@@ -222,7 +222,7 @@ class TracingOpenTelemetryTest < Minitest::Test
     tracing&.shutdown
   end
 
-  def test_emits_captured_tool_content_and_custom_flat_attributes
+  def test_emits_canonical_captured_tool_content_and_custom_flat_attributes
     tracer = Tracer.new
     tracing = LittleGhost::Tracing::OpenTelemetry.new(tracer:)
 
@@ -231,6 +231,7 @@ class TracingOpenTelemetryTest < Minitest::Test
       {
         operation_id: "tool",
         tool_name: "lookup",
+        tool_type: "function",
         diagnostic_input: JSON.generate(query: "safe"),
         diagnostic_tool_definitions: JSON.generate([
           {name: "lookup", description: "Look up a value", input_schema: {type: "object"}}
@@ -245,10 +246,8 @@ class TracingOpenTelemetryTest < Minitest::Test
     refute span.attributes.key?("tool.name")
     refute span.attributes.key?("input.value")
     assert_equal "Look up a value", span.attributes.fetch("gen_ai.tool.description")
-    assert_equal(
-      {"type" => "object"},
-      JSON.parse(span.attributes.fetch("little_ghost.tool_input_schema"))
-    )
+    assert_equal "function", span.attributes.fetch("gen_ai.tool.type")
+    refute span.attributes.key?("little_ghost.tool_input_schema")
     assert_equal JSON.generate(query: "safe"), span.attributes.fetch("gen_ai.tool.call.arguments")
     refute span.attributes.key?("input.mime_type")
     refute span.attributes.key?("output.value")

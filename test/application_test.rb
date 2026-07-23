@@ -381,6 +381,31 @@ class ApplicationTest < Minitest::Test
     assert_equal "Done", JSON.parse(run_stop.fetch(:diagnostic_output))
   end
 
+  def test_run_telemetry_never_captures_provider_reasoning_artifacts
+    recorded = []
+    instrumentation = LittleGhost::Support::Instrumentation.new(
+      content_capture: LittleGhost::Support::ContentCapture.new(enabled: true)
+    )
+    instrumentation.subscribe(->(name, attributes) { recorded << [name, attributes] })
+    message = LittleGhost::Message.new(
+      role: :assistant,
+      content: LittleGhost::Content::Reasoning.new(
+        signature: "provider-signature",
+        details: [{"type" => "provider", "provider_state" => "continuity"}],
+        text: "visible reasoning"
+      )
+    )
+
+    with_application(instrumentation:) do |application|
+      application.call(message:)
+    end
+
+    captured = JSON.parse(recorded.assoc(:run_start).last.fetch(:diagnostic_input))
+    assert_equal "visible reasoning", captured.dig("content", 0, "text")
+    refute_includes JSON.generate(captured), "provider-signature"
+    refute_includes JSON.generate(captured), "continuity"
+  end
+
   def test_model_failure_before_output_omits_time_to_first_token
     recorded = []
     instrumentation = LittleGhost::Support::Instrumentation.new

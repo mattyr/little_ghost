@@ -348,7 +348,34 @@ module LittleGhost
       return message unless message.respond_to?(:text)
       return message.text unless message.text.empty?
 
-      message.to_h
+      {
+        role: message.role,
+        content: message.content.map { |block| diagnostic_invocation_content(block) }
+      }
+    end
+
+    def diagnostic_invocation_content(block)
+      case block
+      when Content::Text
+        {type: "text", text: block.text}
+      when Content::Reasoning
+        {type: "reasoning", text: block.text}
+      when Content::Image
+        {type: "image", media_type: block.media_type, bytes: block.data.bytesize}
+      when Content::Document
+        {type: "document", media_type: block.media_type, name: block.name, bytes: block.data.bytesize}
+      when Content::ToolUse
+        {type: "tool_use", id: block.id, name: block.name, input: block.input}
+      when Content::ToolResult
+        {
+          type: "tool_result",
+          tool_use_id: block.tool_use_id,
+          content: block.content.to_s,
+          status: block.status
+        }
+      else
+        block.to_s
+      end
     end
 
     def diagnostic_exception(error)

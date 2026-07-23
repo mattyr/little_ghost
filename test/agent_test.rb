@@ -210,7 +210,7 @@ class AgentTest < Minitest::Test
     agent&.close
   end
 
-  def test_explicit_capture_records_model_and_tool_content_without_reasoning_or_binary_data
+  def test_explicit_capture_records_model_tool_and_reasoning_content_without_binary_data
     telemetry = []
     instrumentation = LittleGhost::Support::Instrumentation.new(
       content_capture: LittleGhost::Support::ContentCapture.new(enabled: true)
@@ -240,7 +240,7 @@ class AgentTest < Minitest::Test
     assert_equal "found", tool_output
     final_output = JSON.parse(telemetry.filter_map { |name, value| value if name == :model_stop }.last.fetch(:diagnostic_output))
     reasoning = final_output.fetch("content").find { |block| block.fetch("type") == "reasoning" }
-    assert_equal "[REDACTED]", reasoning.fetch("text")
+    assert_equal "private reasoning", reasoning.fetch("text")
   ensure
     agent&.close
   end

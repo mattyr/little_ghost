@@ -566,6 +566,7 @@ module LittleGhost
           operation_id:,
           parent_operation_id:,
           tool_name: telemetry_tool_name,
+          tool_type: "function",
           tool_call_id: tool_use.id,
           diagnostic: {
             input: tool_use.input,
@@ -806,7 +807,7 @@ module LittleGhost
       when Content::Text
         {type: "text", text: block.text}
       when Content::Reasoning
-        {type: "reasoning", text: "[REDACTED]"}
+        {type: "reasoning", text: block.text}
       when Content::Image
         {type: "image", media_type: block.media_type, bytes: block.data.bytesize}
       when Content::Document

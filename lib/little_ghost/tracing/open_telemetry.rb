@@ -22,6 +22,7 @@ module LittleGhost
         time_to_first_token: "gen_ai.response.time_to_first_chunk",
         session_id: "gen_ai.conversation.id",
         tool_name: "gen_ai.tool.name",
+        tool_type: "gen_ai.tool.type",
         tool_call_id: "gen_ai.tool.call.id",
         error_class: "error.type",
         error_type: "error.type"
@@ -284,7 +285,6 @@ module LittleGhost
 
         definition = definitions.first
         attributes["gen_ai.tool.description"] = definition["description"].to_s if definition["description"]
-        attributes["little_ghost.tool_input_schema"] = json_attribute(definition["input_schema"] || {})
       end
 
       def add_content_attributes(result, key, value, kind:, attributes:)

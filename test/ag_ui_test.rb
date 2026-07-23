@@ -46,6 +46,18 @@ class AGUITest < Minitest::Test
     assert_equal "Agent failed", translated.last[:message]
   end
 
+  def test_tool_only_messages_do_not_reference_an_unannounced_text_message
+    events = [
+      LittleGhost::StreamEvent.build(:message_start),
+      LittleGhost::StreamEvent.build(:tool_call_start, index: 0, id: "tool-1", name: "lookup")
+    ]
+
+    translated = LittleGhost::AGUI::Adapter.new.stream(events, thread_id: "thread", run_id: "run").to_a
+
+    assert_equal ["TOOL_CALL_START"], translated.map { |event| event.fetch(:type) }
+    refute translated.first.key?(:parentMessageId)
+  end
+
   def test_translates_partial_and_cancelled_runs
     events = [
       LittleGhost::StreamEvent.build(:run_partial, response: "partial"),
@@ -100,8 +112,8 @@ class AGUITest < Minitest::Test
     assert_equal "little_ghost.model_retry", events.fetch(3).fetch(:name)
   end
 
-  def test_keeps_model_reasoning_private_while_preserving_visible_text_and_usage
-    private_reasoning = "private chain of thought"
+  def test_translates_reasoning_separately_from_visible_text
+    reasoning = "provider reasoning"
     result = LittleGhost::RunResult.new(
       message: LittleGhost::Message.new(role: :assistant, content: "Visible answer"),
       stop_reason: :end_turn,
@@ -111,7 +123,7 @@ class AGUITest < Minitest::Test
     )
     source = [
       LittleGhost::StreamEvent.build(:text_delta, text: "Visible "),
-      LittleGhost::StreamEvent.build(:reasoning_delta, text: private_reasoning),
+      LittleGhost::StreamEvent.build(:reasoning_delta, text: reasoning),
       LittleGhost::StreamEvent.build(:text_delta, text: "answer"),
       LittleGhost::StreamEvent.build(:message_stop),
       LittleGhost::StreamEvent.build(:invocation_stop, result:),
@@ -121,14 +133,19 @@ class AGUITest < Minitest::Test
     translated = LittleGhost::AGUI::Adapter.new.stream(source, thread_id: "thread", run_id: "run").to_a
 
     assert_equal %w[
-      TEXT_MESSAGE_START TEXT_MESSAGE_CONTENT TEXT_MESSAGE_CONTENT TEXT_MESSAGE_END CUSTOM RUN_FINISHED
+      TEXT_MESSAGE_START TEXT_MESSAGE_CONTENT TEXT_MESSAGE_END
+      REASONING_START REASONING_MESSAGE_START REASONING_MESSAGE_CONTENT
+      REASONING_MESSAGE_END REASONING_END
+      TEXT_MESSAGE_START TEXT_MESSAGE_CONTENT TEXT_MESSAGE_END CUSTOM RUN_FINISHED
     ], translated.map { |event| event[:type] }
     assert_equal ["Visible ", "answer"], translated.select { |event|
       event[:type] == "TEXT_MESSAGE_CONTENT"
     }.map { |event| event[:delta] }
+    assert_equal [reasoning], translated.select { |event|
+      event[:type] == "REASONING_MESSAGE_CONTENT"
+    }.map { |event| event[:delta] }
     assert_equal 7, translated.fetch(-2).dig(:value, :usage, :reasoning_tokens)
-    refute_includes JSON.generate(translated), private_reasoning
-    refute translated.any? { |event| event[:type].start_with?("REASONING") }
+    assert_includes JSON.generate(translated), reasoning
   end
 
   def test_closes_open_messages_before_terminal_events
@@ -141,8 +158,11 @@ class AGUITest < Minitest::Test
     translated = LittleGhost::AGUI::Adapter.new.stream(error_events, thread_id: "thread", run_id: "run").to_a
 
     assert_equal [
-      "TEXT_MESSAGE_START",
-      "TEXT_MESSAGE_END",
+      "REASONING_START",
+      "REASONING_MESSAGE_START",
+      "REASONING_MESSAGE_CONTENT",
+      "REASONING_MESSAGE_END",
+      "REASONING_END",
       "RUN_ERROR"
     ], translated.map { |event| event[:type] }
 

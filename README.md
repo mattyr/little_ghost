@@ -253,7 +253,7 @@ Applications can pass any `LittleGhost::SessionStore` to `session_store`, or use
 
 ## AG-UI
 
-Internal events remain interface-neutral. After `require "little_ghost/ag_ui"`, `LittleGhost::AGUI::Adapter` is the translation boundary for AG-UI message, tool, usage, trace, subagent, and run events. The adapter never translates private model-reasoning deltas; visible assistant text and aggregate reasoning-token usage remain available.
+Internal events remain interface-neutral. After `require "little_ghost/ag_ui"`, `LittleGhost::AGUI::Adapter` is the translation boundary for AG-UI message, reasoning, tool, usage, trace, subagent, and run events. Provider-supplied plaintext reasoning is translated into AG-UI reasoning lifecycle events; applications decide which interfaces may present it. Encrypted reasoning and provider continuity artifacts remain private to the provider integration.
 
 ## Instrumentation and tracing
 
