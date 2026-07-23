@@ -133,7 +133,11 @@ module LittleGhost
         action = (count == @tool_loop_warning_at) ? :warn : :final_warning
         warning = (action == :warn) ? WARNING : FINAL_WARNING
         context&.instrumentation&.emit(:tool_loop, action: action, tool_name: tool_use.name, count: count)
-        replacement = Tool::ExecutionResult.new(content: "#{warning}\n\n#{result.content}", status: result.status)
+        replacement = Tool::ExecutionResult.new(
+          content: "#{warning}\n\n#{result.content}",
+          status: result.status,
+          error: result.error
+        )
         Support::Callbacks.replace(payload.merge(result: replacement))
       end
 

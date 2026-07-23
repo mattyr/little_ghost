@@ -241,6 +241,31 @@ class AgentTest < Minitest::Test
     agent&.close
   end
 
+  def test_tool_failure_telemetry_retains_the_original_exception
+    telemetry = []
+    instrumentation = LittleGhost::Support::Instrumentation.new(
+      content_capture: LittleGhost::Support::ContentCapture.new(enabled: true)
+    )
+    instrumentation.subscribe(->(name, attributes) { telemetry << [name, attributes] })
+    tool = LittleGhost::Tool.define(name: "broken", description: "Fails") do
+      raise FrozenError, "live state was frozen"
+    end
+    tool_use = LittleGhost::Content::ToolUse.new(id: "call-1", name: "broken", input: {})
+    model = ScriptedModel.new(response([tool_use], stop_reason: :tool_use), response("recovered"))
+    agent = LittleGhost::Agent.new(model:, tools: [tool], instrumentation:)
+
+    agent.call("try the tool")
+
+    stop = telemetry.assoc(:tool_stop).last
+    assert_equal "FrozenError", stop.fetch(:error_type)
+    exception = JSON.parse(stop.fetch(:diagnostic_exception))
+    assert_equal "FrozenError", exception.fetch("type")
+    assert_equal "live state was frozen", exception.fetch("message")
+    assert_equal ["Tool failed (FrozenError)"], JSON.parse(stop.fetch(:diagnostic_output))
+  ensure
+    agent&.close
+  end
+
   def test_returns_unknown_tools_to_the_model_as_errors
     telemetry = []
     instrumentation = LittleGhost::Support::Instrumentation.new

@@ -579,7 +579,10 @@ module LittleGhost
             outcome: :error,
             duration_ms: duration_ms(started_at),
             error_type: tool.class.name,
-            diagnostic: {output: diagnostic_tool_result(result)}
+            diagnostic: {
+              output: diagnostic_tool_result(result),
+              exception: diagnostic_exception(tool)
+            }
           )
           next result
         end
@@ -588,6 +591,7 @@ module LittleGhost
 
         decision = run_callbacks(:before_tool, {tool_use: tool_use, tool: tool}, context: context)
         if decision.cancel?
+          rejection = ToolError.new(decision.reason)
           result = Content::ToolResult.new(
             tool_use_id: tool_use.id,
             content: decision.reason,
@@ -600,8 +604,11 @@ module LittleGhost
             tool_name: telemetry_tool_name,
             outcome: :error,
             duration_ms: duration_ms(started_at),
-            error_type: "LittleGhost::ToolRejected",
-            diagnostic: {output: diagnostic_tool_result(result)}
+            error_type: rejection.class.name,
+            diagnostic: {
+              output: diagnostic_tool_result(result),
+              exception: diagnostic_exception(rejection)
+            }
           )
           next result
         end
@@ -622,6 +629,8 @@ module LittleGhost
           content: tool_result.content,
           status: tool_result.status
         )
+        tool_error = tool_result.error
+        tool_error ||= ToolError.new(tool_result.content) if result.status == :error
         instrument(
           :tool_stop,
           operation_id:,
@@ -629,8 +638,11 @@ module LittleGhost
           tool_name: telemetry_tool_name,
           outcome: result.status,
           duration_ms: duration_ms(started_at),
-          error_type: (result.status == :error) ? "LittleGhost::ToolError" : nil,
-          diagnostic: {output: diagnostic_tool_result(result)}
+          error_type: tool_error&.class&.name,
+          diagnostic: {
+            output: diagnostic_tool_result(result),
+            exception: tool_error && diagnostic_exception(tool_error)
+          }.compact
         )
         result
       rescue ToolError => error
@@ -643,7 +655,10 @@ module LittleGhost
           outcome: :error,
           duration_ms: duration_ms(started_at),
           error_type: error.class.name,
-          diagnostic: {output: diagnostic_tool_result(result)}
+          diagnostic: {
+            output: diagnostic_tool_result(result),
+            exception: diagnostic_exception(error)
+          }
         )
         result
       rescue => error

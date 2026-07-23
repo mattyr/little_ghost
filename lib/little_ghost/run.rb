@@ -107,6 +107,7 @@ module LittleGhost
       instrument(
         :run_start,
         trace_context: invocation[:parent_trace_context],
+        trace_links: invocation[:trace_links],
         diagnostic: {input: diagnostic_invocation_message}
       )
       emit(:run_start, run_id: invocation.run_id, thread_id: invocation.session_id) { |event| yield event }

@@ -5,7 +5,11 @@ require "json"
 module LittleGhost
   class Tool
     UNSET = Object.new.freeze
-    ExecutionResult = Data.define(:content, :status) do
+    ExecutionResult = Data.define(:content, :status, :error) do
+      def initialize(content:, status:, error: nil)
+        super
+      end
+
       def success?
         status == :success
       end
@@ -120,15 +124,18 @@ module LittleGhost
 
     def execute(input, context: nil)
       errors = SchemaValidator.new(self.class.input_schema).validate(input)
-      return failure("Invalid tool input: #{errors.join("; ")}") unless errors.empty?
+      unless errors.empty?
+        message = "Invalid tool input: #{errors.join("; ")}"
+        return failure(message, error: ToolError.new(message))
+      end
 
       success(sanitize(call(input, context: context)))
     rescue CancelledError, DeadlineExceededError, CleanupError
       raise
     rescue ToolError => error
-      failure(error.message)
+      failure(error.message, error:)
     rescue => error
-      failure("Tool failed (#{error.class})")
+      failure("Tool failed (#{error.class})", error:)
     end
 
     def call(_input, context:)
@@ -152,8 +159,8 @@ module LittleGhost
       ExecutionResult.new(content: content.freeze, status: :success)
     end
 
-    def failure(content)
-      ExecutionResult.new(content: content.freeze, status: :error)
+    def failure(content, error:)
+      ExecutionResult.new(content: content.freeze, status: :error, error:)
     end
 
     class SchemaValidator

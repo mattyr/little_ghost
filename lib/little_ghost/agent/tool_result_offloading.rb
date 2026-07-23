@@ -310,7 +310,8 @@ module LittleGhost
         parts << "[Stored reference: #{reference}]"
         replacement = Tool::ExecutionResult.new(
           content: parts.compact.join("\n\n"),
-          status: result.status
+          status: result.status,
+          error: result.error
         )
         Support::Callbacks.replace(payload.merge(result: replacement))
       rescue
@@ -331,7 +332,8 @@ module LittleGhost
         end
         replacement = Tool::ExecutionResult.new(
           content: [warning, message, preview.empty? ? nil : preview].compact.join("\n\n"),
-          status: result.status
+          status: result.status,
+          error: result.error
         )
         Support::Callbacks.replace(payload.merge(result: replacement))
       end

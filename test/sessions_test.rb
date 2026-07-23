@@ -45,6 +45,31 @@ class SessionsTest < Minitest::Test
     assert_equal({source: "stored"}, snapshot.fetch(:metadata))
   end
 
+  def test_checkpoint_snapshots_do_not_freeze_live_nested_state
+    store = LittleGhost::SessionStores::Memory.new
+    session = LittleGhost::Session.new(id: "conversation", actor_id: "actor", store:)
+    state = {
+      "plan" => {
+        "title" => "Investigate",
+        "items" => [{"id" => "inspect", "status" => "in_progress"}]
+      }
+    }
+
+    session.checkpoint(messages: [], state:)
+
+    refute state.frozen?
+    refute state.fetch("plan").frozen?
+    refute state.dig("plan", "items").frozen?
+    refute state.dig("plan", "items", 0).frozen?
+    state.dig("plan", "items", 0)["status"] = "completed"
+
+    loaded = LittleGhost::Session.new(id: "conversation", actor_id: "actor", store:).state
+    refute loaded.frozen?
+    refute loaded.fetch("plan").frozen?
+    loaded.dig("plan", "items", 0)["status"] = "completed"
+    assert_equal "in_progress", store.load("conversation", actor_id: "actor").dig(:state, "plan", "items", 0, "status")
+  end
+
   def test_checkpoints_without_private_model_reasoning
     store = LittleGhost::SessionStores::Memory.new
     session = LittleGhost::Session.new(id: "conversation", actor_id: "actor", store:)

@@ -26,7 +26,8 @@ module LittleGhost
     end
 
     def state
-      load&.fetch(:state) || {}
+      snapshot = load
+      snapshot ? mutable_copy(snapshot.fetch(:state)) : {}
     end
 
     def metadata
@@ -96,8 +97,8 @@ module LittleGhost
     def build_snapshot(messages:, state:, metadata:)
       {
         messages: persistable_messages(messages),
-        state: state.to_h.freeze,
-        metadata: metadata.to_h.freeze
+        state: Support.immutable(state.to_h),
+        metadata: Support.immutable(metadata.to_h)
       }.freeze
     end
 
@@ -124,8 +125,8 @@ module LittleGhost
 
       {
         messages: persistable_messages(Array(value.fetch(:messages))),
-        state: value.fetch(:state, {}).to_h.freeze,
-        metadata: value.fetch(:metadata, {}).to_h.freeze
+        state: Support.immutable(value.fetch(:state, {}).to_h),
+        metadata: Support.immutable(value.fetch(:metadata, {}).to_h)
       }.freeze
     rescue KeyError, NoMethodError, TypeError => error
       raise ProtocolError, "Session store returned an invalid value: #{error.class}"
@@ -141,6 +142,19 @@ module LittleGhost
 
         sanitized
       end.freeze
+    end
+
+    def mutable_copy(value)
+      case value
+      when Hash
+        value.to_h { |key, child| [mutable_copy(key), mutable_copy(child)] }
+      when Array
+        value.map { |child| mutable_copy(child) }
+      when String
+        value.dup
+      else
+        value
+      end
     end
   end
 end

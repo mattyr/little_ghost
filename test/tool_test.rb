@@ -77,6 +77,8 @@ class ToolTest < Minitest::Test
 
     assert_equal "Tool failed (RuntimeError)", result.content
     refute_includes result.content, "secret credentials"
+    assert_instance_of RuntimeError, result.error
+    assert_equal "secret credentials", result.error.message
   end
 
   def test_execute_preserves_intentional_tool_errors
@@ -88,6 +90,7 @@ class ToolTest < Minitest::Test
 
     assert_equal :error, result.status
     assert_equal "permission denied", result.content
+    assert_instance_of LittleGhost::ToolError, result.error
   end
 
   def test_execute_propagates_cleanup_errors

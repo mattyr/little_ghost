@@ -16,6 +16,28 @@ class WriteTodosTest < Minitest::Test
     assert_equal "Ship it", JSON.parse(result.content).fetch("plan_title")
   end
 
+  def test_updates_a_plan_after_the_context_state_is_checkpointed
+    store = LittleGhost::SessionStores::Memory.new
+    session = LittleGhost::Session.new(id: "conversation", store:)
+    context = LittleGhost::RunContext.new(state: session.state)
+    tool = LittleGhost::Tools::WriteTodos.new
+    first = {
+      "plan_title" => "Ship it",
+      "todos" => [{"id" => "one", "title" => "Build", "status" => "in_progress"}]
+    }
+
+    assert tool.execute(first, context:).success?
+    session.checkpoint(messages: [], state: context.state)
+    second = first.merge(
+      "todos" => [{"id" => "one", "title" => "Build", "status" => "completed"}]
+    )
+
+    result = tool.execute(second, context:)
+
+    assert result.success?, result.content
+    assert_equal "completed", context.state.dig("little_ghost.plan", "todos", 0, "status")
+  end
+
   def test_rejects_duplicate_ids_and_multiple_in_progress_todos
     tool = LittleGhost::Tools::WriteTodos.new
 

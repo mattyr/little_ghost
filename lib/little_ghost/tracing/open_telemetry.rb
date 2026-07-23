@@ -20,25 +20,11 @@ module LittleGhost
         cache_write_tokens: "gen_ai.usage.cache_creation.input_tokens",
         reasoning_tokens: "gen_ai.usage.reasoning.output_tokens",
         time_to_first_token: "gen_ai.response.time_to_first_chunk",
-        session_id: "session.id",
+        session_id: "gen_ai.conversation.id",
         tool_name: "gen_ai.tool.name",
         tool_call_id: "gen_ai.tool.call.id",
         error_class: "error.type",
-        error_type: "error.type",
-        diagnostic_input: "input.value",
-        diagnostic_output: "output.value"
-      }.freeze
-      OPENINFERENCE_ATTRIBUTE_NAMES = {
-        agent_name: "agent.name",
-        model_id: "llm.model_name",
-        model_provider: "llm.provider",
-        input_tokens: "llm.token_count.prompt",
-        output_tokens: "llm.token_count.completion",
-        total_tokens: "llm.token_count.total",
-        cache_read_tokens: "llm.token_count.prompt_details.cache_read",
-        cache_write_tokens: "llm.token_count.prompt_details.cache_write",
-        reasoning_tokens: "llm.token_count.completion_details.reasoning",
-        tool_name: "tool.name"
+        error_type: "error.type"
       }.freeze
       OPERATIONS = {
         agent: "invoke_agent",
@@ -85,7 +71,7 @@ module LittleGhost
         return {} unless context&.valid?
 
         carrier = {}
-        ::OpenTelemetry.propagation.inject(
+        trace_context_propagator.inject(
           carrier,
           context: ::OpenTelemetry::Trace.context_with_span(span)
         )
@@ -126,17 +112,23 @@ module LittleGhost
         parent_context = if parent
           ::OpenTelemetry::Trace.context_with_span(parent.fetch(:span))
         elsif attributes[:trace_context].is_a?(Hash)
-          ::OpenTelemetry.propagation.extract(attributes[:trace_context])
+          trace_context_propagator.extract(attributes[:trace_context])
         end
-        span = tracer.start_span(
-          span_name(kind, attributes),
-          with_parent: parent_context,
+        options = {
           kind: span_kind(kind),
           attributes: span_attributes(attributes, kind:).merge(
-            "gen_ai.operation.name" => OPERATIONS.fetch(kind, kind.to_s),
-            "openinference.span.kind" => openinference_kind(kind)
+            "gen_ai.operation.name" => OPERATIONS.fetch(kind, kind.to_s)
           )
-        )
+        }
+        links = trace_links(attributes[:trace_links])
+        options[:links] = links unless links.empty?
+        span = if parent_context
+          tracer.start_span(span_name(kind, attributes), with_parent: parent_context, **options)
+        elsif links.empty?
+          tracer.start_span(span_name(kind, attributes), **options)
+        else
+          tracer.start_root_span(span_name(kind, attributes), **options)
+        end
         @mutex.synchronize do
           @entries[attributes.fetch(:operation_id)] = {
             span:,
@@ -150,8 +142,6 @@ module LittleGhost
       def alias_primary_agent(attributes, parent)
         span = parent.fetch(:span)
         span_attributes(attributes, kind: :agent).each do |key, value|
-          next if %w[input.value input.mime_type].include?(key)
-
           span.set_attribute(key, value)
         end
         @mutex.synchronize do
@@ -229,10 +219,14 @@ module LittleGhost
             next
           end
           if key.to_sym == :total_tokens
-            result["llm.token_count.total"] = value.to_i
             next
           end
           next if %i[available_tools duration_ms outcome diagnostic_exception].include?(key.to_sym)
+
+          if %i[diagnostic_input diagnostic_output].include?(key.to_sym)
+            add_content_attributes(result, key, attribute_value(key, value), kind:, attributes:)
+            next
+          end
 
           name = key.to_s.include?(".") ? key.to_s : ATTRIBUTE_NAMES.fetch(key.to_sym, "little_ghost.#{key}")
           normalized = if key.to_sym == :model_provider
@@ -241,18 +235,14 @@ module LittleGhost
             attribute_value(key, value)
           end
           result[name] = gen_ai_usage_value(key, attributes, normalized)
-          add_openinference_attribute(result, key, attributes, normalized)
-          add_content_attributes(result, key, normalized, kind:, attributes:)
-          if key.to_sym == :session_id
-            result["gen_ai.conversation.id"] = normalized
-          elsif key.to_sym == :stop_reason && value
+          if key.to_sym == :stop_reason && value
             result["gen_ai.response.finish_reasons"] = [normalized]
           end
         end
       end
 
       def internal_attribute?(key)
-        %i[operation_id parent_operation_id trace_context].include?(key.to_sym)
+        %i[operation_id parent_operation_id trace_context trace_links].include?(key.to_sym)
       end
 
       def add_model_settings(attributes, settings)
@@ -280,18 +270,10 @@ module LittleGhost
         )
       end
 
-      def add_openinference_attribute(result, key, attributes, value)
-        name = OPENINFERENCE_ATTRIBUTE_NAMES[key.to_sym]
-        return unless name
-
-        result[name] = openinference_usage_value(key, attributes, value)
-      end
-
       def add_content_attributes(result, key, value, kind:, attributes:)
         return unless %i[diagnostic_input diagnostic_output].include?(key.to_sym)
 
         prefix = (key.to_sym == :diagnostic_input) ? "input" : "output"
-        result["#{prefix}.mime_type"] = "application/json"
         if kind == :tool
           name = (prefix == "input") ? "gen_ai.tool.call.arguments" : "gen_ai.tool.call.result"
           result[name] = value unless prefix == "output" && attributes[:error_type]
@@ -299,12 +281,10 @@ module LittleGhost
         return unless kind == :model
 
         semantic_name = (prefix == "input") ? "gen_ai.input.messages" : "gen_ai.output.messages"
-        openinference_name = (prefix == "input") ? "llm.input_messages" : "llm.output_messages"
         result[semantic_name] = canonical_messages(
           value,
           finish_reason: prefix == "output" && (attributes[:stop_reason] || Array(attributes[:finish_reasons]).first)
         )
-        result[openinference_name] = value
       end
 
       def canonical_messages(value, finish_reason: nil)
@@ -355,22 +335,11 @@ module LittleGhost
         end
       end
 
-      def openinference_kind(kind)
-        {
-          agent: "AGENT",
-          agent_turn: "CHAIN",
-          run: "AGENT",
-          subagent: "CHAIN",
-          model: "LLM",
-          tool: "TOOL"
-        }.fetch(kind, "CHAIN")
-      end
-
       def span_kind(kind)
         (kind == :model) ? :client : :internal
       end
 
-      def openinference_usage_value(key, attributes, value)
+      def gen_ai_usage_value(key, attributes, value)
         if key.to_sym == :input_tokens
           return value.to_i + attributes.fetch(:cache_read_tokens, 0).to_i +
               attributes.fetch(:cache_write_tokens, 0).to_i
@@ -380,8 +349,16 @@ module LittleGhost
         value
       end
 
-      def gen_ai_usage_value(key, attributes, value)
-        openinference_usage_value(key, attributes, value)
+      def trace_links(carriers)
+        Array(carriers).filter_map do |carrier|
+          next unless carrier.is_a?(Hash)
+
+          context = trace_context_propagator.extract(carrier)
+          span_context = ::OpenTelemetry::Trace.current_span(context).context
+          ::OpenTelemetry::Trace::Link.new(span_context) if span_context.valid?
+        rescue
+          nil
+        end
       end
 
       def attribute_value(key, value)
@@ -420,6 +397,11 @@ module LittleGhost
           "bedrock" => "aws.bedrock",
           "open_router" => "openrouter"
         }.fetch(value.to_s, value.to_s)
+      end
+
+      def trace_context_propagator
+        @trace_context_propagator ||=
+          ::OpenTelemetry::Trace::Propagation::TraceContext::TextMapPropagator.new
       end
 
       def scalar(value)
