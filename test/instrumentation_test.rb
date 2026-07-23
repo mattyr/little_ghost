@@ -99,6 +99,32 @@ class InstrumentationTest < Minitest::Test
     assert_equal "[REDACTED]", exception.fetch("api_key")
   end
 
+  def test_json_string_output_is_structured_and_scrubbed
+    policy = LittleGhost::Support::ContentCapture.new(enabled: true)
+
+    captured = policy.capture(
+      output: JSON.generate(
+        password: "arbitrary-secret",
+        result: "found"
+      )
+    )
+    output = JSON.parse(captured.fetch(:diagnostic_output))
+
+    assert_equal "[REDACTED]", output.fetch("password")
+    assert_equal "found", output.fetch("result")
+  end
+
+  def test_custom_scrubber_cannot_reintroduce_sensitive_output
+    policy = LittleGhost::Support::ContentCapture.new(
+      enabled: true,
+      scrubber: ->(_value) { {authorization: "Bearer abcdefghijklmnopqrstuvwxyz123456"} }
+    )
+
+    output = JSON.parse(policy.capture(output: "found").fetch(:diagnostic_output))
+
+    assert_equal "[REDACTED]", output.fetch("authorization")
+  end
+
   def test_tool_definition_capture_is_scrubbed_and_bounded
     policy = LittleGhost::Support::ContentCapture.new(enabled: true, max_bytes: 256)
 

@@ -164,15 +164,17 @@ module LittleGhost
         end
         return if entry.fetch(:alias)
 
-        record_error(span, attributes, kind: entry.fetch(:kind))
+        record_status(span, attributes, kind: entry.fetch(:kind))
         span.finish
       end
 
-      def record_error(span, attributes, kind:)
+      def record_status(span, attributes, kind:)
         error_type = attributes[:error_type] || attributes[:error_class]
-        return unless error_type
+        unless error_type
+          span.status = ::OpenTelemetry::Trace::Status.ok
+          return
+        end
 
-        span.status = ::OpenTelemetry::Trace::Status.error(error_type.to_s)
         event_attributes = {"exception.type" => error_type.to_s}
         captured = parse_json(attributes[:diagnostic_exception])
         if captured.is_a?(Hash)
@@ -180,6 +182,8 @@ module LittleGhost
           stacktrace = captured["stacktrace"]
           event_attributes["exception.stacktrace"] = String(stacktrace).slice(0, 64_000) if stacktrace
         end
+        description = [error_type, event_attributes["exception.message"]].compact.join(": ")
+        span.status = ::OpenTelemetry::Trace::Status.error(description)
         event_name = (kind == :model) ? "gen_ai.client.operation.exception" : "exception"
         span.add_event(event_name, attributes: event_attributes.compact)
       end
@@ -215,7 +219,12 @@ module LittleGhost
             next
           end
           if key.to_sym == :diagnostic_tool_definitions
-            add_tool_definitions(result, parse_json(value))
+            definitions = parse_json(value)
+            if kind == :tool
+              add_tool_metadata(result, definitions)
+            else
+              add_tool_definitions(result, definitions)
+            end
             next
           end
           if key.to_sym == :total_tokens
@@ -268,6 +277,14 @@ module LittleGhost
             }
           end
         )
+      end
+
+      def add_tool_metadata(attributes, definitions)
+        return unless definitions.is_a?(Array) && definitions.first.is_a?(Hash)
+
+        definition = definitions.first
+        attributes["gen_ai.tool.description"] = definition["description"].to_s if definition["description"]
+        attributes["little_ghost.tool_input_schema"] = json_attribute(definition["input_schema"] || {})
       end
 
       def add_content_attributes(result, key, value, kind:, attributes:)

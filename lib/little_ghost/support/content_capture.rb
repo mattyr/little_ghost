@@ -35,7 +35,9 @@ module LittleGhost
           captured[:"diagnostic_#{key}"] = if key.to_sym == :tool_definitions
             capture_tool_definitions(value)
           else
-            scrubbed = @scrubber ? @scrubber.call(value) : scrub(value)
+            value = structured_output(value) if key.to_sym == :output
+            scrubbed = scrub(value)
+            scrubbed = scrub(@scrubber.call(scrubbed)) if @scrubber
             truncate(JSON.generate(scrubbed))
           end
         rescue JSON::GeneratorError, Encoding::UndefinedConversionError
@@ -121,6 +123,15 @@ module LittleGhost
       def scrub_string(value)
         text = @redactions.reduce(value.dup) { |current, secret| current.gsub(secret, "[REDACTED]") }
         SECRET_PATTERNS.reduce(text) { |current, pattern| current.gsub(pattern, "[REDACTED]") }
+      end
+
+      def structured_output(value)
+        return value unless value.is_a?(String)
+
+        parsed = JSON.parse(value)
+        (parsed.is_a?(Hash) || parsed.is_a?(Array)) ? parsed : value
+      rescue JSON::ParserError
+        value
       end
 
       def truncate(value)

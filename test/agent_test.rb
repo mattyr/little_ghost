@@ -232,8 +232,12 @@ class AgentTest < Minitest::Test
     assert_equal "found", tool_input.fetch("value")
     definitions = JSON.parse(telemetry.assoc(:model_start).last.fetch(:diagnostic_tool_definitions))
     assert_equal "echo", definitions.first.fetch("name")
+    tool_start = telemetry.assoc(:tool_start).last
+    tool_definition = JSON.parse(tool_start.fetch(:diagnostic_tool_definitions)).first
+    assert_equal "Echo", tool_definition.fetch("description")
+    assert_equal({}, tool_definition.fetch("input_schema"))
     tool_output = JSON.parse(telemetry.assoc(:tool_stop).last.fetch(:diagnostic_output))
-    assert_equal ["found"], tool_output
+    assert_equal "found", tool_output
     final_output = JSON.parse(telemetry.filter_map { |name, value| value if name == :model_stop }.last.fetch(:diagnostic_output))
     reasoning = final_output.fetch("content").find { |block| block.fetch("type") == "reasoning" }
     assert_equal "[REDACTED]", reasoning.fetch("text")
@@ -261,7 +265,7 @@ class AgentTest < Minitest::Test
     exception = JSON.parse(stop.fetch(:diagnostic_exception))
     assert_equal "FrozenError", exception.fetch("type")
     assert_equal "live state was frozen", exception.fetch("message")
-    assert_equal ["Tool failed (FrozenError)"], JSON.parse(stop.fetch(:diagnostic_output))
+    assert_equal "Tool failed (FrozenError)", JSON.parse(stop.fetch(:diagnostic_output))
   ensure
     agent&.close
   end

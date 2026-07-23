@@ -182,6 +182,9 @@ class TracingOpenTelemetryTest < Minitest::Test
     assert root_span.finished?
     assert turn_span.finished?
     assert model_span.finished?
+    assert_equal OpenTelemetry::Trace::Status::OK, root_span.status.code
+    assert_equal OpenTelemetry::Trace::Status::OK, turn_span.status.code
+    assert_equal OpenTelemetry::Trace::Status::OK, model_span.status.code
     assert_equal({trace_id: format("%032x", 123)}, trace_context)
   ensure
     tracing&.shutdown
@@ -212,7 +215,9 @@ class TracingOpenTelemetryTest < Minitest::Test
     assert_equal "gen_ai.client.operation.exception", name
     assert_equal "request failed", attributes.fetch("exception.message")
     assert_equal "agent.rb:1", attributes.fetch("exception.stacktrace")
+    refute attributes.key?("exception.escaped")
     assert_equal OpenTelemetry::Trace::Status::ERROR, span.status.code
+    assert_equal "LittleGhost::ProtocolError: request failed", span.status.description
   ensure
     tracing&.shutdown
   end
@@ -227,6 +232,9 @@ class TracingOpenTelemetryTest < Minitest::Test
         operation_id: "tool",
         tool_name: "lookup",
         diagnostic_input: JSON.generate(query: "safe"),
+        diagnostic_tool_definitions: JSON.generate([
+          {name: "lookup", description: "Look up a value", input_schema: {type: "object"}}
+        ]),
         "tag.tags": ["atlas", "main-agent"]
       }
     )
@@ -236,11 +244,17 @@ class TracingOpenTelemetryTest < Minitest::Test
     refute span.attributes.key?("openinference.span.kind")
     refute span.attributes.key?("tool.name")
     refute span.attributes.key?("input.value")
+    assert_equal "Look up a value", span.attributes.fetch("gen_ai.tool.description")
+    assert_equal(
+      {"type" => "object"},
+      JSON.parse(span.attributes.fetch("little_ghost.tool_input_schema"))
+    )
     assert_equal JSON.generate(query: "safe"), span.attributes.fetch("gen_ai.tool.call.arguments")
     refute span.attributes.key?("input.mime_type")
     refute span.attributes.key?("output.value")
     assert_equal JSON.generate(result: "found"), span.attributes.fetch("gen_ai.tool.call.result")
     assert_equal ["atlas", "main-agent"], span.attributes.fetch("tag.tags")
+    assert_equal OpenTelemetry::Trace::Status::OK, span.status.code
   ensure
     tracing&.shutdown
   end
@@ -263,6 +277,8 @@ class TracingOpenTelemetryTest < Minitest::Test
     span = tracer.started.first.last
     refute span.attributes.key?("output.value")
     refute span.attributes.key?("gen_ai.tool.call.result")
+    assert_equal OpenTelemetry::Trace::Status::ERROR, span.status.code
+    assert_equal "LittleGhost::ToolError", span.events.first.last.fetch("exception.type")
   ensure
     tracing&.shutdown
   end

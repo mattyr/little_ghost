@@ -567,7 +567,10 @@ module LittleGhost
           parent_operation_id:,
           tool_name: telemetry_tool_name,
           tool_call_id: tool_use.id,
-          diagnostic: {input: tool_use.input}
+          diagnostic: {
+            input: tool_use.input,
+            tool_definitions: tool.is_a?(Tool) ? [tool.specification] : []
+          }
         )
         if tool.is_a?(ToolError)
           result = Content::ToolResult.new(tool_use_id: tool_use.id, content: tool.message, status: :error)
@@ -822,7 +825,9 @@ module LittleGhost
 
     def diagnostic_tool_result(result)
       value = result.respond_to?(:content) ? result.content : result
-      Array(value).map { |block| block.respond_to?(:role) ? diagnostic_message(block) : block.to_s }
+      return value.map { |block| block.respond_to?(:role) ? diagnostic_message(block) : block.to_s } if value.is_a?(Array)
+
+      value.respond_to?(:role) ? diagnostic_message(value) : value.to_s
     end
 
     def diagnostic_exception(error)
