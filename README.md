@@ -2,7 +2,7 @@
 
 LittleGhost was extracted from an experimental self-improving AI-framework called Algernon.  While functional, it is still in an early stage so the API and functionality are not stable.
 
-LittleGhost is a dependency-light agent framework for Ruby. It provides a conventional application layout, a streaming tool-calling loop, model providers, sessions, subagents, ERB prompts, instrumentation, and an AgentCore Runtime host.
+LittleGhost is a dependency-light agent framework for Ruby. It provides a conventional application layout, a streaming tool-calling loop, model providers, sessions, subagents, ERB prompts, and instrumentation.
 
 LittleGhost requires Ruby 3.3 or newer and is licensed under the MIT License.
 
@@ -251,23 +251,7 @@ Applications can pass any `LittleGhost::SessionStore` to `session_store`, or use
 
 `AgentCoreMemory` requires one active writer for each actor/session pair. It serializes writers inside one Ruby process, but AgentCore's immutable event API does not provide compare-and-swap across processes. Horizontally scaled applications must enforce that invariant with an external lock or a unique active-run record. If the invariant is violated, LittleGhost resolves the immutable fork deterministically when reading, so one concurrent commit is not retained.
 
-## Hosting and AG-UI
-
-```ruby
-# config.ru
-require_relative "config/environment"
-require "little_ghost/hosting"
-
-class SupportHost < LittleGhost::Hosting::AgentCoreRuntime
-  def perform(invocation, environment:)
-    SupportApplication.call(invocation)
-  end
-end
-
-run SupportHost.new
-```
-
-Applications do not choose a transport or output-delivery policy. The optional inheritable AgentCore Runtime Rack host exposes `POST /invocations` and `GET /ping`. Override `normalize`, `perform`, `accepted_response`, or `error_response` when the host needs transport-specific behavior. `normalize` and `perform` receive an immutable snapshot of scalar request environment values; request-scoped objects such as `rack.input` are never exposed to background work. SSE, WebSocket, callback, and framework-embedded hosts can be built around the same `Application.call` and `Application.stream` APIs.
+## AG-UI
 
 Internal events remain interface-neutral. After `require "little_ghost/ag_ui"`, `LittleGhost::AGUI::Adapter` is the translation boundary for AG-UI message, tool, usage, trace, subagent, and run events. The adapter never translates private model-reasoning deltas; visible assistant text and aggregate reasoning-token usage remain available.
 
