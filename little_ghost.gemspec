@@ -17,7 +17,6 @@ Gem::Specification.new do |spec|
   spec.metadata = {
     "bug_tracker_uri" => "#{spec.homepage}/issues",
     "changelog_uri" => "#{spec.homepage}/releases",
-    "homepage_uri" => spec.homepage,
     "source_code_uri" => spec.homepage
   }
 
@@ -25,6 +24,10 @@ Gem::Specification.new do |spec|
     Dir["lib/**/*.rb", "LICENSE.txt", "README.md"]
   end
   spec.require_paths = ["lib"]
+
+  spec.add_dependency "base64"
+  spec.add_dependency "logger"
+  spec.add_dependency "opentelemetry-api", "~> 1.0"
 
   spec.add_development_dependency "minitest", "~> 5.25"
   spec.add_development_dependency "rake", "~> 13.2"
