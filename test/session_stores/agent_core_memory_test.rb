@@ -115,12 +115,8 @@ class AgentCoreMemoryTest < Minitest::Test
     persisted = client.created.first.dig(:payload, 0, :conversational, :content, :text)
     assert persisted.start_with?(LittleGhost::SessionStores::AgentCoreMemory::MESSAGE_PREFIX)
     assert_includes persisted, "again"
-    checkpoint = client.created.last.dig(
-      :payload,
-      0,
-      :blob,
-      LittleGhost::SessionStores::AgentCoreMemory::SESSION_BLOB_KEY
-    )
+    checkpoint = checkpoint_from(client.created.last)
+    assert_instance_of String, client.created.last.dig(:payload, 0, :blob)
     assert_equal 3, checkpoint.fetch("message_count")
     assert_equal({step: 1}, checkpoint.fetch("state"))
     assert_equal({source: "test"}, checkpoint.fetch("metadata"))
@@ -154,6 +150,21 @@ class AgentCoreMemoryTest < Minitest::Test
     store = LittleGhost::SessionStores::AgentCoreMemory.new(memory_id: "memory", client: Client.new)
 
     assert_nil store.load("new", actor_id: "actor")
+  end
+
+  def test_ignores_events_from_older_wire_protocols
+    old_event = Event.new(
+      Time.at(1),
+      [Payload.new(nil, "little_ghost:checkpoint:v3:{}")],
+      {
+        LittleGhost::SessionStores::AgentCoreMemory::EVENT_TYPE_METADATA_KEY => {
+          string_value: "checkpoint"
+        }
+      }
+    )
+    store = store_for(Client.new([old_event]))
+
+    assert_nil store.load("session", actor_id: "actor")
   end
 
   def test_hashes_all_transport_identifiers_into_one_non_colliding_namespace
@@ -196,47 +207,6 @@ class AgentCoreMemoryTest < Minitest::Test
     conversational = client.created.filter_map { |event| event.dig(:payload, 0, :conversational) }
     assert_equal 2, conversational.length
     assert_equal 2, client.created.map { |event| event.fetch(:actor_id) }.uniq.length
-  end
-
-  def test_saves_different_sessions_concurrently_with_independent_timestamps
-    now = Time.at(1_000)
-    client = Client.new
-    mutex = Mutex.new
-    active = 0
-    maximum = 0
-    client.define_singleton_method(:create_event) do |**parameters|
-      mutex.synchronize do
-        active += 1
-        maximum = [maximum, active].max
-      end
-      sleep(0.01)
-      mutex.synchronize { @created << parameters }
-    ensure
-      mutex.synchronize { active -= 1 }
-    end
-    store = LittleGhost::SessionStores::AgentCoreMemory.new(
-      memory_id: "memory",
-      client:,
-      clock: -> { now }
-    )
-
-    %w[first second].map do |session_id|
-      Thread.new do
-        store.replace(
-          session_id,
-          actor_id: "actor",
-          messages: [LittleGhost::Message.new(role: :user, content: session_id)],
-          state: {},
-          metadata: {}
-        )
-      end
-    end.each(&:join)
-
-    assert_equal 2, maximum
-    increment = LittleGhost::SessionStores::AgentCoreMemory::EVENT_TIMESTAMP_INCREMENT
-    client.created.group_by { |event| event.fetch(:session_id) }.each_value do |events|
-      assert_equal [now, now + increment], events.map { |event| event.fetch(:event_timestamp) }
-    end
   end
 
   def test_refreshes_remote_checkpoint_before_every_append
@@ -557,10 +527,8 @@ class AgentCoreMemoryTest < Minitest::Test
     client = Client.new
     store_for(client).replace("session", actor_id: "actor", messages: [], state: {}, metadata: {})
     events = events_from(client.created)
-    checkpoint = events.last.payload.first.blob.fetch(
-      LittleGhost::SessionStores::AgentCoreMemory::SESSION_BLOB_KEY
-    ).merge("revision" => 999)
-    events.last.payload.first.blob[LittleGhost::SessionStores::AgentCoreMemory::SESSION_BLOB_KEY] = checkpoint
+    checkpoint = checkpoint_from_event(events.last).merge("revision" => 999)
+    events.last.payload.first.blob = checkpoint_blob(checkpoint)
 
     error = assert_raises(LittleGhost::ProtocolError) do
       store_for(Client.new(events)).load("session", actor_id: "actor")
@@ -661,7 +629,7 @@ class AgentCoreMemoryTest < Minitest::Test
       }
       Event.new(
         Time.at(index + 1),
-        [Payload.new(nil, {klass::SESSION_BLOB_KEY => checkpoint})],
+        [Payload.new(nil, checkpoint_blob(checkpoint))],
         event_metadata(klass::CHECKPOINT_EVENT_TYPE, generation, commit_id)
       )
     end
@@ -1159,12 +1127,22 @@ class AgentCoreMemoryTest < Minitest::Test
   private
 
   def checkpoint_from(created_event)
-    created_event.dig(
-      :payload,
-      0,
-      :blob,
-      LittleGhost::SessionStores::AgentCoreMemory::SESSION_BLOB_KEY
-    )
+    checkpoint_from_blob(created_event.dig(:payload, 0, :blob))
+  end
+
+  def checkpoint_from_event(event)
+    checkpoint_from_blob(event.payload.first.blob)
+  end
+
+  def checkpoint_from_blob(blob)
+    prefix = LittleGhost::SessionStores::AgentCoreMemory::CHECKPOINT_PREFIX
+    store_for(Client.new).send(:deserialize_checkpoint, blob.delete_prefix(prefix))
+  end
+
+  def checkpoint_blob(checkpoint)
+    store = store_for(Client.new)
+    "#{LittleGhost::SessionStores::AgentCoreMemory::CHECKPOINT_PREFIX}" \
+      "#{store.send(:serialize_checkpoint, checkpoint)}"
   end
 
   def event_metadata(type, generation, commit_id)

@@ -8,18 +8,20 @@ require_relative "../session_store"
 module LittleGhost
   module SessionStores
     class AgentCoreMemory < SessionStore
-      MESSAGE_PREFIX = "little_ghost:message:v3:"
-      MESSAGE_CHUNK_PREFIX = "little_ghost:message_chunk:v3:"
+      MESSAGE_PREFIX = "little_ghost:message:v4:"
+      MESSAGE_CHUNK_PREFIX = "little_ghost:message_chunk:v4:"
+      CHECKPOINT_PREFIX = "little_ghost:checkpoint:v4:"
       CONVERSATIONAL_TEXT_LIMIT = 100_000
       MESSAGE_CHUNK_CONTENT_LIMIT = 90_000
       EVENT_PAYLOAD_LIMIT = 100
       MESSAGE_CHUNK_COUNT_LIMIT = 10_000
-      SESSION_BLOB_KEY = "little_ghost_session_v3"
       EVENT_TYPE_METADATA_KEY = "little_ghost_type"
       GENERATION_METADATA_KEY = "little_ghost_generation"
       COMMIT_METADATA_KEY = "little_ghost_commit"
-      MESSAGE_EVENT_TYPE = "message"
-      CHECKPOINT_EVENT_TYPE = "checkpoint"
+      SYMBOL_KEY_PREFIX = "little_ghost:symbol:"
+      STRING_KEY_PREFIX = "little_ghost:string:"
+      MESSAGE_EVENT_TYPE = "message_v4"
+      CHECKPOINT_EVENT_TYPE = "checkpoint_v4"
       # AgentCore's SDK timestamp transport cannot preserve sub-second ordering.
       EVENT_TIMESTAMP_INCREMENT = 1
       LIST_PAGE_SIZE = 100
@@ -420,7 +422,7 @@ module LittleGhost
         return conversational_text(payload).bytesize if conversational
 
         blob = payload.respond_to?(:blob) ? payload.blob : nil
-        return JSON.generate(blob).bytesize if blob.is_a?(Hash)
+        return blob.bytesize if blob.is_a?(String)
 
         raise ProtocolError, "AgentCore session event payload is invalid"
       rescue JSON::GeneratorError, TypeError => error
@@ -470,11 +472,14 @@ module LittleGhost
       def event_session_data(event)
         values = event_payloads(event).filter_map do |payload|
           blob = payload.respond_to?(:blob) ? payload.blob : nil
-          next unless blob.is_a?(Hash)
+          next unless blob.is_a?(String) && blob.start_with?(CHECKPOINT_PREFIX)
 
-          blob[SESSION_BLOB_KEY] || blob[SESSION_BLOB_KEY.to_sym]
+          checkpoint = deserialize_checkpoint(blob.delete_prefix(CHECKPOINT_PREFIX))
+          checkpoint if checkpoint.is_a?(Hash)
         end
         values.one? ? values.first : nil
+      rescue JSON::ParserError
+        nil
       end
 
       def plan_messages(messages, generation:, commit_id:, offset:)
@@ -566,7 +571,8 @@ module LittleGhost
           event_count: checkpoint.fetch("event_count"),
           payload_count: checkpoint.fetch("payload_count")
         )
-        if checkpoint.fetch("revision") > MAX_REVISION || JSON.generate(checkpoint).bytesize > MAX_CHECKPOINT_SERIALIZED_BYTES
+        if checkpoint.fetch("revision") > MAX_REVISION ||
+            serialize_checkpoint(checkpoint).bytesize > MAX_CHECKPOINT_SERIALIZED_BYTES
           raise ProtocolError, "AgentCore session checkpoint exceeds the byte limit"
         end
         checkpoint.freeze
@@ -618,7 +624,7 @@ module LittleGhost
           actor_id:,
           session_id:,
           event_timestamp: timestamp,
-          payload: [{blob: {SESSION_BLOB_KEY => checkpoint}}],
+          payload: [{blob: "#{CHECKPOINT_PREFIX}#{serialize_checkpoint(checkpoint)}"}],
           metadata: event_metadata(
             CHECKPOINT_EVENT_TYPE,
             checkpoint.fetch("generation"),
@@ -645,6 +651,55 @@ module LittleGhost
         serialized
       rescue JSON::GeneratorError, TypeError => error
         raise ProtocolError, "AgentCore session message could not be serialized: #{error.class}"
+      end
+
+      def serialize_checkpoint(checkpoint)
+        document = checkpoint.merge(
+          "state" => encode_hash_keys(checkpoint.fetch("state")),
+          "metadata" => encode_hash_keys(checkpoint.fetch("metadata"))
+        )
+        JSON.generate(document)
+      end
+
+      def deserialize_checkpoint(value)
+        document = JSON.parse(value)
+        return document unless document.is_a?(Hash)
+
+        document["state"] = decode_hash_keys(document.fetch("state", {}))
+        document["metadata"] = decode_hash_keys(document.fetch("metadata", {}))
+        document
+      end
+
+      def encode_hash_keys(value)
+        case value
+        when Hash
+          value.to_h do |key, child|
+            prefix = key.is_a?(Symbol) ? SYMBOL_KEY_PREFIX : STRING_KEY_PREFIX
+            ["#{prefix}#{key}", encode_hash_keys(child)]
+          end
+        when Array
+          value.map { |child| encode_hash_keys(child) }
+        else
+          value
+        end
+      end
+
+      def decode_hash_keys(value)
+        case value
+        when Hash
+          value.to_h do |key, child|
+            decoded_key = if key.start_with?(SYMBOL_KEY_PREFIX)
+              key.delete_prefix(SYMBOL_KEY_PREFIX).to_sym
+            else
+              key.delete_prefix(STRING_KEY_PREFIX)
+            end
+            [decoded_key, decode_hash_keys(child)]
+          end
+        when Array
+          value.map { |child| decode_hash_keys(child) }
+        else
+          value
+        end
       end
 
       def validate_session_size!(message_count, serialized_bytes, event_count: 0, payload_count: 0)
@@ -730,7 +785,7 @@ module LittleGhost
       end
 
       def normalize_checkpoint(value)
-        if JSON.generate(value).bytesize > MAX_CHECKPOINT_SERIALIZED_BYTES
+        if serialize_checkpoint(value.transform_keys(&:to_s)).bytesize > MAX_CHECKPOINT_SERIALIZED_BYTES
           raise ProtocolError, "AgentCore session checkpoint exceeds the byte limit"
         end
 

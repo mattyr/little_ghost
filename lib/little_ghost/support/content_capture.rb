@@ -5,6 +5,8 @@ require "json"
 module LittleGhost
   module Support
     class ContentCapture
+      CaptureLimitExceeded = Class.new(StandardError)
+
       SENSITIVE_KEY = /(authorization|api[_-]?key|credential|password|secret|(?:^|[_-])token(?:$|[_-])|cookie|private[_-]?key)/i
       SECRET_PATTERNS = [
         /\bBearer\s+[A-Za-z0-9._~+\/-]+=*/i,
@@ -28,16 +30,73 @@ module LittleGhost
         return {} unless @enabled && values.is_a?(Hash)
 
         values.each_with_object({}) do |(key, value), captured|
-          next unless %i[input output].include?(key.to_sym)
+          next unless %i[input output exception tool_definitions].include?(key.to_sym)
 
-          scrubbed = @scrubber ? @scrubber.call(value) : scrub(value)
-          captured[:"diagnostic_#{key}"] = truncate(JSON.generate(scrubbed))
+          captured[:"diagnostic_#{key}"] = if key.to_sym == :tool_definitions
+            capture_tool_definitions(value)
+          else
+            scrubbed = @scrubber ? @scrubber.call(value) : scrub(value)
+            truncate(JSON.generate(scrubbed))
+          end
         rescue JSON::GeneratorError, Encoding::UndefinedConversionError
           captured[:"diagnostic_#{key}"] = JSON.generate("[UNSERIALIZABLE]")
         end
       end
 
       private
+
+      def capture_tool_definitions(value)
+        remaining = [@max_bytes - 32, 1].max
+        scrubbed = bounded_scrub(value, remaining:)
+        scrubbed = bounded_scrub(@scrubber.call(scrubbed), remaining:) if @scrubber
+        encoded = JSON.generate(scrubbed)
+        return encoded if encoded.bytesize <= @max_bytes
+
+        JSON.generate("truncated" => true)
+      rescue CaptureLimitExceeded
+        JSON.generate("truncated" => true)
+      end
+
+      def bounded_scrub(value, remaining:, key: nil)
+        normalized_key = key.to_s.gsub(/([a-z\d])([A-Z])/, "\\1_\\2").downcase
+        return consume("[REDACTED]", remaining:) if key && SENSITIVE_KEY.match?(normalized_key)
+
+        case value
+        when Hash
+          result = {}
+          value.each do |child_key, child|
+            key_text = consume(child_key.to_s, remaining:)
+            remaining -= key_text.bytesize + 4
+            result[key_text] = bounded_scrub(child, remaining:, key: child_key)
+            remaining -= JSON.generate(result.fetch(key_text)).bytesize
+          end
+          result
+        when Array
+          result = []
+          value.each do |child|
+            captured = bounded_scrub(child, remaining:)
+            result << captured
+            remaining -= JSON.generate(captured).bytesize + 1
+          end
+          result
+        when String
+          raise CaptureLimitExceeded if value.bytesize + 2 > remaining
+
+          consume(scrub_string(value), remaining:)
+        when Symbol
+          consume(value.to_s, remaining:)
+        when Numeric, true, false, nil
+          consume(value, remaining:)
+        else
+          consume(value.to_s, remaining:)
+        end
+      end
+
+      def consume(value, remaining:)
+        raise CaptureLimitExceeded if JSON.generate(value).bytesize > remaining
+
+        value
+      end
 
       def scrub(value, key = nil)
         normalized_key = key.to_s.gsub(/([a-z\d])([A-Z])/, "\\1_\\2").downcase
@@ -49,8 +108,7 @@ module LittleGhost
         when Array
           value.map { |child| scrub(child) }
         when String
-          text = @redactions.reduce(value.dup) { |current, secret| current.gsub(secret, "[REDACTED]") }
-          SECRET_PATTERNS.reduce(text) { |current, pattern| current.gsub(pattern, "[REDACTED]") }
+          scrub_string(value)
         when Symbol
           value.to_s
         when Numeric, true, false, nil
@@ -58,6 +116,11 @@ module LittleGhost
         else
           value.to_s
         end
+      end
+
+      def scrub_string(value)
+        text = @redactions.reduce(value.dup) { |current, secret| current.gsub(secret, "[REDACTED]") }
+        SECRET_PATTERNS.reduce(text) { |current, pattern| current.gsub(pattern, "[REDACTED]") }
       end
 
       def truncate(value)

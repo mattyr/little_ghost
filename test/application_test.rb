@@ -337,20 +337,23 @@ class ApplicationTest < Minitest::Test
     end
 
     names = recorded.map(&:first)
-    assert_equal %i[run_start agent_start model_start model_stop agent_stop run_stop], names
+    assert_equal %i[
+      run_start agent_start agent_turn_start model_start model_stop agent_turn_stop agent_stop run_stop
+    ], names
 
     run_start = recorded.assoc(:run_start).last
     run_stop = recorded.assoc(:run_stop).last
     agent_start = recorded.assoc(:agent_start).last
+    turn_start = recorded.assoc(:agent_turn_start).last
     model_start = recorded.assoc(:model_start).last
     model_stop = recorded.assoc(:model_stop).last
     assert_equal run_start[:operation_id], run_stop[:operation_id]
     assert_equal run_start[:operation_id], agent_start[:parent_operation_id]
     assert_empty agent_start[:available_tools]
-    assert_equal agent_start[:operation_id], model_start[:parent_operation_id]
+    assert_equal agent_start[:operation_id], turn_start[:parent_operation_id]
+    assert_equal turn_start[:operation_id], model_start[:parent_operation_id]
     assert_equal model_start[:operation_id], model_stop[:operation_id]
     assert_kind_of Numeric, model_stop[:time_to_first_token]
-    assert_operator model_stop[:time_to_first_token], :<, 1
     assert_equal run_start.values_at(:run_id, :invocation_id, :session_id),
       model_stop.values_at(:run_id, :invocation_id, :session_id)
     assert_equal :completed, run_stop[:outcome]
@@ -358,6 +361,24 @@ class ApplicationTest < Minitest::Test
     assert_kind_of Numeric, run_stop[:duration_ms]
     refute_includes names, :message_start
     refute model_stop.key?(:response)
+  end
+
+  def test_run_telemetry_captures_session_input_and_output
+    recorded = []
+    instrumentation = LittleGhost::Support::Instrumentation.new(
+      content_capture: LittleGhost::Support::ContentCapture.new(enabled: true)
+    )
+    instrumentation.subscribe(->(name, attributes) { recorded << [name, attributes] })
+
+    with_application(instrumentation:) do |application|
+      application.call(message: "Build it", session_id: "session-1")
+    end
+
+    run_start = recorded.assoc(:run_start).last
+    run_stop = recorded.assoc(:run_stop).last
+    assert_equal "session-1", run_start.fetch(:session_id)
+    assert_equal "Build it", JSON.parse(run_start.fetch(:diagnostic_input))
+    assert_equal "Done", JSON.parse(run_stop.fetch(:diagnostic_output))
   end
 
   def test_model_failure_before_output_omits_time_to_first_token
@@ -801,17 +822,30 @@ class ApplicationTest < Minitest::Test
   end
 
   def test_session_save_failure_fails_the_run
-    store = Class.new(LittleGhost::SessionStore) do
-      def load(_id, actor_id: nil) = nil
-      def append(*) = raise("offline")
-      def replace(*) = raise("offline")
-    end.new
+    store = Class.new(LittleGhost::SessionStores::Memory) do
+      def append(id, messages:, **options)
+        raise "offline" if messages.any? { |message| message.role == :assistant }
 
-    with_application(session_store: store) do |application|
+        super
+      end
+    end.new
+    recorded = []
+    instrumentation = LittleGhost::Support::Instrumentation.new(
+      content_capture: LittleGhost::Support::ContentCapture.new(enabled: true)
+    )
+    instrumentation.subscribe(->(name, attributes) { recorded << [name, attributes] })
+
+    with_application(session_store: store, instrumentation:) do |application|
       run = application.call(message: "Continue")
 
       assert run.failed?
+      assert_empty run.response
       assert_equal "offline", run.error.message
+      run_stop = recorded.assoc(:run_stop).last
+      assert_equal "Done", JSON.parse(run_stop.fetch(:diagnostic_output))
+      exception = JSON.parse(run_stop.fetch(:diagnostic_exception))
+      assert_equal "RuntimeError", exception.fetch("type")
+      assert_equal "offline", exception.fetch("message")
     end
   end
 

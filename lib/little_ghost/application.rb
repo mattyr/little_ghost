@@ -156,7 +156,7 @@ module LittleGhost
       end
     end
 
-    attr_reader :root, :loader, :components, :instrumentation, :models, :session_store
+    attr_reader :root, :loader, :components, :instrumentation, :models, :session_store, :agent_class
 
     def initialize(configuration)
       @configuration = configuration

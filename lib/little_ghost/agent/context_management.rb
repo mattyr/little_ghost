@@ -73,7 +73,13 @@ module LittleGhost
         threshold = limit * configuration.fetch(:compression_threshold)
         return Support::Callbacks.continue if estimated_request_tokens(request) < threshold
 
-        compacted = compact_context(request, configuration, context, context_window_tokens: limit)
+        compacted = compact_context(
+          request,
+          configuration,
+          context,
+          context_window_tokens: limit,
+          parent_operation_id: payload[:parent_operation_id]
+        )
         Support::Callbacks.replace(payload.merge(request: compacted))
       rescue CancelledError, DeadlineExceededError, CleanupError
         raise
@@ -92,12 +98,13 @@ module LittleGhost
           configuration,
           context,
           context_window_tokens: model_context_window_tokens(configuration),
-          reason: :overflow
+          reason: :overflow,
+          parent_operation_id: payload[:parent_operation_id]
         )
         Support::Callbacks.replace(payload.merge(request: compacted))
       end
 
-      def summarize_oldest_messages(request, configuration, context)
+      def summarize_oldest_messages(request, configuration, context, parent_operation_id:)
         trusted, conversation = request.messages.partition { |message| %i[system developer].include?(message.role) }
         preserve = configuration.fetch(:preserve_recent_messages)
         split = [(conversation.length * configuration.fetch(:summary_ratio)).floor, 1].max
@@ -106,7 +113,7 @@ module LittleGhost
 
         split = safe_summary_split(conversation, split)
         to_summarize = conversation.first(split)
-        summary = generate_context_summary(to_summarize, request, context)
+        summary = generate_context_summary(to_summarize, request, context, parent_operation_id:)
         ModelRequest.new(
           messages: [*trusted, summary, *conversation.drop(split)],
           tools: request.tools,
@@ -116,8 +123,15 @@ module LittleGhost
         )
       end
 
-      def compact_context(request, configuration, context, context_window_tokens:, reason: :threshold)
-        compacted = summarize_oldest_messages(request, configuration, context)
+      def compact_context(
+        request,
+        configuration,
+        context,
+        context_window_tokens:,
+        parent_operation_id:,
+        reason: :threshold
+      )
+        compacted = summarize_oldest_messages(request, configuration, context, parent_operation_id:)
         context&.instrumentation&.emit(
           :context_compaction,
           reason:,
@@ -141,16 +155,9 @@ module LittleGhost
         split
       end
 
-      def generate_context_summary(messages, request, context)
+      def generate_context_summary(messages, request, context, parent_operation_id:)
         operation_id = SecureRandom.uuid
         started_at = monotonic_time
-        instrument(
-          :model_start,
-          operation_id:,
-          parent_operation_id: run&.operation_id,
-          purpose: :context_compaction,
-          **model_attributes
-        )
         summary_request = ModelRequest.new(
           messages: [
             Message.new(role: :system, content: SUMMARIZATION_PROMPT),
@@ -161,6 +168,18 @@ module LittleGhost
           settings: request.settings,
           cancellation_token: request.cancellation_token,
           deadline: request.deadline
+        )
+        instrument(
+          :model_start,
+          operation_id:,
+          parent_operation_id:,
+          purpose: :context_compaction,
+          diagnostic: {
+            input: summary_request.messages.map { |message| diagnostic_message(message) },
+            tool_definitions: summary_request.tools
+          },
+          model_settings: summary_request.settings,
+          **model_attributes
         )
         response = nil
         time_to_first_token = nil
@@ -178,11 +197,14 @@ module LittleGhost
         instrument(
           :model_stop,
           operation_id:,
-          parent_operation_id: run&.operation_id,
+          parent_operation_id:,
           purpose: :context_compaction,
           outcome: :completed,
           duration_ms: duration_ms(started_at),
           time_to_first_token:,
+          stop_reason: response.stop_reason,
+          **response_attributes(response),
+          diagnostic: {output: diagnostic_message(response.message)},
           **model_attributes,
           **usage_attributes(response.usage)
         )
@@ -191,12 +213,13 @@ module LittleGhost
         instrument(
           :model_stop,
           operation_id:,
-          parent_operation_id: run&.operation_id,
+          parent_operation_id:,
           purpose: :context_compaction,
           outcome: :error,
           duration_ms: duration_ms(started_at),
           time_to_first_token:,
-          error_class: error.class.name,
+          error_type: error.class.name,
+          diagnostic: {exception: diagnostic_exception(error)},
           **model_attributes
         )
         raise

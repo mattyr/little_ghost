@@ -187,20 +187,25 @@ class AgentTest < Minitest::Test
     agent_stop = telemetry.assoc(:agent_stop).last
     model_starts = telemetry.filter_map { |name, attributes| attributes if name == :model_start }
     model_stops = telemetry.filter_map { |name, attributes| attributes if name == :model_stop }
+    turn_starts = telemetry.filter_map { |name, attributes| attributes if name == :agent_turn_start }
+    turn_stops = telemetry.filter_map { |name, attributes| attributes if name == :agent_turn_stop }
     tool_start = telemetry.assoc(:tool_start).last
     tool_stop = telemetry.assoc(:tool_stop).last
 
     assert_equal agent_start[:operation_id], agent_stop[:operation_id]
     assert_equal "subagent-turn", agent_start[:parent_operation_id]
     assert_equal model_starts.map { |event| event[:operation_id] }, model_stops.map { |event| event[:operation_id] }
-    assert model_starts.all? { |event| event[:parent_operation_id] == agent_start[:operation_id] }
-    assert_equal agent_start[:operation_id], tool_start[:parent_operation_id]
+    assert_equal turn_starts.map { |event| event[:operation_id] }, turn_stops.map { |event| event[:operation_id] }
+    assert turn_starts.all? { |event| event[:parent_operation_id] == agent_start[:operation_id] }
+    assert_equal turn_starts.map { |event| event[:operation_id] }, model_starts.map { |event| event[:parent_operation_id] }
+    assert_equal turn_starts.first[:operation_id], tool_start[:parent_operation_id]
     assert_equal tool_start[:operation_id], tool_stop[:operation_id]
     assert_equal "echo", tool_start[:tool_name]
     assert_equal :success, tool_stop[:outcome]
     refute tool_start.key?(:input)
-    refute tool_start.key?(:tool_call_id)
+    assert_equal "call-1", tool_start[:tool_call_id]
     refute model_starts.first.key?(:messages)
+    refute model_starts.first.key?(:diagnostic_tool_definitions)
   ensure
     agent&.close
   end
@@ -225,6 +230,8 @@ class AgentTest < Minitest::Test
     assert_equal "private prompt", JSON.parse(telemetry.assoc(:agent_start).last.fetch(:diagnostic_input))
     tool_input = JSON.parse(telemetry.assoc(:tool_start).last.fetch(:diagnostic_input))
     assert_equal "found", tool_input.fetch("value")
+    definitions = JSON.parse(telemetry.assoc(:model_start).last.fetch(:diagnostic_tool_definitions))
+    assert_equal "echo", definitions.first.fetch("name")
     tool_output = JSON.parse(telemetry.assoc(:tool_stop).last.fetch(:diagnostic_output))
     assert_equal ["found"], tool_output
     final_output = JSON.parse(telemetry.filter_map { |name, value| value if name == :model_stop }.last.fetch(:diagnostic_output))
@@ -246,7 +253,7 @@ class AgentTest < Minitest::Test
     assert_equal "recovered", result.text
     assert_equal :error, model.requests.last.messages.last.content.first.status
     assert_equal "unknown_tool", telemetry.assoc(:tool_start).last.fetch(:tool_name)
-    refute telemetry.assoc(:tool_start).last.key?(:tool_call_id)
+    assert_equal "call-1", telemetry.assoc(:tool_start).last.fetch(:tool_call_id)
   end
 
   def test_agents_can_be_exposed_as_tools
@@ -531,19 +538,20 @@ class AgentTest < Minitest::Test
         ---
         Read the code carefully.
       SKILL
-      run = Object.new
+      run = nil
       agent_class = Class.new(LittleGhost::Agent) do
         system_prompt "Base instructions"
         tools LittleGhost::Tools::WriteTodos
         skills paths: lambda { |current_run|
-          raise "wrong run" unless current_run.equal?(run)
+          raise "wrong run" unless current_run.nil?
 
           [root]
         }
         detect_tool_loops
         offload_large_tool_results
       end
-      agent = agent_class.new(model: ScriptedModel.new(response("done")), run:)
+      model = ScriptedModel.new(response("done"))
+      agent = agent_class.new(model:, run:)
 
       assert_equal %w[write_todos retrieve_offloaded_content skills].sort, agent.tool_registry.names.sort
       assert_includes agent.prompt_locals.fetch(:skills_prompt), "inspect"
@@ -554,6 +562,12 @@ class AgentTest < Minitest::Test
       prompt = decision.value.fetch(:messages).first.text
       assert_includes prompt, "<available_skills>"
       assert_includes prompt, "<name>inspect</name>"
+
+      agent.call("Inspect this")
+      system_message = model.requests.first.messages.first
+      assert_equal :system, system_message.role
+      assert_includes system_message.text, "<available_skills>"
+      assert_includes system_message.text, "<name>inspect</name>"
     ensure
       agent&.close
     end

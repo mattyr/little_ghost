@@ -82,6 +82,80 @@ class InstrumentationTest < Minitest::Test
     assert_equal true, JSON.parse(value).fetch("truncated")
   end
 
+  def test_exception_capture_is_scrubbed
+    policy = LittleGhost::Support::ContentCapture.new(enabled: true)
+
+    captured = policy.capture(
+      exception: {
+        type: "ProviderError",
+        message: "Authorization: Bearer abcdefghijklmnopqrstuvwxyz123456",
+        api_key: "secret"
+      }
+    )
+    exception = JSON.parse(captured.fetch(:diagnostic_exception))
+
+    assert_equal "ProviderError", exception.fetch("type")
+    assert_equal "Authorization: [REDACTED]", exception.fetch("message")
+    assert_equal "[REDACTED]", exception.fetch("api_key")
+  end
+
+  def test_tool_definition_capture_is_scrubbed_and_bounded
+    policy = LittleGhost::Support::ContentCapture.new(enabled: true, max_bytes: 256)
+
+    captured = policy.capture(
+      tool_definitions: [{
+        name: "lookup",
+        description: "Uses Bearer abcdefghijklmnopqrstuvwxyz123456 #{"x" * 1_000}",
+        input_schema: {properties: {api_key: {default: "secret"}}}
+      }]
+    )
+    definitions = JSON.parse(captured.fetch(:diagnostic_tool_definitions))
+
+    assert_operator captured.fetch(:diagnostic_tool_definitions).bytesize, :<=, 256
+    serialized = JSON.generate(definitions)
+    refute_includes serialized, "abcdefghijklmnopqrstuvwxyz123456"
+    refute_includes serialized, "secret"
+  end
+
+  def test_instrumentation_captures_tool_definitions_from_diagnostic_payload
+    received = nil
+    instrumentation = LittleGhost::Support::Instrumentation.new(
+      content_capture: LittleGhost::Support::ContentCapture.new(enabled: true)
+    )
+    instrumentation.subscribe { |_name, attributes| received = attributes }
+
+    instrumentation.emit(
+      :model_start,
+      diagnostic: {tool_definitions: [{name: "lookup", input_schema: {type: "object"}}]}
+    )
+
+    definitions = JSON.parse(received.fetch(:diagnostic_tool_definitions))
+    assert_equal "lookup", definitions.first.fetch("name")
+  end
+
+  def test_oversized_tool_definitions_stop_capture_without_a_preview
+    policy = LittleGhost::Support::ContentCapture.new(enabled: true, max_bytes: 128)
+    definitions = Array.new(100_000, {name: "lookup", description: "x" * 100})
+
+    captured = policy.capture(tool_definitions: definitions)
+
+    assert_equal({"truncated" => true}, JSON.parse(captured.fetch(:diagnostic_tool_definitions)))
+  end
+
+  def test_tool_definition_capture_honors_custom_scrubbers
+    policy = LittleGhost::Support::ContentCapture.new(
+      enabled: true,
+      scrubber: ->(value) {
+        value.map { |definition| definition.merge("description" => "[CUSTOM REDACTION]") }
+      }
+    )
+
+    captured = policy.capture(tool_definitions: [{name: "lookup", description: "private domain detail"}])
+    definition = JSON.parse(captured.fetch(:diagnostic_tool_definitions)).first
+
+    assert_equal "[CUSTOM REDACTION]", definition.fetch("description")
+  end
+
   def test_capture_normalizes_camel_case_secret_keys_and_isolates_policy_failures
     captured = LittleGhost::Support::ContentCapture.new(enabled: true).capture(
       {input: {callbackToken: "secret-callback-value", privateKey: "private-key-value"}}

@@ -1,29 +1,35 @@
 # frozen_string_literal: true
 
+require "json"
 require "opentelemetry-api"
 
 module LittleGhost
   module Tracing
     class OpenTelemetry
       ATTRIBUTE_NAMES = {
-        agent_id: "gen_ai.agent.name",
+        agent_id: "gen_ai.agent.id",
+        agent_name: "gen_ai.agent.name",
         model_id: "gen_ai.request.model",
         model_provider: "gen_ai.provider.name",
+        response_id: "gen_ai.response.id",
+        response_model: "gen_ai.response.model",
+        finish_reasons: "gen_ai.response.finish_reasons",
         input_tokens: "gen_ai.usage.input_tokens",
         output_tokens: "gen_ai.usage.output_tokens",
-        total_tokens: "gen_ai.usage.total_tokens",
-        cache_read_tokens: "gen_ai.usage.cache_read_input_tokens",
-        cache_write_tokens: "gen_ai.usage.cache_write_input_tokens",
-        reasoning_tokens: "gen_ai.usage.reasoning_tokens",
-        time_to_first_token: "gen_ai.server.time_to_first_token",
-        available_tools: "gen_ai.agent.tools",
+        cache_read_tokens: "gen_ai.usage.cache_read.input_tokens",
+        cache_write_tokens: "gen_ai.usage.cache_creation.input_tokens",
+        reasoning_tokens: "gen_ai.usage.reasoning.output_tokens",
+        time_to_first_token: "gen_ai.response.time_to_first_chunk",
         session_id: "session.id",
         tool_name: "gen_ai.tool.name",
+        tool_call_id: "gen_ai.tool.call.id",
+        error_class: "error.type",
+        error_type: "error.type",
         diagnostic_input: "input.value",
         diagnostic_output: "output.value"
       }.freeze
       OPENINFERENCE_ATTRIBUTE_NAMES = {
-        agent_id: "agent.name",
+        agent_name: "agent.name",
         model_id: "llm.model_name",
         model_provider: "llm.provider",
         input_tokens: "llm.token_count.prompt",
@@ -34,13 +40,23 @@ module LittleGhost
         reasoning_tokens: "llm.token_count.completion_details.reasoning",
         tool_name: "tool.name"
       }.freeze
-      GENERIC_USAGE_ATTRIBUTES = %i[total_tokens cache_read_tokens cache_write_tokens reasoning_tokens].freeze
       OPERATIONS = {
         agent: "invoke_agent",
+        agent_turn: "agent_turn",
         model: "chat",
         run: "invoke_agent",
         subagent: "invoke_agent",
         tool: "execute_tool"
+      }.freeze
+      REQUEST_SETTING_ATTRIBUTES = {
+        frequency_penalty: "gen_ai.request.frequency_penalty",
+        max_tokens: "gen_ai.request.max_tokens",
+        max_output_tokens: "gen_ai.request.max_tokens",
+        presence_penalty: "gen_ai.request.presence_penalty",
+        seed: "gen_ai.request.seed",
+        temperature: "gen_ai.request.temperature",
+        top_k: "gen_ai.request.top_k",
+        top_p: "gen_ai.request.top_p"
       }.freeze
       CONTENT_KEYS = %w[arguments content input input_text message output output_text prompt response text].freeze
       SENSITIVE_KEY = /(authorization|api[_-]?key|credential|password|secret|(?:^|[_-])token(?:$|[_-])|cookie|private[_-]?key)/i
@@ -48,7 +64,7 @@ module LittleGhost
 
       def initialize(tracer: nil)
         @tracer = tracer
-        @spans = {}
+        @entries = {}
         @mutex = Mutex.new
       end
 
@@ -64,7 +80,7 @@ module LittleGhost
       end
 
       def trace_context(operation_id: nil, **)
-        span = @mutex.synchronize { @spans[operation_id] }
+        span = @mutex.synchronize { @entries.dig(operation_id, :span) }
         context = span&.context
         return {} unless context&.valid?
 
@@ -85,8 +101,8 @@ module LittleGhost
 
       def shutdown
         spans = @mutex.synchronize do
-          current = @spans.values
-          @spans = {}
+          current = @entries.values.map { |entry| entry.fetch(:span) }.uniq
+          @entries = {}
           current
         end
         spans.each(&:finish)
@@ -100,37 +116,87 @@ module LittleGhost
 
       def start_span(name, attributes)
         kind = name.to_s.delete_suffix("_start").to_sym
-        parent = @mutex.synchronize { @spans[attributes[:parent_operation_id]] }
+        parent = @mutex.synchronize { @entries[attributes[:parent_operation_id]] }
+        if kind == :agent && parent&.fetch(:kind) == :run &&
+            parent[:agent_id].to_s == attributes[:agent_id].to_s
+          alias_primary_agent(attributes, parent)
+          return
+        end
+
         parent_context = if parent
-          ::OpenTelemetry::Trace.context_with_span(parent)
+          ::OpenTelemetry::Trace.context_with_span(parent.fetch(:span))
         elsif attributes[:trace_context].is_a?(Hash)
           ::OpenTelemetry.propagation.extract(attributes[:trace_context])
         end
         span = tracer.start_span(
           span_name(kind, attributes),
           with_parent: parent_context,
-          attributes: span_attributes(attributes).merge(
+          kind: span_kind(kind),
+          attributes: span_attributes(attributes, kind:).merge(
             "gen_ai.operation.name" => OPERATIONS.fetch(kind, kind.to_s),
             "openinference.span.kind" => openinference_kind(kind)
           )
         )
-        @mutex.synchronize { @spans[attributes.fetch(:operation_id)] = span }
+        @mutex.synchronize do
+          @entries[attributes.fetch(:operation_id)] = {
+            span:,
+            kind:,
+            alias: false,
+            agent_id: attributes[:agent_id]
+          }
+        end
+      end
+
+      def alias_primary_agent(attributes, parent)
+        span = parent.fetch(:span)
+        span_attributes(attributes, kind: :agent).each do |key, value|
+          next if %w[input.value input.mime_type].include?(key)
+
+          span.set_attribute(key, value)
+        end
+        @mutex.synchronize do
+          @entries[attributes.fetch(:operation_id)] = {
+            span:,
+            kind: :agent,
+            alias: true,
+            agent_id: attributes[:agent_id]
+          }
+        end
       end
 
       def finish_span(attributes)
-        span = @mutex.synchronize { @spans.delete(attributes[:operation_id]) }
-        return add_event(:orphan_stop, attributes) unless span
+        entry = @mutex.synchronize { @entries.delete(attributes[:operation_id]) }
+        return add_event(:orphan_stop, attributes) unless entry
 
-        span_attributes(attributes).each { |key, value| span.set_attribute(key, value) }
-        if attributes[:outcome].to_s == "error" || attributes[:error_class]
-          span.status = ::OpenTelemetry::Trace::Status.error(attributes[:error_class].to_s)
+        span = entry.fetch(:span)
+        span_attributes(attributes, kind: entry.fetch(:kind)).each do |key, value|
+          span.set_attribute(key, value)
         end
+        return if entry.fetch(:alias)
+
+        record_error(span, attributes, kind: entry.fetch(:kind))
         span.finish
+      end
+
+      def record_error(span, attributes, kind:)
+        error_type = attributes[:error_type] || attributes[:error_class]
+        return unless error_type
+
+        span.status = ::OpenTelemetry::Trace::Status.error(error_type.to_s)
+        event_attributes = {"exception.type" => error_type.to_s}
+        captured = parse_json(attributes[:diagnostic_exception])
+        if captured.is_a?(Hash)
+          event_attributes["exception.message"] = attribute_value(:exception_message, captured["message"])
+          stacktrace = captured["stacktrace"]
+          event_attributes["exception.stacktrace"] = String(stacktrace).slice(0, 64_000) if stacktrace
+        end
+        event_name = (kind == :model) ? "gen_ai.client.operation.exception" : "exception"
+        span.add_event(event_name, attributes: event_attributes.compact)
       end
 
       def add_event(name, attributes)
         owner_id = attributes[:parent_operation_id] || attributes[:operation_id]
-        span = @mutex.synchronize { @spans[owner_id] }
+        span = @mutex.synchronize { @entries.dig(owner_id, :span) }
         if span
           span.add_event("little_ghost.#{name}", attributes: span_attributes(attributes))
         else
@@ -140,7 +206,8 @@ module LittleGhost
 
       def span_name(kind, attributes)
         detail = case kind
-        when :agent then attributes[:agent_id]
+        when :agent, :run then attributes[:agent_name] || attributes[:agent_id]
+        when :agent_turn then attributes[:turn]
         when :model then attributes[:model_id]
         when :subagent then attributes[:kind]
         when :tool then attributes[:tool_name]
@@ -149,48 +216,172 @@ module LittleGhost
         [OPERATIONS.fetch(kind, kind.to_s), detail].compact.join(" ")
       end
 
-      def span_attributes(attributes)
+      def span_attributes(attributes, kind: nil)
         attributes.each_with_object({}) do |(key, value), result|
-          next if %i[operation_id parent_operation_id trace_context].include?(key)
+          next if internal_attribute?(key)
 
-          name = if key.to_s.include?(".")
-            key.to_s
+          if key.to_sym == :model_settings
+            add_model_settings(result, value)
+            next
+          end
+          if key.to_sym == :diagnostic_tool_definitions
+            add_tool_definitions(result, parse_json(value))
+            next
+          end
+          if key.to_sym == :total_tokens
+            result["llm.token_count.total"] = value.to_i
+            next
+          end
+          next if %i[available_tools duration_ms outcome diagnostic_exception].include?(key.to_sym)
+
+          name = key.to_s.include?(".") ? key.to_s : ATTRIBUTE_NAMES.fetch(key.to_sym, "little_ghost.#{key}")
+          normalized = if key.to_sym == :model_provider
+            provider_name(value)
           else
-            ATTRIBUTE_NAMES.fetch(key.to_sym, "little_ghost.#{key}")
+            attribute_value(key, value)
           end
-          normalized = attribute_value(key, value)
           result[name] = gen_ai_usage_value(key, attributes, normalized)
-          openinference_name = OPENINFERENCE_ATTRIBUTE_NAMES[key.to_sym]
-          result[openinference_name] = openinference_usage_value(key, attributes, normalized) if openinference_name
-          result["little_ghost.#{key}"] = normalized if GENERIC_USAGE_ATTRIBUTES.include?(key.to_sym)
-          if %i[diagnostic_input diagnostic_output].include?(key.to_sym)
-            result["#{name.delete_suffix(".value")}.mime_type"] = "application/json"
+          add_openinference_attribute(result, key, attributes, normalized)
+          add_content_attributes(result, key, normalized, kind:, attributes:)
+          if key.to_sym == :session_id
+            result["gen_ai.conversation.id"] = normalized
+          elsif key.to_sym == :stop_reason && value
+            result["gen_ai.response.finish_reasons"] = [normalized]
           end
-        end.tap { |result| add_available_tools(result, attributes[:available_tools]) }
+        end
       end
 
-      def add_available_tools(attributes, tools)
-        Array(tools).each_with_index do |name, index|
-          attributes["llm.tools.#{index}.tool.name"] = scalar(name)
+      def internal_attribute?(key)
+        %i[operation_id parent_operation_id trace_context].include?(key.to_sym)
+      end
+
+      def add_model_settings(attributes, settings)
+        settings.to_h.each do |key, value|
+          name = REQUEST_SETTING_ATTRIBUTES[key.to_sym]
+          attributes[name] = scalar(value) if name && !scalar(value).nil?
+        end
+      rescue NoMethodError
+        nil
+      end
+
+      def add_tool_definitions(attributes, definitions)
+        return unless definitions.is_a?(Array)
+
+        attributes["gen_ai.tool.definitions"] = json_attribute(
+          definitions.map do |definition|
+            values = definition.to_h.transform_keys(&:to_sym)
+            {
+              type: "function",
+              name: values[:name],
+              description: values[:description],
+              parameters: values[:input_schema] || {}
+            }
+          end
+        )
+      end
+
+      def add_openinference_attribute(result, key, attributes, value)
+        name = OPENINFERENCE_ATTRIBUTE_NAMES[key.to_sym]
+        return unless name
+
+        result[name] = openinference_usage_value(key, attributes, value)
+      end
+
+      def add_content_attributes(result, key, value, kind:, attributes:)
+        return unless %i[diagnostic_input diagnostic_output].include?(key.to_sym)
+
+        prefix = (key.to_sym == :diagnostic_input) ? "input" : "output"
+        result["#{prefix}.mime_type"] = "application/json"
+        if kind == :tool
+          name = (prefix == "input") ? "gen_ai.tool.call.arguments" : "gen_ai.tool.call.result"
+          result[name] = value unless prefix == "output" && attributes[:error_type]
+        end
+        return unless kind == :model
+
+        semantic_name = (prefix == "input") ? "gen_ai.input.messages" : "gen_ai.output.messages"
+        openinference_name = (prefix == "input") ? "llm.input_messages" : "llm.output_messages"
+        result[semantic_name] = canonical_messages(
+          value,
+          finish_reason: prefix == "output" && (attributes[:stop_reason] || Array(attributes[:finish_reasons]).first)
+        )
+        result[openinference_name] = value
+      end
+
+      def canonical_messages(value, finish_reason: nil)
+        messages = parse_json(value)
+        messages = [messages] if messages.is_a?(Hash)
+        return value unless messages.is_a?(Array)
+
+        json_attribute(messages.filter_map do |message|
+          next unless message.is_a?(Hash)
+
+          normalized = {
+            role: message["role"].to_s,
+            parts: Array(message["content"]).filter_map { |part| canonical_message_part(part) }
+          }
+          normalized[:finish_reason] = finish_reason.to_s if finish_reason
+          normalized
+        end)
+      end
+
+      def canonical_message_part(part)
+        return {type: "text", content: part.to_s} unless part.is_a?(Hash)
+
+        case part["type"]
+        when "text", "reasoning"
+          {type: part.fetch("type"), content: part["text"].to_s}
+        when "tool_use"
+          {
+            type: "tool_call",
+            id: part["id"].to_s,
+            name: part["name"].to_s,
+            arguments: part["input"] || {}
+          }
+        when "tool_result"
+          {
+            type: "tool_call_response",
+            id: part["tool_use_id"].to_s,
+            response: part["content"]
+          }
+        when "image", "document"
+          {
+            type: "blob",
+            mime_type: part["media_type"].to_s,
+            name: part["name"],
+            size: part["bytes"]
+          }.compact
+        else
+          {type: "text", content: part.to_s}
         end
       end
 
       def openinference_kind(kind)
-        {agent: "AGENT", run: "CHAIN", subagent: "AGENT", model: "LLM", tool: "TOOL"}.fetch(kind, "CHAIN")
+        {
+          agent: "AGENT",
+          agent_turn: "CHAIN",
+          run: "AGENT",
+          subagent: "CHAIN",
+          model: "LLM",
+          tool: "TOOL"
+        }.fetch(kind, "CHAIN")
+      end
+
+      def span_kind(kind)
+        (kind == :model) ? :client : :internal
       end
 
       def openinference_usage_value(key, attributes, value)
-        return value.to_i + attributes.fetch(:cache_read_tokens, 0).to_i + attributes.fetch(:cache_write_tokens, 0).to_i if key.to_sym == :input_tokens
+        if key.to_sym == :input_tokens
+          return value.to_i + attributes.fetch(:cache_read_tokens, 0).to_i +
+              attributes.fetch(:cache_write_tokens, 0).to_i
+        end
         return value.to_i + attributes.fetch(:reasoning_tokens, 0).to_i if key.to_sym == :output_tokens
 
         value
       end
 
       def gen_ai_usage_value(key, attributes, value)
-        return value.to_i + attributes.fetch(:cache_read_tokens, 0).to_i + attributes.fetch(:cache_write_tokens, 0).to_i if key.to_sym == :input_tokens
-        return value.to_i + attributes.fetch(:reasoning_tokens, 0).to_i if key.to_sym == :output_tokens
-
-        value
+        openinference_usage_value(key, attributes, value)
       end
 
       def attribute_value(key, value)
@@ -207,8 +398,28 @@ module LittleGhost
         when Symbol then value.to_s
         when Numeric, true, false then value
         when Array then value.filter_map { |item| scalar(item) }
+        when Hash then json_attribute(value)
         else value.to_s.slice(0, MAX_ATTRIBUTE_LENGTH)
         end
+      end
+
+      def json_attribute(value)
+        JSON.generate(value)
+      rescue JSON::GeneratorError, TypeError
+        JSON.generate("[UNSERIALIZABLE]")
+      end
+
+      def parse_json(value)
+        JSON.parse(value) if value.is_a?(String)
+      rescue JSON::ParserError
+        nil
+      end
+
+      def provider_name(value)
+        {
+          "bedrock" => "aws.bedrock",
+          "open_router" => "openrouter"
+        }.fetch(value.to_s, value.to_s)
       end
 
       def scalar(value)

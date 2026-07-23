@@ -48,8 +48,11 @@ class AgentContextManagementTest < Minitest::Test
     history = 8.times.map do |index|
       LittleGhost::Message.new(role: index.even? ? :user : :assistant, content: "message-#{index}-#{"x" * 50}")
     end
+    telemetry = []
+    instrumentation = LittleGhost::Support::Instrumentation.new
+    instrumentation.subscribe(->(name, attributes) { telemetry << [name, attributes] })
 
-    result = agent_class.new(model: model).call("current", history: history)
+    result = agent_class.new(model:, instrumentation:).call("current", history: history)
 
     assert_equal 2, model.requests.length
     assert_empty model.requests.first.tools
@@ -58,6 +61,11 @@ class AgentContextManagementTest < Minitest::Test
     refute_includes model.requests.last.messages.map(&:text).join, "message-0-"
     assert_equal 16, result.usage.total_tokens
     assert_equal "done", result.text
+    turn_id = telemetry.assoc(:agent_turn_start).last.fetch(:operation_id)
+    model_parents = telemetry.filter_map do |name, attributes|
+      attributes[:parent_operation_id] if name == :model_start
+    end
+    assert_equal [turn_id, turn_id], model_parents
   end
 
   def test_preserves_tool_calls_with_their_results_at_the_summary_boundary

@@ -265,7 +265,8 @@ module LittleGhost
             history: preserve_context ? retained_history : [],
             context: context&.state || {},
             cancellation_token: context&.cancellation_token || Support::CancellationToken.new,
-            deadline: context&.deadline
+            deadline: context&.deadline,
+            parent_operation_id: run&.operation_id
           )
           retained_history.replace(result.messages.reject { |message| message.role == :system }) if preserve_context
           result.text
@@ -331,48 +332,91 @@ module LittleGhost
       emit(events, :invocation_start, agent_id: self.class.agent_id)
 
       @max_turns.times do |turn|
-        context.check!
-        response = invoke_model(messages, context, settings, turn, events, agent_operation_id: operation_id)
-        messages << response.message
-        tool_uses = response.message.content.grep(Content::ToolUse)
+        turn_operation_id = SecureRandom.uuid
+        instrument(
+          :agent_turn_start,
+          operation_id: turn_operation_id,
+          parent_operation_id: operation_id,
+          turn: turn + 1
+        )
+        begin
+          context.check!
+          response = invoke_model(
+            messages,
+            context,
+            settings,
+            turn,
+            events,
+            parent_operation_id: turn_operation_id
+          )
+          messages << response.message
+          tool_uses = response.message.content.grep(Content::ToolUse)
 
-        if tool_uses.empty?
-          context.checkpoint(messages)
-          if %i[max_tokens limit_output_tokens limit_total_tokens limit_turns].include?(response.stop_reason)
-            raise OutputLimitError, "The model stopped before completing its response"
+          if tool_uses.empty?
+            context.checkpoint(messages)
+            if %i[max_tokens limit_output_tokens limit_total_tokens limit_turns].include?(response.stop_reason)
+              raise OutputLimitError, "The model stopped before completing its response"
+            end
+
+            result = RunResult.new(
+              message: response.message,
+              stop_reason: response.stop_reason,
+              usage: context.usage,
+              messages: messages.freeze,
+              state: context.state
+            )
+            decision = run_callbacks(:after_invocation, {result: result}, context: context)
+            apply_cancellation_decision!(decision)
+            result = replacement_value(decision, :result, result)
+            context.checkpoint(result.messages)
+            instrument(
+              :agent_turn_stop,
+              operation_id: turn_operation_id,
+              outcome: :completed,
+              turn: turn + 1
+            )
+            metadata = model.respond_to?(:metadata) ? model.metadata : {}
+            instrument(
+              :agent_stop,
+              outcome: :completed,
+              duration_ms: duration_ms(started_at),
+              stop_reason: result.stop_reason,
+              operation_id:,
+              diagnostic: {output: diagnostic_message(result.message)},
+              **usage_attributes(result.usage)
+            )
+            emit(events, :invocation_stop, result: result, metadata:)
+            return result
           end
 
-          result = RunResult.new(
-            message: response.message,
-            stop_reason: response.stop_reason,
-            usage: context.usage,
-            messages: messages.freeze,
-            state: context.state
+          tool_call_count += tool_uses.length
+          raise ProtocolError, "The agent reached its maximum tool calls" if tool_call_count > @max_tool_calls
+
+          tool_results = execute_tools(
+            tool_uses,
+            context,
+            events,
+            parent_operation_id: turn_operation_id
           )
-          decision = run_callbacks(:after_invocation, {result: result}, context: context)
-          apply_cancellation_decision!(decision)
-          result = replacement_value(decision, :result, result)
-          context.checkpoint(result.messages)
-          metadata = model.respond_to?(:metadata) ? model.metadata : {}
+          messages << Message.new(role: :tool, content: tool_results)
+          context.checkpoint(messages)
           instrument(
-            :agent_stop,
+            :agent_turn_stop,
+            operation_id: turn_operation_id,
             outcome: :completed,
-            duration_ms: duration_ms(started_at),
-            stop_reason: result.stop_reason,
-            operation_id:,
-            diagnostic: {output: diagnostic_message(result.message)},
-            **usage_attributes(result.usage)
+            turn: turn + 1
           )
-          emit(events, :invocation_stop, result: result, metadata:)
-          return result
+        rescue => error
+          instrument(
+            :agent_turn_stop,
+            operation_id: turn_operation_id,
+            outcome: :error,
+            turn: turn + 1,
+            error_type: error.class.name,
+            diagnostic: {exception: diagnostic_exception(error)}
+          )
+          raise
         end
-
-        tool_call_count += tool_uses.length
-        raise ProtocolError, "The agent reached its maximum tool calls" if tool_call_count > @max_tool_calls
-
-        tool_results = execute_tools(tool_uses, context, events, agent_operation_id: operation_id)
-        messages << Message.new(role: :tool, content: tool_results)
-        context.checkpoint(messages)
       end
 
       raise ProtocolError, "The agent reached its maximum model turns"
@@ -382,7 +426,8 @@ module LittleGhost
         operation_id:,
         outcome: :error,
         duration_ms: duration_ms(started_at),
-        error_class: error.class.name,
+        error_type: error.class.name,
+        diagnostic: {exception: diagnostic_exception(error)},
         **usage_attributes(context.usage)
       )
       metadata = model.respond_to?(:metadata) ? model.metadata : {}
@@ -390,7 +435,7 @@ module LittleGhost
       raise
     end
 
-    def invoke_model(messages, context, settings, turn, events, agent_operation_id:, recovery_attempt: 0)
+    def invoke_model(messages, context, settings, turn, events, parent_operation_id:, recovery_attempt: 0)
       started_at = monotonic_time
       operation_id = SecureRandom.uuid
       request = ModelRequest.new(
@@ -400,7 +445,11 @@ module LittleGhost
         cancellation_token: context.cancellation_token,
         deadline: context.deadline
       )
-      decision = run_callbacks(:before_model, {request: request, turn: turn}, context: context)
+      decision = run_callbacks(
+        :before_model,
+        {request: request, turn: turn, parent_operation_id:},
+        context: context
+      )
       apply_cancellation_decision!(decision)
       request = replacement_value(decision, :request, request)
       messages.replace(request.messages)
@@ -408,9 +457,13 @@ module LittleGhost
       instrument(
         :model_start,
         operation_id:,
-        parent_operation_id: agent_operation_id,
+        parent_operation_id:,
         turn:,
-        diagnostic: {input: request.messages.map { |message| diagnostic_message(message) }},
+        diagnostic: {
+          input: request.messages.map { |message| diagnostic_message(message) },
+          tool_definitions: request.tools
+        },
+        model_settings: request.settings,
         **model_attributes
       )
       emit(events, :model_start, turn: turn)
@@ -444,12 +497,13 @@ module LittleGhost
       instrument(
         :model_stop,
         operation_id:,
-        parent_operation_id: agent_operation_id,
+        parent_operation_id:,
         turn:,
         outcome: :completed,
         duration_ms: duration_ms(started_at),
         time_to_first_token:,
         stop_reason: response.stop_reason,
+        **response_attributes(response),
         diagnostic: {output: diagnostic_message(response.message)},
         **model_attributes,
         **usage_attributes(response.usage)
@@ -460,12 +514,13 @@ module LittleGhost
       instrument(
         :model_stop,
         operation_id:,
-        parent_operation_id: agent_operation_id,
+        parent_operation_id:,
         turn:,
         outcome: :error,
         duration_ms: duration_ms(started_at),
         time_to_first_token:,
-        error_class: error.class.name,
+        error_type: error.class.name,
+        diagnostic: {exception: diagnostic_exception(error)},
         **model_attributes
       )
       raise if error.is_a?(CleanupError)
@@ -473,7 +528,7 @@ module LittleGhost
       if recovery_attempt < 3
         decision = run_callbacks(
           :after_model_error,
-          {request:, error:, turn:},
+          {request:, error:, turn:, parent_operation_id:},
           context:
         )
         apply_cancellation_decision!(decision)
@@ -486,7 +541,7 @@ module LittleGhost
             recovered.settings,
             turn,
             events,
-            agent_operation_id:,
+            parent_operation_id:,
             recovery_attempt: recovery_attempt + 1
           )
         end
@@ -494,7 +549,7 @@ module LittleGhost
       raise
     end
 
-    def execute_tools(tool_uses, context, events, agent_operation_id:)
+    def execute_tools(tool_uses, context, events, parent_operation_id:)
       tool_uses.each { |tool_use| emit(events, :tool_start, tool_use: tool_use) }
       pairs = tool_uses.map do |tool_use|
         [tool_use, tool_registry.fetch(tool_use.name)]
@@ -509,8 +564,9 @@ module LittleGhost
         instrument(
           :tool_start,
           operation_id:,
-          parent_operation_id: agent_operation_id,
+          parent_operation_id:,
           tool_name: telemetry_tool_name,
+          tool_call_id: tool_use.id,
           diagnostic: {input: tool_use.input}
         )
         if tool.is_a?(ToolError)
@@ -518,11 +574,11 @@ module LittleGhost
           instrument(
             :tool_stop,
             operation_id:,
-            parent_operation_id: agent_operation_id,
+            parent_operation_id:,
             tool_name: telemetry_tool_name,
             outcome: :error,
             duration_ms: duration_ms(started_at),
-            error_class: tool.class.name,
+            error_type: tool.class.name,
             diagnostic: {output: diagnostic_tool_result(result)}
           )
           next result
@@ -540,10 +596,11 @@ module LittleGhost
           instrument(
             :tool_stop,
             operation_id:,
-            parent_operation_id: agent_operation_id,
+            parent_operation_id:,
             tool_name: telemetry_tool_name,
             outcome: :error,
             duration_ms: duration_ms(started_at),
+            error_type: "LittleGhost::ToolRejected",
             diagnostic: {output: diagnostic_tool_result(result)}
           )
           next result
@@ -568,10 +625,11 @@ module LittleGhost
         instrument(
           :tool_stop,
           operation_id:,
-          parent_operation_id: agent_operation_id,
+          parent_operation_id:,
           tool_name: telemetry_tool_name,
           outcome: result.status,
           duration_ms: duration_ms(started_at),
+          error_type: (result.status == :error) ? "LittleGhost::ToolError" : nil,
           diagnostic: {output: diagnostic_tool_result(result)}
         )
         result
@@ -580,11 +638,11 @@ module LittleGhost
         instrument(
           :tool_stop,
           operation_id:,
-          parent_operation_id: agent_operation_id,
+          parent_operation_id:,
           tool_name: telemetry_tool_name,
           outcome: :error,
           duration_ms: duration_ms(started_at),
-          error_class: error.class.name,
+          error_type: error.class.name,
           diagnostic: {output: diagnostic_tool_result(result)}
         )
         result
@@ -592,11 +650,12 @@ module LittleGhost
         instrument(
           :tool_stop,
           operation_id:,
-          parent_operation_id: agent_operation_id,
+          parent_operation_id:,
           tool_name: telemetry_tool_name,
           outcome: :error,
           duration_ms: duration_ms(started_at),
-          error_class: error.class.name
+          error_type: error.class.name,
+          diagnostic: {exception: diagnostic_exception(error)}
         )
         raise
       end
@@ -694,6 +753,17 @@ module LittleGhost
       }.compact
     end
 
+    def response_attributes(response)
+      metadata = response.metadata.to_h
+      response_id = metadata[:id] || metadata["id"]
+      response_model = metadata[:model] || metadata["model"]
+      {
+        response_id:,
+        response_model:,
+        finish_reasons: response.stop_reason ? [response.stop_reason.to_s] : nil
+      }.compact
+    end
+
     def usage_attributes(usage)
       usage.respond_to?(:to_h) ? usage.to_h : {}
     end
@@ -738,6 +808,14 @@ module LittleGhost
     def diagnostic_tool_result(result)
       value = result.respond_to?(:content) ? result.content : result
       Array(value).map { |block| block.respond_to?(:role) ? diagnostic_message(block) : block.to_s }
+    end
+
+    def diagnostic_exception(error)
+      {
+        type: error.class.name,
+        message: error.message,
+        stacktrace: Array(error.backtrace).join("\n")
+      }
     end
 
     def monotonic_time

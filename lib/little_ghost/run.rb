@@ -104,7 +104,11 @@ module LittleGhost
       response_before_model_attempt = +""
       terminal = nil
       execution_cleanup_error = nil
-      instrument(:run_start, trace_context: invocation[:parent_trace_context])
+      instrument(
+        :run_start,
+        trace_context: invocation[:parent_trace_context],
+        diagnostic: {input: diagnostic_invocation_message}
+      )
       emit(:run_start, run_id: invocation.run_id, thread_id: invocation.session_id) { |event| yield event }
       trace_context = application.instrumentation.trace_context(operation_id:) if application.instrumentation.respond_to?(:trace_context)
       emit(:trace_context, context: trace_context) { |event| yield event } unless trace_context.nil? || trace_context.empty?
@@ -203,7 +207,11 @@ module LittleGhost
       stop_attributes = {
         outcome: ((execution_cleanup_error || resource_cleanup_error) ? "failed" : outcome)&.to_sym,
         duration_ms: duration_ms(started_at),
-        error_class: stop_error&.class&.name,
+        error_type: stop_error&.class&.name,
+        diagnostic: {
+          output: failed? ? last_response : response,
+          exception: stop_error && diagnostic_exception(stop_error)
+        }.compact,
         **usage_attributes(usage)
       }.compact
       terminal_delivery_error = begin
@@ -249,8 +257,10 @@ module LittleGhost
         operation_id:,
         run_id: invocation.run_id,
         invocation_id: invocation.invocation_id,
-        session_id: invocation.session_id
+        session_id: invocation.session_id,
+        agent_id: application.respond_to?(:agent_class) ? application.agent_class.agent_id : nil
       }.merge(application.respond_to?(:instrumentation_attributes) ? application.instrumentation_attributes(run: self) : {})
+        .compact
     end
 
     def subagent_telemetry(data)
@@ -282,8 +292,9 @@ module LittleGhost
             operation_id: subagent_operation_id,
             parent_operation_id: operation_id,
             outcome:,
+            error_type: (event == "turn_failed") ? "LittleGhost::SubagentError" : nil,
             duration_ms: started_at && duration_ms(started_at)
-          )
+          ).compact
         ]
       end
     end
@@ -329,6 +340,22 @@ module LittleGhost
       application.error_message(error, self)
     rescue
       "The run could not cleanly stop all work."
+    end
+
+    def diagnostic_invocation_message
+      message = invocation.message
+      return message unless message.respond_to?(:text)
+      return message.text unless message.text.empty?
+
+      message.to_h
+    end
+
+    def diagnostic_exception(error)
+      {
+        type: error.class.name,
+        message: error.message,
+        stacktrace: Array(error.backtrace).join("\n")
+      }
     end
   end
 end
