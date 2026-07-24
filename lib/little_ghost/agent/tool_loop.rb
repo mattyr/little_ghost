@@ -104,7 +104,13 @@ module LittleGhost
         end
         if termination
           if newly_terminated
-            context&.instrumentation&.emit(:tool_loop, action: :terminate, tool_name: tool_use.name)
+            context&.instrumentation&.emit(
+              :tool_loop,
+              operation_id: payload[:operation_id],
+              parent_operation_id: payload[:parent_operation_id],
+              action: :terminate,
+              tool_name: tool_use.name
+            )
           end
           Support::Callbacks.cancel(termination)
         else
@@ -132,7 +138,14 @@ module LittleGhost
 
         action = (count == @tool_loop_warning_at) ? :warn : :final_warning
         warning = (action == :warn) ? WARNING : FINAL_WARNING
-        context&.instrumentation&.emit(:tool_loop, action: action, tool_name: tool_use.name, count: count)
+        context&.instrumentation&.emit(
+          :tool_loop,
+          operation_id: payload[:operation_id],
+          parent_operation_id: payload[:parent_operation_id],
+          action: action,
+          tool_name: tool_use.name,
+          count: count
+        )
         replacement = Tool::ExecutionResult.new(
           content: "#{warning}\n\n#{result.content}",
           status: result.status,

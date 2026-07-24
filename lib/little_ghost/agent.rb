@@ -593,7 +593,13 @@ module LittleGhost
 
         context.check!
 
-        decision = run_callbacks(:before_tool, {tool_use: tool_use, tool: tool}, context: context)
+        callback_payload = {
+          tool_use: tool_use,
+          tool: tool,
+          operation_id: operation_id,
+          parent_operation_id: parent_operation_id
+        }
+        decision = run_callbacks(:before_tool, callback_payload, context: context)
         if decision.cancel?
           rejection = ToolError.new(decision.reason)
           result = Content::ToolResult.new(
@@ -624,7 +630,7 @@ module LittleGhost
         end
         after_decision = run_callbacks(
           :after_tool,
-          {tool_use: tool_use, tool: tool, result: tool_result},
+          callback_payload.merge(result: tool_result),
           context: context
         )
         tool_result = replacement_value(after_decision, :result, tool_result)
