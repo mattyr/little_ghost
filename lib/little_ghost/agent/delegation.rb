@@ -9,6 +9,7 @@ module LittleGhost
 
       module ClassMethods
         def subagent(agent_class, kind: nil, description: nil, model: nil, tools: nil, factory: nil)
+          validate_delegated_tools!(tools)
           declaration = Support.immutable({
             agent: agent_class,
             kind: (kind || agent_class.agent_id).to_s,
@@ -40,6 +41,7 @@ module LittleGhost
 
         def agent_as_tool(agent_class, name: nil, description: nil, model: nil, tools: nil,
           preserve_context: false)
+          validate_delegated_tools!(tools)
           declaration = Support.immutable({
             agent: agent_class,
             name: (name || agent_class.agent_id).to_s,
@@ -60,6 +62,15 @@ module LittleGhost
           return @agent_tool_declarations if instance_variable_defined?(:@agent_tool_declarations)
 
           superclass.respond_to?(:agent_tool_declarations) ? superclass.agent_tool_declarations : [].freeze
+        end
+
+        private
+
+        def validate_delegated_tools!(tools)
+          return unless Array(tools).flatten.any? { |tool| tool.is_a?(Tool) }
+
+          raise ConfigurationError,
+            "Delegated tools must be tool classes or a resolver that creates fresh instances"
         end
       end
     end

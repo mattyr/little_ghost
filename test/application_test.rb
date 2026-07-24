@@ -1045,6 +1045,40 @@ class ApplicationTest < Minitest::Test
     end
   end
 
+  def test_static_subagent_can_spawn_with_declared_tools
+    delegated_tool = Class.new(LittleGhost::Tool) do
+      tool_name "inspect_source"
+      description "Inspect source"
+
+      def call(_input, context:) = "source"
+    end
+    child = Class.new(LittleGhost::Agent) do
+      model "main"
+      description "Static child"
+      system_prompt "Child"
+    end
+    parent = Class.new(LittleGhost::Agent) do
+      model "main"
+      system_prompt "Parent"
+      subagent child, kind: "static", tools: [delegated_tool]
+    end
+
+    with_application(agent: parent) do |application, provider|
+      run = application.build_run(message: "hello")
+      agent = application.build_agent(run:)
+      result = agent.tool_registry.fetch("spawn_subagent").execute({
+        "kind" => "static", "task" => "inspect", "mode" => "sync"
+      })
+
+      assert result.success?
+      assert_equal "finished", JSON.parse(result.content).fetch("status")
+      assert_includes provider.requests.fetch(0).tools.map { |tool| tool.fetch(:name) }, "inspect_source"
+    ensure
+      agent&.close
+      run&.close
+    end
+  end
+
   private
 
   def assert_stubborn_producer_fails_run(interruption)

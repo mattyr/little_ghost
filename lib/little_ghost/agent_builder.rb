@@ -30,7 +30,7 @@ module LittleGhost
     end
 
     def build_agent(agent_class, run:, model:, tools:)
-      configured_tools = Array(tools)
+      configured_tools = Array(tools).dup
       configured_tools.concat(delegation_tools(agent_class, run))
       resolved_model = model || application.model_for(agent_class, run)
       transferred = true

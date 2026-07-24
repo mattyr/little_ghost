@@ -528,6 +528,23 @@ class AgentTest < Minitest::Test
     assert_empty child.subagent_declarations.first.fetch(:tools)
   end
 
+  def test_static_delegation_rejects_shared_tool_instances
+    delegated = Class.new(LittleGhost::Agent)
+    tool = Class.new(LittleGhost::Tool) do
+      tool_name "shared"
+      description "Shared"
+    end.new
+
+    error = assert_raises(LittleGhost::ConfigurationError) do
+      Class.new(LittleGhost::Agent) { subagent delegated, tools: [tool] }
+    end
+    assert_includes error.message, "tool classes or a resolver"
+
+    assert_raises(LittleGhost::ConfigurationError) do
+      Class.new(LittleGhost::Agent) { agent_as_tool delegated, tools: [tool] }
+    end
+  end
+
   def test_inherited_agent_policy_is_deeply_immutable
     delegated = Class.new(LittleGhost::Agent) do
       agent_id "delegate"
