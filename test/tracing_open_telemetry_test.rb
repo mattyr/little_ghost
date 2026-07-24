@@ -303,6 +303,22 @@ class TracingOpenTelemetryTest < Minitest::Test
     assert_equal "safe", attributes.fetch("little_ghost.detail")
   end
 
+  def test_attaches_custom_events_to_their_operation_span
+    tracer = Tracer.new
+    tracing = LittleGhost::Tracing::OpenTelemetry.new(tracer:)
+
+    tracing.call(:tool_start, {operation_id: "tool", tool_name: "lookup"})
+    tracing.call(:tool_loop, {operation_id: "tool", action: :warn, tool_name: "lookup", count: 3})
+
+    span = tracer.started.first.last
+    name, attributes = span.events.one? ? span.events.first : flunk("expected one tool-loop event")
+    assert_equal "little_ghost.tool_loop", name
+    assert_equal "warn", attributes.fetch("little_ghost.action")
+    assert_empty tracer.instant
+  ensure
+    tracing&.shutdown
+  end
+
   def test_subagent_spans_parent_the_delegated_agent
     tracer = Tracer.new
     tracing = LittleGhost::Tracing::OpenTelemetry.new(tracer:)

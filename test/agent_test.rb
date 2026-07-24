@@ -210,6 +210,30 @@ class AgentTest < Minitest::Test
     agent&.close
   end
 
+  def test_tool_callbacks_receive_tool_operation_ids
+    before_payloads = []
+    after_payloads = []
+    agent_class = Class.new(LittleGhost::Agent) do
+      before_tool { |payload| before_payloads << payload }
+      after_tool { |payload| after_payloads << payload }
+    end
+    tool = LittleGhost::Tool.define(name: "echo", description: "Echo") { "done" }
+    tool_use = LittleGhost::Content::ToolUse.new(id: "call-1", name: "echo", input: {})
+    model = ScriptedModel.new(response([tool_use], stop_reason: :tool_use), response("done"))
+    agent = agent_class.new(model:, tools: [tool])
+
+    agent.call("go")
+
+    before_payload = before_payloads.fetch(0)
+    after_payload = after_payloads.fetch(0)
+    assert_equal before_payload[:operation_id], after_payload[:operation_id]
+    assert_equal before_payload[:parent_operation_id], after_payload[:parent_operation_id]
+    refute_nil before_payload[:operation_id]
+    refute_nil before_payload[:parent_operation_id]
+  ensure
+    agent&.close
+  end
+
   def test_explicit_capture_records_model_tool_and_reasoning_content_without_binary_data
     telemetry = []
     instrumentation = LittleGhost::Support::Instrumentation.new(

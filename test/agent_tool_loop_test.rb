@@ -155,6 +155,25 @@ class AgentToolLoopTest < Minitest::Test
     assert_equal 1, terminations.length
   end
 
+  def test_emits_tool_operation_ids_with_loop_events
+    events = []
+    instrumentation = LittleGhost::Support::Instrumentation.new
+    instrumentation.subscribe(->(name, attributes) { events << [name, attributes] })
+    agent = build_agent(instrumentation:)
+    context = LittleGhost::RunContext.new(instrumentation: instrumentation)
+    run_callback(agent, :before_invocation, {}, context)
+    tool = LittleGhost::Tool.define(name: "search", description: "Search") { "result" }.new
+    use = LittleGhost::Content::ToolUse.new(id: "1", name: "search", input: {})
+
+    call_tool(agent, use, tool, execution("same"), context, operation_id: "tool-1", parent_operation_id: "turn")
+    call_tool(agent, use.with(id: "2"), tool, execution("same"), context,
+      operation_id: "tool-2", parent_operation_id: "turn")
+
+    attributes = events.find { |name, _attributes| name == :tool_loop }.last
+    assert_equal "tool-2", attributes[:operation_id]
+    assert_equal "turn", attributes[:parent_operation_id]
+  end
+
   def test_composes_with_tool_result_offloading
     agent_class = Class.new(LittleGhost::Agent) do
       detect_tool_loops warning_at: 2, terminate_at: 4
@@ -198,18 +217,19 @@ class AgentToolLoopTest < Minitest::Test
 
   private
 
-  def build_agent
+  def build_agent(instrumentation: nil)
     agent_class = Class.new(LittleGhost::Agent) do
       detect_tool_loops warning_at: 2, terminate_at: 4
     end
-    agent_class.new(model: Object.new)
+    agent_class.new(model: Object.new, instrumentation:)
   end
 
-  def call_tool(agent, tool_use, tool, result, context)
-    before = run_callback(agent, :before_tool, {tool_use: tool_use, tool: tool}, context)
+  def call_tool(agent, tool_use, tool, result, context, **telemetry)
+    payload = {tool_use: tool_use, tool: tool, **telemetry}
+    before = run_callback(agent, :before_tool, payload, context)
     return before unless before.continue?
 
-    run_callback(agent, :after_tool, {tool_use: tool_use, tool: tool, result: result}, context)
+    run_callback(agent, :after_tool, payload.merge(result: result), context)
   end
 
   def run_callback(agent, name, payload, context)
