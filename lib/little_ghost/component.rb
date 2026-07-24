@@ -2,12 +2,13 @@
 
 module LittleGhost
   class Component
-    attr_reader :root, :loader, :prompt_paths
+    attr_reader :root, :loader, :prompt_paths, :skill_paths
 
     def initialize(root:)
       @root = canonical_root(root)
       @loader = Support::Loader.new(root: @root)
       @prompt_paths = discover_prompt_paths.freeze
+      @skill_paths = discover_skill_paths.freeze
       freeze
     end
 
@@ -33,6 +34,19 @@ module LittleGhost
       [Templates::Root.new(path: resolved, boundary: root)]
     rescue Errno::ENOENT
       raise Support::Loader::ConflictError, "Component prompt directory is invalid: #{path}"
+    end
+
+    def discover_skill_paths
+      path = File.join(root, "app/skills")
+      return [] unless File.exist?(path) || File.symlink?(path)
+
+      resolved = File.realpath(path)
+      unless File.directory?(resolved) && inside_root?(resolved)
+        raise Support::Loader::ConflictError, "Component skill directory escapes component root: #{path}"
+      end
+      [resolved]
+    rescue Errno::ENOENT
+      raise Support::Loader::ConflictError, "Component skill directory is invalid: #{path}"
     end
 
     def inside_root?(path)

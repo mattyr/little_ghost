@@ -116,7 +116,52 @@ class SkillsTest < Minitest::Test
 
         assert_equal "Second instructions", catalog.fetch("review").instructions
         assert_equal File.realpath(File.join(second_root, "review", "SKILL.md")), catalog.fetch("review").path
+        assert_equal File.realpath(File.join(second_root, "review", "SKILL.md")), catalog.fetch("review").source_path
       end
+    end
+  end
+
+  def test_exposes_agent_paths_without_changing_physical_skill_access
+    Dir.mktmpdir do |first_root|
+      Dir.mktmpdir do |second_root|
+        first_directory = File.join(first_root, "review")
+        second_directory = File.join(second_root, "deploy")
+        FileUtils.mkdir_p(File.join(first_directory, "references"))
+        Dir.mkdir(second_directory)
+        File.write(
+          File.join(first_directory, "SKILL.md"),
+          "---\nname: review\ndescription: Review code\n---\nRead the guide."
+        )
+        File.write(File.join(first_directory, "references", "guide.md"), "Guide")
+        File.write(
+          File.join(second_directory, "SKILL.md"),
+          "---\nname: deploy\ndescription: Deploy code\n---\nDeploy safely."
+        )
+
+        catalog = LittleGhost::Skills::Catalog.new(
+          paths: [first_root, second_root],
+          agent_root: "/skills"
+        )
+
+        review = catalog.fetch("review")
+        assert_equal "/skills/review/SKILL.md", review.path
+        assert_equal File.realpath(File.join(first_directory, "SKILL.md")), review.source_path
+        assert_includes catalog.discovery_prompt, "<location>/skills/review/SKILL.md</location>"
+        result = catalog.tool.new.execute({"skill_name" => "review"})
+        assert_includes result.content, "Location: /skills/review/SKILL.md"
+        assert_includes result.content, "/skills/review/references/guide.md"
+        assert_equal "/skills/deploy/SKILL.md", catalog.fetch("deploy").path
+      end
+    end
+  end
+
+  def test_rejects_relative_agent_roots
+    Dir.mktmpdir do |directory|
+      error = assert_raises(ArgumentError) do
+        LittleGhost::Skills::Catalog.new(paths: directory, agent_root: "skills")
+      end
+
+      assert_equal "agent_root must be an absolute path", error.message
     end
   end
 

@@ -25,6 +25,20 @@ class ComponentTest < Minitest::Test
     end
   end
 
+  def test_component_discovers_conventional_skills
+    Dir.mktmpdir do |component_root|
+      write(
+        component_root,
+        "app/skills/review/SKILL.md",
+        "---\nname: review\ndescription: Review code\n---\nReview carefully."
+      )
+
+      component = LittleGhost::Component.new(root: component_root)
+
+      assert_equal [File.realpath(File.join(component_root, "app/skills"))], component.skill_paths
+    end
+  end
+
   def test_components_load_conventional_agents_and_tools
     Dir.mktmpdir do |application_root|
       Dir.mktmpdir do |component_root|

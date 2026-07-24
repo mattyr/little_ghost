@@ -2,6 +2,7 @@
 
 require "yaml"
 require "erb"
+require "pathname"
 
 module LittleGhost
   module Skills
@@ -23,13 +24,15 @@ module LittleGhost
         max_skills: DEFAULT_MAX_SKILLS,
         max_file_bytes: DEFAULT_MAX_FILE_BYTES,
         max_resource_files: DEFAULT_MAX_RESOURCE_FILES,
-        only: nil
+        only: nil,
+        agent_root: nil
       )
         @paths = Array(paths).map { |path| File.realpath(path) }.freeze
         @max_skills = positive_integer(max_skills, :max_skills)
         @max_file_bytes = positive_integer(max_file_bytes, :max_file_bytes)
         @max_resource_files = positive_integer(max_resource_files, :max_resource_files)
         @only = Array(only).map(&:to_s).freeze if only
+        @agent_root = canonical_agent_root(agent_root)
         @skills = load_skills
       end
 
@@ -144,7 +147,8 @@ module LittleGhost
         allowed_tools = Array(allowed_tools).map(&:to_s).freeze
         compatibility = metadata["compatibility"]&.to_s
         Skill.new(
-          name:, description:, instructions: match[2].strip, path: real_path,
+          name:, description:, instructions: match[2].strip,
+          path: agent_path(real_path, root), source_path: real_path,
           allowed_tools:, compatibility:
         )
       rescue Psych::Exception => error
@@ -156,13 +160,14 @@ module LittleGhost
       end
 
       def skill_resources(skill)
-        directory = File.dirname(skill.path)
+        directory = File.dirname(skill.source_path)
         files = RESOURCE_DIRECTORIES.flat_map do |name|
           root = File.join(directory, name)
           next [] unless File.directory?(root) && !File.symlink?(root)
 
           resource_files(root, prefix: name)
         end.sort
+        files.map! { |path| agent_resource_path(skill, path) } if @agent_root
         return files if files.length <= @max_resource_files
 
         [*files.first(@max_resource_files), "... (truncated at #{@max_resource_files} files)"]
@@ -194,6 +199,28 @@ module LittleGhost
         raise ArgumentError, "#{name} must be positive" unless integer.positive?
 
         integer
+      end
+
+      def canonical_agent_root(value)
+        return unless value
+
+        path = value.to_s
+        if path.include?("\0") || !Pathname.new(path).absolute? || path.split(File::SEPARATOR).include?("..")
+          raise ArgumentError, "agent_root must be an absolute path"
+        end
+
+        File.expand_path(path).freeze
+      end
+
+      def agent_path(source_path, source_root)
+        return source_path unless @agent_root
+
+        relative = source_path.delete_prefix("#{source_root}#{File::SEPARATOR}")
+        File.join(@agent_root, relative)
+      end
+
+      def agent_resource_path(skill, relative)
+        File.join(File.dirname(skill.path), relative)
       end
     end
   end

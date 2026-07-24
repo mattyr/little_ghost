@@ -1,6 +1,6 @@
 # LittleGhost
 
-LittleGhost was extracted from an experimental self-improving AI-framework called Algernon.  While functional, it is still in an early stage so the API and functionality are not stable.
+LittleGhost was extracted from an experimental self-improving AI-framework called Algernon.  While functional, it is still in an early stage so the API is not stable.
 
 LittleGhost is a dependency-light agent framework for Ruby. It provides a conventional application layout, a streaming tool-calling loop, model providers, sessions, subagents, ERB prompts, and instrumentation.
 

@@ -2,6 +2,14 @@
 
 module LittleGhost
   module Skills
-    Skill = Data.define(:name, :description, :instructions, :path, :allowed_tools, :compatibility)
+    Skill = Data.define(
+      :name,
+      :description,
+      :instructions,
+      :path,
+      :source_path,
+      :allowed_tools,
+      :compatibility
+    )
   end
 end
