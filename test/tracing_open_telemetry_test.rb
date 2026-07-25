@@ -222,6 +222,51 @@ class TracingOpenTelemetryTest < Minitest::Test
     tracing&.shutdown
   end
 
+  def test_omits_malformed_or_truncated_model_messages
+    tracer = Tracer.new
+    tracing = LittleGhost::Tracing::OpenTelemetry.new(tracer:)
+
+    tracing.call(
+      :model_start,
+      {
+        operation_id: "model",
+        model_id: "model",
+        diagnostic_input: JSON.generate(truncated: true, preview: "[{\"role\":\"system\"")
+      }
+    )
+    tracing.call(:model_stop, {operation_id: "model"})
+
+    span = tracer.started.first.last
+    refute span.attributes.key?("gen_ai.input.messages")
+  ensure
+    tracing&.shutdown
+  end
+
+  def test_preserves_large_canonical_model_histories
+    tracer = Tracer.new
+    tracing = LittleGhost::Tracing::OpenTelemetry.new(tracer:)
+    content = "context " * 20_000
+
+    tracing.call(
+      :model_start,
+      {
+        operation_id: "model",
+        model_id: "model",
+        diagnostic_input: JSON.generate([
+          {role: "system", content: [{type: "text", text: content}]},
+          {role: "user", content: [{type: "text", text: "current request"}]}
+        ])
+      }
+    )
+    tracing.call(:model_stop, {operation_id: "model"})
+
+    messages = JSON.parse(tracer.started.first.last.attributes.fetch("gen_ai.input.messages"))
+    assert_equal %w[system user], messages.map { |message| message.fetch("role") }
+    assert_equal content, messages.first.dig("parts", 0, "content")
+  ensure
+    tracing&.shutdown
+  end
+
   def test_emits_canonical_captured_tool_content_and_custom_flat_attributes
     tracer = Tracer.new
     tracing = LittleGhost::Tracing::OpenTelemetry.new(tracer:)
