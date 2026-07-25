@@ -298,27 +298,34 @@ module LittleGhost
         return unless kind == :model
 
         semantic_name = (prefix == "input") ? "gen_ai.input.messages" : "gen_ai.output.messages"
-        result[semantic_name] = canonical_messages(
+        messages = canonical_messages(
           value,
           finish_reason: prefix == "output" && (attributes[:stop_reason] || Array(attributes[:finish_reasons]).first)
         )
+        result[semantic_name] = messages if messages
       end
 
       def canonical_messages(value, finish_reason: nil)
         messages = parse_json(value)
         messages = [messages] if messages.is_a?(Hash)
-        return value unless messages.is_a?(Array)
+        return unless messages.is_a?(Array)
 
-        json_attribute(messages.filter_map do |message|
+        normalized_messages = messages.filter_map do |message|
           next unless message.is_a?(Hash)
 
+          role = message["role"].to_s
+          next if role.empty?
+
           normalized = {
-            role: message["role"].to_s,
+            role:,
             parts: Array(message["content"]).filter_map { |part| canonical_message_part(part) }
           }
           normalized[:finish_reason] = finish_reason.to_s if finish_reason
           normalized
-        end)
+        end
+        return if normalized_messages.empty?
+
+        json_attribute(normalized_messages)
       end
 
       def canonical_message_part(part)

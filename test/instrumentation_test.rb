@@ -82,6 +82,25 @@ class InstrumentationTest < Minitest::Test
     assert_equal true, JSON.parse(value).fetch("truncated")
   end
 
+  def test_captured_content_is_lossless_by_default
+    policy = LittleGhost::Support::ContentCapture.new(enabled: true)
+    message = "é" * 100_000
+
+    value = policy.capture(input: {message:}).fetch(:diagnostic_input)
+
+    assert_operator value.bytesize, :>, 64_000
+    assert_equal message, JSON.parse(value).fetch("message")
+  end
+
+  def test_captured_content_normalizes_invalid_utf8
+    policy = LittleGhost::Support::ContentCapture.new(enabled: true)
+    message = "ok\xFFbad".dup.force_encoding(Encoding::UTF_8)
+
+    value = policy.capture(input: {message:}).fetch(:diagnostic_input)
+
+    assert_equal "ok\uFFFDbad", JSON.parse(value).fetch("message")
+  end
+
   def test_exception_capture_is_scrubbed
     policy = LittleGhost::Support::ContentCapture.new(enabled: true)
 
@@ -141,6 +160,18 @@ class InstrumentationTest < Minitest::Test
     serialized = JSON.generate(definitions)
     refute_includes serialized, "abcdefghijklmnopqrstuvwxyz123456"
     refute_includes serialized, "secret"
+  end
+
+  def test_tool_definition_capture_is_lossless_by_default
+    policy = LittleGhost::Support::ContentCapture.new(enabled: true)
+    description = "x" * 100_000
+
+    captured = policy.capture(
+      tool_definitions: [{name: "lookup", description:, input_schema: {type: "object"}}]
+    )
+    definition = JSON.parse(captured.fetch(:diagnostic_tool_definitions)).first
+
+    assert_equal description, definition.fetch("description")
   end
 
   def test_instrumentation_captures_tool_definitions_from_diagnostic_payload

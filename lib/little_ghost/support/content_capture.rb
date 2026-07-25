@@ -17,12 +17,12 @@ module LittleGhost
 
       def self.disabled = new(enabled: false)
 
-      def initialize(enabled: false, max_bytes: 64_000, scrubber: nil, redactions: [])
+      def initialize(enabled: false, max_bytes: nil, scrubber: nil, redactions: [])
         @enabled = enabled == true
-        @max_bytes = Integer(max_bytes)
+        @max_bytes = Integer(max_bytes) if max_bytes
         @scrubber = scrubber
         @redactions = Array(redactions).map(&:to_s).reject { |value| value.length < 8 }.uniq.freeze
-        raise ArgumentError, "max_bytes must be at least 64" if @max_bytes < 64
+        raise ArgumentError, "max_bytes must be at least 64" if @max_bytes && @max_bytes < 64
         raise ArgumentError, "scrubber must be callable" if @scrubber && !@scrubber.respond_to?(:call)
       end
 
@@ -48,6 +48,12 @@ module LittleGhost
       private
 
       def capture_tool_definitions(value)
+        unless @max_bytes
+          scrubbed = scrub(value)
+          scrubbed = scrub(@scrubber.call(scrubbed)) if @scrubber
+          return JSON.generate(scrubbed)
+        end
+
         remaining = [@max_bytes - 32, 1].max
         scrubbed = bounded_scrub(value, remaining:)
         scrubbed = bounded_scrub(@scrubber.call(scrubbed), remaining:) if @scrubber
@@ -121,7 +127,8 @@ module LittleGhost
       end
 
       def scrub_string(value)
-        text = @redactions.reduce(value.dup) { |current, secret| current.gsub(secret, "[REDACTED]") }
+        normalized = value.encode(Encoding::UTF_8, invalid: :replace, undef: :replace, replace: "\uFFFD")
+        text = @redactions.reduce(normalized) { |current, secret| current.gsub(secret, "[REDACTED]") }
         SECRET_PATTERNS.reduce(text) { |current, pattern| current.gsub(pattern, "[REDACTED]") }
       end
 
@@ -135,7 +142,7 @@ module LittleGhost
       end
 
       def truncate(value)
-        return value if value.bytesize <= @max_bytes
+        return value unless @max_bytes && value.bytesize > @max_bytes
 
         preview_bytes = [@max_bytes - 64, 1].max
         preview = value.byteslice(0, preview_bytes).to_s.force_encoding(Encoding::UTF_8).scrub
