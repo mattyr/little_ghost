@@ -190,6 +190,48 @@ class TracingOpenTelemetryTest < Minitest::Test
     tracing&.shutdown
   end
 
+  def test_keeps_workflow_root_separate_from_its_child_agent
+    tracer = Tracer.new
+    tracing = LittleGhost::Tracing::OpenTelemetry.new(tracer:)
+
+    tracing.call(
+      :run_start,
+      {
+        operation_id: "run",
+        entrypoint_kind: :workflow,
+        workflow_name: "MainResponseWorkflow",
+        session_id: "session-1"
+      }
+    )
+    tracing.call(
+      :agent_start,
+      {
+        operation_id: "agent",
+        parent_operation_id: "run",
+        agent_id: "main",
+        agent_name: "Atlas Main"
+      }
+    )
+    tracing.call(:agent_stop, {operation_id: "agent", outcome: :completed})
+    tracing.call(:run_stop, {operation_id: "run", outcome: :completed})
+
+    workflow_name, workflow_context, workflow_span = tracer.started.fetch(0)
+    agent_name, agent_context, agent_span = tracer.started.fetch(1)
+    assert_equal "invoke_workflow MainResponseWorkflow", workflow_name
+    assert_nil workflow_context
+    assert_equal "invoke_workflow", workflow_span.attributes.fetch("gen_ai.operation.name")
+    assert_equal "MainResponseWorkflow", workflow_span.attributes.fetch("gen_ai.workflow.name")
+    refute workflow_span.attributes.key?("gen_ai.agent.id")
+    assert_equal "invoke_agent Atlas Main", agent_name
+    refute_nil agent_context
+    assert_equal "invoke_agent", agent_span.attributes.fetch("gen_ai.operation.name")
+    assert_equal "main", agent_span.attributes.fetch("gen_ai.agent.id")
+    assert workflow_span.finished?
+    assert agent_span.finished?
+  ensure
+    tracing&.shutdown
+  end
+
   def test_records_scrubbed_exception_details
     tracer = Tracer.new
     tracing = LittleGhost::Tracing::OpenTelemetry.new(tracer:)

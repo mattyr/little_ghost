@@ -23,7 +23,66 @@ module LittleGhost
         super(base_url:, api: :chat_completions, **arguments)
       end
 
+      def capabilities(metadata: {})
+        parameters = metadata[:supported_parameters] || metadata["supported_parameters"]
+        return ModelCapabilities.unknown unless parameters.is_a?(Array)
+
+        values = parameters.map(&:to_s)
+        ModelCapabilities.new(
+          native_structured_output: values.any? { |value| %w[structured_outputs response_format].include?(value) },
+          tools: values.include?("tools"),
+          tool_choice: values.include?("tool_choice"),
+          supported_parameters: values
+        )
+      end
+
+      def prepare_request(request, capabilities:)
+        return request if request.required_capabilities.empty?
+        return request unless capabilities.supported_parameters
+
+        settings = filter_supported_settings(request.settings, capabilities)
+        ModelRequest.new(
+          messages: request.messages,
+          tools: request.tools,
+          settings:,
+          output_schema: request.output_schema,
+          tool_choice: request.tool_choice,
+          required_capabilities: request.required_capabilities,
+          cancellation_token: request.cancellation_token,
+          deadline: request.deadline
+        )
+      end
+
       private
+
+      MODEL_SETTING_PARAMETERS = {
+        temperature: %w[temperature],
+        top_p: %w[top_p],
+        max_tokens: %w[max_tokens max_completion_tokens],
+        max_completion_tokens: %w[max_completion_tokens max_tokens],
+        stop: %w[stop],
+        seed: %w[seed],
+        reasoning: %w[reasoning reasoning_effort],
+        reasoning_effort: %w[reasoning reasoning_effort]
+      }.freeze
+
+      def filter_supported_settings(settings, capabilities)
+        result = settings.to_h.dup
+        MODEL_SETTING_PARAMETERS.each do |setting, parameters|
+          key = result.key?(setting) ? setting : setting.to_s
+          next unless result.key?(key)
+
+          result.delete(key) unless capabilities.supports_parameter?(*parameters)
+        end
+        max_tokens_key = result.key?(:max_tokens) ? :max_tokens : "max_tokens"
+        if result.key?(max_tokens_key) &&
+            !capabilities.supports_parameter?("max_tokens") &&
+            capabilities.supports_parameter?("max_completion_tokens")
+          result[result.key?(:max_tokens) ? :max_completion_tokens : "max_completion_tokens"] =
+            result.delete(max_tokens_key)
+        end
+        result.freeze
+      end
 
       def dynamic_headers(request)
         session_id = request.settings[:session_id] || request.settings["session_id"]
@@ -61,7 +120,9 @@ module LittleGhost
 
       def request_body(request)
         body = super
-        body[:provider] = {require_parameters: true} if request.output_schema
+        if request.output_schema || !request.required_capabilities.empty?
+          body[:provider] = {require_parameters: true}
+        end
         add_message_cache_control(body[:messages]) if model_prefix?(MESSAGE_CACHE_MODELS)
         body
       end

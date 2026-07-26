@@ -68,6 +68,16 @@ class OpenAICompatibleTest < Minitest::Test
     assert_equal "lookup", body.dig("tools", 0, "name")
   end
 
+  def test_responses_request_maps_chat_completion_token_limit
+    transport = FakeTransport.new(["data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"])
+
+    provider(transport:).stream(request(settings: {max_completion_tokens: 321})).to_a
+    body = JSON.parse(transport.requests.fetch(0).fetch(:body))
+
+    assert_equal 321, body.fetch("max_output_tokens")
+    refute body.key?("max_completion_tokens")
+  end
+
   def test_responses_request_serializes_native_json_schema_output
     transport = FakeTransport.new(["data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"])
     output_schema = {
@@ -119,6 +129,36 @@ class OpenAICompatibleTest < Minitest::Test
     assert_equal "json_schema", body.dig("response_format", "type")
     assert_equal "answer", body.dig("response_format", "json_schema", "name")
     refute body.dig("response_format", "json_schema").key?("type")
+  end
+
+  def test_serializes_strict_result_tools_and_provider_neutral_tool_choices
+    tool = {
+      name: "submit_result",
+      description: "Submit",
+      input_schema: {type: "object"},
+      strict: true
+    }
+    responses_transport = FakeTransport.new(
+      ["data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"]
+    )
+    provider(transport: responses_transport).stream(
+      request(tools: [tool], tool_choice: {name: "submit_result"})
+    ).to_a
+    responses_body = JSON.parse(responses_transport.requests.first.fetch(:body))
+
+    chat_transport = FakeTransport.new(sse([chat_chunk(id: "chat-1", delta: {}, finish_reason: "stop")]))
+    provider(transport: chat_transport, api: :chat_completions).stream(
+      request(tools: [tool], tool_choice: :required)
+    ).to_a
+    chat_body = JSON.parse(chat_transport.requests.first.fetch(:body))
+
+    assert_equal true, responses_body.dig("tools", 0, "strict")
+    assert_equal(
+      {"type" => "function", "name" => "submit_result"},
+      responses_body.fetch("tool_choice")
+    )
+    assert_equal true, chat_body.dig("tools", 0, "function", "strict")
+    assert_equal "required", chat_body.fetch("tool_choice")
   end
 
   def test_does_not_replay_private_reasoning_as_visible_input
@@ -561,8 +601,18 @@ class OpenAICompatibleTest < Minitest::Test
   end
 
   def request(messages: [{role: :user, content: "Hello"}], tools: [], settings: {}, output_schema: nil,
+    tool_choice: nil, required_capabilities: [],
     cancellation_token: LittleGhost::Support::CancellationToken.new, deadline: nil)
-    LittleGhost::ModelRequest.new(messages:, tools:, settings:, output_schema:, cancellation_token:, deadline:)
+    LittleGhost::ModelRequest.new(
+      messages:,
+      tools:,
+      settings:,
+      output_schema:,
+      tool_choice:,
+      required_capabilities:,
+      cancellation_token:,
+      deadline:
+    )
   end
 
   def sse(events)

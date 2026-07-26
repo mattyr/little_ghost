@@ -6,7 +6,7 @@ require "pathname"
 module LittleGhost
   class Application
     class << self
-      CONFIGURATION_KEYS = %i[agent invocation models default_model instrumentation service_name].freeze
+      CONFIGURATION_KEYS = %i[agent entrypoint invocation models default_model instrumentation service_name].freeze
 
       def inherited(subclass)
         super
@@ -156,7 +156,8 @@ module LittleGhost
       end
     end
 
-    attr_reader :root, :loader, :components, :instrumentation, :models, :session_store, :agent_class
+    attr_reader :root, :loader, :components, :instrumentation, :models, :session_store, :agent_class,
+      :entrypoint_class
 
     def initialize(configuration)
       @configuration = configuration
@@ -168,6 +169,7 @@ module LittleGhost
       loaders.each(&:setup)
       loaders.each(&:eager_load)
       @agent_class = resolve_agent_class(configuration[:agent] || default_agent_name)
+      @entrypoint_class = resolve_entrypoint_class(configuration[:entrypoint] || @agent_class)
       @invocation_class = configuration[:invocation] || Invocation
       @models = build_service(configuration[:models], default: -> { ModelRegistry.new })
       @default_model = configuration.fetch(:default_model, "default").to_s
@@ -208,7 +210,18 @@ module LittleGhost
     end
 
     def build_entrypoint(run:)
-      build_agent(run:)
+      return @entrypoint_class.new(run:) if workflow_entrypoint?
+      return build_agent(run:) if @entrypoint_class == @agent_class
+
+      build_agent(@entrypoint_class, run:)
+    end
+
+    def workflow_entrypoint? = @entrypoint_class <= Workflow
+
+    def entrypoint_name
+      return @entrypoint_class.agent_id unless workflow_entrypoint?
+
+      @entrypoint_class.name.to_s
     end
 
     def model_for(agent_class, run)
@@ -324,6 +337,30 @@ module LittleGhost
       raise ConfigurationError, "agent must inherit from LittleGhost::Agent" unless klass.is_a?(Class) && klass <= Agent
 
       klass
+    end
+
+    def resolve_entrypoint_class(value)
+      klass = if value.is_a?(String) || value.is_a?(Symbol)
+        Object.const_get(value.to_s)
+      else
+        value
+      end
+      unless valid_entrypoint_class?(klass)
+        raise ConfigurationError, "entrypoint must inherit from LittleGhost::Agent or LittleGhost::Workflow"
+      end
+
+      klass
+    rescue NameError
+      klass = loader.constant(value)
+      unless valid_entrypoint_class?(klass)
+        raise ConfigurationError, "entrypoint must inherit from LittleGhost::Agent or LittleGhost::Workflow"
+      end
+
+      klass
+    end
+
+    def valid_entrypoint_class?(value)
+      value.is_a?(Class) && [Agent, Workflow].any? { |base| value <= base }
     end
 
     def discover_prompt_paths

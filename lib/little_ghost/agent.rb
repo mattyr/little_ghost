@@ -67,7 +67,7 @@ module LittleGhost
         @limits ||= {}.freeze
       end
 
-      def result_schema(schema = UNSET, name: nil, description: nil, **schema_keywords)
+      def result_schema(schema = UNSET, name: nil, description: nil, strategy: :auto, **schema_keywords)
         if schema.equal?(UNSET)
           return @result_schema_configuration if schema_keywords.empty?
 
@@ -88,11 +88,16 @@ module LittleGhost
         unless schema_name.match?(/\A[a-zA-Z0-9_-]{1,64}\z/)
           raise ConfigurationError, "result_schema name must contain 1-64 letters, numbers, underscores, or hyphens"
         end
+        strategy = strategy.to_sym
+        unless StructuredOutput::STRATEGIES.include?(strategy)
+          raise ConfigurationError, "result_schema strategy must be auto, provider, or tool"
+        end
 
         @result_schema_configuration = Support.immutable(
           schema: normalized_schema,
           name: schema_name,
-          description: description&.to_s
+          description: description&.to_s,
+          strategy:
         )
       end
 
@@ -303,6 +308,11 @@ module LittleGhost
         end
         @tool_registry.register(resolved, replace: true)
       end
+      @structured_output_strategy = StructuredOutput.resolve(
+        self.class.result_schema,
+        model:,
+        ordinary_tools: @tool_registry.specifications
+      )
       @instrumentation = instrumentation || Support::Instrumentation.new
       @model_settings = model_settings.to_h.freeze
       @template_resolver = template_resolver || default_template_resolver(template_paths)
@@ -480,18 +490,77 @@ module LittleGhost
             settings,
             turn,
             events,
-            parent_operation_id: turn_operation_id
+            parent_operation_id: turn_operation_id,
+            structured_result_repair_due:
           )
           messages << response.message
           tool_uses = response.message.content.grep(Content::ToolUse)
+          result_tool_uses = structured_result_tool_uses(tool_uses)
+
+          unless result_tool_uses.empty?
+            validation_error = capture_structured_result_tool(
+              tool_uses,
+              result_tool_uses,
+              context
+            )
+            unless validation_error
+              messages[-1] = redact_structured_result_message(response.message)
+              return complete_structured_result(
+                response,
+                messages,
+                context,
+                events,
+                operation_id:,
+                turn_operation_id:,
+                turn: turn + 1,
+                started_at:,
+                repaired: structured_result_repair_due
+              )
+            end
+
+            if structured_result_repair_due
+              raise_structured_result_error!(
+                "The model did not return a valid structured result after its repair turn",
+                context,
+                operation_id:,
+                started_at:,
+                validation_errors: [validation_error]
+              )
+            end
+
+            structured_result_repair_due = true
+            messages[-1] = redact_structured_result_tool_message(response.message)
+            messages << Message.new(
+              role: :tool,
+              content: structured_result_tool_errors(tool_uses)
+            )
+            context.checkpoint(messages)
+            instrument_structured_result_repair(
+              operation_id,
+              started_at,
+              context,
+              validation_status: :invalid
+            )
+            instrument(
+              :agent_turn_stop,
+              operation_id: turn_operation_id,
+              outcome: :repair,
+              turn: turn + 1
+            )
+            next
+          end
 
           if tool_uses.empty?
             if %i[max_tokens limit_output_tokens limit_total_tokens limit_turns].include?(response.stop_reason)
               raise OutputLimitError, "The model stopped before completing its response"
             end
 
-            if self.class.result_schema
-              validation_error = capture_structured_result(response.message.text, context)
+            if @structured_output_strategy
+              validation_error = if @structured_output_strategy.provider?
+                capture_structured_result(response.message.text, context)
+              else
+                "The structured result tool was not called"
+              end
               unless validation_error
                 messages[-1] = redact_structured_result_message(response.message)
                 return complete_structured_result(
@@ -519,17 +588,13 @@ module LittleGhost
 
               structured_result_repair_due = true
               messages[-1] = redact_structured_result_message(response.message)
-              messages << structured_result_repair_message(validation_error)
+              messages << structured_result_repair_message
               context.checkpoint(messages)
-              instrument(
-                :structured_result,
-                parent_operation_id: operation_id,
-                schema_name: self.class.result_schema.fetch(:name),
-                validation_status: :missing,
-                repair_attempted: true,
-                duration_ms: duration_ms(started_at),
-                result_duration_ms: duration_ms(started_at),
-                **usage_attributes(context.usage)
+              instrument_structured_result_repair(
+                operation_id,
+                started_at,
+                context,
+                validation_status: :missing
               )
               instrument(
                 :agent_turn_stop,
@@ -573,6 +638,16 @@ module LittleGhost
             return result
           end
 
+          if @structured_output_strategy && structured_result_repair_due
+            raise_structured_result_error!(
+              "The model did not return a structured result after its repair turn",
+              context,
+              operation_id:,
+              started_at:,
+              validation_errors: ["The structured result was not returned"]
+            )
+          end
+
           tool_call_count += tool_uses.length
           raise ProtocolError, "The agent reached its maximum tool calls" if tool_call_count > @max_tool_calls
 
@@ -603,13 +678,18 @@ module LittleGhost
         end
       end
 
-      if structured_result_repair_due
+      if @structured_output_strategy
         raise_structured_result_error!(
-          "The agent reached its model turn limit before it could repair the structured result",
+          structured_result_repair_due ?
+            "The agent reached its model turn limit before it could repair the structured result" :
+            "The agent reached its model turn limit before returning a structured result",
           context,
           operation_id:,
           started_at:,
-          validation_errors: ["repair turn unavailable"]
+          validation_errors: [
+            structured_result_repair_due ? "repair turn unavailable" : "structured result was not submitted"
+          ],
+          repair_attempted: structured_result_repair_due
         )
       end
       raise ProtocolError, "The agent reached its maximum model turns"
@@ -628,14 +708,28 @@ module LittleGhost
       raise
     end
 
-    def invoke_model(messages, context, settings, turn, events, parent_operation_id:, recovery_attempt: 0)
+    def invoke_model(
+      messages,
+      context,
+      settings,
+      turn,
+      events,
+      parent_operation_id:,
+      structured_result_repair_due: false,
+      recovery_attempt: 0
+    )
       started_at = monotonic_time
       operation_id = SecureRandom.uuid
+      strategy = @structured_output_strategy
+      ordinary_tools = tool_registry.specifications
+      StructuredOutput.validate_tool_collision!(strategy, ordinary_tools) if strategy
       request = ModelRequest.new(
         messages: messages,
-        tools: tool_registry.specifications,
+        tools: strategy ? strategy.tools(ordinary_tools) : ordinary_tools,
         settings: settings,
-        output_schema: self.class.result_schema,
+        output_schema: strategy&.output_schema,
+        tool_choice: strategy&.tool_choice(repair: structured_result_repair_due),
+        required_capabilities: strategy&.required_capabilities || [],
         cancellation_token: context.cancellation_token,
         deadline: context.deadline
       )
@@ -663,6 +757,7 @@ module LittleGhost
       emit(events, :model_start, turn: turn)
       response = nil
       time_to_first_token = nil
+      buffered_events = strategy ? [] : nil
 
       model.stream(request).each do |event|
         context.check!
@@ -678,21 +773,37 @@ module LittleGhost
             **model_attributes
           )
         end
-        events << event
+        buffered_events ? buffered_events << event : events << event
         response = event.data[:response] if event.type == :message_stop
       end
       raise ProtocolError, "The model stream ended without a response" unless response
 
       context.record_usage(response.usage)
+      provider_response = response
 
       decision = run_callbacks(:after_model, {request: request, response: response, turn: turn}, context: context)
       apply_cancellation_decision!(decision)
       response = replacement_value(decision, :response, response)
-      diagnostic_response = if self.class.result_schema &&
-          response.message.content.none? { |block| block.is_a?(Content::ToolUse) }
-        redact_structured_result_message(response.message)
+      if buffered_events
+        publish_model_events(
+          events,
+          buffered_events,
+          provider_response,
+          response,
+          repair: structured_result_repair_due
+        )
+      end
+      redact_response = structured_result_terminal_response?(
+        provider_response,
+        repair: structured_result_repair_due
+      ) || structured_result_terminal_response?(
+        response,
+        repair: structured_result_repair_due
+      )
+      diagnostic_response = if redact_response
+        redact_structured_result_payload_message(response.message)
       else
-        response.message
+        structured_result_diagnostic_message(response.message)
       end
       instrument(
         :model_stop,
@@ -708,7 +819,16 @@ module LittleGhost
         **model_attributes,
         **usage_attributes(response.usage)
       )
-      emit(events, :model_stop, turn: turn, response: response)
+      emit(
+        events,
+        :model_stop,
+        turn: turn,
+        response: structured_result_stream_response(
+          provider_response,
+          response,
+          repair: structured_result_repair_due
+        )
+      )
       response
     rescue => error
       instrument(
@@ -720,6 +840,7 @@ module LittleGhost
         duration_ms: duration_ms(started_at),
         time_to_first_token:,
         error_type: error.class.name,
+        **provider_error_attributes(error),
         diagnostic: {exception: diagnostic_exception(error)},
         **model_attributes
       )
@@ -742,6 +863,7 @@ module LittleGhost
             turn,
             events,
             parent_operation_id:,
+            structured_result_repair_due:,
             recovery_attempt: recovery_attempt + 1
           )
         end
@@ -912,9 +1034,26 @@ module LittleGhost
     end
 
     def capture_structured_result(text, context)
+      value = JSON.parse(text)
+      capture_structured_result_value(value, context)
+    rescue JSON::ParserError
+      "Structured result is not valid JSON"
+    end
+
+    def capture_structured_result_tool(tool_uses, result_tool_uses, context)
+      if result_tool_uses.length > 1
+        return "The model called the structured result tool more than once"
+      end
+      if tool_uses.length > 1
+        return "The structured result tool must be the only tool call in its response"
+      end
+
+      capture_structured_result_value(result_tool_uses.first.input, context)
+    end
+
+    def capture_structured_result_value(value, context)
       configuration = self.class.result_schema
       schema_name = configuration.fetch(:name)
-      value = JSON.parse(text)
       validate_structured_result_limits!(value)
       errors = Tool::SchemaValidator.new(configuration.fetch(:schema)).validate(value)
       return "Structured result does not match its schema: #{errors.join("; ")}" unless errors.empty?
@@ -923,10 +1062,24 @@ module LittleGhost
         StructuredResult.new(schema_name:, value: Support.immutable(value))
       )
       nil
-    rescue JSON::ParserError
-      "Structured result is not valid JSON"
     rescue ToolError => error
       error.message
+    end
+
+    def structured_result_tool_uses(tool_uses)
+      return [] unless @structured_output_strategy&.tool?
+
+      tool_uses.select { |tool_use| tool_use.name == @structured_output_strategy.schema_name }
+    end
+
+    def structured_result_tool_errors(tool_uses)
+      tool_uses.map do |tool_use|
+        Content::ToolResult.new(
+          tool_use_id: tool_use.id,
+          content: "The structured result was invalid. Submit it again using the required schema.",
+          status: :error
+        )
+      end
     end
 
     def validate_structured_result_limits!(value)
@@ -965,11 +1118,108 @@ module LittleGhost
       )
     end
 
-    def structured_result_repair_message(error)
+    def redact_structured_result_tool_message(message)
+      tool_uses = message.content.grep(Content::ToolUse).map do |tool_use|
+        Content::ToolUse.new(id: tool_use.id, name: tool_use.name, input: {})
+      end
+      Message.new(role: message.role, content: tool_uses, metadata: message.metadata)
+    end
+
+    def structured_result_diagnostic_message(message)
+      return message unless @structured_output_strategy
+
+      tool_uses = message.content.grep(Content::ToolUse)
+      if tool_uses.empty?
+        redact_structured_result_message(message)
+      elsif structured_result_tool_uses(tool_uses).empty?
+        message
+      else
+        redact_structured_result_tool_message(message)
+      end
+    end
+
+    def publish_model_events(events, buffered_events, provider_response, response, repair:)
+      redact = structured_result_terminal_response?(provider_response, repair:) ||
+        structured_result_terminal_response?(response, repair:)
+      buffered_events.each do |event|
+        published = redact ? redact_structured_result_event(event, provider_response) : event
+        events << published if published
+      end
+    end
+
+    def redact_structured_result_event(event, response)
+      return if %i[text_delta reasoning_delta tool_call_delta].include?(event.type)
+
+      data = event.data
+      if event.type == :message_stop
+        data = data.merge(response: redact_structured_result_response(response))
+      elsif event.type == :tool_call_stop && data[:tool_use]
+        tool_use = data.fetch(:tool_use)
+        data = data.merge(
+          tool_use: Content::ToolUse.new(id: tool_use.id, name: tool_use.name, input: {})
+        )
+      end
+      StreamEvent.build(event.type, **data)
+    end
+
+    def structured_result_stream_response(provider_response, response, repair:)
+      redact = structured_result_terminal_response?(provider_response, repair:) ||
+        structured_result_terminal_response?(response, repair:)
+      return response unless redact
+
+      redact_structured_result_response(response)
+    end
+
+    def structured_result_terminal_response?(response, repair:)
+      return false unless @structured_output_strategy
+      return true if repair
+
+      tool_uses = response.message.content.grep(Content::ToolUse)
+      return tool_uses.empty? if @structured_output_strategy.provider?
+
+      tool_uses.empty? || !structured_result_tool_uses(tool_uses).empty?
+    end
+
+    def redact_structured_result_response(response)
+      ModelResponse.new(
+        message: redact_structured_result_payload_message(response.message),
+        stop_reason: response.stop_reason,
+        usage: response.usage,
+        metadata: response.metadata
+      )
+    end
+
+    def redact_structured_result_payload_message(message)
+      if message.content.any? { |block| block.is_a?(Content::ToolUse) }
+        redact_structured_result_tool_message(message)
+      else
+        redact_structured_result_message(message)
+      end
+    end
+
+    def structured_result_repair_message
+      requirement = if @structured_output_strategy&.tool?
+        "Call #{@structured_output_strategy.schema_name} exactly once as your only tool call."
+      else
+        "Your final response must be JSON matching the configured output schema."
+      end
       Message.new(
         role: :user,
-        content: "Your final response must be JSON matching the configured output schema. " \
-          "You have one repair attempt. Previous response problem: #{error}"
+        content: "#{requirement} You have one repair attempt. The previous structured result was invalid."
+      )
+    end
+
+    def instrument_structured_result_repair(operation_id, started_at, context, validation_status:)
+      instrument(
+        :structured_result,
+        parent_operation_id: operation_id,
+        schema_name: self.class.result_schema.fetch(:name),
+        strategy: structured_output_strategy_name,
+        validation_status:,
+        repair_attempted: true,
+        duration_ms: duration_ms(started_at),
+        result_duration_ms: duration_ms(started_at),
+        **usage_attributes(context.usage)
       )
     end
 
@@ -1003,6 +1253,7 @@ module LittleGhost
         :structured_result,
         parent_operation_id: operation_id,
         schema_name: structured_result.schema_name,
+        strategy: structured_output_strategy_name,
         validation_status: :valid,
         repair_attempted: repaired,
         duration_ms: duration_ms(started_at),
@@ -1034,15 +1285,17 @@ module LittleGhost
       context,
       operation_id:,
       started_at:,
-      validation_errors:
+      validation_errors:,
+      repair_attempted: true
     )
       configuration = self.class.result_schema
       instrument(
         :structured_result,
         parent_operation_id: operation_id,
         schema_name: configuration.fetch(:name),
+        strategy: structured_output_strategy_name,
         validation_status: :failed,
-        repair_attempted: true,
+        repair_attempted:,
         duration_ms: duration_ms(started_at),
         result_duration_ms: duration_ms(started_at),
         **usage_attributes(context.usage)
@@ -1052,6 +1305,10 @@ module LittleGhost
         schema_name: configuration.fetch(:name),
         validation_errors:
       )
+    end
+
+    def structured_output_strategy_name
+      @structured_output_strategy&.tool? ? :tool : :provider
     end
 
     def rendered_system_prompt(locals, invocation_paths)
@@ -1131,6 +1388,11 @@ module LittleGhost
         response_model:,
         finish_reasons: response.stop_reason ? [response.stop_reason.to_s] : nil
       }.compact
+    end
+
+    def provider_error_attributes(error)
+      status = error.respond_to?(:status) ? error.status : nil
+      {http_response_status_code: status}.compact
     end
 
     def usage_attributes(usage)
