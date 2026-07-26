@@ -68,6 +68,27 @@ class OpenAICompatibleTest < Minitest::Test
     assert_equal "lookup", body.dig("tools", 0, "name")
   end
 
+  def test_responses_request_serializes_native_json_schema_output
+    transport = FakeTransport.new(["data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"])
+    output_schema = {
+      name: "answer",
+      schema: {
+        "type" => "object",
+        "properties" => {"answer" => {"type" => "string"}},
+        "required" => ["answer"],
+        "additionalProperties" => false
+      }
+    }
+
+    provider(transport:).stream(request(output_schema:)).to_a
+    body = JSON.parse(transport.requests.fetch(0).fetch(:body))
+
+    assert_equal "json_schema", body.dig("text", "format", "type")
+    assert_equal "answer", body.dig("text", "format", "name")
+    assert_equal true, body.dig("text", "format", "strict")
+    assert_equal output_schema.fetch(:schema), body.dig("text", "format", "schema")
+  end
+
   def test_responses_replays_assistant_text_as_input_text
     transport = FakeTransport.new(["data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"])
     messages = [{role: :assistant, content: "Previous answer"}, {role: :user, content: "Continue"}]
@@ -76,6 +97,28 @@ class OpenAICompatibleTest < Minitest::Test
 
     body = JSON.parse(transport.requests.fetch(0).fetch(:body))
     assert_equal "input_text", body.dig("input", 0, "content", 0, "type")
+  end
+
+  def test_chat_completions_request_serializes_native_json_schema_output
+    transport = FakeTransport.new(
+      sse([chat_chunk(id: "chat-1", delta: {}, finish_reason: "stop")])
+    )
+    output_schema = {
+      name: "answer",
+      schema: {
+        "type" => "object",
+        "properties" => {"answer" => {"type" => "string"}},
+        "required" => ["answer"],
+        "additionalProperties" => false
+      }
+    }
+
+    provider(transport:, api: :chat_completions).stream(request(output_schema:)).to_a
+    body = JSON.parse(transport.requests.fetch(0).fetch(:body))
+
+    assert_equal "json_schema", body.dig("response_format", "type")
+    assert_equal "answer", body.dig("response_format", "json_schema", "name")
+    refute body.dig("response_format", "json_schema").key?("type")
   end
 
   def test_does_not_replay_private_reasoning_as_visible_input
@@ -517,9 +560,9 @@ class OpenAICompatibleTest < Minitest::Test
     )
   end
 
-  def request(messages: [{role: :user, content: "Hello"}], tools: [], settings: {},
+  def request(messages: [{role: :user, content: "Hello"}], tools: [], settings: {}, output_schema: nil,
     cancellation_token: LittleGhost::Support::CancellationToken.new, deadline: nil)
-    LittleGhost::ModelRequest.new(messages:, tools:, settings:, cancellation_token:, deadline:)
+    LittleGhost::ModelRequest.new(messages:, tools:, settings:, output_schema:, cancellation_token:, deadline:)
   end
 
   def sse(events)

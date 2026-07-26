@@ -61,6 +61,7 @@ module LittleGhost
 
       def request_body(request)
         body = super
+        body[:provider] = {require_parameters: true} if request.output_schema
         add_message_cache_control(body[:messages]) if model_prefix?(MESSAGE_CACHE_MODELS)
         body
       end

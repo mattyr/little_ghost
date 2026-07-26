@@ -136,6 +136,7 @@ module LittleGhost
       messages.filter_map do |value|
         message = Message.coerce(value)
         next if message.role == :system
+        next if message.metadata[:transient] || message.metadata["transient"]
 
         sanitized = message.without_reasoning
         next if sanitized.content.empty? && !message.content.empty?

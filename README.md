@@ -218,6 +218,31 @@ An agent can be exposed as a normal tool with `agent_as_tool`. A `subagent` decl
 
 Applications that discover agents at runtime can use `subagents { |run| definitions }`, returning `LittleGhost::Subagents::Definition` objects. Static `subagent` declarations take precedence over discovered definitions with the same kind, and all definitions share one manager and one control-tool surface.
 
+Agents that must return machine-readable data can declare a JSON-schema result contract:
+
+```ruby
+class InvestigationAgent < LittleGhost::Agent
+  result_schema(
+    {
+      type: "object",
+      properties: {
+        claims: {type: "array", items: {type: "string"}},
+        confidence: {type: "string", enum: %w[high medium low]}
+      },
+      required: %w[claims confidence],
+      additionalProperties: false
+    },
+    name: "investigation_result"
+  )
+end
+```
+
+LittleGhost sends the schema through each provider's native structured-output mode and exposes the locally validated value through `RunResult#structured_result`. A missing or invalid result receives one repair turn before `StructuredResultError` is raised. Result schemas use a portable strict subset of the tool-schema keywords: every object must set `additionalProperties: false` and require every declared property; represent optional values with nullable types. Unsupported JSON Schema keywords and invalid provider schema names are rejected when the agent class is defined rather than silently ignored. Results also have framework-level serialized-size, nesting, and node-count limits, and retained conversation history contains only a redacted result marker.
+
+Structured values remain structured when the agent is called directly, exposed as an agent tool, or managed as a subagent. Values are retained only in the dedicated structured-result channel; conversation history and telemetry contain a redacted marker. Result telemetry records the schema, validation status, duration, and usage without including the payload. Evidence-sensitive agents can declare `capture_diagnostics false` to keep all of their model and tool content out of diagnostic telemetry while preserving low-cardinality lifecycle and usage attributes.
+
+Applications can override `build_entrypoint(run:)` when orchestration, rather than one agent, owns the top-level invocation. An entrypoint implements the same `stream` and `close` lifecycle as an agent and may invoke application-built agents as explicit workflow steps.
+
 ## Prompts and components
 
 Prompts are ERB. Templates can render partials with `partial "shared/rules"`. Application prompts override component prompts.

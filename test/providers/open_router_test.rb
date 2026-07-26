@@ -57,6 +57,24 @@ class OpenRouterTest < Minitest::Test
     assert_equal({"type" => "ephemeral"}, content["cache_control"])
   end
 
+  def test_requires_a_provider_that_supports_structured_output_parameters
+    transport = CaptureTransport.new
+    provider = LittleGhost::Providers::OpenRouter.new(api_key: "secret", model: "google/gemini-3.5-flash", transport:)
+    output_schema = {
+      name: "answer",
+      schema: {
+        type: "object",
+        properties: {answer: {type: "string"}},
+        required: ["answer"],
+        additionalProperties: false
+      }
+    }
+
+    provider.stream(LittleGhost::ModelRequest.new(messages: [], output_schema:)).to_a
+
+    assert_equal true, JSON.parse(transport.request[:body]).dig("provider", "require_parameters")
+  end
+
   def test_replays_reasoning_details_for_a_tool_continuation
     transport = CaptureTransport.new
     provider = LittleGhost::Providers::OpenRouter.new(

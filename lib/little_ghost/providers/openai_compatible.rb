@@ -169,8 +169,26 @@ module LittleGhost
         else
           common.merge(messages: chat_messages(request.messages), tools: chat_tools(request.tools), stream_options: {include_usage: true})
         end
+        body.merge!(structured_output_parameters(request.output_schema)) if request.output_schema
         body.delete(:tools) if request.tools.empty?
         body
+      end
+
+      def structured_output_parameters(output_schema)
+        schema = {
+          name: output_schema.fetch(:name),
+          schema: output_schema.fetch(:schema),
+          strict: true
+        }
+        schema[:description] = output_schema[:description] if output_schema[:description]
+        return {text: {format: {type: "json_schema", **schema}}} if api == :responses
+
+        {
+          response_format: {
+            type: "json_schema",
+            json_schema: schema
+          }
+        }
       end
 
       def provider_settings(settings)

@@ -269,6 +269,9 @@ module LittleGhost
 
       def tools
         manager = self
+        kind_descriptions = definitions.values.map do |definition|
+          "- #{definition.kind}: #{definition.description}"
+        end.join("\n")
         tools = [
           Tool.define(
             name: "spawn_subagent",
@@ -281,7 +284,11 @@ module LittleGhost
             input_schema: {
               type: "object",
               properties: {
-                kind: {type: "string", enum: definitions.keys, description: "Kind of subagent to create."},
+                kind: {
+                  type: "string",
+                  enum: definitions.keys,
+                  description: "Kind of subagent to create.\n#{kind_descriptions}"
+                },
                 task: {type: "string", description: "Independent task to delegate."},
                 mode: {
                   type: "string", enum: %w[sync async],
@@ -534,6 +541,25 @@ module LittleGhost
       end
 
       def finish_turn(identity, turn, result)
+        structured = result.is_a?(RunResult) && result.structured?
+        response = if structured
+          result.structured_result.value
+        elsif result.respond_to?(:text)
+          result.text.to_s
+        else
+          result.to_s
+        end
+        serialized_response = response.is_a?(String) ? response : JSON.generate(response)
+        if structured && serialized_response.length > @max_response_chars
+          raise StructuredResultError.new(
+            "The structured subagent result exceeds the response limit",
+            schema_name: result.structured_result.schema_name,
+            validation_errors: ["result exceeds #{@max_response_chars} characters"]
+          )
+        end
+        truncated = serialized_response.length > @max_response_chars
+        response = serialized_response[0, @max_response_chars] if truncated
+
         @mutex.synchronize do
           if @closed
             turn.completion.resolve(cancelled_turn(identity, turn))
@@ -541,9 +567,6 @@ module LittleGhost
           end
 
           retain_agent_conversation(identity, result)
-          response = result.respond_to?(:text) ? result.text.to_s : result.to_s
-          truncated = response.length > @max_response_chars
-          response = response[0, @max_response_chars]
           identity.latest_turn = turn.number
           identity.latest_response = response
           identity.latest_response_truncated = truncated

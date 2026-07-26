@@ -20,6 +20,8 @@ module LittleGhost
       @checkpoint = checkpoint
       @usage = Usage.new
       @usage_mutex = Mutex.new
+      @structured_result = nil
+      @structured_result_mutex = Mutex.new
     end
 
     def check!
@@ -45,6 +47,15 @@ module LittleGhost
 
       remaining = deadline - Time.now
       maximum ? [remaining, maximum].min : remaining
+    end
+
+    def submit_structured_result(result)
+      @structured_result_mutex.synchronize { @structured_result = result }
+      result
+    end
+
+    def structured_result
+      @structured_result_mutex.synchronize { @structured_result }
     end
   end
 end

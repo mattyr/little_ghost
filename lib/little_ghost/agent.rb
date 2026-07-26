@@ -5,6 +5,13 @@ require "securerandom"
 module LittleGhost
   class Agent
     UNSET = Object.new.freeze
+    MAX_STRUCTURED_RESULT_BYTES = 1_000_000
+    MAX_STRUCTURED_RESULT_DEPTH = 64
+    MAX_STRUCTURED_RESULT_NODES = 100_000
+    RESULT_SCHEMA_KEYWORDS = %w[
+      $schema title description type enum minimum maximum minLength maxLength
+      properties required additionalProperties minItems maxItems items
+    ].freeze
     CALLBACKS = %i[
       after_initialize
       before_invocation after_invocation
@@ -21,6 +28,8 @@ module LittleGhost
         subclass.instance_variable_set(:@system_prompt, @system_prompt)
         subclass.instance_variable_set(:@system_prompt_builder, @system_prompt_builder)
         subclass.instance_variable_set(:@model_role, @model_role)
+        subclass.instance_variable_set(:@result_schema_configuration, @result_schema_configuration)
+        subclass.instance_variable_set(:@capture_diagnostics, @capture_diagnostics)
         subclass.instance_variable_set(:@limits, limits.dup)
       end
 
@@ -56,6 +65,41 @@ module LittleGhost
       def limits(**values)
         @limits = Support.immutable(limits.merge(values.transform_keys(&:to_sym))) unless values.empty?
         @limits ||= {}.freeze
+      end
+
+      def result_schema(schema = UNSET, name: nil, description: nil, **schema_keywords)
+        if schema.equal?(UNSET)
+          return @result_schema_configuration if schema_keywords.empty?
+
+          schema = schema_keywords
+        elsif !schema_keywords.empty?
+          raise ArgumentError, "Provide result_schema as a hash or keyword schema, not both"
+        end
+
+        raise ArgumentError, "result_schema must be a hash" unless schema.is_a?(Hash)
+
+        normalized_schema = Class.new(Tool).tap { |tool| tool.input_schema(schema) }.input_schema
+        validate_result_schema_keywords!(normalized_schema)
+        unless normalized_schema["type"] == "object"
+          raise ConfigurationError, "result_schema must describe a top-level object"
+        end
+
+        schema_name = (name || "#{agent_id}_result").to_s
+        unless schema_name.match?(/\A[a-zA-Z0-9_-]{1,64}\z/)
+          raise ConfigurationError, "result_schema name must contain 1-64 letters, numbers, underscores, or hyphens"
+        end
+
+        @result_schema_configuration = Support.immutable(
+          schema: normalized_schema,
+          name: schema_name,
+          description: description&.to_s
+        )
+      end
+
+      def capture_diagnostics(value = UNSET)
+        return @capture_diagnostics != false if value.equal?(UNSET)
+
+        @capture_diagnostics = value == true
       end
 
       def system_template(value = nil)
@@ -134,6 +178,94 @@ module LittleGhost
 
       def local_tool_declarations
         @tool_declarations ||= []
+      end
+
+      def validate_result_schema_keywords!(schema, path = "$")
+        unsupported = schema.keys - RESULT_SCHEMA_KEYWORDS
+        unless unsupported.empty?
+          raise ConfigurationError,
+            "result_schema contains unsupported keywords at #{path}: #{unsupported.sort.join(", ")}"
+        end
+
+        validate_result_schema_values!(schema, path)
+        schema.fetch("properties", {}).each do |name, child|
+          validate_result_schema_keywords!(child, "#{path}.properties.#{name}")
+        end
+        items = schema["items"]
+        validate_result_schema_keywords!(items, "#{path}.items") if items
+        additional = schema["additionalProperties"]
+        if additional.is_a?(Hash)
+          validate_result_schema_keywords!(additional, "#{path}.additionalProperties")
+        end
+      end
+
+      def validate_result_schema_values!(schema, path)
+        type = schema["type"]
+        types = Array(type)
+        supported_types = %w[object array string integer number boolean null]
+        if type && (types.empty? || !types.all? { |value| supported_types.include?(value) })
+          raise ConfigurationError, "result_schema has an invalid type at #{path}"
+        end
+        if schema.key?("properties") &&
+            (!schema["properties"].is_a?(Hash) || !schema["properties"].values.all? { |value| value.is_a?(Hash) })
+          raise ConfigurationError, "result_schema properties must contain object schemas at #{path}"
+        end
+        if schema.key?("required") &&
+            (!schema["required"].is_a?(Array) || !schema["required"].all? { |value| value.is_a?(String) })
+          raise ConfigurationError, "result_schema required must be an array of strings at #{path}"
+        end
+        if type == "object" || Array(type).include?("object") || schema.key?("properties")
+          properties = schema.fetch("properties", {})
+          unless schema["additionalProperties"] == false
+            raise ConfigurationError, "result_schema object must set additionalProperties to false at #{path}"
+          end
+          unless schema["required"]&.sort == properties.keys.sort
+            raise ConfigurationError, "result_schema object must require every property at #{path}"
+          end
+        end
+        if schema.key?("items") && !schema["items"].is_a?(Hash)
+          raise ConfigurationError, "result_schema items must be an object schema at #{path}"
+        end
+        additional = schema["additionalProperties"]
+        if schema.key?("additionalProperties") && additional != true && additional != false && !additional.is_a?(Hash)
+          raise ConfigurationError, "result_schema additionalProperties must be boolean or an object schema at #{path}"
+        end
+        if schema.key?("enum") &&
+            (!schema["enum"].is_a?(Array) || !schema["enum"].all? { |value| json_schema_value?(value) })
+          raise ConfigurationError, "result_schema enum must contain only JSON values at #{path}"
+        end
+        %w[minimum maximum].each do |keyword|
+          if schema.key?(keyword) &&
+              (!schema[keyword].is_a?(Numeric) ||
+                (schema[keyword].respond_to?(:finite?) && !schema[keyword].finite?))
+            raise ConfigurationError, "result_schema #{keyword} must be finite and numeric at #{path}"
+          end
+        end
+        %w[minLength maxLength minItems maxItems].each do |keyword|
+          if schema.key?(keyword) && (!schema[keyword].is_a?(Integer) || schema[keyword].negative?)
+            raise ConfigurationError, "result_schema #{keyword} must be a non-negative integer at #{path}"
+          end
+        end
+        %w[$schema title description].each do |keyword|
+          if schema.key?(keyword) && !schema[keyword].is_a?(String)
+            raise ConfigurationError, "result_schema #{keyword} must be a string at #{path}"
+          end
+        end
+      end
+
+      def json_schema_value?(value)
+        case value
+        when String, Integer, true, false, nil
+          true
+        when Numeric
+          !value.respond_to?(:finite?) || value.finite?
+        when Array
+          value.all? { |child| json_schema_value?(child) }
+        when Hash
+          value.all? { |key, child| key.is_a?(String) && json_schema_value?(child) }
+        else
+          false
+        end
       end
 
       def default_agent_id
@@ -269,7 +401,7 @@ module LittleGhost
             parent_operation_id: run&.operation_id
           )
           retained_history.replace(result.messages.reject { |message| message.role == :system }) if preserve_context
-          result.text
+          result.structured? ? result.structured_result.value : result.text
         end
         preserve_context ? mutex.synchronize(&invocation) : invocation.call
       end
@@ -324,6 +456,7 @@ module LittleGhost
       messages.unshift(Message.new(role: :system, content: prompt)) unless prompt.to_s.empty?
       messages << (input.is_a?(Message) ? input : Message.new(role: :user, content: input))
       tool_call_count = 0
+      structured_result_repair_due = false
 
       decision = run_callbacks(:before_invocation, {messages: messages}, context: context)
       apply_cancellation_decision!(decision)
@@ -353,10 +486,61 @@ module LittleGhost
           tool_uses = response.message.content.grep(Content::ToolUse)
 
           if tool_uses.empty?
-            context.checkpoint(messages)
             if %i[max_tokens limit_output_tokens limit_total_tokens limit_turns].include?(response.stop_reason)
               raise OutputLimitError, "The model stopped before completing its response"
             end
+
+            if self.class.result_schema
+              validation_error = capture_structured_result(response.message.text, context)
+              unless validation_error
+                messages[-1] = redact_structured_result_message(response.message)
+                return complete_structured_result(
+                  response,
+                  messages,
+                  context,
+                  events,
+                  operation_id:,
+                  turn_operation_id:,
+                  turn: turn + 1,
+                  started_at:,
+                  repaired: structured_result_repair_due
+                )
+              end
+
+              if structured_result_repair_due
+                raise_structured_result_error!(
+                  "The model did not return a valid structured result after its repair turn",
+                  context,
+                  operation_id:,
+                  started_at:,
+                  validation_errors: [validation_error]
+                )
+              end
+
+              structured_result_repair_due = true
+              messages[-1] = redact_structured_result_message(response.message)
+              messages << structured_result_repair_message(validation_error)
+              context.checkpoint(messages)
+              instrument(
+                :structured_result,
+                parent_operation_id: operation_id,
+                schema_name: self.class.result_schema.fetch(:name),
+                validation_status: :missing,
+                repair_attempted: true,
+                duration_ms: duration_ms(started_at),
+                result_duration_ms: duration_ms(started_at),
+                **usage_attributes(context.usage)
+              )
+              instrument(
+                :agent_turn_stop,
+                operation_id: turn_operation_id,
+                outcome: :repair,
+                turn: turn + 1
+              )
+              next
+            end
+
+            context.checkpoint(messages)
 
             result = RunResult.new(
               message: response.message,
@@ -419,6 +603,15 @@ module LittleGhost
         end
       end
 
+      if structured_result_repair_due
+        raise_structured_result_error!(
+          "The agent reached its model turn limit before it could repair the structured result",
+          context,
+          operation_id:,
+          started_at:,
+          validation_errors: ["repair turn unavailable"]
+        )
+      end
       raise ProtocolError, "The agent reached its maximum model turns"
     rescue => error
       instrument(
@@ -442,6 +635,7 @@ module LittleGhost
         messages: messages,
         tools: tool_registry.specifications,
         settings: settings,
+        output_schema: self.class.result_schema,
         cancellation_token: context.cancellation_token,
         deadline: context.deadline
       )
@@ -494,6 +688,12 @@ module LittleGhost
       decision = run_callbacks(:after_model, {request: request, response: response, turn: turn}, context: context)
       apply_cancellation_decision!(decision)
       response = replacement_value(decision, :response, response)
+      diagnostic_response = if self.class.result_schema &&
+          response.message.content.none? { |block| block.is_a?(Content::ToolUse) }
+        redact_structured_result_message(response.message)
+      else
+        response.message
+      end
       instrument(
         :model_stop,
         operation_id:,
@@ -504,7 +704,7 @@ module LittleGhost
         time_to_first_token:,
         stop_reason: response.stop_reason,
         **response_attributes(response),
-        diagnostic: {output: diagnostic_message(response.message)},
+        diagnostic: {output: diagnostic_message(diagnostic_response)},
         **model_attributes,
         **usage_attributes(response.usage)
       )
@@ -569,7 +769,7 @@ module LittleGhost
           tool_type: "function",
           tool_call_id: tool_use.id,
           diagnostic: {
-            input: tool_use.input,
+            input: diagnostic_tool_input(tool_use),
             tool_definitions: tool.is_a?(Tool) ? [tool.specification] : []
           }
         )
@@ -711,6 +911,149 @@ module LittleGhost
       end
     end
 
+    def capture_structured_result(text, context)
+      configuration = self.class.result_schema
+      schema_name = configuration.fetch(:name)
+      value = JSON.parse(text)
+      validate_structured_result_limits!(value)
+      errors = Tool::SchemaValidator.new(configuration.fetch(:schema)).validate(value)
+      return "Structured result does not match its schema: #{errors.join("; ")}" unless errors.empty?
+
+      context.submit_structured_result(
+        StructuredResult.new(schema_name:, value: Support.immutable(value))
+      )
+      nil
+    rescue JSON::ParserError
+      "Structured result is not valid JSON"
+    rescue ToolError => error
+      error.message
+    end
+
+    def validate_structured_result_limits!(value)
+      nodes = 0
+      stack = [[value, 1]]
+      until stack.empty?
+        child, depth = stack.pop
+        nodes += 1
+        if depth > MAX_STRUCTURED_RESULT_DEPTH
+          raise ToolError, "Structured result exceeds the maximum nesting depth"
+        end
+        if nodes > MAX_STRUCTURED_RESULT_NODES
+          raise ToolError, "Structured result exceeds the maximum complexity"
+        end
+
+        case child
+        when Hash
+          child.each { |key, nested| stack << [key, depth + 1] << [nested, depth + 1] }
+        when Array
+          child.each { |nested| stack << [nested, depth + 1] }
+        end
+      end
+
+      if JSON.generate(value).bytesize > MAX_STRUCTURED_RESULT_BYTES
+        raise ToolError, "Structured result exceeds the maximum serialized size"
+      end
+    rescue JSON::GeneratorError
+      raise ToolError, "Structured result cannot be serialized"
+    end
+
+    def redact_structured_result_message(message)
+      Message.new(
+        role: message.role,
+        content: "[Structured result #{self.class.result_schema.fetch(:name)} redacted]",
+        metadata: message.metadata
+      )
+    end
+
+    def structured_result_repair_message(error)
+      Message.new(
+        role: :user,
+        content: "Your final response must be JSON matching the configured output schema. " \
+          "You have one repair attempt. Previous response problem: #{error}"
+      )
+    end
+
+    def complete_structured_result(
+      response,
+      messages,
+      context,
+      events,
+      operation_id:,
+      turn_operation_id:,
+      turn:,
+      started_at:,
+      repaired:
+    )
+      structured_result = context.structured_result
+      raise ProtocolError, "Structured output completed without capturing a result" unless structured_result
+
+      result = RunResult.new(
+        message: messages[-1],
+        stop_reason: :structured_result,
+        usage: context.usage,
+        messages: messages.freeze,
+        state: context.state,
+        structured_result:
+      )
+      decision = run_callbacks(:after_invocation, {result: result}, context: context)
+      apply_cancellation_decision!(decision)
+      result = replacement_value(decision, :result, result)
+      context.checkpoint(result.messages)
+      instrument(
+        :structured_result,
+        parent_operation_id: operation_id,
+        schema_name: structured_result.schema_name,
+        validation_status: :valid,
+        repair_attempted: repaired,
+        duration_ms: duration_ms(started_at),
+        result_duration_ms: duration_ms(started_at),
+        **usage_attributes(result.usage)
+      )
+      instrument(
+        :agent_turn_stop,
+        operation_id: turn_operation_id,
+        outcome: :completed,
+        turn:
+      )
+      metadata = model.respond_to?(:metadata) ? model.metadata : {}
+      instrument(
+        :agent_stop,
+        outcome: :completed,
+        duration_ms: duration_ms(started_at),
+        stop_reason: result.stop_reason,
+        operation_id:,
+        diagnostic: {output: diagnostic_message(result.message)},
+        **usage_attributes(result.usage)
+      )
+      emit(events, :invocation_stop, result:, metadata:)
+      result
+    end
+
+    def raise_structured_result_error!(
+      message,
+      context,
+      operation_id:,
+      started_at:,
+      validation_errors:
+    )
+      configuration = self.class.result_schema
+      instrument(
+        :structured_result,
+        parent_operation_id: operation_id,
+        schema_name: configuration.fetch(:name),
+        validation_status: :failed,
+        repair_attempted: true,
+        duration_ms: duration_ms(started_at),
+        result_duration_ms: duration_ms(started_at),
+        **usage_attributes(context.usage)
+      )
+      raise StructuredResultError.new(
+        message,
+        schema_name: configuration.fetch(:name),
+        validation_errors:
+      )
+    end
+
     def rendered_system_prompt(locals, invocation_paths)
       prompt = self.class.system_prompt
       return prompt.call(locals) if prompt.respond_to?(:call)
@@ -752,6 +1095,7 @@ module LittleGhost
     end
 
     def instrument(name, **attributes)
+      attributes.delete(:diagnostic) unless self.class.capture_diagnostics
       instrumentation.emit(name, **correlation_attributes, **attributes.compact)
     end
 
@@ -801,7 +1145,15 @@ module LittleGhost
       value.is_a?(Message) ? diagnostic_message(value) : value
     end
 
+    def diagnostic_tool_input(tool_use)
+      tool_use.input
+    end
+
     def diagnostic_message(message)
+      if message.metadata[:diagnostic_redact] || message.metadata["diagnostic_redact"]
+        return {role: message.role, content: [{type: "redacted"}]}
+      end
+
       {
         role: message.role,
         content: message.content.map { |block| diagnostic_content(block) }
@@ -819,7 +1171,7 @@ module LittleGhost
       when Content::Document
         {type: "document", media_type: block.media_type, name: block.name, bytes: block.data.bytesize}
       when Content::ToolUse
-        {type: "tool_use", id: block.id, name: block.name, input: block.input}
+        {type: "tool_use", id: block.id, name: block.name, input: diagnostic_tool_input(block)}
       when Content::ToolResult
         {
           type: "tool_result", tool_use_id: block.tool_use_id,

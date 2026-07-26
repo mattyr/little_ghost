@@ -347,6 +347,64 @@ class SubagentManagerTest < Minitest::Test
     manager&.close
   end
 
+  def test_propagates_structured_results_from_agent_run_results
+    agent = Class.new do
+      def call(_message, cancellation_token:)
+        cancellation_token.raise_if_cancelled!
+        response = LittleGhost::Message.new(role: :assistant, content: [])
+        LittleGhost::RunResult.new(
+          message: response,
+          stop_reason: :structured_result,
+          usage: LittleGhost::Usage.new,
+          messages: [response],
+          state: {},
+          structured_result: LittleGhost::StructuredResult.new(
+            schema_name: "evidence",
+            value: {"claim" => "supported"}
+          )
+        )
+      end
+    end.new
+    manager = manager_for(->(_id) { agent })
+
+    result = manager.spawn(kind: "explore", task: "inspect", mode: "sync")
+
+    assert_equal({"claim" => "supported"}, result[:response])
+  ensure
+    manager&.close
+  end
+
+  def test_rejects_oversized_structured_results_without_corrupting_their_type
+    agent = Class.new do
+      def call(_message, cancellation_token:)
+        cancellation_token.raise_if_cancelled!
+        response = LittleGhost::Message.new(role: :assistant, content: [])
+        LittleGhost::RunResult.new(
+          message: response,
+          stop_reason: :structured_result,
+          usage: LittleGhost::Usage.new,
+          messages: [response],
+          state: {},
+          structured_result: LittleGhost::StructuredResult.new(
+            schema_name: "evidence",
+            value: {"claim" => "too large"}
+          )
+        )
+      end
+    end.new
+    manager = manager_for(->(_id) { agent }, max_response_chars: 5)
+
+    _out, _err = capture_io do
+      @result = manager.spawn(kind: "explore", task: "inspect", mode: "sync")
+    end
+
+    assert_equal "failed", @result[:status]
+    assert_equal "Subagent turn failed.", @result[:error]
+    refute @result.key?(:response)
+  ensure
+    manager&.close
+  end
+
   def test_lifecycle_events_exclude_messages_and_survive_observer_failures
     events = []
     observer = lambda do |event|
@@ -599,6 +657,8 @@ class SubagentManagerTest < Minitest::Test
 
     assert_equal "finished", spawned.fetch("status")
     assert_equal "explore-1", listed.fetch("subagents").first.fetch("subagent_id")
+    assert_includes registry.fetch("spawn_subagent").input_schema
+      .dig("properties", "kind", "description"), "explore: Explore code"
     assert invalid.error?
     assert_equal "Unknown subagent id: missing", invalid.content
   ensure

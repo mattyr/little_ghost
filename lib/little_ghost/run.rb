@@ -114,7 +114,7 @@ module LittleGhost
       trace_context = application.instrumentation.trace_context(operation_id:) if application.instrumentation.respond_to?(:trace_context)
       emit(:trace_context, context: trace_context) { |event| yield event } unless trace_context.nil? || trace_context.empty?
       @session = application.open_session(self)
-      agent = application.build_agent(run: self)
+      agent = application.build_entrypoint(run: self)
       register(agent)
       invoke = lambda do
         history = session ? session.history(fallback: invocation.history) : invocation.history

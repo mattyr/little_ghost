@@ -26,6 +26,21 @@ class SessionsTest < Minitest::Test
     assert_equal({source: "test"}, reopened.metadata)
   end
 
+  def test_transient_messages_are_not_persisted
+    store = LittleGhost::SessionStores::Memory.new
+    session = LittleGhost::Session.new(id: "conversation", actor_id: "actor", store:)
+
+    session.checkpoint(
+      messages: [
+        LittleGhost::Message.new(role: :user, content: "Keep me"),
+        LittleGhost::Message.new(role: :user, content: "Discard me", metadata: {transient: true}),
+        LittleGhost::Message.new(role: :user, content: "Discard me too", metadata: {"transient" => true})
+      ]
+    )
+
+    assert_equal ["Keep me"], session.history.map(&:text)
+  end
+
   def test_checkpoint_result_preserves_stored_metadata
     store = LittleGhost::SessionStores::Memory.new
     store.replace(
