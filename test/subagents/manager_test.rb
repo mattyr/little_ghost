@@ -814,6 +814,9 @@ class SubagentManagerTest < Minitest::Test
     assert_equal "explore-1", listed.fetch("subagents").first.fetch("subagent_id")
     assert_includes registry.fetch("spawn_subagent").input_schema
       .dig("properties", "kind", "description"), "explore: Explore code"
+    registry.each do |tool|
+      assert_equal({persist_redact: true, diagnostic_redact: true}, tool.result_metadata)
+    end
     assert invalid.error?
     assert_equal "Unknown subagent id: missing", invalid.content
   ensure

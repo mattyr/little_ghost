@@ -26,6 +26,7 @@ module LittleGhost
         subclass.instance_variable_set(:@description, @description)
         subclass.instance_variable_set(:@input_schema, @input_schema)
         subclass.instance_variable_set(:@exclusive, @exclusive)
+        subclass.instance_variable_set(:@result_metadata, @result_metadata)
       end
 
       def tool_name(value = UNSET)
@@ -54,13 +55,28 @@ module LittleGhost
         @exclusive = !!value
       end
 
-      def define(name:, description:, input_schema: {}, &implementation)
+      def result_metadata(value = UNSET)
+        return @result_metadata || {}.freeze if value.equal?(UNSET)
+        raise ArgumentError, "result metadata must be a hash" unless value.is_a?(Hash)
+
+        normalized = value.to_h do |key, child|
+          unless key.is_a?(String) || key.is_a?(Symbol)
+            raise ArgumentError, "result metadata keys must be strings or symbols"
+          end
+
+          [key.to_sym, child]
+        end
+        @result_metadata = Support.immutable(normalized)
+      end
+
+      def define(name:, description:, input_schema: {}, result_metadata: UNSET, &implementation)
         raise ArgumentError, "A tool implementation block is required" unless implementation
 
         Class.new(self) do
           tool_name(name)
           description(description)
           input_schema(input_schema)
+          self.result_metadata(result_metadata) unless result_metadata.equal?(UNSET)
 
           define_method(:call) do |input, context:|
             accepts_context = implementation.parameters.any? do |kind, parameter|
@@ -117,6 +133,7 @@ module LittleGhost
     def input_schema = self.class.input_schema
     def specification = self.class.specification
     def exclusive? = self.class.exclusive
+    def result_metadata = self.class.result_metadata
 
     def initialize(run: nil)
       @run = run

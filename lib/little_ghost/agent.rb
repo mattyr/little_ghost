@@ -657,7 +657,11 @@ module LittleGhost
             events,
             parent_operation_id: turn_operation_id
           )
-          messages << Message.new(role: :tool, content: tool_results)
+          messages << Message.new(
+            role: :tool,
+            content: tool_results,
+            metadata: tool_result_message_metadata(tool_uses)
+          )
           context.checkpoint(messages)
           instrument(
             :agent_turn_stop,
@@ -872,6 +876,10 @@ module LittleGhost
     end
 
     def execute_tools(tool_uses, context, events, parent_operation_id:)
+      if tool_uses.map(&:id).uniq.length != tool_uses.length
+        raise ProtocolError, "The model returned duplicate tool use ids"
+      end
+
       tool_uses.each { |tool_use| emit(events, :tool_start, tool_use: tool_use) }
       pairs = tool_uses.map do |tool_use|
         [tool_use, tool_registry.fetch(tool_use.name)]
@@ -906,7 +914,7 @@ module LittleGhost
             duration_ms: duration_ms(started_at),
             error_type: tool.class.name,
             diagnostic: {
-              output: diagnostic_tool_result(result),
+              output: diagnostic_tool_result(result, tool:),
               exception: diagnostic_exception(tool)
             }
           )
@@ -938,8 +946,8 @@ module LittleGhost
             duration_ms: duration_ms(started_at),
             error_type: rejection.class.name,
             diagnostic: {
-              output: diagnostic_tool_result(result),
-              exception: diagnostic_exception(rejection)
+              output: diagnostic_tool_result(result, tool:),
+              exception: diagnostic_tool_exception(rejection, tool:)
             }
           )
           next result
@@ -972,8 +980,8 @@ module LittleGhost
           duration_ms: duration_ms(started_at),
           error_type: tool_error&.class&.name,
           diagnostic: {
-            output: diagnostic_tool_result(result),
-            exception: tool_error && diagnostic_exception(tool_error)
+            output: diagnostic_tool_result(result, tool:),
+            exception: tool_error && diagnostic_tool_exception(tool_error, tool:)
           }.compact
         )
         result
@@ -988,8 +996,8 @@ module LittleGhost
           duration_ms: duration_ms(started_at),
           error_type: error.class.name,
           diagnostic: {
-            output: diagnostic_tool_result(result),
-            exception: diagnostic_exception(error)
+            output: diagnostic_tool_result(result, tool:),
+            exception: diagnostic_tool_exception(error, tool:)
           }
         )
         result
@@ -1002,7 +1010,7 @@ module LittleGhost
           outcome: :error,
           duration_ms: duration_ms(started_at),
           error_type: error.class.name,
-          diagnostic: {exception: diagnostic_exception(error)}
+          diagnostic: {exception: diagnostic_tool_exception(error, tool:)}
         )
         raise
       end
@@ -1416,13 +1424,17 @@ module LittleGhost
         return {role: message.role, content: [{type: "redacted"}]}
       end
 
+      result_metadata = message.metadata[:tool_result_metadata] ||
+        message.metadata["tool_result_metadata"] || {}
       {
         role: message.role,
-        content: message.content.map { |block| diagnostic_content(block) }
+        content: message.content.map do |block|
+          diagnostic_content(block, result_metadata: result_metadata)
+        end
       }
     end
 
-    def diagnostic_content(block)
+    def diagnostic_content(block, result_metadata: {})
       case block
       when Content::Text
         {type: "text", text: block.text}
@@ -1435,20 +1447,44 @@ module LittleGhost
       when Content::ToolUse
         {type: "tool_use", id: block.id, name: block.name, input: diagnostic_tool_input(block)}
       when Content::ToolResult
+        metadata = result_metadata[block.tool_use_id] || result_metadata[block.tool_use_id.to_sym] || {}
         {
           type: "tool_result", tool_use_id: block.tool_use_id,
-          content: diagnostic_tool_result(block), status: block.status
+          content: diagnostic_tool_result(block, metadata:), status: block.status
         }
       else
         block.to_s
       end
     end
 
-    def diagnostic_tool_result(result)
+    def diagnostic_tool_result(result, tool: nil, metadata: nil)
+      metadata ||= tool.respond_to?(:result_metadata) ? tool.result_metadata : {}
+      if metadata[:diagnostic_redact] || metadata["diagnostic_redact"]
+        return {type: "redacted"}
+      end
+
       value = result.respond_to?(:content) ? result.content : result
       return value.map { |block| block.respond_to?(:role) ? diagnostic_message(block) : block.to_s } if value.is_a?(Array)
 
       value.respond_to?(:role) ? diagnostic_message(value) : value.to_s
+    end
+
+    def diagnostic_tool_exception(error, tool:)
+      metadata = tool.respond_to?(:result_metadata) ? tool.result_metadata : {}
+      return diagnostic_exception(error) unless metadata[:diagnostic_redact] || metadata["diagnostic_redact"]
+
+      {type: error.class.name, redacted: true}
+    end
+
+    def tool_result_message_metadata(tool_uses)
+      values = tool_uses.each_with_object({}) do |tool_use, metadata|
+        tool = tool_registry.fetch(tool_use.name)
+        result_metadata = tool.respond_to?(:result_metadata) ? tool.result_metadata : {}
+        metadata[tool_use.id] = result_metadata unless result_metadata.empty?
+      rescue ToolError
+        nil
+      end
+      values.empty? ? {} : {tool_result_metadata: values.freeze}
     end
 
     def diagnostic_exception(error)

@@ -279,6 +279,7 @@ module LittleGhost
 
       def tools
         manager = self
+        result_metadata = {persist_redact: true, diagnostic_redact: true}
         kind_descriptions = definitions.values.map do |definition|
           "- #{definition.kind}: #{definition.description}"
         end.join("\n")
@@ -291,6 +292,7 @@ module LittleGhost
               other work immediately, then use wait_for_subagents to check in. Spawning the same kind repeatedly
               creates separate identities.
             DESCRIPTION
+            result_metadata:,
             input_schema: {
               type: "object",
               properties: {
@@ -315,6 +317,7 @@ module LittleGhost
               Send a follow-up turn to an existing subagent identity. Messages are processed in order. Choose sync
               when the next step depends on this turn, or async to enqueue it and continue immediately.
             DESCRIPTION
+            result_metadata:,
             input_schema: {
               type: "object",
               properties: {
@@ -342,6 +345,7 @@ module LittleGhost
               when work takes longer than this check-in window. Call this tool again to keep waiting; timeout is not an
               error and does not cancel the subagents.
             DESCRIPTION
+            result_metadata:,
             input_schema: {
               type: "object",
               properties: {
@@ -356,6 +360,7 @@ module LittleGhost
           Tool.define(
             name: "list_subagents",
             description: "List subagent identities, statuses, turns, and queued work without waiting.",
+            result_metadata:,
             input_schema: {type: "object", additionalProperties: false}
           ) { |_input| manager.list }
         ]
