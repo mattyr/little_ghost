@@ -3,17 +3,31 @@
 module LittleGhost
   module Support
     class CancellationToken
-      def initialize
+      def initialize(parent: nil)
         @cancelled = false
         @mutex = Mutex.new
         @condition = ConditionVariable.new
+        @children = {}
+        @parent = parent
+        parent&.send(:attach, self)
       end
 
+      def child = self.class.new(parent: self)
+
       def cancel
-        @mutex.synchronize do
+        parent, children = @mutex.synchronize do
+          return self if @cancelled
+
           @cancelled = true
           @condition.broadcast
+          parent = @parent
+          @parent = nil
+          children = @children.keys
+          @children.clear
+          [parent, children]
         end
+        parent&.send(:detach, self)
+        children.each(&:cancel)
         self
       end
 
@@ -36,6 +50,24 @@ module LittleGhost
           end
           @cancelled
         end
+      end
+
+      private
+
+      def attach(child)
+        cancelled = @mutex.synchronize do
+          if @cancelled
+            true
+          else
+            @children[child] = true
+            false
+          end
+        end
+        child.cancel if cancelled
+      end
+
+      def detach(child)
+        @mutex.synchronize { @children.delete(child) }
       end
     end
   end

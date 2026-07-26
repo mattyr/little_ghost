@@ -284,10 +284,13 @@ module LittleGhost
         subagent_id: value[:subagent_id] || value["subagent_id"],
         kind: value[:kind] || value["kind"],
         turn: value[:turn] || value["turn"],
-        status: value[:status] || value["status"]
+        status: value[:status] || value["status"],
+        error_type: value[:error_type] || value["error_type"]
       }.compact
       key = [attributes[:subagent_id], attributes[:turn]]
       case event
+      when "factory_failed"
+        [:subagent_factory_failed, attributes.merge(parent_operation_id: operation_id)]
       when "turn_started"
         subagent_operation_id = value[:operation_id] || value["operation_id"] || SecureRandom.uuid
         @subagent_started_at[key] = [monotonic_time, subagent_operation_id]

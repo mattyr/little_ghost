@@ -216,12 +216,13 @@ class SubagentManagerTest < Minitest::Test
 
   def test_factory_failure_frees_capacity_without_reusing_id
     attempts = 0
+    events = []
     manager = manager_for(lambda { |_id|
       attempts += 1
       raise "secret factory detail" if attempts == 1
 
       ControlledAgent.new
-    }, max_identities: 1)
+    }, max_identities: 1, observer: ->(event) { events << event })
 
     _out, _err = capture_io do
       @failed = manager.spawn(kind: "explore", task: "first", mode: "sync")
@@ -230,6 +231,15 @@ class SubagentManagerTest < Minitest::Test
 
     assert_equal "Subagent could not be created.", @failed[:error]
     assert_equal "explore-2", spawned[:subagent_id]
+    assert_equal({
+      event: "factory_failed",
+      subagent_id: "explore-1",
+      kind: "explore",
+      status: "failed",
+      error_type: "RuntimeError"
+    }, events.fetch(0))
+    refute_includes events.inspect, "secret factory detail"
+    refute_includes events.inspect, "first"
   ensure
     manager&.close
   end
@@ -475,7 +485,7 @@ class SubagentManagerTest < Minitest::Test
     elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
 
     assert_operator elapsed, :<, 0.1
-    assert token.cancelled?
+    refute token.cancelled?
     assert_equal "cancelled", manager.list.dig(:subagents, 0, :status)
   ensure
     gate&.open
