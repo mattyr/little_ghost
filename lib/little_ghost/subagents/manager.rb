@@ -152,7 +152,7 @@ module LittleGhost
         @max_response_chars = max_response_chars
         @wait_timeout = wait_timeout
         @close_timeout = close_timeout
-        @cancellation_token = cancellation_token
+        @cancellation_token = cancellation_token.child
         @deadline = deadline
         @observer = observer
         @capacity = Capacity.new(max_concurrent)
@@ -180,6 +180,7 @@ module LittleGhost
         rescue => error
           release_identity_reservation
           warn_failure("factory", subagent_id, error)
+          emit_factory_failure(definition, subagent_id, error)
           return {
             status: "failed",
             subagent_id: subagent_id,
@@ -750,6 +751,20 @@ module LittleGhost
           value[:operation_id] = turn.operation_id if turn.respond_to?(:operation_id) && turn.operation_id
         end
         @observer.call(value.freeze)
+      rescue
+        nil
+      end
+
+      def emit_factory_failure(definition, subagent_id, error)
+        return unless @observer
+
+        @observer.call({
+          event: "factory_failed",
+          subagent_id:,
+          kind: definition.kind,
+          status: "failed",
+          error_type: error.class.name
+        }.freeze)
       rescue
         nil
       end
