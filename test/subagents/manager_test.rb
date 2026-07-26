@@ -160,6 +160,140 @@ class SubagentManagerTest < Minitest::Test
     manager&.close
   end
 
+  def test_agent_progress_is_normalized_capped_deduplicated_and_exposed_only_in_active_snapshots
+    gate = Gate.new
+    ready = Queue.new
+    events = []
+    tool_use = LittleGhost::Content::ToolUse.new(id: "tool-1", name: "inspect", input: {})
+    ignored_end_turn = model_response("not progress", stop_reason: :end_turn)
+    ignored_without_tool = model_response("also not progress", stop_reason: :tool_use)
+    first = model_response(" \tWorking\n\u0000 through\u202E\u200B it  ", stop_reason: :tool_use, tool_use:)
+    duplicate = model_response("Working through it", stop_reason: :tool_use, tool_use:)
+    unread_text = +"should not be read"
+    unread_text.define_singleton_method(:each_char) { raise "later text block was traversed" }
+    latest = LittleGhost::ModelResponse.new(
+      message: LittleGhost::Message.new(
+        role: :assistant,
+        content: ["x" * 161, unread_text, tool_use]
+      ),
+      stop_reason: :tool_use
+    )
+    agent = streaming_agent do |stream|
+      [ignored_end_turn, ignored_without_tool, first, duplicate, latest].each do |response|
+        stream << LittleGhost::StreamEvent.build(:message_stop, response:)
+      end
+      ready << true
+      gate.wait
+      stream << LittleGhost::StreamEvent.build(:invocation_stop, result: run_result("done"))
+    end
+    manager = manager_for(
+      ->(_id) { agent },
+      observer: ->(event) { events << event },
+      max_queued_turns_per_identity: 1,
+      wait_timeout: 0.001
+    )
+
+    manager.spawn(kind: "explore", task: "inspect", mode: "async")
+    ready.pop
+    listed = manager.list.dig(:subagents, 0)
+    waited = manager.wait.dig(:subagents, 0)
+
+    assert_equal({message: "x" * 160, sequence: 2}, listed[:progress])
+    assert_equal listed[:progress], waited[:progress]
+    refute events.any? { |event| event.key?(:progress) || event.key?(:message) }
+
+    queued = manager.send_message(
+      subagent_id: "explore-1",
+      message: "follow up",
+      mode: "async"
+    )
+    queue_limited = manager.send_message(
+      subagent_id: "explore-1",
+      message: "one more",
+      mode: "async"
+    )
+    refute queued.fetch(:subagent).key?(:progress)
+    refute queue_limited.fetch(:subagent).key?(:progress)
+
+    gate.open
+    finished = manager.wait.dig(:subagents, 0)
+
+    refute finished.key?(:progress)
+  ensure
+    gate&.open
+    manager&.close
+  end
+
+  def test_agent_progress_sequence_remains_monotonic_across_manager_turns
+    gates = [Gate.new, Gate.new]
+    ready = Queue.new
+    turn = 0
+    tool_use = LittleGhost::Content::ToolUse.new(id: "tool-1", name: "inspect", input: {})
+    agent = streaming_agent do |stream|
+      current_turn = turn
+      turn += 1
+      stream << LittleGhost::StreamEvent.build(
+        :message_stop,
+        response: model_response("same progress", stop_reason: :tool_use, tool_use:)
+      )
+      ready << true
+      gates.fetch(current_turn).wait
+      stream << LittleGhost::StreamEvent.build(
+        :invocation_stop,
+        result: run_result("turn #{current_turn + 1}")
+      )
+    end
+    manager = manager_for(->(_id) { agent })
+
+    manager.spawn(kind: "explore", task: "first", mode: "async")
+    ready.pop
+    assert_equal 1, manager.list.dig(:subagents, 0, :progress, :sequence)
+    gates.fetch(0).open
+    manager.wait
+    refute manager.list.dig(:subagents, 0).key?(:progress)
+
+    manager.send_message(subagent_id: "explore-1", message: "second", mode: "async")
+    ready.pop
+    assert_equal(
+      {message: "same progress", sequence: 2},
+      manager.list.dig(:subagents, 0, :progress)
+    )
+    gates.fetch(1).open
+    manager.wait
+  ensure
+    gates&.each(&:open)
+    manager&.close
+  end
+
+  def test_agent_progress_is_cleared_when_a_turn_fails
+    ready = Queue.new
+    gate = Gate.new
+    tool_use = LittleGhost::Content::ToolUse.new(id: "tool-1", name: "inspect", input: {})
+    agent = streaming_agent do |stream|
+      stream << LittleGhost::StreamEvent.build(
+        :message_stop,
+        response: model_response("working", stop_reason: :tool_use, tool_use:)
+      )
+      ready << true
+      gate.wait
+      raise "failed"
+    end
+    manager = manager_for(->(_id) { agent })
+
+    manager.spawn(kind: "explore", task: "inspect", mode: "async")
+    ready.pop
+    assert manager.list.dig(:subagents, 0).key?(:progress)
+    gate.open
+    _out, _err = capture_io { @failed_progress_turn = manager.wait }
+
+    failed = @failed_progress_turn.dig(:subagents, 0)
+    assert_equal "failed", failed[:status]
+    refute failed.key?(:progress)
+  ensure
+    gate&.open
+    manager&.close
+  end
+
   def test_wait_responds_promptly_to_external_cancellation
     gate = Gate.new
     agent = ControlledAgent.new(gate: gate)
@@ -574,9 +708,20 @@ class SubagentManagerTest < Minitest::Test
     deadline = Time.now + 60
     observed = Queue.new
     agent_class = Class.new(LittleGhost::Agent) do
-      define_method(:call) do |_message, **options|
+      define_method(:stream) do |_message, **options|
         observed << options
-        "done"
+        message = LittleGhost::Message.new(role: :assistant, content: "done")
+        result = LittleGhost::RunResult.new(
+          message:,
+          stop_reason: :end_turn,
+          usage: LittleGhost::Usage.new,
+          messages: [message],
+          state: {}
+        )
+        [LittleGhost::StreamEvent.build(
+          :invocation_stop,
+          result:
+        )].each
       end
     end
     manager = manager_for(
@@ -687,6 +832,35 @@ class SubagentManagerTest < Minitest::Test
 
   def manager_for(factory, **options)
     LittleGhost::Subagents::Manager.new([definition_for(factory)], **options)
+  end
+
+  def streaming_agent(&body)
+    agent = LittleGhost::Agent.new(model: Object.new)
+    agent.define_singleton_method(:stream) do |_message, **_options|
+      Enumerator.new { |stream| body.call(stream) }
+    end
+    agent
+  end
+
+  def model_response(text, stop_reason:, tool_use: nil)
+    content = [text]
+    content << tool_use if tool_use
+    LittleGhost::ModelResponse.new(
+      message: LittleGhost::Message.new(role: :assistant, content:),
+      stop_reason:,
+      usage: LittleGhost::Usage.new
+    )
+  end
+
+  def run_result(text)
+    message = LittleGhost::Message.new(role: :assistant, content: text)
+    LittleGhost::RunResult.new(
+      message:,
+      stop_reason: :end_turn,
+      usage: LittleGhost::Usage.new,
+      messages: [message],
+      state: {}
+    )
   end
 
   def wait_until(timeout: 1)

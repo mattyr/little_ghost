@@ -131,7 +131,14 @@ module LittleGhost
         final_invocation.each(checkpoint: @checkpoint) do |event|
           error_emitted = true if event.type == :invocation_error
           event = aggregate_usage(event)
-          observed_usage = event.data[:result]&.usage || event.data[:usage] || observed_usage
+          observed_usage = case event.type
+          when :invocation_stop
+            event.data.fetch(:result).usage
+          when :invocation_error
+            event.data[:usage] || observed_usage
+          else
+            observed_usage
+          end
           events << event
         end
       rescue => error
