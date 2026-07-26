@@ -269,6 +269,145 @@ class AgentTest < Minitest::Test
     agent&.close
   end
 
+  def test_sensitive_tool_results_are_redacted_before_checkpointing
+    telemetry = []
+    checkpoints = []
+    store = LittleGhost::SessionStores::Memory.new
+    session = LittleGhost::Session.new(id: "sensitive-tool", store:)
+    instrumentation = LittleGhost::Support::Instrumentation.new(
+      content_capture: LittleGhost::Support::ContentCapture.new(enabled: true)
+    )
+    instrumentation.subscribe(->(name, attributes) { telemetry << [name, attributes] })
+    tool = LittleGhost::Tool.define(
+      name: "sensitive",
+      description: "Returns sensitive data",
+      result_metadata: {persist_redact: true, diagnostic_redact: true}
+    ) { "customer-secret" }
+    tool_use = LittleGhost::Content::ToolUse.new(id: "call-1", name: "sensitive", input: {})
+    model = ScriptedModel.new(response([tool_use], stop_reason: :tool_use), response("done"))
+    agent = LittleGhost::Agent.new(model:, tools: [tool], instrumentation:)
+
+    result = agent.call(
+      "private prompt",
+      checkpoint: lambda do |**value|
+        checkpoints << value
+        session.checkpoint(**value)
+      end
+    )
+
+    tool_message = result.messages.find { |message| message.role == :tool }
+    assert_equal(
+      {persist_redact: true, diagnostic_redact: true},
+      tool_message.metadata.dig(:tool_result_metadata, "call-1")
+    )
+    checkpoint_tool_message = checkpoints.filter_map do |checkpoint|
+      checkpoint.fetch(:messages).find { |message| message.role == :tool }
+    end.first
+    assert_equal tool_message.metadata, checkpoint_tool_message.metadata
+    assert_equal({"type" => "redacted"}, JSON.parse(telemetry.assoc(:tool_stop).last.fetch(:diagnostic_output)))
+    second_model_input = JSON.parse(
+      telemetry.filter_map { |name, attributes| attributes if name == :model_start }
+        .last.fetch(:diagnostic_input)
+    )
+    assert_equal(
+      {"type" => "redacted"},
+      second_model_input.last.fetch("content").first.fetch("content")
+    )
+    reopened = LittleGhost::Session.new(id: "sensitive-tool", store:).history
+    persisted_result = reopened.find { |message| message.role == :tool }.content.first
+    assert_equal "Tool result omitted from persisted history.", persisted_result.content
+    assert reopened.any? { |message| message.content.any? { |block| block.is_a?(LittleGhost::Content::ToolUse) } }
+    refute_includes reopened.map(&:to_h).inspect, "customer-secret"
+  ensure
+    agent&.close
+  end
+
+  def test_mixed_tool_results_keep_independent_security_classifications
+    telemetry = []
+    instrumentation = LittleGhost::Support::Instrumentation.new(
+      content_capture: LittleGhost::Support::ContentCapture.new(enabled: true)
+    )
+    instrumentation.subscribe(->(name, attributes) { telemetry << [name, attributes] })
+    sensitive = LittleGhost::Tool.define(
+      name: "sensitive",
+      description: "Returns sensitive data",
+      result_metadata: {"persist_redact" => true, "diagnostic_redact" => true}
+    ) { "customer-secret" }
+    ordinary = LittleGhost::Tool.define(name: "ordinary", description: "Returns ordinary data") { "public" }
+    uses = [
+      LittleGhost::Content::ToolUse.new(id: "sensitive-1", name: "sensitive", input: {}),
+      LittleGhost::Content::ToolUse.new(id: "ordinary-1", name: "ordinary", input: {})
+    ]
+    model = ScriptedModel.new(response(uses, stop_reason: :tool_use), response("done"))
+    agent = LittleGhost::Agent.new(model:, tools: [sensitive, ordinary], instrumentation:)
+
+    result = agent.call("go")
+
+    tool_message = result.messages.find { |message| message.role == :tool }
+    assert_equal(
+      {persist_redact: true, diagnostic_redact: true},
+      tool_message.metadata.dig(:tool_result_metadata, "sensitive-1")
+    )
+    refute tool_message.metadata.fetch(:tool_result_metadata).key?("ordinary-1")
+    outputs = telemetry.filter_map { |name, attributes| attributes if name == :tool_stop }
+      .to_h { |attributes| [attributes.fetch(:tool_name), JSON.parse(attributes.fetch(:diagnostic_output))] }
+    assert_equal({"type" => "redacted"}, outputs.fetch("sensitive"))
+    assert_equal "public", outputs.fetch("ordinary")
+  ensure
+    agent&.close
+  end
+
+  def test_rejects_duplicate_tool_use_ids_before_executing_tools
+    calls = []
+    sensitive = LittleGhost::Tool.define(
+      name: "sensitive",
+      description: "Returns sensitive data",
+      result_metadata: {persist_redact: true, diagnostic_redact: true}
+    ) { calls << :sensitive }
+    ordinary = LittleGhost::Tool.define(name: "ordinary", description: "Returns ordinary data") do
+      calls << :ordinary
+    end
+    uses = [
+      LittleGhost::Content::ToolUse.new(id: "duplicate", name: "sensitive", input: {}),
+      LittleGhost::Content::ToolUse.new(id: "duplicate", name: "ordinary", input: {})
+    ]
+    model = ScriptedModel.new(response(uses, stop_reason: :tool_use))
+    agent = LittleGhost::Agent.new(model:, tools: [sensitive, ordinary])
+
+    error = assert_raises(LittleGhost::ProtocolError) { agent.call("go") }
+
+    assert_equal "The model returned duplicate tool use ids", error.message
+    assert_empty calls
+  ensure
+    agent&.close
+  end
+
+  def test_sensitive_tool_failures_redact_exception_details
+    telemetry = []
+    instrumentation = LittleGhost::Support::Instrumentation.new(
+      content_capture: LittleGhost::Support::ContentCapture.new(enabled: true)
+    )
+    instrumentation.subscribe(->(name, attributes) { telemetry << [name, attributes] })
+    sensitive = LittleGhost::Tool.define(
+      name: "sensitive",
+      description: "Fails with sensitive data",
+      result_metadata: {diagnostic_redact: true}
+    ) { raise LittleGhost::ToolError, "customer-secret" }
+    tool_use = LittleGhost::Content::ToolUse.new(id: "sensitive-1", name: "sensitive", input: {})
+    model = ScriptedModel.new(response([tool_use], stop_reason: :tool_use), response("done"))
+    agent = LittleGhost::Agent.new(model:, tools: [sensitive], instrumentation:)
+
+    agent.call("go")
+
+    stop = telemetry.assoc(:tool_stop).last
+    assert_equal({"type" => "redacted"}, JSON.parse(stop.fetch(:diagnostic_output)))
+    exception = JSON.parse(stop.fetch(:diagnostic_exception))
+    assert_equal({"type" => "LittleGhost::ToolError", "redacted" => true}, exception)
+    refute_includes stop.inspect, "customer-secret"
+  ensure
+    agent&.close
+  end
+
   def test_tool_failure_telemetry_retains_the_original_exception
     telemetry = []
     instrumentation = LittleGhost::Support::Instrumentation.new(

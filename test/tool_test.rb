@@ -115,6 +115,25 @@ class ToolTest < Minitest::Test
     assert result.content.frozen?
   end
 
+  def test_result_metadata_is_immutable_and_inherited
+    parent = LittleGhost::Tool.define(
+      name: "sensitive",
+      description: "Returns sensitive data",
+      result_metadata: {"diagnostic_redact" => true, "nested" => {redacted: true}}
+    ) { "secret" }
+    child = Class.new(parent)
+
+    assert_equal(
+      {diagnostic_redact: true, nested: {redacted: true}},
+      child.new.result_metadata
+    )
+    assert child.result_metadata.frozen?
+    assert child.result_metadata.fetch(:nested).frozen?
+
+    defined_child = parent.define(name: "defined_sensitive", description: "Still sensitive") { "secret" }
+    assert_equal parent.result_metadata, defined_child.result_metadata
+  end
+
   def test_tool_names_default_from_the_ruby_class_name
     klass = Class.new(LittleGhost::Tool)
     stub_const = Module.new
