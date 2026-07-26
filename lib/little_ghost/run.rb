@@ -287,27 +287,40 @@ module LittleGhost
         status: value[:status] || value["status"],
         error_type: value[:error_type] || value["error_type"]
       }.compact
-      key = [attributes[:subagent_id], attributes[:turn]]
+      parent_operation_id = value[:parent_operation_id] || value["parent_operation_id"] || operation_id
       case event
       when "factory_failed"
-        [:subagent_factory_failed, attributes.merge(parent_operation_id: operation_id)]
-      when "turn_started"
-        subagent_operation_id = value[:operation_id] || value["operation_id"] || SecureRandom.uuid
-        @subagent_started_at[key] = [monotonic_time, subagent_operation_id]
-        [:subagent_start, attributes.merge(operation_id: subagent_operation_id, parent_operation_id: operation_id)]
-      when "turn_finished", "turn_failed", "cancelled"
-        started = @subagent_started_at.delete(key)
-        supplied_operation_id = value[:operation_id] || value["operation_id"]
-        return unless started || supplied_operation_id
+        [:subagent_factory_failed, attributes.merge(parent_operation_id:)]
+      when "spawned", "message_queued"
+        subagent_operation_id = value[:operation_id] || value["operation_id"]
+        return unless subagent_operation_id
 
-        started_at, subagent_operation_id = started
+        @subagent_started_at[subagent_operation_id] = monotonic_time
+        [
+          :subagent_start,
+          attributes.merge(
+            operation_id: subagent_operation_id,
+            parent_operation_id:,
+            agent_id: attributes[:subagent_id]
+          )
+        ]
+      when "turn_started"
+        supplied_operation_id = value[:operation_id] || value["operation_id"]
+        return unless supplied_operation_id
+
+        [:subagent_turn_started, attributes.merge(operation_id: supplied_operation_id)]
+      when "turn_finished", "turn_failed", "cancelled"
+        supplied_operation_id = value[:operation_id] || value["operation_id"]
+        return unless supplied_operation_id
+
+        started_at = @subagent_started_at.delete(supplied_operation_id)
         outcome = {"turn_finished" => :completed, "turn_failed" => :error, "cancelled" => :cancelled}.fetch(event)
-        subagent_operation_id ||= supplied_operation_id
         [
           :subagent_stop,
           attributes.merge(
-            operation_id: subagent_operation_id,
-            parent_operation_id: operation_id,
+            operation_id: supplied_operation_id,
+            parent_operation_id:,
+            agent_id: attributes[:subagent_id],
             outcome:,
             error_type: (event == "turn_failed") ? "LittleGhost::SubagentError" : nil,
             duration_ms: started_at && duration_ms(started_at)

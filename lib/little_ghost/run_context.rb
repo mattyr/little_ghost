@@ -2,7 +2,8 @@
 
 module LittleGhost
   class RunContext
-    attr_reader :state, :cancellation_token, :deadline, :instrumentation, :metadata
+    attr_reader :state, :cancellation_token, :deadline, :instrumentation, :metadata,
+      :agent_operation_id
 
     def initialize(
       state: {},
@@ -22,6 +23,8 @@ module LittleGhost
       @usage_mutex = Mutex.new
       @structured_result = nil
       @structured_result_mutex = Mutex.new
+      @agent_operation_id = nil
+      @agent_operation_id_mutex = Mutex.new
     end
 
     def check!
@@ -56,6 +59,16 @@ module LittleGhost
 
     def structured_result
       @structured_result_mutex.synchronize { @structured_result }
+    end
+
+    def bind_agent_operation_id(operation_id)
+      @agent_operation_id_mutex.synchronize do
+        if @agent_operation_id && @agent_operation_id != operation_id
+          raise Error, "run context is already bound to an agent operation"
+        end
+
+        @agent_operation_id ||= operation_id
+      end
     end
   end
 end

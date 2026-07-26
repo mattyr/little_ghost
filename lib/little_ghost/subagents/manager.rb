@@ -21,7 +21,7 @@ module LittleGhost
       PROGRESS_SEPARATOR = /[\p{Z}\p{Cc}\p{Cf}]/
       CANCELLATION_POLL_INTERVAL = 0.05
 
-      Turn = Struct.new(:number, :message, :completion, :operation_id)
+      Turn = Struct.new(:number, :message, :completion, :operation_id, :parent_operation_id)
       Identity = Struct.new(
         :subagent_id,
         :definition,
@@ -171,7 +171,7 @@ module LittleGhost
         @closed = false
       end
 
-      def spawn(kind:, task:, mode:)
+      def spawn(kind:, task:, mode:, parent_operation_id: nil)
         validate_mode(mode)
         definition, subagent_id = reserve_identity(kind, task)
         return subagent_id unless definition
@@ -185,7 +185,7 @@ module LittleGhost
         rescue => error
           release_identity_reservation
           warn_failure("factory", subagent_id, error)
-          emit_factory_failure(definition, subagent_id, error)
+          emit_factory_failure(definition, subagent_id, error, parent_operation_id:)
           return {
             status: "failed",
             subagent_id: subagent_id,
@@ -221,19 +221,31 @@ module LittleGhost
           raise Error, "Subagent manager is closed"
         end
 
-        turn, queued_snapshot = enqueue(identity, task, event: "spawned", count_turn: false)
+        turn, queued_snapshot = enqueue(
+          identity,
+          task,
+          event: "spawned",
+          count_turn: false,
+          parent_operation_id:
+        )
         return {status: "working", subagent: queued_snapshot} if mode == "async"
 
         turn.completion.value(cancellation_token: @cancellation_token, deadline: @deadline)
       end
 
-      def send_message(subagent_id:, message:, mode:)
+      def send_message(subagent_id:, message:, mode:, parent_operation_id: nil)
         validate_mode(mode)
         identity = @mutex.synchronize do
           ensure_open!
           fetch_identity!(subagent_id)
         end
-        queued = enqueue(identity, message, event: "message_queued", enforce_limits: true)
+        queued = enqueue(
+          identity,
+          message,
+          event: "message_queued",
+          enforce_limits: true,
+          parent_operation_id:
+        )
         return queued if queued.is_a?(Hash)
 
         turn, queued_snapshot = queued
@@ -279,7 +291,6 @@ module LittleGhost
 
       def tools
         manager = self
-        result_metadata = {persist_redact: true, diagnostic_redact: true}
         kind_descriptions = definitions.values.map do |definition|
           "- #{definition.kind}: #{definition.description}"
         end.join("\n")
@@ -292,7 +303,6 @@ module LittleGhost
               other work immediately, then use wait_for_subagents to check in. Spawning the same kind repeatedly
               creates separate identities.
             DESCRIPTION
-            result_metadata:,
             input_schema: {
               type: "object",
               properties: {
@@ -310,14 +320,20 @@ module LittleGhost
               required: %w[kind task mode],
               additionalProperties: false
             }
-          ) { |input| manager.spawn(kind: input.fetch("kind"), task: input.fetch("task"), mode: input.fetch("mode")) },
+          ) do |input, context: nil|
+            manager.spawn(
+              kind: input.fetch("kind"),
+              task: input.fetch("task"),
+              mode: input.fetch("mode"),
+              parent_operation_id: context&.agent_operation_id
+            )
+          end,
           Tool.define(
             name: "send_message_to_subagent",
             description: <<~DESCRIPTION.strip,
               Send a follow-up turn to an existing subagent identity. Messages are processed in order. Choose sync
               when the next step depends on this turn, or async to enqueue it and continue immediately.
             DESCRIPTION
-            result_metadata:,
             input_schema: {
               type: "object",
               properties: {
@@ -331,11 +347,12 @@ module LittleGhost
               required: %w[subagent_id message mode],
               additionalProperties: false
             }
-          ) do |input|
+          ) do |input, context: nil|
             manager.send_message(
               subagent_id: input.fetch("subagent_id"),
               message: input.fetch("message"),
-              mode: input.fetch("mode")
+              mode: input.fetch("mode"),
+              parent_operation_id: context&.agent_operation_id
             )
           end,
           Tool.define(
@@ -345,7 +362,6 @@ module LittleGhost
               when work takes longer than this check-in window. Call this tool again to keep waiting; timeout is not an
               error and does not cancel the subagents.
             DESCRIPTION
-            result_metadata:,
             input_schema: {
               type: "object",
               properties: {
@@ -360,7 +376,6 @@ module LittleGhost
           Tool.define(
             name: "list_subagents",
             description: "List subagent identities, statuses, turns, and queued work without waiting.",
-            result_metadata:,
             input_schema: {type: "object", additionalProperties: false}
           ) { |_input| manager.list }
         ]
@@ -448,7 +463,14 @@ module LittleGhost
         end
       end
 
-      def enqueue(identity, message, event:, enforce_limits: false, count_turn: true)
+      def enqueue(
+        identity,
+        message,
+        event:,
+        enforce_limits: false,
+        count_turn: true,
+        parent_operation_id: nil
+      )
         turn = nil
         queued_snapshot = nil
         @mutex.synchronize do
@@ -462,12 +484,18 @@ module LittleGhost
             return rejection if rejection
           end
 
-          turn = Turn.new(number: identity.next_turn, message: message, completion: Completion.new)
+          turn = Turn.new(
+            number: identity.next_turn,
+            message: message,
+            completion: Completion.new,
+            operation_id: SecureRandom.uuid,
+            parent_operation_id:
+          )
           identity.next_turn += 1
           @turn_count += 1 if count_turn
           identity.queue << turn
           identity.status = "queued" unless identity.status == "running"
-          emit(event, identity, turn: turn.number)
+          emit(event, identity, turn:)
           queued_snapshot = snapshot(identity)
           unless identity.worker&.alive?
             identity.worker = Thread.new { run_identity(identity) }
@@ -508,7 +536,6 @@ module LittleGhost
                 unless @closed
                   identity.status = "running"
                   identity.progress_message = nil
-                  turn.operation_id = SecureRandom.uuid
                   emit("turn_started", identity, turn:)
                   @condition.broadcast
                   true
@@ -732,7 +759,10 @@ module LittleGhost
       end
 
       def cancel_queued_turns(identity)
-        identity.queue.each { |turn| turn.completion.resolve(cancelled_turn(identity, turn)) }
+        identity.queue.each do |turn|
+          turn.completion.resolve(cancelled_turn(identity, turn))
+          emit("cancelled", identity, turn:)
+        end
         identity.queue.clear
       end
 
@@ -745,6 +775,7 @@ module LittleGhost
             turn: turn.number,
             error: "A previous turn failed; spawn a new identity."
           )
+          emit("turn_failed", identity, turn:)
         end
         identity.queue.clear
       end
@@ -835,13 +866,16 @@ module LittleGhost
         if turn
           value[:turn] = turn.respond_to?(:number) ? turn.number : turn
           value[:operation_id] = turn.operation_id if turn.respond_to?(:operation_id) && turn.operation_id
+          if turn.respond_to?(:parent_operation_id) && turn.parent_operation_id
+            value[:parent_operation_id] = turn.parent_operation_id
+          end
         end
         @observer.call(value.freeze)
       rescue
         nil
       end
 
-      def emit_factory_failure(definition, subagent_id, error)
+      def emit_factory_failure(definition, subagent_id, error, parent_operation_id: nil)
         return unless @observer
 
         @observer.call({
@@ -849,8 +883,9 @@ module LittleGhost
           subagent_id:,
           kind: definition.kind,
           status: "failed",
-          error_type: error.class.name
-        }.freeze)
+          error_type: error.class.name,
+          parent_operation_id:
+        }.compact.freeze)
       rescue
         nil
       end

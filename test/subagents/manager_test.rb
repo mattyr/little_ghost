@@ -561,11 +561,84 @@ class SubagentManagerTest < Minitest::Test
 
     assert_equal "finished", result[:status]
     assert_equal %w[spawned turn_started turn_finished], events.map { |event| event[:event] }
+    assert_equal events[0][:operation_id], events[1][:operation_id]
     assert_equal events[1][:operation_id], events[2][:operation_id]
-    refute events[0].key?(:operation_id)
     refute_includes events.inspect, "sensitive task text"
     refute events.any? { |event| event.key?(:response) || event.key?(:message) }
   ensure
+    manager&.close
+  end
+
+  def test_tool_context_identifies_the_agent_that_queued_each_turn
+    events = []
+    manager = manager_for(
+      ->(_id) { ControlledAgent.new },
+      observer: ->(event) { events << event }
+    )
+    registry = LittleGhost::ToolRegistry.new(manager.tools)
+    first_context = LittleGhost::RunContext.new
+    first_context.bind_agent_operation_id("investigator-agent")
+    second_context = LittleGhost::RunContext.new
+    second_context.bind_agent_operation_id("main-agent")
+
+    registry.fetch("spawn_subagent").execute(
+      {"kind" => "explore", "task" => "inspect", "mode" => "sync"},
+      context: first_context
+    )
+    registry.fetch("send_message_to_subagent").execute(
+      {"subagent_id" => "explore-1", "message" => "summarize", "mode" => "sync"},
+      context: second_context
+    )
+
+    turns = events.select { |event| event[:event] == "turn_started" }
+    finishes = events.select { |event| event[:event] == "turn_finished" }
+    queued = events.select { |event| %w[spawned message_queued].include?(event[:event]) }
+    assert_equal %w[investigator-agent main-agent], queued.map { |event| event[:parent_operation_id] }
+    assert_equal queued.map { |event| event[:operation_id] }, turns.map { |event| event[:operation_id] }
+    assert_equal %w[investigator-agent main-agent], turns.map { |event| event[:parent_operation_id] }
+    assert_equal turns.map { |event| event[:operation_id] }, finishes.map { |event| event[:operation_id] }
+    assert_equal turns.map { |event| event[:parent_operation_id] },
+      finishes.map { |event| event[:parent_operation_id] }
+  ensure
+    manager&.close
+  end
+
+  def test_capacity_delayed_turn_keeps_its_enqueue_operation_and_parent
+    gates = {"explore-1" => Gate.new, "explore-2" => Gate.new}
+    agents = {}
+    events = []
+    manager = manager_for(
+      ->(id) { agents[id] = ControlledAgent.new(gate: gates.fetch(id)) },
+      max_concurrent: 1,
+      observer: ->(event) { events << event }
+    )
+
+    manager.spawn(
+      kind: "explore",
+      task: "first",
+      mode: "async",
+      parent_operation_id: "first-caller"
+    )
+    agents.fetch("explore-1").started.pop
+    manager.spawn(
+      kind: "explore",
+      task: "second",
+      mode: "async",
+      parent_operation_id: "caller-that-finishes-while-queued"
+    )
+    queued = events.find { |event| event[:event] == "spawned" && event[:subagent_id] == "explore-2" }
+    refute_nil queued
+    refute events.any? { |event| event[:event] == "turn_started" && event[:subagent_id] == "explore-2" }
+
+    gates.fetch("explore-1").open
+    agents.fetch("explore-2").started.pop
+    started = events.find { |event| event[:event] == "turn_started" && event[:subagent_id] == "explore-2" }
+
+    assert_equal queued[:operation_id], started[:operation_id]
+    assert_equal "caller-that-finishes-while-queued", queued[:parent_operation_id]
+    assert_equal queued[:parent_operation_id], started[:parent_operation_id]
+  ensure
+    gates&.each_value(&:open)
     manager&.close
   end
 
@@ -598,8 +671,17 @@ class SubagentManagerTest < Minitest::Test
     assert_equal "cancelled", listed.dig(:subagents, 0, :status)
     assert_equal 0, listed.dig(:subagents, 0, :queued_turns)
     started = events.find { |event| event[:event] == "turn_started" }
-    cancelled = events.find { |event| event[:event] == "cancelled" }
+    cancelled = events.find do |event|
+      event[:event] == "cancelled" && event[:operation_id] == started[:operation_id]
+    end
     assert_equal started.values_at(:turn, :operation_id), cancelled.values_at(:turn, :operation_id)
+    queued_operations = events.filter_map do |event|
+      event[:operation_id] if %w[spawned message_queued].include?(event[:event])
+    end
+    cancelled_operations = events.filter_map do |event|
+      event[:operation_id] if event[:event] == "cancelled"
+    end
+    assert_equal queued_operations.sort, cancelled_operations.sort
   end
 
   def test_close_is_bounded_when_agent_does_not_cooperate
@@ -768,7 +850,8 @@ class SubagentManagerTest < Minitest::Test
       raise "https://internal.example secret-provider-detail"
     end
 
-    manager = manager_for(->(_id) { failing_agent })
+    events = []
+    manager = manager_for(->(_id) { failing_agent }, observer: ->(event) { events << event })
     manager.spawn(kind: "explore", task: "first", mode: "async")
     started.pop
     queued_thread = Thread.new do
@@ -782,6 +865,13 @@ class SubagentManagerTest < Minitest::Test
     assert_equal "Subagent turn failed.", @failed.dig(:subagents, 0, :error)
     assert_equal "A previous turn failed; spawn a new identity.", queued[:error]
     refute_includes @failed.inspect, "internal.example"
+    queued_operations = events.filter_map do |event|
+      event[:operation_id] if %w[spawned message_queued].include?(event[:event])
+    end
+    failed_operations = events.filter_map do |event|
+      event[:operation_id] if event[:event] == "turn_failed"
+    end
+    assert_equal queued_operations.sort, failed_operations.sort
   ensure
     gate&.open
     manager&.close
@@ -814,9 +904,6 @@ class SubagentManagerTest < Minitest::Test
     assert_equal "explore-1", listed.fetch("subagents").first.fetch("subagent_id")
     assert_includes registry.fetch("spawn_subagent").input_schema
       .dig("properties", "kind", "description"), "explore: Explore code"
-    registry.each do |tool|
-      assert_equal({persist_redact: true, diagnostic_redact: true}, tool.result_metadata)
-    end
     assert invalid.error?
     assert_equal "Unknown subagent id: missing", invalid.content
   ensure

@@ -209,7 +209,7 @@ module LittleGhost
         when :workflow then attributes[:workflow_name]
         when :agent_turn then attributes[:turn]
         when :model then attributes[:model_id]
-        when :subagent then attributes[:kind]
+        when :subagent then attributes[:subagent_id] || attributes[:kind]
         when :tool then attributes[:tool_name]
         end
         detail = attribute_value(:span_name, detail) if detail
@@ -296,6 +296,10 @@ module LittleGhost
         return unless %i[diagnostic_input diagnostic_output].include?(key.to_sym)
 
         prefix = (key.to_sym == :diagnostic_input) ? "input" : "output"
+        if %i[agent tool].include?(kind) && !(kind == :tool && prefix == "output" && attributes[:error_type])
+          result["#{prefix}.value"] = value
+          result["#{prefix}.mime_type"] = diagnostic_mime_type(value)
+        end
         if kind == :tool
           name = (prefix == "input") ? "gen_ai.tool.call.arguments" : "gen_ai.tool.call.result"
           result[name] = value unless prefix == "output" && attributes[:error_type]
@@ -307,7 +311,23 @@ module LittleGhost
           value,
           finish_reason: prefix == "output" && (attributes[:stop_reason] || Array(attributes[:finish_reasons]).first)
         )
-        result[semantic_name] = messages if messages
+        if messages
+          result[semantic_name] = messages
+          result["#{prefix}.value"] = messages
+          result["#{prefix}.mime_type"] = "application/json"
+        else
+          result["#{prefix}.value"] = value
+          result["#{prefix}.mime_type"] = diagnostic_mime_type(value)
+        end
+      end
+
+      def diagnostic_mime_type(value)
+        return "application/json" if value.is_a?(Hash) || value.is_a?(Array)
+
+        JSON.parse(value)
+        "application/json"
+      rescue JSON::ParserError, TypeError
+        "text/plain"
       end
 
       def canonical_messages(value, finish_reason: nil)

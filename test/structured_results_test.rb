@@ -628,8 +628,7 @@ class StructuredResultsTest < Minitest::Test
     agent.call(
       LittleGhost::Message.new(
         role: :user,
-        content: "customer evidence",
-        metadata: {diagnostic_redact: true}
+        content: "customer evidence"
       )
     )
 
