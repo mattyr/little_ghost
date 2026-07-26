@@ -118,6 +118,7 @@ module LittleGhost
           messages: [*trusted, summary, *conversation.drop(split)],
           tools: request.tools,
           settings: request.settings,
+          output_schema: request.output_schema,
           cancellation_token: request.cancellation_token,
           deadline: request.deadline
         )
@@ -239,7 +240,8 @@ module LittleGhost
       def estimated_request_tokens(request)
         characters = JSON.generate(
           messages: request.messages.map(&:to_h),
-          tools: request.tools
+          tools: request.tools,
+          output_schema: request.output_schema
         ).length
         (characters.to_f / ESTIMATED_CHARS_PER_TOKEN).ceil
       rescue JSON::GeneratorError

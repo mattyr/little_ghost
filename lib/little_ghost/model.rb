@@ -30,6 +30,7 @@ module LittleGhost
         messages: request.messages,
         tools: request.tools,
         settings: settings.merge(request.settings),
+        output_schema: request.output_schema,
         cancellation_token: request.cancellation_token,
         deadline: request.deadline
       )

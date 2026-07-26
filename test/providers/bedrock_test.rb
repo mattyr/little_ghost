@@ -80,6 +80,33 @@ class BedrockTest < Minitest::Test
     assert_includes error.message, "aws-sdk-bedrockruntime"
   end
 
+  def test_serializes_native_json_schema_output_configuration
+    client = FakeClient.new([
+      {message_start: {role: "assistant"}},
+      {message_stop: {stop_reason: "end_turn"}}
+    ])
+    provider = LittleGhost::Providers::Bedrock.new(model: "anthropic.test", client:)
+    output_schema = {
+      name: "answer",
+      description: "Return an answer",
+      schema: {
+        "type" => "object",
+        "properties" => {"answer" => {"type" => "string"}},
+        "required" => ["answer"],
+        "additionalProperties" => false
+      }
+    }
+
+    provider.stream(LittleGhost::ModelRequest.new(messages: [], output_schema:)).to_a
+
+    json_schema = client.parameters.dig(
+      :output_config, :text_format, :structure, :json_schema
+    )
+    assert_equal "json_schema", client.parameters.dig(:output_config, :text_format, :type)
+    assert_equal "answer", json_schema.fetch(:name)
+    assert_equal output_schema.fetch(:schema), JSON.parse(json_schema.fetch(:schema))
+  end
+
   def test_accepts_the_event_type_shape_used_by_the_aws_sdk
     events = [
       {role: "assistant", event_type: :message_start},

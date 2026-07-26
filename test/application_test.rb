@@ -591,6 +591,27 @@ class ApplicationTest < Minitest::Test
     end
   end
 
+  def test_default_entrypoint_preserves_keyword_only_build_agent_overrides
+    configure = lambda do |application_class|
+      application_class.attr_reader :overridden_build_run
+      application_class.define_method(:build_agent) do |run:, **options|
+        @overridden_build_run = run
+        super(run:, **options)
+      end
+    end
+
+    with_application(configure:) do |application|
+      run = application.build_run(message: "hello")
+
+      entrypoint = application.build_entrypoint(run:)
+
+      assert_instance_of application.agent_class, entrypoint
+      assert_same run, application.overridden_build_run
+    ensure
+      entrypoint&.close
+    end
+  end
+
   def test_run_closes_agent_tools
     tool = Class.new(LittleGhost::Tool) do
       tool_name "closable"

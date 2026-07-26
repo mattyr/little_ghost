@@ -207,6 +207,10 @@ module LittleGhost
       @agent_builder.build(agent_class_or_name, run:, model:, tools:)
     end
 
+    def build_entrypoint(run:)
+      build_agent(run:)
+    end
+
     def model_for(agent_class, run)
       role = agent_class.model_role(run.invocation) || @default_model
       models.resolve(role, invocation: run.invocation, run:)

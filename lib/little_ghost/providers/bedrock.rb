@@ -103,12 +103,45 @@ module LittleGhost
         }
         parameters[:system] = system.flat_map { |message| message.content.grep(Content::Text).map { |block| {text: block.text} } }
         parameters[:tool_config] = {tools: request.tools.map { |tool| bedrock_tool(tool) }} unless request.tools.empty?
+        parameters[:output_config] = bedrock_output_config(request.output_schema) if request.output_schema
 
         inference = extract_settings(request.settings, %i[max_tokens temperature top_p stop_sequences])
         parameters[:inference_config] = inference unless inference.empty?
         additional = request.settings[:additional_model_request_fields] || request.settings["additional_model_request_fields"]
         parameters[:additional_model_request_fields] = additional if additional
         parameters
+      end
+
+      def bedrock_output_config(output_schema)
+        {
+          text_format: {
+            type: "json_schema",
+            structure: {
+              json_schema: {
+                schema: JSON.generate(bedrock_output_schema(output_schema.fetch(:schema))),
+                name: output_schema.fetch(:name),
+                description: output_schema[:description]
+              }.compact
+            }
+          }
+        }
+      end
+
+      def bedrock_output_schema(value)
+        case value
+        when Hash
+          value.each_with_object({}) do |(key, child), result|
+            key = key.to_s
+            next if %w[minimum maximum minLength maxLength pattern maxItems].include?(key)
+            next if key == "minItems" && ![0, 1].include?(child)
+
+            result[key] = bedrock_output_schema(child)
+          end
+        when Array
+          value.map { |child| bedrock_output_schema(child) }
+        else
+          value
+        end
       end
 
       def bedrock_message(message)
