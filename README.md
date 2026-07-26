@@ -237,11 +237,11 @@ class InvestigationAgent < LittleGhost::Agent
 end
 ```
 
-LittleGhost sends the schema through each provider's native structured-output mode and exposes the locally validated value through `RunResult#structured_result`. A missing or invalid result receives one repair turn before `StructuredResultError` is raised. Result schemas use a portable strict subset of the tool-schema keywords: every object must set `additionalProperties: false` and require every declared property; represent optional values with nullable types. Unsupported JSON Schema keywords and invalid provider schema names are rejected when the agent class is defined rather than silently ignored. Results also have framework-level serialized-size, nesting, and node-count limits, and retained conversation history contains only a redacted result marker.
+LittleGhost selects the result mechanism from the resolved model's capabilities. Provider-native structured output is preferred when available; otherwise LittleGhost supplies the schema as a strict terminal tool when the model supports both tools and forced tool choice. Applications still receive the same locally validated value through `RunResult#structured_result` and do not need to branch on the selected mechanism. Automatic selection fails closed when model capabilities are unknown instead of sending an assumed provider request. Pass `strategy: :provider` or `strategy: :tool` to `result_schema` only when an explicit override is required.
+
+A missing or invalid result receives one repair turn before `StructuredResultError` is raised. The terminal result tool must be the only tool call in its response; mixed calls are rejected without executing ordinary tools. Result schemas use a portable strict subset of the tool-schema keywords: every object must set `additionalProperties: false` and require every declared property; represent optional values with nullable types. Unsupported JSON Schema keywords and invalid provider schema names are rejected when the agent class is defined rather than silently ignored. Results also have framework-level serialized-size, nesting, and node-count limits, and retained conversation history contains only a redacted result marker.
 
 Structured values remain structured when the agent is called directly, exposed as an agent tool, or managed as a subagent. Values are retained only in the dedicated structured-result channel; conversation history and telemetry contain a redacted marker. Result telemetry records the schema, validation status, duration, and usage without including the payload. Evidence-sensitive agents can declare `capture_diagnostics false` to keep all of their model and tool content out of diagnostic telemetry while preserving low-cardinality lifecycle and usage attributes.
-
-Applications can override `build_entrypoint(run:)` when orchestration, rather than one agent, owns the top-level invocation. An entrypoint implements the same `stream` and `close` lifecycle as an agent and may invoke application-built agents as explicit workflow steps.
 
 Use `LittleGhost::Workflow` for a small functional composition. Every `invoke` inherits the current input, history, state, settings, cancellation, deadline, and trace parent. Read an intermediate agent's `output`, then return the final `invoke` so its response streams to the caller:
 
@@ -264,6 +264,17 @@ class ResponseWorkflow < LittleGhost::Workflow
   end
 end
 ```
+
+Declare the workflow as the application's entrypoint:
+
+```ruby
+class SupportApplication < LittleGhost::Application
+  agent MainAgent
+  entrypoint ResponseWorkflow
+end
+```
+
+Agent entrypoints produce one fused root `invoke_agent` span. Workflow entrypoints instead produce an `invoke_workflow` root with `gen_ai.workflow.name`; every agent invoked by the workflow remains a distinct child `invoke_agent` span.
 
 `RunResult#output` returns the validated structured value when the agent has a result schema and otherwise returns its text. Workflows use ordinary Ruby branching; use a graph runtime only when the application needs durable node state, joins, or cycles.
 
@@ -306,7 +317,7 @@ Internal events remain interface-neutral. After `require "little_ghost/ag_ui"`, 
 
 ## Instrumentation and tracing
 
-LittleGhost automatically creates hierarchical OpenTelemetry spans for agents, agent turns, model calls, tools, and subagents. The application run and its primary agent share one root agent span; delegated agents remain distinct children. Spans use flat, dot-separated OpenTelemetry GenAI attributes for operations, agents, models, providers, tool definitions, response metadata, timing, and token usage. Prompt, response, message, tool-argument, and exception content is excluded by default. Applications can opt into scrubbed content capture with `LittleGhost::Support::ContentCapture`. Captured content is complete by default; applications can set `max_bytes` explicitly or apply backend-specific limits in their exporter. With no tracer provider configured, OpenTelemetry's no-op provider keeps the same application code dependency-free at runtime; an application can register any OpenTelemetry SDK provider and exporter.
+LittleGhost automatically creates hierarchical OpenTelemetry spans for agents, workflows, agent turns, model calls, tools, and subagents. An agent entrypoint shares the application run's root agent span; a workflow entrypoint owns a separate workflow root and keeps every invoked agent as a distinct child. Spans use flat, dot-separated OpenTelemetry GenAI attributes for operations, agents, workflows, models, providers, tool definitions, response metadata, timing, and token usage. Prompt, response, message, tool-argument, and exception content is excluded by default. Applications can opt into scrubbed content capture with `LittleGhost::Support::ContentCapture`. Captured content is complete by default; applications can set `max_bytes` explicitly or apply backend-specific limits in their exporter. With no tracer provider configured, OpenTelemetry's no-op provider keeps the same application code dependency-free at runtime; an application can register any OpenTelemetry SDK provider and exporter.
 
 Instrumentation is the code that records signals; telemetry is the emitted data; tracing is the span-based signal LittleGhost provides out of the box. `LittleGhost::Support::Instrumentation` supplies the generic instrumentation hooks and emits correlated lifecycle events, model retries, and tool-loop decisions. `LittleGhost::Tracing::OpenTelemetry` turns those events into spans. Environment variables never install an exporter:
 

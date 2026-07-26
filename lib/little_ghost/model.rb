@@ -31,10 +31,23 @@ module LittleGhost
         tools: request.tools,
         settings: settings.merge(request.settings),
         output_schema: request.output_schema,
+        tool_choice: request.tool_choice,
+        required_capabilities: request.required_capabilities,
         cancellation_token: request.cancellation_token,
         deadline: request.deadline
       )
+      if provider.respond_to?(:prepare_request)
+        configured_request = provider.prepare_request(configured_request, capabilities:)
+      end
       provider.stream(configured_request, &block)
+    end
+
+    def capabilities
+      @capabilities ||= if provider.respond_to?(:capabilities)
+        provider.capabilities(metadata:)
+      else
+        ModelCapabilities.legacy
+      end
     end
 
     private

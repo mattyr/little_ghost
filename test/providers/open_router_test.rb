@@ -75,6 +75,85 @@ class OpenRouterTest < Minitest::Test
     assert_equal true, JSON.parse(transport.request[:body]).dig("provider", "require_parameters")
   end
 
+  def test_capabilities_are_derived_from_openrouter_model_metadata
+    provider = LittleGhost::Providers::OpenRouter.new(
+      api_key: "secret",
+      model: "openai/gpt-test",
+      transport: CaptureTransport.new
+    )
+
+    capabilities = provider.capabilities(
+      metadata: {supported_parameters: %w[structured_outputs tools tool_choice max_tokens]}
+    )
+
+    assert capabilities.known?
+    assert capabilities.native_structured_output?
+    assert capabilities.tools?
+    assert capabilities.tool_choice?
+    assert capabilities.supports_parameter?(:max_tokens)
+    refute capabilities.supports_parameter?(:temperature)
+  end
+
+  def test_strict_requests_remove_unsupported_optional_settings
+    transport = CaptureTransport.new
+    provider = LittleGhost::Providers::OpenRouter.new(
+      api_key: "secret",
+      model: "openai/gpt-test",
+      transport:
+    )
+    model = LittleGhost::Model.new(
+      provider:,
+      provider_name: :openrouter,
+      model: "openai/gpt-test",
+      settings: {temperature: 0.0, max_tokens: 200},
+      metadata: {supported_parameters: %w[structured_outputs max_tokens]}
+    )
+
+    model.stream(
+      LittleGhost::ModelRequest.new(
+        messages: [],
+        output_schema: {
+          name: "answer",
+          schema: {type: "object", properties: {}, required: [], additionalProperties: false}
+        },
+        required_capabilities: [:native_structured_output]
+      )
+    ).to_a
+
+    body = JSON.parse(transport.request[:body])
+    refute body.key?("temperature")
+    assert_equal 200, body.fetch("max_tokens")
+    assert_equal true, body.dig("provider", "require_parameters")
+  end
+
+  def test_strict_tool_requests_require_compatible_provider_parameters
+    transport = CaptureTransport.new
+    provider = LittleGhost::Providers::OpenRouter.new(
+      api_key: "secret",
+      model: "tool-model",
+      transport:
+    )
+    model = LittleGhost::Model.new(
+      provider:,
+      provider_name: :openrouter,
+      model: "tool-model",
+      metadata: {supported_parameters: %w[tools tool_choice]}
+    )
+
+    model.stream(
+      LittleGhost::ModelRequest.new(
+        messages: [],
+        tools: [{name: "result", description: "Submit", input_schema: {type: "object"}}],
+        tool_choice: :required,
+        required_capabilities: %i[tools tool_choice]
+      )
+    ).to_a
+
+    body = JSON.parse(transport.request[:body])
+    assert_equal "required", body.fetch("tool_choice")
+    assert_equal true, body.dig("provider", "require_parameters")
+  end
+
   def test_replays_reasoning_details_for_a_tool_continuation
     transport = CaptureTransport.new
     provider = LittleGhost::Providers::OpenRouter.new(

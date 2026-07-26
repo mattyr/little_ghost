@@ -6,6 +6,18 @@ require "test_helper"
 require "little_ghost/ag_ui"
 
 class ApplicationTest < Minitest::Test
+  class EntrypointWorkflow < LittleGhost::Workflow
+    class << self
+      attr_accessor :agent_class
+    end
+
+    private
+
+    def perform
+      invoke(self.class.agent_class)
+    end
+  end
+
   class ScriptedProvider
     attr_reader :requests
 
@@ -610,6 +622,52 @@ class ApplicationTest < Minitest::Test
     ensure
       entrypoint&.close
     end
+  end
+
+  def test_entrypoint_dsl_builds_a_workflow
+    with_application(configure: ->(application_class) { application_class.entrypoint EntrypointWorkflow }) do |application|
+      run = application.build_run(message: "hello")
+      entrypoint = application.build_entrypoint(run:)
+
+      assert_equal EntrypointWorkflow, application.entrypoint_class
+      assert application.workflow_entrypoint?
+      assert_equal "ApplicationTest::EntrypointWorkflow", application.entrypoint_name
+      assert_instance_of EntrypointWorkflow, entrypoint
+      assert_same run, entrypoint.run
+    ensure
+      entrypoint&.close
+    end
+  end
+
+  def test_workflow_entrypoint_marks_run_telemetry_without_changing_child_agent_telemetry
+    recorded = []
+    expected_agent_id = nil
+    instrumentation = LittleGhost::Support::Instrumentation.new
+    instrumentation.subscribe(->(name, attributes) { recorded << [name, attributes] })
+
+    with_application(
+      instrumentation:,
+      configure: lambda do |application_class|
+        EntrypointWorkflow.agent_class = application_class.agent
+        expected_agent_id = application_class.agent.agent_id
+        application_class.entrypoint EntrypointWorkflow
+      end
+    ) do |application|
+      application.call(message: "hello")
+    end
+
+    run_start = recorded.assoc(:run_start).last
+    run_stop = recorded.assoc(:run_stop).last
+    agent_start = recorded.assoc(:agent_start).last
+    assert_equal :workflow, run_start.fetch(:entrypoint_kind)
+    assert_equal "ApplicationTest::EntrypointWorkflow", run_start.fetch(:workflow_name)
+    refute run_start.key?(:agent_id)
+    assert_equal "ApplicationTest::EntrypointWorkflow", run_stop.fetch(:workflow_name)
+    refute run_stop.key?(:agent_id)
+    assert_equal expected_agent_id, agent_start.fetch(:agent_id)
+    assert_equal run_start.fetch(:operation_id), agent_start.fetch(:parent_operation_id)
+  ensure
+    EntrypointWorkflow.agent_class = nil
   end
 
   def test_run_closes_agent_tools

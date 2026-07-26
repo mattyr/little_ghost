@@ -106,6 +106,8 @@ module LittleGhost
       execution_cleanup_error = nil
       instrument(
         :run_start,
+        entrypoint_kind: workflow_entrypoint? ? :workflow : :agent,
+        workflow_name: workflow_entrypoint? ? application_entrypoint_name : nil,
         trace_context: invocation[:parent_trace_context],
         trace_links: invocation[:trace_links],
         diagnostic: {input: diagnostic_invocation_message}
@@ -259,9 +261,20 @@ module LittleGhost
         run_id: invocation.run_id,
         invocation_id: invocation.invocation_id,
         session_id: invocation.session_id,
-        agent_id: application.respond_to?(:agent_class) ? application.agent_class.agent_id : nil
+        agent_id: workflow_entrypoint? ? nil : application_entrypoint_name,
+        workflow_name: workflow_entrypoint? ? application_entrypoint_name : nil
       }.merge(application.respond_to?(:instrumentation_attributes) ? application.instrumentation_attributes(run: self) : {})
         .compact
+    end
+
+    def workflow_entrypoint?
+      application.respond_to?(:workflow_entrypoint?) && application.workflow_entrypoint?
+    end
+
+    def application_entrypoint_name
+      return application.entrypoint_name if application.respond_to?(:entrypoint_name)
+
+      application.agent_class.agent_id if application.respond_to?(:agent_class)
     end
 
     def subagent_telemetry(data)

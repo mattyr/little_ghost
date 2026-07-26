@@ -80,6 +80,19 @@ module LittleGhost
         end
       end
 
+      def capabilities(metadata: {})
+        parameters = metadata[:supported_parameters] || metadata["supported_parameters"]
+        return ModelCapabilities.unknown unless parameters.is_a?(Array)
+
+        values = parameters.map(&:to_s)
+        ModelCapabilities.new(
+          native_structured_output: values.include?("structured_outputs"),
+          tools: values.include?("tools"),
+          tool_choice: values.include?("tool_choice"),
+          supported_parameters: values
+        )
+      end
+
       private
 
       def build_client(region:, **options)
@@ -102,7 +115,10 @@ module LittleGhost
           messages: messages.filter_map { |message| bedrock_message(message) }
         }
         parameters[:system] = system.flat_map { |message| message.content.grep(Content::Text).map { |block| {text: block.text} } }
-        parameters[:tool_config] = {tools: request.tools.map { |tool| bedrock_tool(tool) }} unless request.tools.empty?
+        unless request.tools.empty?
+          parameters[:tool_config] = {tools: request.tools.map { |tool| bedrock_tool(tool) }}
+          parameters[:tool_config][:tool_choice] = bedrock_tool_choice(request.tool_choice) if request.tool_choice
+        end
         parameters[:output_config] = bedrock_output_config(request.output_schema) if request.output_schema
 
         inference = extract_settings(request.settings, %i[max_tokens temperature top_p stop_sequences])
@@ -187,13 +203,23 @@ module LittleGhost
         else
           {name: tool.public_send(:name), description: tool.public_send(:description), input_schema: tool.public_send(:input_schema)}
         end
+        tool_spec = {
+          name: definition.fetch(:name),
+          description: definition[:description],
+          input_schema: {json: definition[:input_schema] || {}}
+        }
+        tool_spec[:strict] = definition[:strict] unless definition[:strict].nil?
         {
           tool_spec: {
-            name: definition.fetch(:name),
-            description: definition[:description],
-            input_schema: {json: definition[:input_schema] || {}}
+            **tool_spec
           }
         }
+      end
+
+      def bedrock_tool_choice(choice)
+        return {any: {}} if choice == :required
+
+        {tool: {name: choice.fetch(:name).to_s}}
       end
 
       def extract_settings(settings, keys)

@@ -24,6 +24,8 @@ module LittleGhost
         tool_name: "gen_ai.tool.name",
         tool_type: "gen_ai.tool.type",
         tool_call_id: "gen_ai.tool.call.id",
+        workflow_name: "gen_ai.workflow.name",
+        http_response_status_code: "http.response.status_code",
         error_class: "error.type",
         error_type: "error.type"
       }.freeze
@@ -33,7 +35,8 @@ module LittleGhost
         model: "chat",
         run: "invoke_agent",
         subagent: "invoke_agent",
-        tool: "execute_tool"
+        tool: "execute_tool",
+        workflow: "invoke_workflow"
       }.freeze
       REQUEST_SETTING_ATTRIBUTES = {
         frequency_penalty: "gen_ai.request.frequency_penalty",
@@ -103,6 +106,7 @@ module LittleGhost
 
       def start_span(name, attributes)
         kind = name.to_s.delete_suffix("_start").to_sym
+        kind = :workflow if kind == :run && attributes[:entrypoint_kind]&.to_sym == :workflow
         parent = @mutex.synchronize { @entries[attributes[:parent_operation_id]] }
         if kind == :agent && parent&.fetch(:kind) == :run &&
             parent[:agent_id].to_s == attributes[:agent_id].to_s
@@ -202,6 +206,7 @@ module LittleGhost
       def span_name(kind, attributes)
         detail = case kind
         when :agent, :run then attributes[:agent_name] || attributes[:agent_id]
+        when :workflow then attributes[:workflow_name]
         when :agent_turn then attributes[:turn]
         when :model then attributes[:model_id]
         when :subagent then attributes[:kind]
@@ -252,7 +257,7 @@ module LittleGhost
       end
 
       def internal_attribute?(key)
-        %i[operation_id parent_operation_id trace_context trace_links].include?(key.to_sym)
+        %i[operation_id parent_operation_id trace_context trace_links entrypoint_kind].include?(key.to_sym)
       end
 
       def add_model_settings(attributes, settings)

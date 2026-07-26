@@ -80,6 +80,20 @@ class BedrockTest < Minitest::Test
     assert_includes error.message, "aws-sdk-bedrockruntime"
   end
 
+  def test_capabilities_are_derived_from_model_metadata
+    provider = LittleGhost::Providers::Bedrock.new(model: "anthropic.test", client: FakeClient.new([]))
+
+    unknown = provider.capabilities
+    known = provider.capabilities(
+      metadata: {supported_parameters: %w[structured_outputs tools tool_choice]}
+    )
+
+    refute unknown.known?
+    assert known.native_structured_output?
+    assert known.tools?
+    assert known.tool_choice?
+  end
+
   def test_serializes_native_json_schema_output_configuration
     client = FakeClient.new([
       {message_start: {role: "assistant"}},
@@ -105,6 +119,52 @@ class BedrockTest < Minitest::Test
     assert_equal "json_schema", client.parameters.dig(:output_config, :text_format, :type)
     assert_equal "answer", json_schema.fetch(:name)
     assert_equal output_schema.fetch(:schema), JSON.parse(json_schema.fetch(:schema))
+  end
+
+  def test_serializes_strict_result_tool_and_tool_choice
+    client = FakeClient.new([
+      {message_start: {role: "assistant"}},
+      {message_stop: {stop_reason: "end_turn"}}
+    ])
+    provider = LittleGhost::Providers::Bedrock.new(model: "anthropic.test", client:)
+    tool = {
+      name: "submit_result",
+      description: "Submit",
+      input_schema: {type: "object"},
+      strict: true
+    }
+
+    provider.stream(
+      LittleGhost::ModelRequest.new(
+        messages: [],
+        tools: [tool],
+        tool_choice: {name: "submit_result"}
+      )
+    ).to_a
+
+    assert_equal true, client.parameters.dig(:tool_config, :tools, 0, :tool_spec, :strict)
+    assert_equal(
+      {tool: {name: "submit_result"}},
+      client.parameters.dig(:tool_config, :tool_choice)
+    )
+  end
+
+  def test_serializes_required_tool_choice_as_any
+    client = FakeClient.new([
+      {message_start: {role: "assistant"}},
+      {message_stop: {stop_reason: "end_turn"}}
+    ])
+    provider = LittleGhost::Providers::Bedrock.new(model: "anthropic.test", client:)
+
+    provider.stream(
+      LittleGhost::ModelRequest.new(
+        messages: [],
+        tools: [{name: "lookup", description: "Lookup", input_schema: {type: "object"}}],
+        tool_choice: :required
+      )
+    ).to_a
+
+    assert_equal({any: {}}, client.parameters.dig(:tool_config, :tool_choice))
   end
 
   def test_accepts_the_event_type_shape_used_by_the_aws_sdk

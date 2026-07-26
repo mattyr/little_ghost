@@ -105,6 +105,10 @@ module LittleGhost
         end
       end
 
+      def capabilities(metadata: {})
+        ModelCapabilities.legacy
+      end
+
       private
 
       def context_window_overflow?(error)
@@ -161,8 +165,10 @@ module LittleGhost
 
       def request_body(request)
         common = compact_hash(model:, stream: true).merge(provider_settings(request.settings))
-        if api == :responses && common.key?(:max_tokens) && !common.key?(:max_output_tokens)
-          common[:max_output_tokens] = common.delete(:max_tokens)
+        if api == :responses
+          common[:max_output_tokens] ||= common[:max_tokens] || common[:max_completion_tokens]
+          common.delete(:max_tokens)
+          common.delete(:max_completion_tokens)
         end
         body = if api == :responses
           common.merge(input: responses_input(request.messages), tools: responses_tools(request.tools))
@@ -170,8 +176,20 @@ module LittleGhost
           common.merge(messages: chat_messages(request.messages), tools: chat_tools(request.tools), stream_options: {include_usage: true})
         end
         body.merge!(structured_output_parameters(request.output_schema)) if request.output_schema
+        body.merge!(tool_choice_parameters(request.tool_choice)) if request.tool_choice
         body.delete(:tools) if request.tools.empty?
         body
+      end
+
+      def tool_choice_parameters(choice)
+        return {tool_choice: "required"} if choice == :required
+
+        name = choice.fetch(:name).to_s
+        if api == :responses
+          {tool_choice: {type: "function", name:}}
+        else
+          {tool_choice: {type: "function", function: {name:}}}
+        end
       end
 
       def structured_output_parameters(output_schema)
@@ -192,7 +210,10 @@ module LittleGhost
       end
 
       def provider_settings(settings)
-        allowed = %i[temperature top_p max_tokens max_output_tokens stop seed service_tier user metadata]
+        allowed = %i[
+          temperature top_p max_tokens max_completion_tokens max_output_tokens
+          stop seed service_tier user metadata
+        ]
         settings.each_with_object({}) do |(key, value), result|
           symbol = key.to_sym
           result[symbol] = value if allowed.include?(symbol)
@@ -273,7 +294,13 @@ module LittleGhost
       def responses_tools(tools)
         tools.map do |tool|
           definition = tool_definition(tool)
-          {type: "function", name: definition[:name], description: definition[:description], parameters: definition[:input_schema]}
+          {
+            type: "function",
+            name: definition[:name],
+            description: definition[:description],
+            parameters: definition[:input_schema],
+            strict: definition[:strict]
+          }.compact
         end
       end
 
@@ -287,14 +314,16 @@ module LittleGhost
           return {
             name: definition.fetch(:name),
             description: definition[:description],
-            input_schema: definition[:input_schema] || {}
+            input_schema: definition[:input_schema] || {},
+            strict: definition[:strict]
           }
         end
 
         {
           name: tool.public_send(:name),
           description: tool.public_send(:description),
-          input_schema: tool.public_send(:input_schema)
+          input_schema: tool.public_send(:input_schema),
+          strict: tool.respond_to?(:strict) ? tool.public_send(:strict) : nil
         }
       end
 

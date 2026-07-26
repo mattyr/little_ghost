@@ -119,6 +119,8 @@ module LittleGhost
           tools: request.tools,
           settings: request.settings,
           output_schema: request.output_schema,
+          tool_choice: request.tool_choice,
+          required_capabilities: request.required_capabilities,
           cancellation_token: request.cancellation_token,
           deadline: request.deadline
         )
@@ -241,7 +243,8 @@ module LittleGhost
         characters = JSON.generate(
           messages: request.messages.map(&:to_h),
           tools: request.tools,
-          output_schema: request.output_schema
+          output_schema: request.output_schema,
+          tool_choice: request.tool_choice
         ).length
         (characters.to_f / ESTIMATED_CHARS_PER_TOKEN).ceil
       rescue JSON::GeneratorError
