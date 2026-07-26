@@ -198,6 +198,36 @@ class WorkflowTest < Minitest::Test
     assert_equal 10, events.last.data.fetch(:usage).input_tokens
   end
 
+  def test_tool_stop_result_is_not_treated_as_usage_observation
+    final_result = result(text: "final", usage: LittleGhost::Usage.new(input_tokens: 5))
+    tool_use = LittleGhost::Content::ToolUse.new(id: "tool-1", name: "inspect", input: {})
+    tool_result = LittleGhost::Content::ToolResult.new(
+      tool_use_id: tool_use.id,
+      content: "found",
+      status: :success
+    )
+    agent = FakeAgent.new(final_result)
+    agent.define_singleton_method(:stream) do |input, **options|
+      calls << [:stream, input, options]
+      [
+        LittleGhost::StreamEvent.build(:tool_stop, tool_use:, result: tool_result),
+        LittleGhost::StreamEvent.build(:invocation_stop, result: final_result)
+      ].each
+    end
+    workflow_class = Class.new(LittleGhost::Workflow) do
+      private
+
+      def perform = invoke(:main)
+    end
+    workflow = workflow_class.new(run: Run.new(Application.new(main: [agent])))
+
+    events = workflow.stream("question").to_a
+
+    assert_equal %i[tool_stop invocation_stop], events.map(&:type)
+    assert_same tool_result, events.first.data.fetch(:result)
+    assert_equal 5, events.last.data.fetch(:result).usage.input_tokens
+  end
+
   private
 
   def result(text: nil, structured: nil, usage: LittleGhost::Usage.new)

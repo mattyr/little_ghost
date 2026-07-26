@@ -14,8 +14,11 @@ module LittleGhost
       DEFAULT_MAX_QUEUED_TURNS_PER_IDENTITY = 8
       DEFAULT_MAX_MESSAGE_CHARS = 50_000
       DEFAULT_MAX_RESPONSE_CHARS = 100_000
-      DEFAULT_WAIT_TIMEOUT = 30.0
+      DEFAULT_WAIT_TIMEOUT = 20.0
       DEFAULT_CLOSE_TIMEOUT = 5.0
+      MAX_PROGRESS_CHARS = 160
+      MAX_PROGRESS_SOURCE_CHARS = 4_096
+      PROGRESS_SEPARATOR = /[\p{Z}\p{Cc}\p{Cf}]/
       CANCELLATION_POLL_INTERVAL = 0.05
 
       Turn = Struct.new(:number, :message, :completion, :operation_id)
@@ -34,7 +37,9 @@ module LittleGhost
         :latest_turn,
         :latest_response,
         :latest_response_truncated,
-        :latest_error
+        :latest_error,
+        :progress_message,
+        :progress_sequence
       )
 
       class Completion
@@ -198,7 +203,8 @@ module LittleGhost
           queue: [],
           status: "idle",
           next_turn: 1,
-          latest_response_truncated: false
+          latest_response_truncated: false,
+          progress_sequence: 0
         )
 
         closed = @mutex.synchronize do
@@ -258,13 +264,16 @@ module LittleGhost
             @condition.wait(@mutex, [remaining, CANCELLATION_POLL_INTERVAL].min)
           end
           status = (identities.all? { |identity| finished?(identity) }) ? "finished" : "still_working"
-          {status: status, subagents: identities.map { |identity| snapshot(identity, include_response: true) }}
+          {
+            status: status,
+            subagents: identities.map { |identity| snapshot(identity, include_response: true, include_progress: true) }
+          }
         end
       end
 
       def list
         @mutex.synchronize do
-          {status: "ok", subagents: @identities.values.map { |identity| snapshot(identity) }}
+          {status: "ok", subagents: @identities.values.map { |identity| snapshot(identity, include_progress: true) }}
         end
       end
 
@@ -366,6 +375,7 @@ module LittleGhost
             turn = identity.current
             identity.status = "cancelled"
             turn&.completion&.resolve(cancelled_turn(identity, turn))
+            identity.progress_message = nil
             identity.current_turn = nil
             identity.current = nil
             cancel_queued_turns(identity)
@@ -492,6 +502,7 @@ module LittleGhost
               should_run = @mutex.synchronize do
                 unless @closed
                   identity.status = "running"
+                  identity.progress_message = nil
                   turn.operation_id = SecureRandom.uuid
                   emit("turn_started", identity, turn:)
                   @condition.broadcast
@@ -508,7 +519,11 @@ module LittleGhost
                   options[:history] = identity.history
                   options[:context] = identity.state
                 end
-                result = identity.agent.call(turn.message, **options)
+                result = if identity.agent.is_a?(Agent)
+                  run_agent_turn(identity, turn, options)
+                else
+                  identity.agent.call(turn.message, **options)
+                end
                 finish_turn(identity, turn, result)
               rescue CancelledError
                 cancelled = true
@@ -539,6 +554,63 @@ module LittleGhost
           identity.worker = nil if identity.worker == Thread.current
           @condition.broadcast
         end
+      end
+
+      def run_agent_turn(identity, turn, options)
+        result = nil
+        identity.agent.stream(turn.message, **options).each do |event|
+          capture_progress(identity, turn, event)
+          result = event.data[:result] if event.type == :invocation_stop
+        end
+        result
+      end
+
+      def capture_progress(identity, turn, event)
+        return unless event.type == :message_stop
+
+        response = event.data[:response]
+        return unless response&.stop_reason == :tool_use
+        return unless response.message.role == :assistant
+        return if response.message.content.grep(Content::ToolUse).empty?
+
+        message = normalize_progress(response.message)
+        return if message.empty?
+
+        @mutex.synchronize do
+          return unless identity.current.equal?(turn)
+          return if identity.progress_message == message
+
+          identity.progress_message = message
+          identity.progress_sequence += 1
+          @condition.broadcast
+        end
+      end
+
+      def normalize_progress(message)
+        normalized = +""
+        pending_space = false
+        source_chars = 0
+        message.content.each do |block|
+          next unless block.is_a?(Content::Text)
+
+          block.text.each_char do |character|
+            return normalized if source_chars >= MAX_PROGRESS_SOURCE_CHARS
+
+            source_chars += 1
+            if character.match?(PROGRESS_SEPARATOR)
+              pending_space = !normalized.empty?
+              next
+            end
+
+            normalized << " " if pending_space
+            return normalized if normalized.length >= MAX_PROGRESS_CHARS
+
+            pending_space = false
+            normalized << character
+            return normalized if normalized.length >= MAX_PROGRESS_CHARS
+          end
+        end
+        normalized
       end
 
       def finish_turn(identity, turn, result)
@@ -572,6 +644,7 @@ module LittleGhost
           identity.latest_response = response
           identity.latest_response_truncated = truncated
           identity.latest_error = nil
+          identity.progress_message = nil
           identity.current_turn = nil
           identity.current = nil
           value = {
@@ -604,6 +677,7 @@ module LittleGhost
           identity.latest_response = nil
           identity.latest_response_truncated = false
           identity.latest_error = "Subagent turn failed."
+          identity.progress_message = nil
           identity.current_turn = nil
           identity.current = nil
           identity.status = "failed"
@@ -628,6 +702,7 @@ module LittleGhost
         @mutex.synchronize do
           newly_cancelled = identity.status != "cancelled"
           turn.completion.resolve(cancelled_turn(identity, turn))
+          identity.progress_message = nil
           identity.current_turn = nil
           identity.current = nil
           identity.status = "cancelled"
@@ -716,7 +791,7 @@ module LittleGhost
         @identities.fetch(subagent_id) { raise ToolError, "Unknown subagent id: #{subagent_id}" }
       end
 
-      def snapshot(identity, include_response: false)
+      def snapshot(identity, include_response: false, include_progress: false)
         value = {
           subagent_id: identity.subagent_id,
           kind: identity.definition.kind,
@@ -728,6 +803,12 @@ module LittleGhost
         if include_response && identity.latest_response
           value[:response] = identity.latest_response
           value[:response_truncated] = true if identity.latest_response_truncated
+        end
+        if include_progress && identity.progress_message && %w[queued running].include?(identity.status)
+          value[:progress] = {
+            message: identity.progress_message,
+            sequence: identity.progress_sequence
+          }
         end
         value[:error] = identity.latest_error if identity.latest_error
         value
