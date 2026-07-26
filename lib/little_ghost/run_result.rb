@@ -15,5 +15,9 @@ module LittleGhost
     def structured?
       !structured_result.nil?
     end
+
+    def output
+      structured? ? structured_result.value : text
+    end
   end
 end

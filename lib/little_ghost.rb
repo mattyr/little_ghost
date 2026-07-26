@@ -35,6 +35,7 @@ require_relative "little_ghost/subagents/definition"
 require_relative "little_ghost/subagents/manager"
 require_relative "little_ghost/agent"
 require_relative "little_ghost/agent_builder"
+require_relative "little_ghost/workflow"
 require_relative "little_ghost/application"
 
 module LittleGhost

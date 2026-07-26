@@ -243,6 +243,30 @@ Structured values remain structured when the agent is called directly, exposed a
 
 Applications can override `build_entrypoint(run:)` when orchestration, rather than one agent, owns the top-level invocation. An entrypoint implements the same `stream` and `close` lifecycle as an agent and may invoke application-built agents as explicit workflow steps.
 
+Use `LittleGhost::Workflow` for a small functional composition. Every `invoke` inherits the current input, history, state, settings, cancellation, deadline, and trace parent. Read an intermediate agent's `output`, then return the final `invoke` so its response streams to the caller:
+
+```ruby
+class ResponseWorkflow < LittleGhost::Workflow
+  private
+
+  def perform
+    route = invoke(RouterAgent).output
+    return invoke(MainAgent) unless route["research"]
+
+    research = invoke(ResearchAgent).output
+    invoke MainAgent, input: <<~PROMPT
+      Original request:
+      #{input.text}
+
+      Research:
+      #{research}
+    PROMPT
+  end
+end
+```
+
+`RunResult#output` returns the validated structured value when the agent has a result schema and otherwise returns its text. Workflows use ordinary Ruby branching; use a graph runtime only when the application needs durable node state, joins, or cycles.
+
 ## Prompts and components
 
 Prompts are ERB. Templates can render partials with `partial "shared/rules"`. Application prompts override component prompts.
