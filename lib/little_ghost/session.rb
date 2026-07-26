@@ -138,31 +138,11 @@ module LittleGhost
         next if message.role == :system
         next if message.metadata[:transient] || message.metadata["transient"]
 
-        sanitized = redact_persisted_tool_results(message).without_reasoning
+        sanitized = message.without_reasoning
         next if sanitized.content.empty? && !message.content.empty?
 
         sanitized
       end.freeze
-    end
-
-    def redact_persisted_tool_results(message)
-      metadata = message.metadata[:tool_result_metadata] ||
-        message.metadata["tool_result_metadata"] || {}
-      return message if metadata.empty?
-
-      content = message.content.map do |block|
-        next block unless block.is_a?(Content::ToolResult)
-
-        classification = metadata[block.tool_use_id] || metadata[block.tool_use_id.to_sym] || {}
-        next block unless classification[:persist_redact] || classification["persist_redact"]
-
-        Content::ToolResult.new(
-          tool_use_id: block.tool_use_id,
-          content: "Tool result omitted from persisted history.",
-          status: block.status
-        )
-      end
-      Message.new(role: message.role, content:, metadata: message.metadata)
     end
 
     def mutable_copy(value)

@@ -197,9 +197,33 @@ class OpenAICompatibleTest < Minitest::Test
     response = result.last.data[:response]
     assert_equal :tool_use, response.stop_reason
     assert_equal [{"x" => 1}, {}], response.message.content.grep(LittleGhost::Content::ToolUse).map(&:input)
+    assert_equal 6, response.usage.input_tokens
     assert_equal 2, response.usage.cache_read_tokens
     assert_equal 1, response.usage.reasoning_tokens
     assert_equal 2, response.usage.output_tokens
+    assert_equal 11, response.usage.total_tokens
+  end
+
+  def test_chat_completions_partitions_openrouter_cache_creation_without_double_counting
+    chunks = [
+      chat_chunk(id: "chat_1", delta: {}, finish_reason: "stop"),
+      {
+        id: "chat_1",
+        model: "gpt-test",
+        choices: [],
+        usage: {
+          prompt_tokens: 32_532,
+          completion_tokens: 4,
+          cache_creation_input_tokens: 32_529
+        }
+      }
+    ]
+    transport = FakeTransport.new(sse(chunks))
+    response = provider(transport:, api: :chat_completions).stream(request).to_a.last.data.fetch(:response)
+
+    assert_equal 3, response.usage.input_tokens
+    assert_equal 32_529, response.usage.cache_write_tokens
+    assert_equal 32_536, response.usage.total_tokens
   end
 
   def test_chat_completions_preserves_ordered_reasoning_details

@@ -71,7 +71,8 @@ class TracingOpenTelemetryTest < Minitest::Test
         parent_operation_id: "run",
         agent_id: "main",
         agent_name: "Atlas Main",
-        available_tools: %w[lookup fetch]
+        available_tools: %w[lookup fetch],
+        diagnostic_input: JSON.generate("hello")
       }
     )
     tracing.call(:agent_turn_start, {operation_id: "turn", parent_operation_id: "agent", turn: 1})
@@ -117,7 +118,10 @@ class TracingOpenTelemetryTest < Minitest::Test
       }
     )
     tracing.call(:agent_turn_stop, {operation_id: "turn", outcome: :completed})
-    tracing.call(:agent_stop, {operation_id: "agent", outcome: :completed})
+    tracing.call(
+      :agent_stop,
+      {operation_id: "agent", outcome: :completed, diagnostic_output: JSON.generate("done")}
+    )
     trace_context = tracing.trace_context(operation_id: "run")
     tracing.call(
       :run_stop,
@@ -142,8 +146,10 @@ class TracingOpenTelemetryTest < Minitest::Test
     assert_equal :internal, root_span.kind
     assert_equal "session-1", root_span.attributes.fetch("gen_ai.conversation.id")
     refute root_span.attributes.key?("openinference.span.kind")
-    refute root_span.attributes.key?("input.value")
-    refute root_span.attributes.key?("output.value")
+    assert_equal JSON.generate("hello"), root_span.attributes.fetch("input.value")
+    assert_equal "application/json", root_span.attributes.fetch("input.mime_type")
+    assert_equal JSON.generate("done"), root_span.attributes.fetch("output.value")
+    assert_equal "application/json", root_span.attributes.fetch("output.mime_type")
     assert_equal "agent_turn 1", turn_name
     refute_nil turn_context
     refute turn_span.attributes.key?("openinference.span.kind")
@@ -166,6 +172,9 @@ class TracingOpenTelemetryTest < Minitest::Test
     refute model_span.attributes.key?("llm.token_count.total")
     refute model_span.attributes.key?("llm.input_messages")
     input_messages = JSON.parse(model_span.attributes.fetch("gen_ai.input.messages"))
+    assert_equal model_span.attributes.fetch("gen_ai.input.messages"),
+      model_span.attributes.fetch("input.value")
+    assert_equal "application/json", model_span.attributes.fetch("input.mime_type")
     assert_equal ["system"], input_messages.map { |message| message.fetch("role") }
     assert_equal(
       ["instructions", "<available_skills>skills</available_skills>"],
@@ -176,6 +185,9 @@ class TracingOpenTelemetryTest < Minitest::Test
     assert_equal "function", definitions.first.fetch("type")
     assert_equal "object", definitions.first.dig("parameters", "type")
     output = JSON.parse(model_span.attributes.fetch("gen_ai.output.messages")).first
+    assert_equal model_span.attributes.fetch("gen_ai.output.messages"),
+      model_span.attributes.fetch("output.value")
+    assert_equal "application/json", model_span.attributes.fetch("output.mime_type")
     assert_equal "assistant", output.fetch("role")
     assert_equal "done", output.dig("parts", 0, "content")
     assert_equal "stop", output.fetch("finish_reason")
@@ -331,13 +343,14 @@ class TracingOpenTelemetryTest < Minitest::Test
     span = tracer.started.first.last
     refute span.attributes.key?("openinference.span.kind")
     refute span.attributes.key?("tool.name")
-    refute span.attributes.key?("input.value")
+    assert_equal JSON.generate(query: "safe"), span.attributes.fetch("input.value")
     assert_equal "Look up a value", span.attributes.fetch("gen_ai.tool.description")
     assert_equal "function", span.attributes.fetch("gen_ai.tool.type")
     refute span.attributes.key?("little_ghost.tool_input_schema")
     assert_equal JSON.generate(query: "safe"), span.attributes.fetch("gen_ai.tool.call.arguments")
-    refute span.attributes.key?("input.mime_type")
-    refute span.attributes.key?("output.value")
+    assert_equal "application/json", span.attributes.fetch("input.mime_type")
+    assert_equal JSON.generate(result: "found"), span.attributes.fetch("output.value")
+    assert_equal "application/json", span.attributes.fetch("output.mime_type")
     assert_equal JSON.generate(result: "found"), span.attributes.fetch("gen_ai.tool.call.result")
     assert_equal ["atlas", "main-agent"], span.attributes.fetch("tag.tags")
     assert_equal OpenTelemetry::Trace::Status::OK, span.status.code
@@ -365,6 +378,72 @@ class TracingOpenTelemetryTest < Minitest::Test
     refute span.attributes.key?("gen_ai.tool.call.result")
     assert_equal OpenTelemetry::Trace::Status::ERROR, span.status.code
     assert_equal "LittleGhost::ToolError", span.events.first.last.fetch("exception.type")
+  ensure
+    tracing&.shutdown
+  end
+
+  def test_every_model_span_exposes_common_input_and_output_including_tool_only_responses
+    tracer = Tracer.new
+    tracing = LittleGhost::Tracing::OpenTelemetry.new(tracer:)
+    first_input = JSON.generate([
+      {role: "system", content: [{type: "text", text: "delegate carefully"}]},
+      {role: "user", content: [{type: "text", text: "investigate"}]}
+    ])
+    tool_output = JSON.generate(
+      role: "assistant",
+      content: [{
+        type: "tool_use",
+        id: "call-1",
+        name: "spawn_subagent",
+        input: {kind: "evidence", task: "check logs", mode: "async"}
+      }]
+    )
+    second_input = JSON.generate([
+      {role: "system", content: [{type: "text", text: "delegate carefully"}]},
+      {role: "assistant", content: JSON.parse(tool_output).fetch("content")},
+      {
+        role: "tool",
+        content: [{
+          type: "tool_result",
+          tool_use_id: "call-1",
+          content: {status: "working", subagent_id: "evidence-1"}
+        }]
+      }
+    ])
+    final_output = JSON.generate(
+      role: "assistant",
+      content: [{type: "text", text: "The investigation is complete."}]
+    )
+
+    tracing.call(:model_start, operation_id: "model-1", model_id: "model", diagnostic_input: first_input)
+    tracing.call(
+      :model_stop,
+      operation_id: "model-1",
+      stop_reason: :tool_use,
+      diagnostic_output: tool_output
+    )
+    tracing.call(:model_start, operation_id: "model-2", model_id: "model", diagnostic_input: second_input)
+    tracing.call(
+      :model_stop,
+      operation_id: "model-2",
+      stop_reason: :end_turn,
+      diagnostic_output: final_output
+    )
+
+    spans = tracer.started.map(&:last)
+    assert_equal 2, spans.length
+    spans.each do |span|
+      assert_equal "application/json", span.attributes.fetch("input.mime_type")
+      assert_equal "application/json", span.attributes.fetch("output.mime_type")
+      assert span.attributes.key?("gen_ai.input.messages")
+      assert span.attributes.key?("gen_ai.output.messages")
+      assert_equal span.attributes.fetch("gen_ai.input.messages"), span.attributes.fetch("input.value")
+      assert_equal span.attributes.fetch("gen_ai.output.messages"), span.attributes.fetch("output.value")
+    end
+    tool_call = JSON.parse(spans.first.attributes.fetch("gen_ai.output.messages"))
+      .first.fetch("parts").first
+    assert_equal "tool_call", tool_call.fetch("type")
+    assert_equal "spawn_subagent", tool_call.fetch("name")
   ensure
     tracing&.shutdown
   end
@@ -410,16 +489,46 @@ class TracingOpenTelemetryTest < Minitest::Test
     tracer = Tracer.new
     tracing = LittleGhost::Tracing::OpenTelemetry.new(tracer:)
 
-    tracing.call(:subagent_start, {operation_id: "turn", kind: "explore"})
-    tracing.call(:agent_start, {operation_id: "agent", parent_operation_id: "turn", agent_id: "ExploreAgent"})
+    tracing.call(:agent_start, {
+      operation_id: "caller",
+      agent_id: "InvestigatorAgent",
+      diagnostic_input: JSON.generate("investigate")
+    })
+    tracing.call(:subagent_start, {
+      operation_id: "turn",
+      parent_operation_id: "caller",
+      subagent_id: "evidence-1",
+      kind: "explore"
+    })
+    tracing.call(:agent_stop, {
+      operation_id: "caller",
+      diagnostic_output: JSON.generate("delegation queued")
+    })
+    tracing.call(:agent_start, {
+      operation_id: "agent",
+      parent_operation_id: "turn",
+      agent_id: "ExploreAgent",
+      diagnostic_input: JSON.generate("check evidence")
+    })
+    tracing.call(:agent_stop, {
+      operation_id: "agent",
+      diagnostic_output: JSON.generate("evidence found")
+    })
     tracing.call(:subagent_stop, {operation_id: "turn", outcome: :cancelled})
 
-    subagent_name, _context, subagent_span = tracer.started.fetch(0)
-    agent_name, agent_context, = tracer.started.fetch(1)
-    assert_equal "invoke_agent explore", subagent_name
+    caller_name, _caller_context, caller_span = tracer.started.fetch(0)
+    subagent_name, subagent_context, subagent_span = tracer.started.fetch(1)
+    agent_name, agent_context, agent_span = tracer.started.fetch(2)
+    assert_equal "invoke_agent InvestigatorAgent", caller_name
+    assert_equal "invoke_agent evidence-1", subagent_name
     assert_equal "invoke_agent ExploreAgent", agent_name
+    refute_nil subagent_context
     refute_nil agent_context
     assert subagent_span.finished?
+    assert_equal JSON.generate("check evidence"), agent_span.attributes.fetch("input.value")
+    assert_equal JSON.generate("evidence found"), agent_span.attributes.fetch("output.value")
+    assert_equal JSON.generate("delegation queued"), caller_span.attributes.fetch("output.value")
+    assert_equal JSON.generate("investigate"), caller_span.attributes.fetch("input.value")
   ensure
     tracing&.shutdown
   end
