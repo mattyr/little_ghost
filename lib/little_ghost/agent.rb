@@ -518,7 +518,11 @@ module LittleGhost
     private
 
     def register_interruptions(interruptions)
-      @interruptions_mutex.synchronize { @active_interruptions << interruptions }
+      @close_mutex.synchronize do
+        raise InvocationError, "Agent is closed" if @closed
+
+        @interruptions_mutex.synchronize { @active_interruptions << interruptions }
+      end
     end
 
     def unregister_interruptions(interruptions)

@@ -235,6 +235,15 @@ class AgentInterruptTest < Minitest::Test
     agent&.close
   end
 
+  def test_closed_agent_rejects_a_new_invocation
+    agent = LittleGhost::Agent.new(model: SequencedModel.new(model_response("done")))
+    agent.close
+
+    error = assert_raises(LittleGhost::InvocationError) { agent.call("work") }
+
+    assert_equal "Agent is closed", error.message
+  end
+
   def self.model_response(content, stop_reason: :end_turn)
     LittleGhost::ModelResponse.new(
       message: LittleGhost::Message.new(role: :assistant, content:),
