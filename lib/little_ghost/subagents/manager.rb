@@ -1,6 +1,9 @@
 # frozen_string_literal: true
 
 require "securerandom"
+require "base64"
+require "digest"
+require "time"
 require_relative "definition"
 
 module LittleGhost
@@ -16,16 +19,31 @@ module LittleGhost
       DEFAULT_MAX_RESPONSE_CHARS = 100_000
       DEFAULT_WAIT_TIMEOUT = 20.0
       DEFAULT_CLOSE_TIMEOUT = 5.0
+      DEFAULT_LIST_LIMIT = 20
+      MAX_LIST_LIMIT = 100
       MAX_PROGRESS_CHARS = 160
       MAX_PROGRESS_SOURCE_CHARS = 4_096
       PROGRESS_SEPARATOR = /[\p{Z}\p{Cc}\p{Cf}]/
       CANCELLATION_POLL_INTERVAL = 0.05
+      REGISTRY_VERSION = 1
+      CURSOR_MAX_BYTES = 512
+      OPAQUE_ID_PATTERN = /\Asa_[0-9a-f]{32}\z/
+      UUID_PATTERN = /\A[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\z/
 
-      Turn = Struct.new(:number, :message, :completion, :operation_id, :parent_operation_id)
+      InterruptExchange = Struct.new(:message, :response, :complete)
+      Turn = Struct.new(:number, :message, :completion, :operation_id, :parent_operation_id, :interrupts)
       Identity = Struct.new(
         :subagent_id,
+        :conversation_id,
         :definition,
         :agent,
+        :session,
+        :durable,
+        :resumed,
+        :updated_at,
+        :committed_count,
+        :commit_id,
+        :commit_slot,
         :history,
         :state,
         :queue,
@@ -122,6 +140,24 @@ module LittleGhost
 
       attr_reader :definitions
 
+      class << self
+        def parent_link(session)
+          Digest::SHA256.hexdigest("#{session.actor_id}\0#{session.id}")
+        end
+
+        def registry_session_id(session)
+          "lg_subagent_registry_#{parent_link(session)}"
+        end
+
+        def conversation_session_id(conversation_id)
+          "lg_subagent_conversation_#{conversation_id}"
+        end
+
+        def commit_session_id(conversation_id, slot)
+          "lg_subagent_commit_#{conversation_id}_#{slot}"
+        end
+      end
+
       def initialize(
         definitions,
         max_concurrent: DEFAULT_MAX_CONCURRENT,
@@ -134,7 +170,9 @@ module LittleGhost
         close_timeout: DEFAULT_CLOSE_TIMEOUT,
         cancellation_token: Support::CancellationToken.new,
         deadline: nil,
-        observer: nil
+        observer: nil,
+        parent_session: nil,
+        id_generator: -> { "sa_#{SecureRandom.hex(16)}" }
       )
         validate_limit(:max_concurrent, max_concurrent)
         validate_limit(:max_identities, max_identities)
@@ -160,8 +198,14 @@ module LittleGhost
         @cancellation_token = cancellation_token.child
         @deadline = deadline
         @observer = observer
+        @parent_session = parent_session
+        @parent_link = parent_session && self.class.parent_link(parent_session)
+        @registry_session = parent_session && registry_session
+        @id_generator = id_generator
         @capacity = Capacity.new(max_concurrent)
         @mutex = Mutex.new
+        @registry_mutex = Mutex.new
+        @restore_mutex = Mutex.new
         @condition = ConditionVariable.new
         @identities = {}
         @identity_slots = 0
@@ -169,15 +213,17 @@ module LittleGhost
         @kind_counts = Hash.new(0)
         @cleanup_error = nil
         @closed = false
+        restore_identities
       end
 
-      def spawn(kind:, task:, mode:, parent_operation_id: nil)
+      def spawn(kind:, task:, mode:, parent_operation_id: nil, context: nil)
         validate_mode(mode)
         definition, subagent_id = reserve_identity(kind, task)
         return subagent_id unless definition
 
+        conversation_id = SecureRandom.uuid
         begin
-          agent = definition.factory.call(subagent_id)
+          agent = build_agent(definition, subagent_id, conversation_id)
           raise TypeError, "factory result must respond to call" unless agent.respond_to?(:call)
         rescue LittleGhost::CleanupError
           release_identity_reservation
@@ -196,8 +242,15 @@ module LittleGhost
 
         identity = Identity.new(
           subagent_id: subagent_id,
+          conversation_id: conversation_id,
           definition: definition,
           agent: agent,
+          session: definition.persist && @parent_session && child_session(conversation_id),
+          durable: definition.persist && !!@parent_session,
+          resumed: false,
+          updated_at: Time.now.utc.iso8601(6),
+          committed_count: 0,
+          commit_slot: 1,
           history: [].freeze,
           state: {},
           queue: [],
@@ -233,12 +286,13 @@ module LittleGhost
         turn.completion.value(cancellation_token: @cancellation_token, deadline: @deadline)
       end
 
-      def send_message(subagent_id:, message:, mode:, parent_operation_id: nil)
+      def send_message(subagent_id:, message:, mode:, parent_operation_id: nil, context: nil)
         validate_mode(mode)
         identity = @mutex.synchronize do
           ensure_open!
           fetch_identity!(subagent_id)
         end
+        restore_agent!(identity)
         queued = enqueue(
           identity,
           message,
@@ -262,6 +316,7 @@ module LittleGhost
           raise ToolError, "Subagent messages cannot exceed #{@max_message_chars} characters."
         end
 
+        exchange = InterruptExchange.new(message:, complete: false)
         identity, turn = @mutex.synchronize do
           ensure_open!
           value = fetch_identity!(subagent_id)
@@ -271,23 +326,49 @@ module LittleGhost
           unless value.status == "running"
             raise ToolError, "Subagent #{subagent_id.inspect} is not currently running."
           end
+          if value.current.interrupts.length >= @max_queued_turns_per_identity
+            raise ToolError, "Subagent #{subagent_id.inspect} has reached its interrupt limit."
+          end
+          interrupt_chars = value.current.interrupts.sum { |pending| pending.message.length }
+          if interrupt_chars + message.length > @max_message_chars
+            raise ToolError, "Subagent interrupt messages cannot exceed #{@max_message_chars} total characters."
+          end
 
+          value.current.interrupts << exchange
           [value, value.current]
         end
 
-        response = identity.agent.interrupt(
-          message,
-          cancellation_token:,
-          deadline:,
-          target_operation_id: turn.operation_id
-        )
+        response = begin
+          identity.agent.interrupt(
+            message,
+            cancellation_token:,
+            deadline:,
+            target_operation_id: turn.operation_id
+          )
+        rescue
+          @mutex.synchronize do
+            turn.interrupts.delete(exchange)
+            @condition.broadcast
+          end
+          raise
+        end
         truncated = response.length > @max_response_chars
+        returned_response = truncated ? response[0, @max_response_chars] : response
+        @mutex.synchronize do
+          used_response_chars = turn.interrupts.sum do |pending|
+            pending.equal?(exchange) ? 0 : pending.response.to_s.length
+          end
+          remaining_response_chars = [@max_response_chars - used_response_chars, 0].max
+          exchange.response = returned_response[0, remaining_response_chars]
+          exchange.complete = true
+          @condition.broadcast
+        end
         value = {
           status: "interrupted",
           subagent_id: identity.subagent_id,
           kind: identity.definition.kind,
           turn: turn.number,
-          response: truncated ? response[0, @max_response_chars] : response
+          response: returned_response
         }
         value[:response_truncated] = true if truncated
         value
@@ -324,9 +405,31 @@ module LittleGhost
         end
       end
 
-      def list
+      def list(kind: nil, limit: DEFAULT_LIST_LIMIT, cursor: nil)
+        unless limit.is_a?(Integer) && limit.between?(1, MAX_LIST_LIMIT)
+          raise ToolError, "limit must be between 1 and #{MAX_LIST_LIMIT}"
+        end
+        if kind && !definitions.key?(kind)
+          raise ToolError, "Unknown subagent kind: #{kind}"
+        end
+
         @mutex.synchronize do
-          {status: "ok", subagents: @identities.values.map { |identity| snapshot(identity, include_progress: true) }}
+          identities = @identities.values
+          identities = identities.select { |identity| identity.definition.kind == kind } if kind
+          identities = identities.sort_by { |identity| [identity.updated_at.to_s, identity.subagent_id] }.reverse
+          if cursor
+            boundary = decode_cursor(cursor)
+            identities = identities.drop_while do |identity|
+              ([identity.updated_at.to_s, identity.subagent_id] <=> boundary) >= 0
+            end
+          end
+          page = identities.first(limit)
+          value = {
+            status: "ok",
+            subagents: page.map { |identity| snapshot(identity, include_progress: true) }
+          }
+          value[:next_cursor] = encode_cursor(page.last) if identities.length > page.length
+          value
         end
       end
 
@@ -366,13 +469,15 @@ module LittleGhost
               kind: input.fetch("kind"),
               task: input.fetch("task"),
               mode: input.fetch("mode"),
+              context:,
               parent_operation_id: context&.agent_operation_id
             )
           end,
           Tool.define(
             name: "send_message_to_subagent",
             description: <<~DESCRIPTION.strip,
-              Send a follow-up turn to an existing subagent identity. Messages are processed in order after the
+              Send a follow-up turn to an existing active or persisted subagent identity. Persisted conversations
+              are restored transparently before the follow-up. Messages are processed in order after the
               current turn and never interrupt active work. Do not use this for status, steering, stopping, or
               finalization; use interrupt_subagent for an active subagent. Choose sync when the next step depends on
               the later turn, or async to enqueue it and continue immediately.
@@ -395,6 +500,7 @@ module LittleGhost
               subagent_id: input.fetch("subagent_id"),
               message: input.fetch("message"),
               mode: input.fetch("mode"),
+              context:,
               parent_operation_id: context&.agent_operation_id
             )
           end,
@@ -444,9 +550,26 @@ module LittleGhost
           ) { |input| manager.wait(subagent_ids: input["subagent_ids"]) },
           Tool.define(
             name: "list_subagents",
-            description: "List subagent identities, statuses, turns, and queued work without waiting.",
-            input_schema: {type: "object", additionalProperties: false}
-          ) { |_input| manager.list }
+            description: <<~DESCRIPTION.strip,
+              List active and persisted subagent conversations newest-first without restoring inactive agents.
+              Use kind to filter and cursor to continue bounded pages.
+            DESCRIPTION
+            input_schema: {
+              type: "object",
+              properties: {
+                kind: {type: "string", enum: definitions.keys},
+                limit: {type: "integer", minimum: 1, maximum: MAX_LIST_LIMIT},
+                cursor: {type: "string"}
+              },
+              additionalProperties: false
+            }
+          ) do |input|
+            manager.list(
+              kind: input["kind"],
+              limit: input.fetch("limit", DEFAULT_LIST_LIMIT),
+              cursor: input["cursor"]
+            )
+          end
         ]
         tools.first.define_method(:close) { manager.close }
         tools
@@ -459,7 +582,7 @@ module LittleGhost
           @closed = true
           @cancellation_token.cancel
           @identities.each_value do |identity|
-            next if %w[idle failed cancelled].include?(identity.status)
+            next if %w[idle failed cancelled persisting].include?(identity.status)
 
             turn = identity.current
             identity.status = "cancelled"
@@ -507,6 +630,294 @@ module LittleGhost
 
       private
 
+      def restore_identities
+        return unless @registry_session
+
+        registry = @registry_session.state
+        validate_session_metadata!(@registry_session, registry_metadata)
+        version = registry["version"] || registry[:version]
+        return unless version == REGISTRY_VERSION
+
+        conversations = registry["conversations"] || registry[:conversations]
+        return unless conversations.is_a?(Hash)
+
+        restored = conversations.filter_map do |subagent_id, record|
+          normalized = normalize_registry_record(subagent_id, record)
+          next unless normalized
+
+          definition = @definitions[normalized.fetch(:kind)]
+          next unless definition&.persist
+
+          conversation_id = normalized.fetch(:conversation_id)
+          session = child_session(conversation_id)
+          Identity.new(
+            subagent_id: normalized.fetch(:subagent_id),
+            conversation_id:,
+            definition:,
+            agent: nil,
+            session:,
+            durable: true,
+            resumed: true,
+            updated_at: normalized.fetch(:updated_at),
+            committed_count: normalized.fetch(:message_count),
+            commit_id: normalized.fetch(:commit_id),
+            commit_slot: normalized.fetch(:commit_slot),
+            history: [].freeze,
+            state: {},
+            queue: [],
+            status: "idle",
+            next_turn: normalized.fetch(:latest_turn) + 1,
+            latest_turn: normalized.fetch(:latest_turn),
+            latest_response_truncated: false,
+            progress_sequence: 0
+          )
+        end
+        restored.sort_by { |identity| [identity.updated_at, identity.subagent_id] }.reverse
+          .first(@max_identities)
+          .each { |identity| @identities[identity.subagent_id] = identity }
+      rescue ProtocolError
+        raise
+      rescue => error
+        raise ProtocolError, "Subagent conversation registry is invalid: #{error.class}"
+      end
+
+      def registry_session
+        Session.new(
+          id: self.class.registry_session_id(@parent_session),
+          actor_id: @parent_session.actor_id,
+          store: @parent_session.store,
+          metadata: registry_metadata
+        )
+      end
+
+      def child_session(conversation_id)
+        Session.new(
+          id: self.class.conversation_session_id(conversation_id),
+          actor_id: @parent_session.actor_id,
+          store: @parent_session.store,
+          metadata: child_metadata(conversation_id)
+        )
+      end
+
+      def commit_session(conversation_id, slot, commit_id, message_count)
+        Session.new(
+          id: self.class.commit_session_id(conversation_id, slot),
+          actor_id: @parent_session.actor_id,
+          store: @parent_session.store,
+          metadata: commit_metadata(conversation_id, commit_id, message_count)
+        )
+      end
+
+      def load_committed_state(identity)
+        commit = commit_session(
+          identity.conversation_id,
+          identity.commit_slot,
+          identity.commit_id,
+          identity.committed_count
+        )
+        snapshot = commit.load
+        validate_session_metadata!(
+          commit,
+          commit_metadata(identity.conversation_id, identity.commit_id, identity.committed_count)
+        )
+        raise ProtocolError, "Subagent committed state snapshot is missing" unless snapshot
+
+        snapshot.fetch(:state)
+      end
+
+      def build_agent(definition, subagent_id, conversation_id)
+        if definition.accepts_conversation_id
+          definition.factory.call(subagent_id, conversation_id)
+        else
+          definition.factory.call(subagent_id)
+        end
+      end
+
+      def restore_agent!(identity)
+        return if identity.agent
+
+        agent = nil
+        @restore_mutex.synchronize do
+          return if identity.agent
+
+          snapshot = identity.session.load
+          validate_session_metadata!(identity.session, child_metadata(identity.conversation_id))
+          committed_state = load_committed_state(identity)
+          messages = snapshot&.fetch(:messages) || []
+          snapshot_state = snapshot&.fetch(:state) || {}
+          if messages.length < identity.committed_count
+            raise ProtocolError, "Subagent conversation is shorter than its committed boundary"
+          end
+          identity.history = messages.first(identity.committed_count).freeze
+          identity.state = mutable_copy(committed_state)
+          if messages.length != identity.committed_count ||
+              snapshot_state != committed_state
+            identity.session.replace(
+              messages: identity.history,
+              state: identity.state,
+              metadata: child_metadata(identity.conversation_id)
+            )
+          end
+          agent = build_agent(identity.definition, identity.subagent_id, identity.conversation_id)
+          raise TypeError, "factory result must respond to call" unless agent.respond_to?(:call)
+
+          @mutex.synchronize do
+            ensure_open!
+            identity.agent = agent
+          end
+        end
+      rescue LittleGhost::CleanupError
+        agent.close if agent&.respond_to?(:close)
+        raise
+      rescue => error
+        agent.close if agent&.respond_to?(:close)
+        warn_failure("factory", identity.subagent_id, error)
+        emit_factory_failure(identity.definition, identity.subagent_id, error)
+        raise ToolError, "Subagent could not be restored."
+      end
+
+      def persist_registry(identity, message_count:, state:)
+        return unless @registry_session
+
+        @registry_mutex.synchronize do
+          commit_id = SecureRandom.uuid
+          commit_slot = (identity.commit_slot == 0) ? 1 : 0
+          commit = commit_session(identity.conversation_id, commit_slot, commit_id, message_count)
+          commit.replace(
+            messages: [],
+            state:,
+            metadata: commit_metadata(identity.conversation_id, commit_id, message_count)
+          )
+          @registry_session.synchronize do
+            current = registry_session
+            registry = current.state
+            validate_session_metadata!(current, registry_metadata)
+            registry = {"version" => REGISTRY_VERSION, "conversations" => {}} unless
+              (registry["version"] || registry[:version]) == REGISTRY_VERSION
+            conversations = registry["conversations"] ||= {}
+            identity.updated_at = Time.now.utc.iso8601(6)
+            conversations[identity.subagent_id] = {
+              "conversation_id" => identity.conversation_id,
+              "kind" => identity.definition.kind,
+              "latest_turn" => identity.current.number,
+              "updated_at" => identity.updated_at,
+              "message_count" => message_count,
+              "commit_id" => commit_id,
+              "commit_slot" => commit_slot
+            }
+            retained = conversations.filter_map do |subagent_id, record|
+              normalized = normalize_registry_record(subagent_id, record)
+              definition = normalized && @definitions[normalized.fetch(:kind)]
+              [subagent_id, record] if normalized && definition&.persist
+            end.sort_by do |subagent_id, record|
+              [(record["updated_at"] || record[:updated_at]).to_s, subagent_id]
+            end.reverse.first(@max_identities).to_h
+            registry["conversations"] = retained
+            current.replace(messages: [], state: registry, metadata: registry_metadata)
+            @registry_session = current
+            identity.commit_id = commit_id
+            identity.commit_slot = commit_slot
+          end
+        end
+      end
+
+      def registry_metadata
+        {
+          "little_ghost_kind" => "subagent_registry",
+          "little_ghost_parent_link" => @parent_link
+        }
+      end
+
+      def child_metadata(conversation_id)
+        {
+          "little_ghost_kind" => "subagent_conversation",
+          "little_ghost_parent_link" => @parent_link,
+          "little_ghost_conversation_id" => conversation_id
+        }
+      end
+
+      def commit_metadata(conversation_id, commit_id, message_count)
+        {
+          "little_ghost_kind" => "subagent_commit",
+          "little_ghost_parent_link" => @parent_link,
+          "little_ghost_conversation_id" => conversation_id,
+          "little_ghost_commit_id" => commit_id,
+          "little_ghost_message_count" => message_count
+        }
+      end
+
+      def validate_session_metadata!(session, expected)
+        actual = session.metadata
+        return if expected.all? { |key, value| actual[key] == value || actual[key.to_sym] == value }
+
+        raise ProtocolError, "Subagent session metadata does not match its parent conversation"
+      end
+
+      def normalize_registry_record(subagent_id, record)
+        return unless subagent_id.is_a?(String) && subagent_id.match?(OPAQUE_ID_PATTERN)
+        return unless record.is_a?(Hash)
+
+        conversation_id = record["conversation_id"] || record[:conversation_id]
+        kind = record["kind"] || record[:kind]
+        latest_turn = record["latest_turn"] || record[:latest_turn]
+        updated_at = record["updated_at"] || record[:updated_at]
+        message_count = record["message_count"] || record[:message_count]
+        commit_id = record["commit_id"] || record[:commit_id]
+        commit_slot = record["commit_slot"] || record[:commit_slot]
+        return unless conversation_id.is_a?(String) && conversation_id.match?(UUID_PATTERN)
+        return unless commit_id.is_a?(String) && commit_id.match?(UUID_PATTERN)
+        return unless kind.is_a?(String) && latest_turn.is_a?(Integer) && latest_turn.positive?
+        return unless message_count.is_a?(Integer) && message_count.positive?
+        return unless [0, 1].include?(commit_slot)
+
+        Time.iso8601(updated_at)
+        {
+          subagent_id:,
+          conversation_id:,
+          kind:,
+          latest_turn:,
+          updated_at:,
+          message_count:,
+          commit_id:,
+          commit_slot:
+        }
+      rescue ArgumentError, TypeError
+        nil
+      end
+
+      def mutable_copy(value)
+        case value
+        when Hash
+          value.to_h { |key, child| [mutable_copy(key), mutable_copy(child)] }
+        when Array
+          value.map { |child| mutable_copy(child) }
+        when String
+          value.dup
+        else
+          value
+        end
+      end
+
+      def encode_cursor(identity)
+        Base64.urlsafe_encode64(
+          JSON.generate([identity.updated_at.to_s, identity.subagent_id]),
+          padding: false
+        )
+      end
+
+      def decode_cursor(cursor)
+        raise ToolError, "Invalid subagent list cursor" if String(cursor).bytesize > CURSOR_MAX_BYTES
+
+        value = JSON.parse(Base64.urlsafe_decode64(String(cursor)))
+        unless value.is_a?(Array) && value.length == 2 && value.all? { |part| part.is_a?(String) }
+          raise ToolError, "Invalid subagent list cursor"
+        end
+
+        value
+      rescue ArgumentError, JSON::ParserError
+        raise ToolError, "Invalid subagent list cursor"
+      end
+
       def reserve_identity(kind, task)
         @mutex.synchronize do
           ensure_open!
@@ -521,7 +932,21 @@ module LittleGhost
           @identity_slots += 1
           @turn_count += 1
           @kind_counts[kind] += 1
-          [definition, "#{kind}-#{@kind_counts[kind]}"]
+          subagent_id = nil
+          100.times do
+            candidate = String(@id_generator.call)
+            durable_id_invalid = definition.persist && @parent_session && !candidate.match?(OPAQUE_ID_PATTERN)
+            unless candidate.empty? || @identities.key?(candidate) || durable_id_invalid
+              subagent_id = candidate
+              break
+            end
+          end
+          unless subagent_id
+            @identity_slots -= 1
+            @turn_count -= 1
+            raise Error, "Subagent identity generator did not produce a unique id"
+          end
+          [definition, subagent_id]
         end
       end
 
@@ -558,7 +983,8 @@ module LittleGhost
             message: message,
             completion: Completion.new,
             operation_id: SecureRandom.uuid,
-            parent_operation_id:
+            parent_operation_id:,
+            interrupts: []
           )
           identity.next_turn += 1
           @turn_count += 1 if count_turn
@@ -619,6 +1045,7 @@ module LittleGhost
                   options[:parent_operation_id] = turn.operation_id
                   options[:history] = identity.history
                   options[:context] = identity.state
+                  options[:conversation_id] = identity.conversation_id
                 end
                 result = if identity.agent.is_a?(Agent)
                   run_agent_turn(identity, turn, options)
@@ -733,14 +1160,25 @@ module LittleGhost
         end
         truncated = serialized_response.length > @max_response_chars
         response = serialized_response[0, @max_response_chars] if truncated
+        persisted_response = response.is_a?(String) ? response : serialized_response
 
-        @mutex.synchronize do
+        interrupt_exchanges = @mutex.synchronize do
+          while identity.durable && turn.interrupts.any? { |exchange| !exchange.complete } && !@closed
+            @condition.wait(@mutex, CANCELLATION_POLL_INTERVAL)
+          end
           if @closed
             turn.completion.resolve(cancelled_turn(identity, turn))
-            return
+            next nil
           end
 
-          retain_agent_conversation(identity, result)
+          identity.status = "persisting" if identity.durable
+          turn.interrupts.select(&:complete).map { |exchange| [exchange.message, exchange.response] }
+        end
+        return unless interrupt_exchanges
+
+        retain_agent_conversation(identity, turn, result, persisted_response, interrupt_exchanges)
+
+        @mutex.synchronize do
           identity.latest_turn = turn.number
           identity.latest_response = response
           identity.latest_response_truncated = truncated
@@ -762,16 +1200,47 @@ module LittleGhost
         end
       end
 
-      def retain_agent_conversation(identity, result)
-        return unless identity.agent.is_a?(Agent) && result.is_a?(RunResult)
+      def retain_agent_conversation(identity, turn, result, persisted_response, interrupt_exchanges)
+        if identity.durable
+          state = result.is_a?(RunResult) ? result.state : identity.state
+          messages = [Message.new(role: :user, content: turn.message)]
+          interrupt_exchanges.each do |message, response|
+            messages << Message.new(role: :user, content: message)
+            messages << Message.new(role: :assistant, content: response)
+          end
+          messages << Message.new(role: :assistant, content: persisted_response)
+          identity.session.append(messages:, state:)
+          message_count = identity.session.history.length
+          persist_registry(identity, message_count:, state:)
+          identity.committed_count = message_count
+          project_conversation(identity, turn, messages)
+        end
+        if identity.agent.is_a?(Agent) && result.is_a?(RunResult)
+          identity.history = result.messages.reject { |message| message.role == :system }.freeze
+          identity.state = result.state
+        end
+      end
 
-        identity.history = result.messages.reject { |message| message.role == :system }.freeze
-        identity.state = result.state
+      def project_conversation(identity, turn, messages)
+        identity.session.store.project_conversation(
+          identity.session.id,
+          messages:,
+          actor_id: identity.session.actor_id,
+          metadata: {
+            "little_ghost_parent_link" => @parent_link,
+            "little_ghost_conversation_id" => identity.conversation_id,
+            "little_ghost_subagent_id" => identity.subagent_id,
+            "little_ghost_kind" => identity.definition.kind,
+            "little_ghost_turn" => turn.number
+          }
+        )
+      rescue => error
+        warn_failure("projection", identity.subagent_id, error)
       end
 
       def fail_turn(identity, turn, error, propagate: false)
         @mutex.synchronize do
-          return if @closed
+          return if @closed && identity.status != "persisting"
 
           warn_failure("turn", identity.subagent_id, error)
           identity.latest_turn = turn.number
@@ -886,10 +1355,18 @@ module LittleGhost
       end
 
       def selected_identities(subagent_ids)
-        return @identities.values if subagent_ids.nil?
+        if subagent_ids.nil?
+          return @identities.values.reject { |identity| identity.resumed && identity.agent.nil? }
+        end
         raise ToolError, "subagent_ids must be unique" if subagent_ids.uniq.length != subagent_ids.length
 
-        subagent_ids.map { |subagent_id| fetch_identity!(subagent_id) }
+        subagent_ids.map do |subagent_id|
+          identity = fetch_identity!(subagent_id)
+          if identity.resumed && identity.agent.nil?
+            raise ToolError, "Subagent #{subagent_id.inspect} is not active in this invocation."
+          end
+          identity
+        end
       end
 
       def fetch_identity!(subagent_id)
@@ -899,12 +1376,14 @@ module LittleGhost
       def snapshot(identity, include_response: false, include_progress: false)
         value = {
           subagent_id: identity.subagent_id,
+          conversation_id: identity.conversation_id,
           kind: identity.definition.kind,
           status: identity.status,
           current_turn: identity.current_turn,
           latest_turn: identity.latest_turn,
           queued_turns: identity.queue.length
         }
+        value[:resumed] = true if identity.resumed
         if include_response && identity.latest_response
           value[:response] = identity.latest_response
           value[:response_truncated] = true if identity.latest_response_truncated
@@ -929,6 +1408,8 @@ module LittleGhost
         value = {
           event: event,
           subagent_id: identity.subagent_id,
+          conversation_id: identity.conversation_id,
+          resumed: identity.resumed,
           kind: identity.definition.kind,
           status: identity.status
         }

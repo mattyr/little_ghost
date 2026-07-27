@@ -19,6 +19,12 @@ module LittleGhost
       raise NotImplementedError
     end
 
+    # Stores may use this hook to expose a clean conversational view without
+    # changing the canonical session transcript.
+    def project_conversation(_id, messages:, metadata:, actor_id: nil)
+      nil
+    end
+
     def synchronize(id, actor_id: nil)
       key = [actor_id&.to_s, id.to_s].freeze
       entry = @session_locks_mutex.synchronize do

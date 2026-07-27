@@ -282,6 +282,8 @@ module LittleGhost
       event = value[:event] || value["event"]
       attributes = {
         subagent_id: value[:subagent_id] || value["subagent_id"],
+        conversation_id: value[:conversation_id] || value["conversation_id"],
+        resumed: value[:resumed] || value["resumed"],
         kind: value[:kind] || value["kind"],
         turn: value[:turn] || value["turn"],
         status: value[:status] || value["status"],

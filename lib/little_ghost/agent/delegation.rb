@@ -8,7 +8,7 @@ module LittleGhost
       end
 
       module ClassMethods
-        def subagent(agent_class, kind: nil, description: nil, model: nil, tools: nil, factory: nil)
+        def subagent(agent_class, kind: nil, description: nil, model: nil, tools: nil, factory: nil, persist: true)
           validate_delegated_tools!(tools)
           declaration = Support.immutable({
             agent: agent_class,
@@ -16,7 +16,8 @@ module LittleGhost
             description: description || agent_class.description,
             model:,
             tools:,
-            factory:
+            factory:,
+            persist:
           })
           @subagent_declarations = [*subagent_declarations, declaration].freeze
         end

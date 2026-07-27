@@ -112,6 +112,7 @@ class AgentCoreMemoryTest < Minitest::Test
       {string_value: LittleGhost::SessionStores::AgentCoreMemory::MESSAGE_EVENT_TYPE},
       client.created.first.dig(:metadata, LittleGhost::SessionStores::AgentCoreMemory::EVENT_TYPE_METADATA_KEY)
     )
+    assert_equal "SKIP", client.created.first.fetch(:extraction_mode)
     persisted = client.created.first.dig(:payload, 0, :conversational, :content, :text)
     assert persisted.start_with?(LittleGhost::SessionStores::AgentCoreMemory::MESSAGE_PREFIX)
     assert_includes persisted, "again"
@@ -124,6 +125,40 @@ class AgentCoreMemoryTest < Minitest::Test
     assert(client.listed.all? do |parameters|
       parameters.fetch(:max_results) == LittleGhost::SessionStores::AgentCoreMemory::LIST_PAGE_SIZE
     end)
+  end
+
+  def test_projects_clean_subagent_dialogue_with_link_metadata
+    client = Client.new
+    store = LittleGhost::SessionStores::AgentCoreMemory.new(memory_id: "memory", client:)
+    metadata = {
+      "little_ghost_parent_link" => "parent-link",
+      "little_ghost_conversation_id" => "conversation",
+      "little_ghost_subagent_id" => "subagent",
+      "little_ghost_kind" => "research",
+      "little_ghost_turn" => 2
+    }
+
+    store.project_conversation(
+      "child",
+      actor_id: "actor",
+      messages: [
+        LittleGhost::Message.new(role: :user, content: "Investigate this"),
+        LittleGhost::Message.new(role: :assistant, content: "Here is the result")
+      ],
+      metadata:
+    )
+
+    event = client.created.fetch(0)
+    assert_equal ["Investigate this", "Here is the result"],
+      event.fetch(:payload).map { |payload| payload.dig(:conversational, :content, :text) }
+    assert_equal "SKIP", event.fetch(:extraction_mode)
+    assert_equal(
+      {string_value: LittleGhost::SessionStores::AgentCoreMemory::CONVERSATION_PROJECTION_EVENT_TYPE},
+      event.dig(:metadata, LittleGhost::SessionStores::AgentCoreMemory::EVENT_TYPE_METADATA_KEY)
+    )
+    metadata.each do |key, value|
+      assert_equal({string_value: value.to_s}, event.dig(:metadata, key))
+    end
   end
 
   def test_rejects_non_little_ghost_session_events

@@ -22,6 +22,14 @@ module LittleGhost
       STRING_KEY_PREFIX = "little_ghost:string:"
       MESSAGE_EVENT_TYPE = "message_v4"
       CHECKPOINT_EVENT_TYPE = "checkpoint_v4"
+      CONVERSATION_PROJECTION_EVENT_TYPE = "conversation_projection_v1"
+      PROJECTION_METADATA_KEYS = %w[
+        little_ghost_parent_link
+        little_ghost_conversation_id
+        little_ghost_subagent_id
+        little_ghost_kind
+        little_ghost_turn
+      ].freeze
       # AgentCore's SDK timestamp transport cannot preserve sub-second ordering.
       EVENT_TIMESTAMP_INCREMENT = 1
       LIST_PAGE_SIZE = 100
@@ -122,6 +130,33 @@ module LittleGhost
           persist_commit(actor, session, plan:, checkpoint:, previous_timestamp: head&.fetch(:event_timestamp))
         end
         {messages:, state:, metadata:}
+      end
+
+      def project_conversation(id, messages:, metadata:, actor_id: nil)
+        payload = persistable_messages(messages).filter_map do |message|
+          text = message.text
+          next if text.empty?
+
+          conversational_payload(text, message.role)
+        end
+        return if payload.empty?
+
+        event_metadata = {
+          EVENT_TYPE_METADATA_KEY => {string_value: CONVERSATION_PROJECTION_EVENT_TYPE}
+        }
+        PROJECTION_METADATA_KEYS.each do |key|
+          value = metadata[key] || metadata[key.to_sym]
+          event_metadata[key] = {string_value: value.to_s} unless value.nil?
+        end
+        @client.create_event(
+          memory_id: @memory_id,
+          actor_id: self.class.safe_id(required_actor_id(actor_id)),
+          session_id: self.class.safe_id(id),
+          event_timestamp: next_event_timestamp(nil),
+          payload:,
+          metadata: event_metadata,
+          extraction_mode: "SKIP"
+        )
       end
 
       private
@@ -605,7 +640,8 @@ module LittleGhost
           payload: event.map do |message_payload|
             conversational_payload(message_payload.fetch(:text), message_payload.fetch(:role))
           end,
-          metadata: event_metadata(MESSAGE_EVENT_TYPE, generation, commit_id)
+          metadata: event_metadata(MESSAGE_EVENT_TYPE, generation, commit_id),
+          extraction_mode: "SKIP"
         )
         timestamp
       end

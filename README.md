@@ -218,6 +218,18 @@ An agent can be exposed as a normal tool with `agent_as_tool`. A `subagent` decl
 
 `Agent#interrupt` synchronously adds a message to the next model request of one active invocation and returns only the ordinary text from that model response. Tool calls from the same response stay inside the interrupted agent and continue its current run. A text-only response completes the run normally. The subagent manager exposes the same behavior as `interrupt_subagent`; `send_message_to_subagent` remains the separate FIFO mechanism for a later turn after active work finishes.
 
+Subagent conversations are durable by default when the application has a `SessionStore`. Each spawned conversation receives a stable, opaque subagent ID. LittleGhost owns a separate derived registry session, a compact child transcript, and bounded two-slot committed-state snapshots; invocation context cannot replace the registry. Store-visible parent links are SHA-256 pseudonyms rather than raw parent session IDs. A later application invocation can discover inactive conversations with `list_subagents` and pass the same ID to `send_message_to_subagent`; LittleGhost restores the child transparently. Listing is newest-first, supports kind filtering and bounded cursor pagination, retains at most the configured identity limit, and does not activate persisted children. `wait_for_subagents` and `interrupt_subagent` operate only on work active in the current invocation.
+
+The durable transcript is intentionally compact. LittleGhost persists delegated tasks and follow-ups, successful interrupt message/ordinary-text response pairs, and each successful turn's final returned response; structured values use their serialized JSON representation. Internal tool calls, reasoning, progress updates, and other execution details remain inside the live child. A child transcript and state snapshot become visible only when the framework registry advances their committed message-count boundary. Failed registry writes can leave unreachable storage, but restoration never exposes it and repairs an orphaned child suffix back to the last committed boundary. Failed or cancelled turns therefore do not expose a partial exchange. A child can declare subagents of its own; their registries and derived sessions follow the same rules, so nested conversations also resume across invocations.
+
+Durability is an application declaration, not a model-controlled spawn option. Use `persist: false` only for a child that must remain invocation-local:
+
+```ruby
+class CoordinatorAgent < LittleGhost::Agent
+  subagent ScratchAgent, kind: "scratch", persist: false
+end
+```
+
 Applications that discover agents at runtime can use `subagents { |run| definitions }`, returning `LittleGhost::Subagents::Definition` objects. Static `subagent` declarations take precedence over discovered definitions with the same kind, and all definitions share one manager and one control-tool surface.
 
 Agents that must return machine-readable data can declare a JSON-schema result contract:

@@ -9,9 +9,9 @@ module LittleGhost
       @resolve_agent = resolve_agent
     end
 
-    def build(agent_class_or_name = @primary_agent, run:, model: nil, tools: [])
+    def build(agent_class_or_name = @primary_agent, run:, model: nil, tools: [], conversation_id: nil)
       agent_class = @resolve_agent.call(agent_class_or_name)
-      build_agent(agent_class, run:, model:, tools:)
+      build_agent(agent_class, run:, model:, tools:, conversation_id:)
     end
 
     private
@@ -29,9 +29,9 @@ module LittleGhost
       )
     end
 
-    def build_agent(agent_class, run:, model:, tools:)
+    def build_agent(agent_class, run:, model:, tools:, conversation_id: nil)
       configured_tools = Array(tools).dup
-      configured_tools.concat(delegation_tools(agent_class, run))
+      configured_tools.concat(delegation_tools(agent_class, run, conversation_id:))
       resolved_model = model || application.model_for(agent_class, run)
       transferred = true
       instantiate(agent_class, run:, model: resolved_model, tools: configured_tools)
@@ -40,9 +40,9 @@ module LittleGhost
       raise
     end
 
-    def delegation_tools(agent_class, run)
+    def delegation_tools(agent_class, run, conversation_id:)
       tools = agent_tools(agent_class, run)
-      tools.concat(subagent_tools(agent_class, run))
+      tools.concat(subagent_tools(agent_class, run, conversation_id:))
     rescue
       close_tools(tools)
       raise
@@ -69,14 +69,20 @@ module LittleGhost
       raise
     end
 
-    def subagent_tools(agent_class, run)
+    def subagent_tools(agent_class, run, conversation_id:)
       definitions = agent_class.subagent_declarations.map do |declaration|
         Subagents::Definition.new(
           kind: declaration.fetch(:kind),
           description: declaration.fetch(:description),
-          factory: lambda do |subagent_id|
+          persist: declaration.fetch(:persist, true),
+          accepts_conversation_id: true,
+          factory: lambda do |subagent_id, child_conversation_id = nil|
             factory = declaration[:factory]
-            factory ? factory.call(subagent_id, run) : declared_agent(declaration, run)
+            if factory
+              factory.call(subagent_id, run)
+            else
+              declared_agent(declaration, run, conversation_id: child_conversation_id)
+            end
           end
         )
       end
@@ -92,18 +98,20 @@ module LittleGhost
 
       Subagents::Manager.new(
         definitions,
+        parent_session: conversation_id ? application.open_subagent_session(run, conversation_id) : run.session,
         cancellation_token: run.cancellation_token,
         deadline: run.invocation.deadline_at,
         observer: ->(event) { run.publish(:subagent, event:) }
       ).tools
     end
 
-    def declared_agent(declaration, run)
+    def declared_agent(declaration, run, conversation_id: nil)
       agent_class = @resolve_agent.call(declaration.fetch(:agent))
       build_agent(
         agent_class, run:,
         model: resolve(declaration[:model], run),
-        tools: Array(resolve(declaration[:tools], run))
+        tools: Array(resolve(declaration[:tools], run)),
+        conversation_id:
       )
     end
 

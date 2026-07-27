@@ -3,7 +3,7 @@
 module LittleGhost
   class RunContext
     attr_reader :state, :cancellation_token, :deadline, :instrumentation, :metadata,
-      :agent_operation_id
+      :agent_operation_id, :conversation_id
 
     def initialize(
       state: {},
@@ -11,14 +11,21 @@ module LittleGhost
       deadline: nil,
       instrumentation: nil,
       metadata: {},
-      checkpoint: nil
+      checkpoint: nil,
+      conversation_id: nil
     )
+      if conversation_id
+        conversation_id = String(conversation_id)
+        raise ArgumentError, "conversation_id cannot be empty" if conversation_id.empty?
+        conversation_id = conversation_id.dup.freeze
+      end
       @state = state
       @cancellation_token = cancellation_token
       @deadline = deadline
       @instrumentation = instrumentation || Support::Instrumentation.new
       @metadata = metadata.freeze
       @checkpoint = checkpoint
+      @conversation_id = conversation_id
       @usage = Usage.new
       @usage_mutex = Mutex.new
       @structured_result = nil
