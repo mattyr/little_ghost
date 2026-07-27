@@ -596,10 +596,11 @@ class ApplicationTest < Minitest::Test
 
     with_application(agent:) do |application, provider|
       run = application.build_run(message: "hello", dynamic: true)
-      built_agent = application.build_agent(run:)
+      built_agent = application.build_agent(run:, agent_path: "/root/dynamic_child")
 
       assert_equal %w[static dynamic], built_agent.tool_registry.names
       assert built_agent.tool_registry.all? { |tool| tool.run }
+      assert_equal "/root/dynamic_child", built_agent.agent_path
     end
   end
 
@@ -1146,7 +1147,7 @@ class ApplicationTest < Minitest::Test
       run = application.build_run(message: "hello")
       agent = application.build_agent(run:)
       result = agent.tool_registry.fetch("spawn_subagent").execute({
-        "kind" => "static", "task" => "inspect", "mode" => "sync"
+        "kind" => "static", "task_name" => "inspect_source", "task" => "inspect", "mode" => "sync"
       })
 
       assert result.success?
@@ -1155,6 +1156,63 @@ class ApplicationTest < Minitest::Test
     ensure
       agent&.close
       run&.close
+    end
+  end
+
+  def test_builder_binds_canonical_path_and_relays_delegated_activity
+    child = Class.new(LittleGhost::Agent) do
+      model "main"
+      description "Child"
+      system_prompt "Child"
+      before_invocation do
+        delegation_activity.publish
+      end
+    end
+    parent = Class.new(LittleGhost::Agent) do
+      model "main"
+      system_prompt "Parent"
+      subagent child, kind: "child"
+    end
+    parent_turn = 0
+    provider = Object.new
+    provider.define_singleton_method(:stream) do |request|
+      system = request.messages.find { |message| message.role == :system }&.text
+      parent_turn += 1 if system == "Parent"
+      content, stop_reason = if system == "Parent" && parent_turn == 1
+        [
+          LittleGhost::Content::ToolUse.new(
+            id: "spawn-1",
+            name: "spawn_subagent",
+            input: {
+              "kind" => "child",
+              "task_name" => "inspect_activity",
+              "task" => "inspect",
+              "mode" => "sync"
+            }
+          ),
+          :tool_use
+        ]
+      else
+        ["done", :end_turn]
+      end
+      response = LittleGhost::ModelResponse.new(
+        message: LittleGhost::Message.new(role: :assistant, content:),
+        stop_reason:,
+        usage: LittleGhost::Usage.new
+      )
+      [LittleGhost::StreamEvent.build(:message_stop, response:)].each
+    end
+
+    with_application(agent: parent, provider:) do |application|
+      run = application.build_run(message: "start")
+      events = []
+      run.each { |event| events << event }
+      activity = events.filter_map do |event|
+        event.data[:event] if event.type == :subagent && event.data.dig(:event, :event) == "activity"
+      end
+
+      assert run.completed?
+      assert activity.any? { |event| event[:subagent_id] == "/root/inspect_activity" }
     end
   end
 
@@ -1174,14 +1232,22 @@ class ApplicationTest < Minitest::Test
       parsed = latest_result && JSON.parse(latest_result.content)
       name, input, text = case [system, count]
       when ["Parent", 1]
-        ["spawn_subagent", {"kind" => "child", "task" => "investigate", "mode" => "async"}, nil]
+        [
+          "spawn_subagent",
+          {"kind" => "child", "task_name" => "investigate", "task" => "investigate", "mode" => "async"},
+          nil
+        ]
       when ["Parent", 2]
         child_id = parsed.dig("subagent", "subagent_id")
         ["wait_for_subagents", {"subagent_ids" => [child_id]}, nil]
       when ["Parent", 4]
         ["send_message_to_subagent", {"subagent_id" => child_id, "message" => "continue", "mode" => "sync"}, nil]
       when ["Child", 1]
-        ["spawn_subagent", {"kind" => "grandchild", "task" => "inspect", "mode" => "async"}, nil]
+        [
+          "spawn_subagent",
+          {"kind" => "grandchild", "task_name" => "inspect", "task" => "inspect", "mode" => "async"},
+          nil
+        ]
       when ["Child", 2]
         grandchild_id = parsed.dig("subagent", "subagent_id")
         ["wait_for_subagents", {"subagent_ids" => [grandchild_id]}, nil]
@@ -1234,8 +1300,8 @@ class ApplicationTest < Minitest::Test
 
       assert first.completed?
       assert second.completed?
-      assert_match(/\Asa_[0-9a-f]{32}\z/, child_id)
-      assert_match(/\Asa_[0-9a-f]{32}\z/, grandchild_id)
+      assert_equal "/root/investigate", child_id
+      assert_equal "/root/investigate/inspect", grandchild_id
       assert_equal 2, counts.fetch("Grandchild")
     end
   end

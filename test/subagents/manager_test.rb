@@ -70,13 +70,36 @@ class SubagentManagerTest < Minitest::Test
       @interruptions = []
     end
 
-    def interrupt(message, cancellation_token:, deadline:, target_operation_id:)
+    def interrupt_response(message, cancellation_token:, deadline:, target_operation_id:)
       cancellation_token.raise_if_cancelled!
       raise LittleGhost::DeadlineExceededError, "deadline" if deadline && Time.now >= deadline
 
       @interruptions << message
       @interrupt_target = target_operation_id
-      "Still investigating"
+      LittleGhost::AgentInterruptions::Response.new(text: "Still investigating", tool_calls: false)
+    end
+  end
+
+  class ActivityRelay
+    def initialize
+      @observers = []
+    end
+
+    def subscribe(&observer)
+      @observers << observer
+    end
+
+    def publish
+      @observers.each(&:call)
+    end
+  end
+
+  class DelegatingAgent < ControlledAgent
+    attr_reader :delegation_activity
+
+    def initialize(...)
+      super
+      @delegation_activity = ActivityRelay.new
     end
   end
 
@@ -89,19 +112,111 @@ class SubagentManagerTest < Minitest::Test
     assert_same factory, definition.factory
   end
 
-  def test_sync_spawns_overlap_and_create_fresh_monotonic_identities
+  def test_model_chosen_task_names_form_strict_hierarchical_agent_paths
+    manager = LittleGhost::Subagents::Manager.new(
+      [definition_for(->(_id) { ControlledAgent.new })],
+      parent_agent_path: "/root/investigate_customer"
+    )
+
+    first = manager.spawn(
+      kind: "explore",
+      task_name: "inspect_source",
+      task: "inspect",
+      mode: "sync"
+    )
+    duplicate = assert_raises(LittleGhost::ToolError) do
+      manager.spawn(
+        kind: "explore",
+        task_name: "inspect_source",
+        task: "inspect again",
+        mode: "sync"
+      )
+    end
+
+    assert_equal "/root/investigate_customer/inspect_source", first.fetch(:subagent_id)
+    assert_includes duplicate.message, "already exists"
+    assert_includes duplicate.message, "different task_name"
+  ensure
+    manager&.close
+  end
+
+  def test_agent_path_is_reserved_while_its_factory_is_building
+    started = Queue.new
+    release = Queue.new
+    manager = LittleGhost::Subagents::Manager.new([
+      definition_for(lambda { |_id|
+        started << true
+        release.pop
+        ControlledAgent.new
+      })
+    ])
+    first = Thread.new do
+      manager.spawn(
+        kind: "explore",
+        task_name: "inspect_source",
+        task: "inspect",
+        mode: "sync"
+      )
+    end
+    started.pop
+
+    duplicate = assert_raises(LittleGhost::ToolError) do
+      manager.spawn(
+        kind: "explore",
+        task_name: "inspect_source",
+        task: "inspect again",
+        mode: "sync"
+      )
+    end
+
+    assert_includes duplicate.message, "already exists"
+    release << true
+    assert_equal "/root/inspect_source", first.value.fetch(:subagent_id)
+  ensure
+    release << true if release && first&.alive?
+    first&.join(1)
+    manager&.close
+  end
+
+  def test_agent_factory_must_bind_the_reserved_canonical_path
+    agent_class = Class.new(LittleGhost::Agent) do
+      system_prompt "Child"
+    end
+    manager = manager_for(->(_id) { agent_class.new(model: Object.new) })
+
+    _out, _err = capture_io do
+      @mismatched_factory = manager.spawn(
+        kind: "explore",
+        task_name: "inspect_source",
+        task: "inspect",
+        mode: "sync"
+      )
+    end
+
+    assert_equal "failed", @mismatched_factory.fetch(:status)
+    assert_equal "Subagent could not be created.", @mismatched_factory.fetch(:error)
+    assert_empty manager.list.fetch(:subagents)
+  ensure
+    manager&.close
+  end
+
+  def test_sync_spawns_overlap_with_distinct_canonical_paths
     gate = Gate.new
     activity = {active: 0, maximum: 0, mutex: Mutex.new}
     agents = {}
     manager = manager_for(->(id) { agents[id] = ControlledAgent.new(gate: gate, activity: activity) })
 
-    first = Thread.new { manager.spawn(kind: "explore", task: "olympus", mode: "sync") }
-    second = Thread.new { manager.spawn(kind: "explore", task: "hermes", mode: "sync") }
+    first = Thread.new do
+      manager.spawn(kind: "explore", task_name: "olympus", task: "olympus", mode: "sync")
+    end
+    second = Thread.new do
+      manager.spawn(kind: "explore", task_name: "hermes", task: "hermes", mode: "sync")
+    end
     wait_until { activity[:mutex].synchronize { activity[:active] == 2 } }
     gate.open
     results = [first.value, second.value]
 
-    assert_equal %w[explore-1 explore-2], results.map { |result| result[:subagent_id] }.sort
+    assert_equal %w[/root/hermes /root/olympus], results.map { |result| result[:subagent_id] }.sort
     assert_equal 2, agents.length
     assert_equal 2, activity[:maximum]
   ensure
@@ -112,7 +227,7 @@ class SubagentManagerTest < Minitest::Test
     gate = Gate.new
     agents = {}
     manager = manager_for(->(id) { agents[id] = ControlledAgent.new(gate: gate) })
-    spawned = manager.spawn(kind: "explore", task: "first", mode: "async")
+    spawned = manager.spawn(kind: "explore", task_name: "explore", task: "first", mode: "async")
     id = spawned.dig(:subagent, :subagent_id)
     agents.fetch(id).started.pop
 
@@ -132,7 +247,7 @@ class SubagentManagerTest < Minitest::Test
   def test_close_closes_spawned_agents
     agent = ClosableAgent.new
     manager = manager_for(->(_id) { agent })
-    manager.spawn(kind: "explore", task: "inspect", mode: "sync")
+    manager.spawn(kind: "explore", task_name: "explore", task: "inspect", mode: "sync")
 
     manager.close
 
@@ -150,7 +265,7 @@ class SubagentManagerTest < Minitest::Test
       model: Object.new,
       tools: [parent_tool, *manager.tools]
     )
-    manager.spawn(kind: "explore", task: "inspect", mode: "sync")
+    manager.spawn(kind: "explore", task_name: "explore", task: "inspect", mode: "sync")
 
     parent.close
 
@@ -163,7 +278,7 @@ class SubagentManagerTest < Minitest::Test
     gate = Gate.new
     agent = ControlledAgent.new(gate: gate)
     manager = manager_for(->(_id) { agent }, wait_timeout: 0.001)
-    manager.spawn(kind: "explore", task: "slow", mode: "async")
+    manager.spawn(kind: "explore", task_name: "explore", task: "slow", mode: "async")
     agent.started.pop
 
     working = manager.wait
@@ -211,22 +326,22 @@ class SubagentManagerTest < Minitest::Test
       wait_timeout: 0.001
     )
 
-    manager.spawn(kind: "explore", task: "inspect", mode: "async")
+    manager.spawn(kind: "explore", task_name: "explore", task: "inspect", mode: "async")
     ready.pop
     listed = manager.list.dig(:subagents, 0)
     waited = manager.wait.dig(:subagents, 0)
 
-    assert_equal({message: "x" * 160, sequence: 2}, listed[:progress])
+    assert_equal({message: "x" * 160, sequence: 6}, listed[:progress])
     assert_equal listed[:progress], waited[:progress]
     refute events.any? { |event| event.key?(:progress) || event.key?(:message) }
 
     queued = manager.send_message(
-      subagent_id: "explore-1",
+      subagent_id: "/root/explore",
       message: "follow up",
       mode: "async"
     )
     queue_limited = manager.send_message(
-      subagent_id: "explore-1",
+      subagent_id: "/root/explore",
       message: "one more",
       mode: "async"
     )
@@ -263,23 +378,41 @@ class SubagentManagerTest < Minitest::Test
     end
     manager = manager_for(->(_id) { agent })
 
-    manager.spawn(kind: "explore", task: "first", mode: "async")
+    manager.spawn(kind: "explore", task_name: "explore", task: "first", mode: "async")
     ready.pop
-    assert_equal 1, manager.list.dig(:subagents, 0, :progress, :sequence)
+    assert_equal 2, manager.list.dig(:subagents, 0, :progress, :sequence)
     gates.fetch(0).open
     manager.wait
     refute manager.list.dig(:subagents, 0).key?(:progress)
 
-    manager.send_message(subagent_id: "explore-1", message: "second", mode: "async")
+    manager.send_message(subagent_id: "/root/explore", message: "second", mode: "async")
     ready.pop
     assert_equal(
-      {message: "same progress", sequence: 2},
+      {message: "same progress", sequence: 5},
       manager.list.dig(:subagents, 0, :progress)
     )
     gates.fetch(1).open
     manager.wait
   ensure
     gates&.each(&:open)
+    manager&.close
+  end
+
+  def test_nested_delegation_activity_advances_the_existing_progress_sequence
+    gate = Gate.new
+    agent = DelegatingAgent.new(gate:)
+    manager = manager_for(->(_id) { agent })
+
+    manager.spawn(kind: "explore", task_name: "explore", task: "inspect", mode: "async")
+    agent.started.pop
+    assert_equal({sequence: 1}, manager.list.dig(:subagents, 0, :progress))
+
+    agent.delegation_activity.publish
+    agent.delegation_activity.publish
+
+    assert_equal({sequence: 3}, manager.list.dig(:subagents, 0, :progress))
+  ensure
+    gate&.open
     manager&.close
   end
 
@@ -298,7 +431,7 @@ class SubagentManagerTest < Minitest::Test
     end
     manager = manager_for(->(_id) { agent })
 
-    manager.spawn(kind: "explore", task: "inspect", mode: "async")
+    manager.spawn(kind: "explore", task_name: "explore", task: "inspect", mode: "async")
     ready.pop
     assert manager.list.dig(:subagents, 0).key?(:progress)
     gate.open
@@ -317,7 +450,7 @@ class SubagentManagerTest < Minitest::Test
     agent = ControlledAgent.new(gate: gate)
     token = LittleGhost::Support::CancellationToken.new
     manager = manager_for(->(_id) { agent }, cancellation_token: token, wait_timeout: 30)
-    manager.spawn(kind: "explore", task: "slow", mode: "async")
+    manager.spawn(kind: "explore", task_name: "explore", task: "slow", mode: "async")
     agent.started.pop
     result = Queue.new
     waiter = Thread.new do
@@ -349,8 +482,10 @@ class SubagentManagerTest < Minitest::Test
       max_concurrent: 2,
       max_identities: 3
     )
-    %w[one two three].each { |task| manager.spawn(kind: "explore", task: task, mode: "async") }
-    rejected = manager.spawn(kind: "explore", task: "four", mode: "async")
+    %w[one two three].each do |task|
+      manager.spawn(kind: "explore", task_name: task, task:, mode: "async")
+    end
+    rejected = manager.spawn(kind: "explore", task_name: "four", task: "four", mode: "async")
     wait_until { activity[:mutex].synchronize { activity[:active] == 2 } }
 
     assert_equal({
@@ -366,7 +501,7 @@ class SubagentManagerTest < Minitest::Test
     manager&.close
   end
 
-  def test_factory_failure_frees_capacity_without_reusing_id
+  def test_factory_failure_frees_capacity_and_path
     attempts = 0
     events = []
     manager = manager_for(lambda { |_id|
@@ -377,15 +512,15 @@ class SubagentManagerTest < Minitest::Test
     }, max_identities: 1, observer: ->(event) { events << event })
 
     _out, _err = capture_io do
-      @failed = manager.spawn(kind: "explore", task: "first", mode: "sync")
+      @failed = manager.spawn(kind: "explore", task_name: "explore", task: "first", mode: "sync")
     end
-    spawned = manager.spawn(kind: "explore", task: "second", mode: "sync")
+    spawned = manager.spawn(kind: "explore", task_name: "explore", task: "second", mode: "sync")
 
     assert_equal "Subagent could not be created.", @failed[:error]
-    assert_equal "explore-2", spawned[:subagent_id]
+    assert_equal "/root/explore", spawned[:subagent_id]
     assert_equal({
       event: "factory_failed",
-      subagent_id: "explore-1",
+      subagent_id: "/root/explore",
       kind: "explore",
       status: "failed",
       error_type: "RuntimeError"
@@ -407,15 +542,15 @@ class SubagentManagerTest < Minitest::Test
       max_response_chars: 3
     )
 
-    oversized = manager.spawn(kind: "explore", task: "123456", mode: "async")
-    manager.spawn(kind: "explore", task: "first", mode: "async")
+    oversized = manager.spawn(kind: "explore", task_name: "explore", task: "123456", mode: "async")
+    manager.spawn(kind: "explore", task_name: "explore", task: "first", mode: "async")
     agent.started.pop
-    queued = manager.send_message(subagent_id: "explore-1", message: "two", mode: "async")
-    queue_limited = manager.send_message(subagent_id: "explore-1", message: "tri", mode: "async")
+    queued = manager.send_message(subagent_id: "/root/explore", message: "two", mode: "async")
+    queue_limited = manager.send_message(subagent_id: "/root/explore", message: "tri", mode: "async")
     gate.open
     finished = manager.wait
     listed = manager.list
-    turn_limited = manager.spawn(kind: "explore", task: "more", mode: "async")
+    turn_limited = manager.spawn(kind: "explore", task_name: "explore", task: "more", mode: "async")
 
     assert_equal "invalid_request", oversized[:status]
     assert_equal "working", queued[:status]
@@ -431,7 +566,7 @@ class SubagentManagerTest < Minitest::Test
 
   def test_sync_followup_waits_for_exact_turn
     manager = manager_for(->(_id) { ControlledAgent.new })
-    spawned = manager.spawn(kind: "explore", task: "first", mode: "sync")
+    spawned = manager.spawn(kind: "explore", task_name: "explore", task: "first", mode: "sync")
     followed_up = manager.send_message(
       subagent_id: spawned[:subagent_id],
       message: "second",
@@ -466,9 +601,9 @@ class SubagentManagerTest < Minitest::Test
         context.state[:turns] = context.state.fetch(:turns, 0) + 1
       end
     end
-    manager = manager_for(->(_id) { agent_class.new(model: model) })
+    manager = manager_for(->(id) { agent_class.new(model: model, agent_path: id) })
 
-    spawned = manager.spawn(kind: "explore", task: "first", mode: "sync")
+    spawned = manager.spawn(kind: "explore", task_name: "explore", task: "first", mode: "sync")
     followed_up = manager.send_message(
       subagent_id: spawned[:subagent_id],
       message: "second",
@@ -491,7 +626,7 @@ class SubagentManagerTest < Minitest::Test
     parent = LittleGhost::Session.new(id: "parent", store:)
     requests = []
     responses = ["first response", "second response"]
-    factory = lambda do |_id|
+    factory = lambda do |id|
       model = Object.new
       model.define_singleton_method(:stream) do |request|
         requests << request
@@ -502,7 +637,7 @@ class SubagentManagerTest < Minitest::Test
         )
         [LittleGhost::StreamEvent.build(:message_stop, response:)].each
       end
-      LittleGhost::Agent.new(model:)
+      LittleGhost::Agent.new(model:, agent_path: id)
     end
     definition = LittleGhost::Subagents::Definition.new(
       kind: "explore",
@@ -510,7 +645,7 @@ class SubagentManagerTest < Minitest::Test
       factory:
     )
     first_manager = LittleGhost::Subagents::Manager.new([definition], parent_session: parent)
-    spawned = first_manager.spawn(kind: "explore", task: "inspect", mode: "sync")
+    spawned = first_manager.spawn(kind: "explore", task_name: "explore", task: "inspect", mode: "sync")
     subagent_id = spawned.fetch(:subagent_id)
     conversation_id = first_manager.list.dig(:subagents, 0, :conversation_id)
     first_manager.close
@@ -534,7 +669,7 @@ class SubagentManagerTest < Minitest::Test
       .fetch("conversations")
       .fetch(subagent_id)
 
-    assert_match(/\Asa_[0-9a-f]{32}\z/, subagent_id)
+    assert_equal "/root/explore", subagent_id
     assert_equal true, listed.fetch(:resumed)
     assert_equal conversation_id, listed.fetch(:conversation_id)
     assert_equal 2, followed_up.fetch(:turn)
@@ -575,9 +710,9 @@ class SubagentManagerTest < Minitest::Test
     definition = LittleGhost::Subagents::Definition.new(
       kind: "explore",
       description: "Explore code",
-      factory: lambda do |_id|
+      factory: lambda do |id|
         builds += 1
-        agent = LittleGhost::Agent.new(model: Object.new)
+        agent = LittleGhost::Agent.new(model: Object.new, agent_path: id)
         agent.define_singleton_method(:stream) do |_message, **options|
           Enumerator.new do |events|
             if builds == 1
@@ -593,7 +728,7 @@ class SubagentManagerTest < Minitest::Test
       end
     )
     first_manager = LittleGhost::Subagents::Manager.new([definition], parent_session: parent)
-    first = first_manager.spawn(kind: "explore", task: "inspect", mode: "sync")
+    first = first_manager.spawn(kind: "explore", task_name: "explore", task: "inspect", mode: "sync")
     first_manager.close
 
     second_manager = LittleGhost::Subagents::Manager.new(
@@ -622,7 +757,7 @@ class SubagentManagerTest < Minitest::Test
       observed << context.conversation_id
       "observed"
     end
-    factory = lambda do |_id|
+    factory = lambda do |id|
       calls = 0
       model = Object.new
       model.define_singleton_method(:stream) do |_request|
@@ -646,7 +781,7 @@ class SubagentManagerTest < Minitest::Test
         )
         [LittleGhost::StreamEvent.build(:message_stop, response:)].each
       end
-      LittleGhost::Agent.new(model:, tools: [tool_class.new])
+      LittleGhost::Agent.new(model:, tools: [tool_class.new], agent_path: id)
     end
     store = LittleGhost::SessionStores::Memory.new
     parent = LittleGhost::Session.new(id: "parent", store:)
@@ -656,11 +791,11 @@ class SubagentManagerTest < Minitest::Test
       factory:
     )
     first_manager = LittleGhost::Subagents::Manager.new([definition], parent_session: parent)
-    first = first_manager.spawn(kind: "explore", task: "first", mode: "sync")
+    first = first_manager.spawn(kind: "explore", task_name: "first", task: "first", mode: "sync")
     first_id = first.fetch(:subagent_id)
     first_conversation_id = first_manager.list.dig(:subagents, 0, :conversation_id)
     first_manager.send_message(subagent_id: first_id, message: "follow up", mode: "sync")
-    second = first_manager.spawn(kind: "explore", task: "second", mode: "sync")
+    second = first_manager.spawn(kind: "explore", task_name: "second", task: "second", mode: "sync")
     second_conversation_id = first_manager.list.fetch(:subagents)
       .find { |identity| identity.fetch(:subagent_id) == second.fetch(:subagent_id) }
       .fetch(:conversation_id)
@@ -702,7 +837,7 @@ class SubagentManagerTest < Minitest::Test
     )
     manager = LittleGhost::Subagents::Manager.new([definition], parent_session: parent)
 
-    manager.spawn(kind: "explore", task: "inspect", mode: "sync")
+    manager.spawn(kind: "explore", task_name: "explore", task: "inspect", mode: "sync")
 
     refute parent.state.key?("little_ghost.subagent_conversations")
     assert_empty LittleGhost::Subagents::Manager.new([definition], parent_session: parent).list.fetch(:subagents)
@@ -719,7 +854,7 @@ class SubagentManagerTest < Minitest::Test
         "little_ghost.subagent_conversations" => {
           "version" => 1,
           "conversations" => {
-            "sa_00000000000000000000000000000001" => {
+            "/root/explore" => {
               "conversation_id" => "00000000-0000-4000-8000-000000000001",
               "kind" => "explore"
             }
@@ -751,7 +886,7 @@ class SubagentManagerTest < Minitest::Test
     manager = LittleGhost::Subagents::Manager.new([definition], parent_session: parent)
 
     _out, _err = capture_io do
-      @failed_durable_result = manager.spawn(kind: "explore", task: "inspect", mode: "sync")
+      @failed_durable_result = manager.spawn(kind: "explore", task_name: "explore", task: "inspect", mode: "sync")
     end
     conversation_id = manager.list.dig(:subagents, 0, :conversation_id)
     child = LittleGhost::Session.new(
@@ -774,7 +909,7 @@ class SubagentManagerTest < Minitest::Test
       parent:,
       records: [
         {
-          subagent_id: "sa_00000000000000000000000000000001",
+          subagent_id: "/root/explore_old",
           conversation_id: "00000000-0000-4000-8000-000000000001",
           commit_id: "10000000-0000-4000-8000-000000000001",
           kind: "explore",
@@ -785,7 +920,7 @@ class SubagentManagerTest < Minitest::Test
           ]
         },
         {
-          subagent_id: "sa_00000000000000000000000000000002",
+          subagent_id: "/root/review_new",
           conversation_id: "00000000-0000-4000-8000-000000000002",
           commit_id: "10000000-0000-4000-8000-000000000002",
           kind: "review",
@@ -807,23 +942,22 @@ class SubagentManagerTest < Minitest::Test
     manager = LittleGhost::Subagents::Manager.new(
       definitions,
       parent_session: parent,
-      max_identities: 2,
-      id_generator: -> { "sa_00000000000000000000000000000003" }
+      max_identities: 2
     )
 
     first_page = manager.list(limit: 1)
     second_page = manager.list(limit: 1, cursor: first_page.fetch(:next_cursor))
     filtered = manager.list(kind: "explore")
-    spawned = manager.spawn(kind: "explore", task: "new work", mode: "sync")
+    spawned = manager.spawn(kind: "explore", task_name: "explore_new", task: "new work", mode: "sync")
 
-    assert_equal ["sa_00000000000000000000000000000002"],
+    assert_equal ["/root/review_new"],
       first_page.fetch(:subagents).map { |value| value.fetch(:subagent_id) }
-    assert_equal ["sa_00000000000000000000000000000001"],
+    assert_equal ["/root/explore_old"],
       second_page.fetch(:subagents).map { |value| value.fetch(:subagent_id) }
     refute second_page.key?(:next_cursor)
-    assert_equal ["sa_00000000000000000000000000000001"],
+    assert_equal ["/root/explore_old"],
       filtered.fetch(:subagents).map { |value| value.fetch(:subagent_id) }
-    assert_equal "sa_00000000000000000000000000000003", spawned.fetch(:subagent_id)
+    assert_equal "/root/explore_new", spawned.fetch(:subagent_id)
   ensure
     manager&.close
   end
@@ -853,7 +987,7 @@ class SubagentManagerTest < Minitest::Test
       store:,
       parent:,
       records: [{
-        subagent_id: "sa_00000000000000000000000000000001",
+        subagent_id: "/root/explore_one",
         conversation_id:,
         commit_id: "10000000-0000-4000-8000-000000000001",
         kind: "explore",
@@ -880,7 +1014,7 @@ class SubagentManagerTest < Minitest::Test
     assert_equal [registry_id], store.loads
 
     manager.send_message(
-      subagent_id: "sa_00000000000000000000000000000001",
+      subagent_id: "/root/explore_one",
       message: "continue",
       mode: "sync"
     )
@@ -916,7 +1050,7 @@ class SubagentManagerTest < Minitest::Test
       end
     )
     first_manager = LittleGhost::Subagents::Manager.new([definition], parent_session: parent)
-    first = first_manager.spawn(kind: "explore", task: "first", mode: "sync")
+    first = first_manager.spawn(kind: "explore", task_name: "explore", task: "first", mode: "sync")
     subagent_id = first.fetch(:subagent_id)
     conversation_id = first_manager.list.dig(:subagents, 0, :conversation_id)
     store.fail_id = LittleGhost::Subagents::Manager.registry_session_id(parent)
@@ -968,7 +1102,7 @@ class SubagentManagerTest < Minitest::Test
     manager = LittleGhost::Subagents::Manager.new([definition], parent_session: parent)
 
     _out, _err = capture_io do
-      @child_failed = manager.spawn(kind: "explore", task: "first", mode: "sync")
+      @child_failed = manager.spawn(kind: "explore", task_name: "explore", task: "first", mode: "sync")
     end
     restored = LittleGhost::Subagents::Manager.new(
       [definition],
@@ -986,7 +1120,7 @@ class SubagentManagerTest < Minitest::Test
     store = LittleGhost::SessionStores::Memory.new
     parent = LittleGhost::Session.new(id: "parent", store:)
     valid = {
-      subagent_id: "sa_00000000000000000000000000000001",
+      subagent_id: "/root/explore_one",
       conversation_id: "00000000-0000-4000-8000-000000000001",
       commit_id: "10000000-0000-4000-8000-000000000001",
       kind: "explore",
@@ -1008,9 +1142,10 @@ class SubagentManagerTest < Minitest::Test
     )
     registry_state = registry.state
     valid_record = registry_state.fetch("conversations").fetch(valid.fetch(:subagent_id))
-    registry_state.fetch("conversations")["explore-1"] = valid_record
-    registry_state.fetch("conversations")["sa_00000000000000000000000000000002"] =
+    registry_state.fetch("conversations")["invalid-id"] = valid_record
+    registry_state.fetch("conversations")["/root/explore_two"] =
       valid_record.merge("conversation_id" => "not-a-uuid")
+    registry_state.fetch("conversations")["/root/explore_one/nested"] = valid_record
     registry.replace(messages: [], state: registry_state, metadata: registry_metadata)
     child_id = LittleGhost::Subagents::Manager.conversation_session_id(valid.fetch(:conversation_id))
     wrong_metadata = {
@@ -1065,7 +1200,7 @@ class SubagentManagerTest < Minitest::Test
       max_queued_turns_per_identity: 1,
       max_message_chars: 5
     )
-    spawned = manager.spawn(kind: "explore", task: "work", mode: "async")
+    spawned = manager.spawn(kind: "explore", task_name: "explore", task: "work", mode: "async")
     subagent_id = spawned.dig(:subagent, :subagent_id)
     agent.started.pop
 
@@ -1094,7 +1229,7 @@ class SubagentManagerTest < Minitest::Test
     end.new
     manager = manager_for(->(_id) { agent })
 
-    result = manager.spawn(kind: "explore", task: "inspect", mode: "sync")
+    result = manager.spawn(kind: "explore", task_name: "explore", task: "inspect", mode: "sync")
 
     assert_equal "response to inspect", result[:response]
   ensure
@@ -1121,7 +1256,7 @@ class SubagentManagerTest < Minitest::Test
     end.new
     manager = manager_for(->(_id) { agent })
 
-    result = manager.spawn(kind: "explore", task: "inspect", mode: "sync")
+    result = manager.spawn(kind: "explore", task_name: "explore", task: "inspect", mode: "sync")
 
     assert_equal({"claim" => "supported"}, result[:response])
   ensure
@@ -1149,7 +1284,7 @@ class SubagentManagerTest < Minitest::Test
     manager = manager_for(->(_id) { agent }, max_response_chars: 5)
 
     _out, _err = capture_io do
-      @result = manager.spawn(kind: "explore", task: "inspect", mode: "sync")
+      @result = manager.spawn(kind: "explore", task_name: "explore", task: "inspect", mode: "sync")
     end
 
     assert_equal "failed", @result[:status]
@@ -1167,7 +1302,7 @@ class SubagentManagerTest < Minitest::Test
     end
     manager = manager_for(->(_id) { ControlledAgent.new }, observer: observer)
 
-    result = manager.spawn(kind: "explore", task: "sensitive task text", mode: "sync")
+    result = manager.spawn(kind: "explore", task_name: "explore", task: "sensitive task text", mode: "sync")
 
     assert_equal "finished", result[:status]
     assert_equal %w[spawned turn_started turn_finished], events.map { |event| event[:event] }
@@ -1192,11 +1327,11 @@ class SubagentManagerTest < Minitest::Test
     second_context.bind_agent_operation_id("main-agent")
 
     registry.fetch("spawn_subagent").execute(
-      {"kind" => "explore", "task" => "inspect", "mode" => "sync"},
+      {"kind" => "explore", "task_name" => "inspect", "task" => "inspect", "mode" => "sync"},
       context: first_context
     )
     registry.fetch("send_message_to_subagent").execute(
-      {"subagent_id" => "explore-1", "message" => "summarize", "mode" => "sync"},
+      {"subagent_id" => "/root/inspect", "message" => "summarize", "mode" => "sync"},
       context: second_context
     )
 
@@ -1214,7 +1349,7 @@ class SubagentManagerTest < Minitest::Test
   end
 
   def test_capacity_delayed_turn_keeps_its_enqueue_operation_and_parent
-    gates = {"explore-1" => Gate.new, "explore-2" => Gate.new}
+    gates = {"/root/explore" => Gate.new, "/root/explore_second" => Gate.new}
     agents = {}
     events = []
     manager = manager_for(
@@ -1225,24 +1360,26 @@ class SubagentManagerTest < Minitest::Test
 
     manager.spawn(
       kind: "explore",
+      task_name: "explore",
       task: "first",
       mode: "async",
       parent_operation_id: "first-caller"
     )
-    agents.fetch("explore-1").started.pop
+    agents.fetch("/root/explore").started.pop
     manager.spawn(
       kind: "explore",
+      task_name: "explore_second",
       task: "second",
       mode: "async",
       parent_operation_id: "caller-that-finishes-while-queued"
     )
-    queued = events.find { |event| event[:event] == "spawned" && event[:subagent_id] == "explore-2" }
+    queued = events.find { |event| event[:event] == "spawned" && event[:subagent_id] == "/root/explore_second" }
     refute_nil queued
-    refute events.any? { |event| event[:event] == "turn_started" && event[:subagent_id] == "explore-2" }
+    refute events.any? { |event| event[:event] == "turn_started" && event[:subagent_id] == "/root/explore_second" }
 
-    gates.fetch("explore-1").open
-    agents.fetch("explore-2").started.pop
-    started = events.find { |event| event[:event] == "turn_started" && event[:subagent_id] == "explore-2" }
+    gates.fetch("/root/explore").open
+    agents.fetch("/root/explore_second").started.pop
+    started = events.find { |event| event[:event] == "turn_started" && event[:subagent_id] == "/root/explore_second" }
 
     assert_equal queued[:operation_id], started[:operation_id]
     assert_equal "caller-that-finishes-while-queued", queued[:parent_operation_id]
@@ -1270,9 +1407,9 @@ class SubagentManagerTest < Minitest::Test
       end
     end.new
     manager = manager_for(->(_id) { agent }, observer: ->(event) { events << event })
-    manager.spawn(kind: "explore", task: "first", mode: "async")
+    manager.spawn(kind: "explore", task_name: "explore", task: "first", mode: "async")
     agent.started.pop
-    manager.send_message(subagent_id: "explore-1", message: "second", mode: "async")
+    manager.send_message(subagent_id: "/root/explore", message: "second", mode: "async")
 
     manager.close
     agent.cancelled.pop
@@ -1303,7 +1440,7 @@ class SubagentManagerTest < Minitest::Test
       cancellation_token: token,
       close_timeout: 0
     )
-    manager.spawn(kind: "explore", task: "slow", mode: "async")
+    manager.spawn(kind: "explore", task_name: "explore", task: "slow", mode: "async")
     agent.started.pop
 
     started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
@@ -1321,7 +1458,7 @@ class SubagentManagerTest < Minitest::Test
     gate = Gate.new
     agent = ControlledAgent.new(gate: gate)
     manager = manager_for(->(_id) { agent }, close_timeout: 0)
-    caller = Thread.new { manager.spawn(kind: "explore", task: "slow", mode: "sync") }
+    caller = Thread.new { manager.spawn(kind: "explore", task_name: "explore", task: "slow", mode: "sync") }
     agent.started.pop
 
     assert_raises(LittleGhost::Subagents::Manager::CleanupError) { manager.close }
@@ -1340,7 +1477,7 @@ class SubagentManagerTest < Minitest::Test
     manager = manager_for(->(_id) { agent })
 
     raised = assert_raises(LittleGhost::CleanupError) do
-      manager.spawn(kind: "explore", task: "inspect", mode: "sync")
+      manager.spawn(kind: "explore", task_name: "explore", task: "inspect", mode: "sync")
     end
     close_error = assert_raises(LittleGhost::CleanupError) { manager.close }
 
@@ -1354,7 +1491,7 @@ class SubagentManagerTest < Minitest::Test
     agent.define_singleton_method(:call) { |_message, cancellation_token:| raise cleanup_error }
     manager = manager_for(->(_id) { agent })
 
-    manager.spawn(kind: "explore", task: "inspect", mode: "async")
+    manager.spawn(kind: "explore", task_name: "explore", task: "inspect", mode: "async")
     wait_until { manager.list.dig(:subagents, 0, :status) == "failed" }
 
     raised = assert_raises(LittleGhost::CleanupError) { manager.close }
@@ -1378,10 +1515,10 @@ class SubagentManagerTest < Minitest::Test
       end
     end.new
     manager = manager_for(->(_id) { agent }, cancellation_token: token)
-    manager.spawn(kind: "explore", task: "first", mode: "async")
+    manager.spawn(kind: "explore", task_name: "explore", task: "first", mode: "async")
     agent.started.pop
     followup = Thread.new do
-      manager.send_message(subagent_id: "explore-1", message: "second", mode: "sync")
+      manager.send_message(subagent_id: "/root/explore", message: "second", mode: "sync")
     end
 
     wait_until { manager.list.dig(:subagents, 0, :queued_turns) == 1 }
@@ -1417,11 +1554,11 @@ class SubagentManagerTest < Minitest::Test
       end
     end
     manager = manager_for(
-      ->(_id) { agent_class.new(model: Object.new) },
+      ->(id) { agent_class.new(model: Object.new, agent_path: id) },
       deadline: deadline
     )
 
-    result = manager.spawn(kind: "explore", task: "inspect", mode: "sync")
+    result = manager.spawn(kind: "explore", task_name: "explore", task: "inspect", mode: "sync")
 
     assert_equal "finished", result[:status]
     assert_equal deadline, observed.pop.fetch(:deadline)
@@ -1439,7 +1576,7 @@ class SubagentManagerTest < Minitest::Test
     )
 
     assert_raises(LittleGhost::DeadlineExceededError) do
-      manager.spawn(kind: "explore", task: "slow", mode: "sync")
+      manager.spawn(kind: "explore", task_name: "explore", task: "slow", mode: "sync")
     end
   ensure
     begin
@@ -1462,10 +1599,10 @@ class SubagentManagerTest < Minitest::Test
 
     events = []
     manager = manager_for(->(_id) { failing_agent }, observer: ->(event) { events << event })
-    manager.spawn(kind: "explore", task: "first", mode: "async")
+    manager.spawn(kind: "explore", task_name: "explore", task: "first", mode: "async")
     started.pop
     queued_thread = Thread.new do
-      manager.send_message(subagent_id: "explore-1", message: "second", mode: "sync")
+      manager.send_message(subagent_id: "/root/explore", message: "second", mode: "sync")
     end
     wait_until { manager.list.dig(:subagents, 0, :queued_turns) == 1 }
     gate.open
@@ -1490,12 +1627,15 @@ class SubagentManagerTest < Minitest::Test
   def test_validation_and_selection_errors
     manager = manager_for(->(_id) { ControlledAgent.new })
 
-    assert_raises(LittleGhost::ToolError) { manager.spawn(kind: "missing", task: "x", mode: "sync") }
-    assert_raises(LittleGhost::ToolError) { manager.spawn(kind: "explore", task: "x", mode: "later") }
+    assert_raises(LittleGhost::ToolError) { manager.spawn(kind: "missing", task_name: "missing", task: "x", mode: "sync") }
+    assert_raises(LittleGhost::ToolError) { manager.spawn(kind: "explore", task_name: "explore", task: "x", mode: "later") }
+    assert_raises(LittleGhost::ToolError) do
+      manager.spawn(kind: "explore", task_name: "x" * 41, task: "x", mode: "sync")
+    end
     assert_raises(LittleGhost::ToolError) { manager.wait(subagent_ids: %w[missing]) }
 
-    manager.spawn(kind: "explore", task: "x", mode: "sync")
-    assert_raises(LittleGhost::ToolError) { manager.wait(subagent_ids: %w[explore-1 explore-1]) }
+    manager.spawn(kind: "explore", task_name: "explore", task: "x", mode: "sync")
+    assert_raises(LittleGhost::ToolError) { manager.wait(subagent_ids: %w[/root/explore /root/explore]) }
   ensure
     manager&.close
   end
@@ -1505,15 +1645,17 @@ class SubagentManagerTest < Minitest::Test
     registry = LittleGhost::ToolRegistry.new(manager.tools)
 
     spawned = JSON.parse(registry.fetch("spawn_subagent").execute({
-      "kind" => "explore", "task" => "inspect", "mode" => "sync"
+      "kind" => "explore", "task_name" => "inspect", "task" => "inspect", "mode" => "sync"
     }).content)
     listed = JSON.parse(registry.fetch("list_subagents").execute({}).content)
     invalid = registry.fetch("wait_for_subagents").execute({"subagent_ids" => ["missing"]})
 
     assert_equal "finished", spawned.fetch("status")
-    assert_equal "explore-1", listed.fetch("subagents").first.fetch("subagent_id")
+    assert_equal "/root/inspect", listed.fetch("subagents").first.fetch("subagent_id")
     assert_includes registry.fetch("spawn_subagent").input_schema
       .dig("properties", "kind", "description"), "explore: Explore code"
+    assert_equal 40, registry.fetch("spawn_subagent").input_schema
+      .dig("properties", "task_name", "maxLength")
     assert invalid.error?
     assert_equal "Unknown subagent id: missing", invalid.content
   ensure
@@ -1525,17 +1667,19 @@ class SubagentManagerTest < Minitest::Test
     agent = InterruptibleAgent.new(gate:)
     manager = manager_for(->(_id) { agent })
     registry = LittleGhost::ToolRegistry.new(manager.tools)
-    manager.spawn(kind: "explore", task: "inspect", mode: "async")
+    manager.spawn(kind: "explore", task_name: "explore", task: "inspect", mode: "async")
     agent.started.pop
 
     result = JSON.parse(registry.fetch("interrupt_subagent").execute({
-      "subagent_id" => "explore-1",
+      "subagent_id" => "/root/explore",
       "message" => "What are you checking?"
     }).content)
     snapshot = manager.list.dig(:subagents, 0)
 
-    assert_equal "interrupted", result.fetch("status")
+    assert_equal "interruption_delivered", result.fetch("status")
     assert_equal "Still investigating", result.fetch("response")
+    assert_equal "text_only", result.fetch("response_disposition")
+    assert_equal "running", result.dig("subagent", "status")
     assert_equal ["What are you checking?"], agent.interruptions
     refute_nil agent.interrupt_target
     assert_equal 1, snapshot[:current_turn]
@@ -1556,9 +1700,9 @@ class SubagentManagerTest < Minitest::Test
     builds = 0
     first_result = run_result("final answer")
     resumed_result = run_result("resumed answer")
-    factory = lambda do |_id|
+    factory = lambda do |id|
       builds += 1
-      agent = LittleGhost::Agent.new(model: Object.new)
+      agent = LittleGhost::Agent.new(model: Object.new, agent_path: id)
       if builds == 1
         agent.define_singleton_method(:stream) do |_message, **_options|
           Enumerator.new do |events|
@@ -1567,8 +1711,8 @@ class SubagentManagerTest < Minitest::Test
             events << LittleGhost::StreamEvent.build(:invocation_stop, result: first_result)
           end
         end
-        agent.define_singleton_method(:interrupt) do |_message, **_options|
-          "interrupt answer"
+        agent.define_singleton_method(:interrupt_response) do |_message, **_options|
+          LittleGhost::AgentInterruptions::Response.new(text: "interrupt answer", tool_calls: false)
         end
       else
         agent.define_singleton_method(:stream) do |_message, **options|
@@ -1586,7 +1730,7 @@ class SubagentManagerTest < Minitest::Test
       factory:
     )
     first_manager = LittleGhost::Subagents::Manager.new([definition], parent_session: parent)
-    spawned = first_manager.spawn(kind: "explore", task: "initial task", mode: "async")
+    spawned = first_manager.spawn(kind: "explore", task_name: "explore", task: "initial task", mode: "async")
     subagent_id = spawned.dig(:subagent, :subagent_id)
     conversation_id = spawned.dig(:subagent, :conversation_id)
     started.pop
@@ -1625,7 +1769,7 @@ class SubagentManagerTest < Minitest::Test
     parent = LittleGhost::Session.new(id: "parent", store:)
     gate = Gate.new
     started = Queue.new
-    agent = LittleGhost::Agent.new(model: Object.new)
+    agent = LittleGhost::Agent.new(model: Object.new, agent_path: "/root/explore")
     agent.define_singleton_method(:stream) do |_message, **_options|
       Enumerator.new do |_events|
         started << true
@@ -1633,14 +1777,16 @@ class SubagentManagerTest < Minitest::Test
         raise "turn failed"
       end
     end
-    agent.define_singleton_method(:interrupt) { |_message, **_options| "temporary answer" }
+    agent.define_singleton_method(:interrupt_response) do |_message, **_options|
+      LittleGhost::AgentInterruptions::Response.new(text: "temporary answer", tool_calls: false)
+    end
     definition = LittleGhost::Subagents::Definition.new(
       kind: "explore",
       description: "Explore code",
       factory: ->(_id) { agent }
     )
     manager = LittleGhost::Subagents::Manager.new([definition], parent_session: parent)
-    spawned = manager.spawn(kind: "explore", task: "initial task", mode: "async")
+    spawned = manager.spawn(kind: "explore", task_name: "explore", task: "initial task", mode: "async")
     subagent_id = spawned.dig(:subagent, :subagent_id)
     conversation_id = spawned.dig(:subagent, :conversation_id)
     started.pop
@@ -1665,7 +1811,7 @@ class SubagentManagerTest < Minitest::Test
     parent = LittleGhost::Session.new(id: "parent", store:)
     gate = Gate.new
     started = Queue.new
-    agent = LittleGhost::Agent.new(model: Object.new)
+    agent = LittleGhost::Agent.new(model: Object.new, agent_path: "/root/explore")
     agent.define_singleton_method(:stream) do |_message, **options|
       Enumerator.new do |_events|
         started << true
@@ -1673,14 +1819,16 @@ class SubagentManagerTest < Minitest::Test
         options.fetch(:cancellation_token).raise_if_cancelled!
       end
     end
-    agent.define_singleton_method(:interrupt) { |_message, **_options| "temporary answer" }
+    agent.define_singleton_method(:interrupt_response) do |_message, **_options|
+      LittleGhost::AgentInterruptions::Response.new(text: "temporary answer", tool_calls: false)
+    end
     definition = LittleGhost::Subagents::Definition.new(
       kind: "explore",
       description: "Explore code",
       factory: ->(_id) { agent }
     )
     manager = LittleGhost::Subagents::Manager.new([definition], parent_session: parent)
-    spawned = manager.spawn(kind: "explore", task: "initial task", mode: "async")
+    spawned = manager.spawn(kind: "explore", task_name: "explore", task: "initial task", mode: "async")
     subagent_id = spawned.dig(:subagent, :subagent_id)
     conversation_id = spawned.dig(:subagent, :conversation_id)
     started.pop
@@ -1772,13 +1920,11 @@ class SubagentManagerTest < Minitest::Test
   end
 
   def manager_for(factory, **options)
-    next_id = 0
-    options[:id_generator] ||= -> { "explore-#{next_id += 1}" }
     LittleGhost::Subagents::Manager.new([definition_for(factory)], **options)
   end
 
   def streaming_agent(&body)
-    agent = LittleGhost::Agent.new(model: Object.new)
+    agent = LittleGhost::Agent.new(model: Object.new, agent_path: "/root/explore")
     agent.define_singleton_method(:stream) do |_message, **_options|
       Enumerator.new { |stream| body.call(stream) }
     end

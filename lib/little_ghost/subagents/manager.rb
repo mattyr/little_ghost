@@ -25,9 +25,8 @@ module LittleGhost
       MAX_PROGRESS_SOURCE_CHARS = 4_096
       PROGRESS_SEPARATOR = /[\p{Z}\p{Cc}\p{Cf}]/
       CANCELLATION_POLL_INTERVAL = 0.05
-      REGISTRY_VERSION = 1
+      REGISTRY_VERSION = 2
       CURSOR_MAX_BYTES = 512
-      OPAQUE_ID_PATTERN = /\Asa_[0-9a-f]{32}\z/
       UUID_PATTERN = /\A[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\z/
 
       InterruptExchange = Struct.new(:message, :response, :complete)
@@ -172,7 +171,7 @@ module LittleGhost
         deadline: nil,
         observer: nil,
         parent_session: nil,
-        id_generator: -> { "sa_#{SecureRandom.hex(16)}" }
+        parent_agent_path: AgentPath::ROOT
       )
         validate_limit(:max_concurrent, max_concurrent)
         validate_limit(:max_identities, max_identities)
@@ -199,26 +198,26 @@ module LittleGhost
         @deadline = deadline
         @observer = observer
         @parent_session = parent_session
+        @parent_agent_path = AgentPath.validate!(parent_agent_path)
         @parent_link = parent_session && self.class.parent_link(parent_session)
         @registry_session = parent_session && registry_session
-        @id_generator = id_generator
         @capacity = Capacity.new(max_concurrent)
         @mutex = Mutex.new
         @registry_mutex = Mutex.new
         @restore_mutex = Mutex.new
         @condition = ConditionVariable.new
         @identities = {}
+        @reserved_agent_paths = {}
         @identity_slots = 0
         @turn_count = 0
-        @kind_counts = Hash.new(0)
         @cleanup_error = nil
         @closed = false
         restore_identities
       end
 
-      def spawn(kind:, task:, mode:, parent_operation_id: nil, context: nil)
+      def spawn(kind:, task_name:, task:, mode:, parent_operation_id: nil, context: nil)
         validate_mode(mode)
-        definition, subagent_id = reserve_identity(kind, task)
+        definition, subagent_id = reserve_identity(kind, task, task_name:)
         return subagent_id unless definition
 
         conversation_id = SecureRandom.uuid
@@ -226,10 +225,10 @@ module LittleGhost
           agent = build_agent(definition, subagent_id, conversation_id)
           raise TypeError, "factory result must respond to call" unless agent.respond_to?(:call)
         rescue LittleGhost::CleanupError
-          release_identity_reservation
+          release_identity_reservation(subagent_id)
           raise
         rescue => error
-          release_identity_reservation
+          release_identity_reservation(subagent_id)
           warn_failure("factory", subagent_id, error)
           emit_factory_failure(definition, subagent_id, error, parent_operation_id:)
           return {
@@ -259,13 +258,16 @@ module LittleGhost
           latest_response_truncated: false,
           progress_sequence: 0
         )
+        observe_delegated_activity(identity)
 
         closed = @mutex.synchronize do
           if @closed
+            @reserved_agent_paths.delete(subagent_id)
             @identity_slots -= 1
             @turn_count -= 1
             next true
           end
+          @reserved_agent_paths.delete(subagent_id)
           @identities[subagent_id] = identity
           false
         end
@@ -320,7 +322,7 @@ module LittleGhost
         identity, turn = @mutex.synchronize do
           ensure_open!
           value = fetch_identity!(subagent_id)
-          unless value.agent.respond_to?(:interrupt)
+          unless value.agent.respond_to?(:interrupt_response)
             raise ToolError, "Subagent #{subagent_id.inspect} does not support interruptions."
           end
           unless value.status == "running"
@@ -338,8 +340,8 @@ module LittleGhost
           [value, value.current]
         end
 
-        response = begin
-          identity.agent.interrupt(
+        interrupt_response = begin
+          identity.agent.interrupt_response(
             message,
             cancellation_token:,
             deadline:,
@@ -352,6 +354,7 @@ module LittleGhost
           end
           raise
         end
+        response = interrupt_response.text
         truncated = response.length > @max_response_chars
         returned_response = truncated ? response[0, @max_response_chars] : response
         @mutex.synchronize do
@@ -363,12 +366,17 @@ module LittleGhost
           exchange.complete = true
           @condition.broadcast
         end
+        subagent = @mutex.synchronize do
+          snapshot(identity, include_response: true, include_progress: true)
+        end
         value = {
-          status: "interrupted",
+          status: "interruption_delivered",
           subagent_id: identity.subagent_id,
           kind: identity.definition.kind,
+          subagent:,
           turn: turn.number,
-          response: returned_response
+          response: returned_response,
+          response_disposition: interrupt_response.tool_calls? ? "text_with_tool_calls" : "text_only"
         }
         value[:response_truncated] = true if truncated
         value
@@ -445,7 +453,8 @@ module LittleGhost
               Create a new subagent identity for an independent task. Choose sync when the next step depends on this
               response; several sync spawns requested together can still run in parallel. Choose async to coordinate
               or perform explicitly non-overlapping work while the subagent runs, then use wait_for_subagents to
-              check in. Spawning the same kind repeatedly creates separate identities.
+              check in. Give the task a concise lowercase name. The returned identity is its canonical path beneath
+              the current agent. Task names must be unique among that agent's children.
             DESCRIPTION
             input_schema: {
               type: "object",
@@ -455,18 +464,25 @@ module LittleGhost
                   enum: definitions.keys,
                   description: "Kind of subagent to create.\n#{kind_descriptions}"
                 },
+                task_name: {
+                  type: "string",
+                  pattern: "^[a-z0-9_]+$",
+                  maxLength: AgentPath::MAX_NAME_LENGTH,
+                  description: "Friendly task name using lowercase letters, digits, and underscores."
+                },
                 task: {type: "string", description: "Independent task to delegate."},
                 mode: {
                   type: "string", enum: %w[sync async],
                   description: "Use sync when the next step needs the result; async for coordination or non-overlapping work."
                 }
               },
-              required: %w[kind task mode],
+              required: %w[kind task_name task mode],
               additionalProperties: false
             }
           ) do |input, context: nil|
             manager.spawn(
               kind: input.fetch("kind"),
+              task_name: input.fetch("task_name"),
               task: input.fetch("task"),
               mode: input.fetch("mode"),
               context:,
@@ -508,8 +524,9 @@ module LittleGhost
             name: "interrupt_subagent",
             description: <<~DESCRIPTION.strip,
               Interrupt an actively running subagent in its current turn. The message is added at the next model
-              boundary. This call waits for that model response and returns only its ordinary text; tool calls from
-              the same response remain with the subagent and continue its current run.
+              boundary. This call waits for that model response and reports its ordinary text, whether the same
+              response also initiated tool work, and the subagent's current lifecycle state. Delivery is distinct
+              from stopping: tool work from that response remains with the subagent and its current run may continue.
             DESCRIPTION
             input_schema: {
               type: "object",
@@ -726,11 +743,17 @@ module LittleGhost
       end
 
       def build_agent(definition, subagent_id, conversation_id)
-        if definition.accepts_conversation_id
+        agent = if definition.accepts_conversation_id
           definition.factory.call(subagent_id, conversation_id)
         else
           definition.factory.call(subagent_id)
         end
+        if agent.is_a?(Agent) && agent.agent_path != subagent_id
+          raise ConfigurationError,
+            "Subagent factory built #{agent.agent_path.inspect}; it must use canonical agent_path #{subagent_id.inspect}."
+        end
+
+        agent
       end
 
       def restore_agent!(identity)
@@ -854,7 +877,8 @@ module LittleGhost
       end
 
       def normalize_registry_record(subagent_id, record)
-        return unless subagent_id.is_a?(String) && subagent_id.match?(OPAQUE_ID_PATTERN)
+        return unless subagent_id.is_a?(String)
+        return unless AgentPath.immediate_child?(subagent_id, @parent_agent_path)
         return unless record.is_a?(Hash)
 
         conversation_id = record["conversation_id"] || record[:conversation_id]
@@ -918,7 +942,7 @@ module LittleGhost
         raise ToolError, "Invalid subagent list cursor"
       end
 
-      def reserve_identity(kind, task)
+      def reserve_identity(kind, task, task_name:)
         @mutex.synchronize do
           ensure_open!
           definition = @definitions[kind]
@@ -929,29 +953,28 @@ module LittleGhost
           rejection = reject_turn_locked(task)
           return [nil, rejection] if rejection
 
+          subagent_id = agent_path(task_name)
           @identity_slots += 1
           @turn_count += 1
-          @kind_counts[kind] += 1
-          subagent_id = nil
-          100.times do
-            candidate = String(@id_generator.call)
-            durable_id_invalid = definition.persist && @parent_session && !candidate.match?(OPAQUE_ID_PATTERN)
-            unless candidate.empty? || @identities.key?(candidate) || durable_id_invalid
-              subagent_id = candidate
-              break
-            end
-          end
-          unless subagent_id
-            @identity_slots -= 1
-            @turn_count -= 1
-            raise Error, "Subagent identity generator did not produce a unique id"
-          end
+          @reserved_agent_paths[subagent_id] = true
           [definition, subagent_id]
         end
       end
 
-      def release_identity_reservation
+      def agent_path(task_name)
+        name = AgentPath.validate_name!(task_name)
+        candidate = AgentPath.join(@parent_agent_path, name)
+        if @identities.key?(candidate) || @reserved_agent_paths.key?(candidate)
+          raise ToolError, "Agent path #{candidate.inspect} already exists; choose a different task_name."
+        end
+        candidate
+      rescue ArgumentError => error
+        raise ToolError, error.message
+      end
+
+      def release_identity_reservation(subagent_id)
         @mutex.synchronize do
+          @reserved_agent_paths.delete(subagent_id)
           @identity_slots -= 1
           @turn_count -= 1
         end
@@ -1031,6 +1054,7 @@ module LittleGhost
                 unless @closed
                   identity.status = "running"
                   identity.progress_message = nil
+                  identity.progress_sequence += 1
                   emit("turn_started", identity, turn:)
                   @condition.broadcast
                   true
@@ -1087,13 +1111,27 @@ module LittleGhost
       def run_agent_turn(identity, turn, options)
         result = nil
         identity.agent.stream(turn.message, **options).each do |event|
-          capture_progress(identity, turn, event)
+          capture_activity(identity, turn, event)
           result = event.data[:result] if event.type == :invocation_stop
         end
         result
       end
 
-      def capture_progress(identity, turn, event)
+      def capture_activity(identity, turn, event)
+        return unless %i[tool_start tool_stop message_stop invocation_stop].include?(event.type)
+
+        message = progress_message(event)
+        @mutex.synchronize do
+          return unless identity.current.equal?(turn)
+
+          identity.progress_message = message unless message.to_s.empty?
+          identity.progress_sequence += 1
+          @condition.broadcast
+        end
+        emit("activity", identity, turn:)
+      end
+
+      def progress_message(event)
         return unless event.type == :message_stop
 
         response = event.data[:response]
@@ -1101,17 +1139,7 @@ module LittleGhost
         return unless response.message.role == :assistant
         return if response.message.content.grep(Content::ToolUse).empty?
 
-        message = normalize_progress(response.message)
-        return if message.empty?
-
-        @mutex.synchronize do
-          return unless identity.current.equal?(turn)
-          return if identity.progress_message == message
-
-          identity.progress_message = message
-          identity.progress_sequence += 1
-          @condition.broadcast
-        end
+        normalize_progress(response.message)
       end
 
       def normalize_progress(message)
@@ -1388,11 +1416,9 @@ module LittleGhost
           value[:response] = identity.latest_response
           value[:response_truncated] = true if identity.latest_response_truncated
         end
-        if include_progress && identity.progress_message && %w[queued running].include?(identity.status)
-          value[:progress] = {
-            message: identity.progress_message,
-            sequence: identity.progress_sequence
-          }
+        if include_progress && identity.progress_sequence.positive? && %w[queued running].include?(identity.status)
+          value[:progress] = {sequence: identity.progress_sequence}
+          value[:progress][:message] = identity.progress_message if identity.progress_message
         end
         value[:error] = identity.latest_error if identity.latest_error
         value
@@ -1423,6 +1449,24 @@ module LittleGhost
         @observer.call(value.freeze)
       rescue
         nil
+      end
+
+      def observe_delegated_activity(identity)
+        activity = identity.agent.respond_to?(:delegation_activity) && identity.agent.delegation_activity
+        return unless activity
+
+        activity.subscribe { record_delegated_activity(identity) }
+      end
+
+      def record_delegated_activity(identity)
+        turn = @mutex.synchronize do
+          next unless identity.status == "running" && identity.current
+
+          identity.progress_sequence += 1
+          @condition.broadcast
+          identity.current
+        end
+        emit("activity", identity, turn:) if turn
       end
 
       def emit_factory_failure(definition, subagent_id, error, parent_operation_id: nil)

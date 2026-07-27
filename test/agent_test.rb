@@ -338,7 +338,7 @@ class AgentTest < Minitest::Test
     tool_use = LittleGhost::Content::ToolUse.new(
       id: "call-1",
       name: "spawn_subagent",
-      input: {"kind" => "evidence", "task" => "inspect", "mode" => "sync"}
+      input: {"kind" => "evidence", "task_name" => "inspect", "task" => "inspect", "mode" => "sync"}
     )
     model = ScriptedModel.new(response([tool_use], stop_reason: :tool_use), response("done"))
     agent = LittleGhost::Agent.new(model:, tools: manager.tools, instrumentation:)

@@ -205,8 +205,14 @@ module LittleGhost
       build_run(payload).each
     end
 
-    def build_agent(agent_class_or_name = @agent_class, run:, model: nil, tools: [])
-      @agent_builder.build(agent_class_or_name, run:, model:, tools:)
+    def build_agent(
+      agent_class_or_name = @agent_class,
+      run:,
+      model: nil,
+      tools: [],
+      agent_path: Subagents::AgentPath::ROOT
+    )
+      @agent_builder.build(agent_class_or_name, run:, model:, tools:, agent_path:)
     end
 
     def build_entrypoint(run:)

@@ -20,7 +20,7 @@ class AgentInterruptTest < Minitest::Test
     end
   end
 
-  def test_interrupt_returns_only_text_before_same_response_tools_finish
+  def test_detailed_interrupt_reports_same_response_tool_work_before_it_finishes
     first_started = Queue.new
     release_first = Queue.new
     second_started = Queue.new
@@ -58,13 +58,14 @@ class AgentInterruptTest < Minitest::Test
     runner = Thread.new { agent.call("Investigate") }
 
     first_started.pop
-    interrupted = Thread.new { agent.interrupt("Current status?") }
+    interrupted = Thread.new { agent.interrupt_response("Current status?") }
     wait_until { telemetry.any? { |name, _| name == :agent_interrupt_queued } }
     release_first << true
     second_started.pop
 
     assert interrupted.join(1), "interrupt did not resolve from the next model response"
-    assert_equal "Still checking", interrupted.value
+    assert_equal "Still checking", interrupted.value.text
+    assert interrupted.value.tool_calls?
     assert runner.alive?, "child finished before executing its same-response tool"
 
     delivered_index = telemetry.index { |name, _| name == :agent_interrupt_delivered }
