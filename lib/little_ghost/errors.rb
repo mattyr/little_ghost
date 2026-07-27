@@ -23,6 +23,7 @@ module LittleGhost
 
   class ToolLoopError < ProtocolError; end
   class ToolError < Error; end
+  class AgentInterruptError < InvocationError; end
   class CancelledError < Error; end
   class DeadlineExceededError < Error; end
   class CleanupError < Error; end

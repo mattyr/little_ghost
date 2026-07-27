@@ -62,6 +62,24 @@ class SubagentManagerTest < Minitest::Test
     def close = @closed = true
   end
 
+  class InterruptibleAgent < ControlledAgent
+    attr_reader :interruptions, :interrupt_target
+
+    def initialize(...)
+      super
+      @interruptions = []
+    end
+
+    def interrupt(message, cancellation_token:, deadline:, target_operation_id:)
+      cancellation_token.raise_if_cancelled!
+      raise LittleGhost::DeadlineExceededError, "deadline" if deadline && Time.now >= deadline
+
+      @interruptions << message
+      @interrupt_target = target_operation_id
+      "Still investigating"
+    end
+  end
+
   def test_definition_exposes_agent_metadata
     factory = ->(_id) { ControlledAgent.new }
     definition = definition_for(factory)
@@ -907,6 +925,33 @@ class SubagentManagerTest < Minitest::Test
     assert invalid.error?
     assert_equal "Unknown subagent id: missing", invalid.content
   ensure
+    manager&.close
+  end
+
+  def test_interrupt_tool_returns_text_without_queuing_another_turn
+    gate = Gate.new
+    agent = InterruptibleAgent.new(gate:)
+    manager = manager_for(->(_id) { agent })
+    registry = LittleGhost::ToolRegistry.new(manager.tools)
+    manager.spawn(kind: "explore", task: "inspect", mode: "async")
+    agent.started.pop
+
+    result = JSON.parse(registry.fetch("interrupt_subagent").execute({
+      "subagent_id" => "explore-1",
+      "message" => "What are you checking?"
+    }).content)
+    snapshot = manager.list.dig(:subagents, 0)
+
+    assert_equal "interrupted", result.fetch("status")
+    assert_equal "Still investigating", result.fetch("response")
+    assert_equal ["What are you checking?"], agent.interruptions
+    refute_nil agent.interrupt_target
+    assert_equal 1, snapshot[:current_turn]
+    assert_nil snapshot[:latest_turn]
+    assert_equal 0, snapshot[:queued_turns]
+    refute_includes registry.fetch("interrupt_subagent").input_schema.fetch("properties"), "mode"
+  ensure
+    gate&.open
     manager&.close
   end
 

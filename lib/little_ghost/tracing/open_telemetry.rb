@@ -196,10 +196,11 @@ module LittleGhost
       def add_event(name, attributes)
         owner_id = attributes[:parent_operation_id] || attributes[:operation_id]
         span = @mutex.synchronize { @entries.dig(owner_id, :span) }
+        kind = attributes[:event_kind]&.to_sym
         if span
-          span.add_event("little_ghost.#{name}", attributes: span_attributes(attributes))
+          span.add_event("little_ghost.#{name}", attributes: span_attributes(attributes, kind:))
         else
-          tracer.in_span("little_ghost.#{name}", attributes: span_attributes(attributes)) {}
+          tracer.in_span("little_ghost.#{name}", attributes: span_attributes(attributes, kind:)) {}
         end
       end
 
@@ -257,7 +258,7 @@ module LittleGhost
       end
 
       def internal_attribute?(key)
-        %i[operation_id parent_operation_id trace_context trace_links entrypoint_kind].include?(key.to_sym)
+        %i[event_kind operation_id parent_operation_id trace_context trace_links entrypoint_kind].include?(key.to_sym)
       end
 
       def add_model_settings(attributes, settings)
@@ -296,7 +297,8 @@ module LittleGhost
         return unless %i[diagnostic_input diagnostic_output].include?(key.to_sym)
 
         prefix = (key.to_sym == :diagnostic_input) ? "input" : "output"
-        if %i[agent tool].include?(kind) && !(kind == :tool && prefix == "output" && attributes[:error_type])
+        if %i[agent interrupt tool].include?(kind) &&
+            !(kind == :tool && prefix == "output" && attributes[:error_type])
           result["#{prefix}.value"] = value
           result["#{prefix}.mime_type"] = diagnostic_mime_type(value)
         end

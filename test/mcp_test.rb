@@ -143,6 +143,49 @@ class MCPTest < Minitest::Test
     assert_empty client.tools
   end
 
+  def test_filters_raw_tool_definitions_before_building_tools
+    definitions = [
+      {
+        "name" => "read",
+        "description" => "Read",
+        "inputSchema" => {"type" => "object"},
+        "annotations" => {"readOnlyHint" => true}
+      },
+      {
+        "name" => "write",
+        "description" => "Write",
+        "inputSchema" => {"type" => "object"},
+        "annotations" => {"readOnlyHint" => false}
+      }
+    ]
+    transport = Class.new(Transport) do
+      define_method(:send) do |payload, context: nil|
+        return super(payload, context:) unless payload[:method] == "tools/list"
+
+        {"result" => {"tools" => definitions}}
+      end
+    end.new
+    seen = []
+    client = LittleGhost::MCP::Client.new(
+      transport:,
+      definition_filter: ->(definition) {
+        seen << definition.fetch("name")
+        definition.dig("annotations", "readOnlyHint") == true
+      }
+    )
+
+    assert_equal ["read"], client.tools.map(&:tool_name)
+    assert_equal %w[read write], seen
+  end
+
+  def test_rejects_invalid_definition_filter
+    error = assert_raises(ArgumentError) do
+      LittleGhost::MCP::Client.new(transport: Transport.new, definition_filter: true)
+    end
+
+    assert_equal "definition_filter must respond to call", error.message
+  end
+
   def test_loads_all_pages_of_tools
     transport = Class.new(Transport) do
       def send(payload, context: nil)

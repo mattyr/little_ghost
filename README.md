@@ -214,7 +214,9 @@ weather = LittleGhost::Tool.define(
 ) { |input| "Sunny in #{input.fetch("city")}" }
 ```
 
-An agent can be exposed as a normal tool with `agent_as_tool`. A `subagent` declaration uses the bounded, concurrent subagent manager and adds spawn, message, wait, and listing tools. Each agent declares its own tools, so access policy remains visible on the class that receives it. Child capabilities are declared on the child agent itself.
+An agent can be exposed as a normal tool with `agent_as_tool`. A `subagent` declaration uses the bounded, concurrent subagent manager and adds spawn, queued-message, interrupt, wait, and listing tools. Each agent declares its own tools, so access policy remains visible on the class that receives it. Child capabilities are declared on the child agent itself.
+
+`Agent#interrupt` synchronously adds a message to the next model request of one active invocation and returns only the ordinary text from that model response. Tool calls from the same response stay inside the interrupted agent and continue its current run. A text-only response completes the run normally. The subagent manager exposes the same behavior as `interrupt_subagent`; `send_message_to_subagent` remains the separate FIFO mechanism for a later turn after active work finishes.
 
 Applications that discover agents at runtime can use `subagents { |run| definitions }`, returning `LittleGhost::Subagents::Definition` objects. Static `subagent` declarations take precedence over discovered definitions with the same kind, and all definitions share one manager and one control-tool surface.
 

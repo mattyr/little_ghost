@@ -254,6 +254,47 @@ module LittleGhost
         turn.completion.value(cancellation_token: @cancellation_token, deadline: @deadline)
       end
 
+      def interrupt(subagent_id:, message:, cancellation_token: @cancellation_token, deadline: @deadline)
+        unless message.is_a?(String)
+          raise ToolError, "Subagent messages must be strings."
+        end
+        if message.length > @max_message_chars
+          raise ToolError, "Subagent messages cannot exceed #{@max_message_chars} characters."
+        end
+
+        identity, turn = @mutex.synchronize do
+          ensure_open!
+          value = fetch_identity!(subagent_id)
+          unless value.agent.respond_to?(:interrupt)
+            raise ToolError, "Subagent #{subagent_id.inspect} does not support interruptions."
+          end
+          unless value.status == "running"
+            raise ToolError, "Subagent #{subagent_id.inspect} is not currently running."
+          end
+
+          [value, value.current]
+        end
+
+        response = identity.agent.interrupt(
+          message,
+          cancellation_token:,
+          deadline:,
+          target_operation_id: turn.operation_id
+        )
+        truncated = response.length > @max_response_chars
+        value = {
+          status: "interrupted",
+          subagent_id: identity.subagent_id,
+          kind: identity.definition.kind,
+          turn: turn.number,
+          response: truncated ? response[0, @max_response_chars] : response
+        }
+        value[:response_truncated] = true if truncated
+        value
+      rescue AgentInterruptError => error
+        raise ToolError, error.message
+      end
+
       def wait(subagent_ids: nil)
         identities = @mutex.synchronize do
           ensure_open!
@@ -331,8 +372,10 @@ module LittleGhost
           Tool.define(
             name: "send_message_to_subagent",
             description: <<~DESCRIPTION.strip,
-              Send a follow-up turn to an existing subagent identity. Messages are processed in order. Choose sync
-              when the next step depends on this turn, or async to enqueue it and continue immediately.
+              Send a follow-up turn to an existing subagent identity. Messages are processed in order after the
+              current turn and never interrupt active work. Do not use this for status, steering, stopping, or
+              finalization; use interrupt_subagent for an active subagent. Choose sync when the next step depends on
+              the later turn, or async to enqueue it and continue immediately.
             DESCRIPTION
             input_schema: {
               type: "object",
@@ -353,6 +396,32 @@ module LittleGhost
               message: input.fetch("message"),
               mode: input.fetch("mode"),
               parent_operation_id: context&.agent_operation_id
+            )
+          end,
+          Tool.define(
+            name: "interrupt_subagent",
+            description: <<~DESCRIPTION.strip,
+              Interrupt an actively running subagent in its current turn. The message is added at the next model
+              boundary. This call waits for that model response and returns only its ordinary text; tool calls from
+              the same response remain with the subagent and continue its current run.
+            DESCRIPTION
+            input_schema: {
+              type: "object",
+              properties: {
+                subagent_id: {type: "string", description: "Actively running subagent identity."},
+                message: {type: "string", description: "Status question, steering context, or request to finish."}
+              },
+              required: %w[subagent_id message],
+              additionalProperties: false
+            }
+          ) do |input, context: nil|
+            options = {}
+            options[:cancellation_token] = context.cancellation_token if context
+            options[:deadline] = context.deadline if context&.deadline
+            manager.interrupt(
+              subagent_id: input.fetch("subagent_id"),
+              message: input.fetch("message"),
+              **options
             )
           end,
           Tool.define(
