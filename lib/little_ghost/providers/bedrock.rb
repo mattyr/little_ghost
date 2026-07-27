@@ -43,6 +43,7 @@ module LittleGhost
         attempts = 0
 
         begin
+          partial_text = false
           request.cancellation_token.raise_if_cancelled!
           normalizer = StreamNormalizer.new(model:)
           stream = Support::InterruptibleStream.new(
@@ -54,10 +55,12 @@ module LittleGhost
           end
           stream.each do |event|
             normalizer.consume(event_hash(event)).each do |normalized|
+              partial_text ||= normalized.type == :text_delta && !normalized.data[:text].to_s.empty?
               yield normalized
             end
           end
           normalizer.finish.each do |event|
+            partial_text ||= event.type == :text_delta && !event.data[:text].to_s.empty?
             yield event
           end
         rescue CancelledError, DeadlineExceededError, CleanupError
@@ -75,7 +78,14 @@ module LittleGhost
           delay = capped_retry_delay(request, retry_delay(attempts))
           @on_retry.call(attempts, error, delay)
           wait_before_retry(request, delay)
-          yield StreamEvent.build(:model_retry, attempt: attempts, delay:, error_class: error.class.name)
+          yield StreamEvent.build(
+            :model_retry,
+            attempt: attempts,
+            delay:,
+            error_class: error.class.name,
+            error_code: (error.event_type if error.is_a?(StreamError)),
+            partial_text:
+          )
           retry
         end
       end

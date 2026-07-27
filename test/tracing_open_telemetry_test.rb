@@ -485,6 +485,59 @@ class TracingOpenTelemetryTest < Minitest::Test
     tracing&.shutdown
   end
 
+  def test_attaches_safe_retry_details_to_the_model_span
+    tracer = Tracer.new
+    tracing = LittleGhost::Tracing::OpenTelemetry.new(tracer:)
+
+    tracing.call(:model_start, {operation_id: "model", model_id: "model"})
+    tracing.call(
+      :model_retry,
+      {
+        parent_operation_id: "model",
+        error_class: "LittleGhost::Providers::HTTPError",
+        error_code: "server_error",
+        http_status: 503,
+        partial_text: true
+      }
+    )
+
+    span = tracer.started.first.last
+    assert_equal 1, span.events.length
+    name, attributes = span.events.first
+    assert_equal "little_ghost.model_retry", name
+    assert_equal "LittleGhost::Providers::HTTPError", attributes.fetch("error.type")
+    assert_equal "server_error", attributes.fetch("little_ghost.error_code")
+    assert_equal 503, attributes.fetch("little_ghost.http_status")
+    assert_equal true, attributes.fetch("little_ghost.partial_text")
+    refute attributes.key?("exception.message")
+  ensure
+    tracing&.shutdown
+  end
+
+  def test_attaches_delivered_interrupt_to_its_started_model_span
+    tracer = Tracer.new
+    tracing = LittleGhost::Tracing::OpenTelemetry.new(tracer:)
+
+    tracing.call(:model_start, {operation_id: "model", model_id: "model"})
+    tracing.call(
+      :agent_interrupt_delivered,
+      {
+        parent_operation_id: "model",
+        interruption_id: "interrupt",
+        event_kind: :interrupt
+      }
+    )
+
+    span = tracer.started.first.last
+    assert_equal 1, span.events.length
+    name, attributes = span.events.first
+    assert_equal "little_ghost.agent_interrupt_delivered", name
+    assert_equal "interrupt", attributes.fetch("little_ghost.interruption_id")
+    assert_empty tracer.instant
+  ensure
+    tracing&.shutdown
+  end
+
   def test_subagent_spans_parent_the_delegated_agent
     tracer = Tracer.new
     tracing = LittleGhost::Tracing::OpenTelemetry.new(tracer:)

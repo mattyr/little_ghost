@@ -402,6 +402,7 @@ class BedrockTest < Minitest::Test
     assert_equal 2, client.attempts
     assert_equal 1, retries.length
     assert_equal %i[message_start text_delta model_retry message_start text_delta message_stop], delivered.map(&:type)
+    assert_equal true, delivered.find { |event| event.type == :model_retry }.data.fetch(:partial_text)
     assert_equal "complete", delivered.last.data.fetch(:response).message.text
   end
 
@@ -442,6 +443,8 @@ class BedrockTest < Minitest::Test
 
     assert_equal 2, client.attempts
     assert events[0...retry_index].any? { |event| event.type == :tool_call_stop }
+    assert_equal false, events.fetch(retry_index).data.fetch(:partial_text)
+    assert_equal "service_unavailable_exception", events.fetch(retry_index).data.fetch(:error_code)
     assert_equal ["current"], response.message.content.grep(LittleGhost::Content::ToolUse).map(&:name)
     assert_equal({"id" => 1}, response.message.content.grep(LittleGhost::Content::ToolUse).fetch(0).input)
   end
@@ -479,7 +482,11 @@ class BedrockTest < Minitest::Test
       ).stream(request).to_a
 
       assert_equal 2, client.attempts, type
-      assert_equal 1, events.count { |event| event.type == :model_retry }, type
+      retry_events = events.select { |event| event.type == :model_retry }
+      assert_equal 1, retry_events.length, type
+      retry_event = retry_events.first
+      assert_equal type.to_s, retry_event.data.fetch(:error_code), type
+      assert_equal true, retry_event.data.fetch(:partial_text), type
     end
   end
 

@@ -337,7 +337,8 @@ module LittleGhost
         error = data[:error]
         error_class = error.class.name if error.is_a?(Exception)
         error_class ||= error if error.is_a?(String) && error.match?(/\A[A-Z]\w*(?:::[A-Z]\w*)*\z/)
-        [:model_retry, data.slice(:attempt, :delay).merge(error_class:).compact]
+        attributes = data.slice(:attempt, :delay, :error_code, :http_status, :partial_text)
+        [:model_retry, attributes.merge(error_class:).compact]
       end
     end
 

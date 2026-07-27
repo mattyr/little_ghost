@@ -350,6 +350,9 @@ class OpenAICompatibleTest < Minitest::Test
     assert_equal 2, transport.requests.length
     assert_equal [1], delays
     assert_equal [[1, failure, 1]], retries
+    retry_event = result.find { |event| event.type == :model_retry }
+    assert_equal 429, retry_event.data.fetch(:http_status)
+    assert_equal false, retry_event.data.fetch(:partial_text)
     assert_equal :message_stop, result.last.type
   end
 
@@ -389,6 +392,9 @@ class OpenAICompatibleTest < Minitest::Test
     assert_equal 2, transport.calls
     assert_equal 1, retries.length
     assert_equal %i[message_start text_delta model_retry message_start text_delta message_stop], delivered.map(&:type)
+    retry_event = delivered.find { |event| event.type == :model_retry }
+    assert_equal 503, retry_event.data.fetch(:http_status)
+    assert_equal true, retry_event.data.fetch(:partial_text)
     assert_equal "complete", delivered.last.data.fetch(:response).message.text
   end
 
@@ -432,6 +438,7 @@ class OpenAICompatibleTest < Minitest::Test
 
     assert_equal 2, transport.calls
     assert events[0...retry_index].any? { |event| event.type == :tool_call_stop }
+    assert_equal false, events.fetch(retry_index).data.fetch(:partial_text)
     assert_equal ["current"], response.message.content.grep(LittleGhost::Content::ToolUse).map(&:name)
     assert_equal({"id" => 1}, response.message.content.grep(LittleGhost::Content::ToolUse).fetch(0).input)
   end
@@ -596,7 +603,32 @@ class OpenAICompatibleTest < Minitest::Test
     assert_equal 2, transport.requests.length
     assert_equal 1, retries.length
     assert_instance_of LittleGhost::Providers::OpenAICompatible::StreamError, retries.first.fetch(1)
+    retry_event = events.find { |event| event.type == :model_retry }
+    assert_equal "provider_overloaded", retry_event.data.fetch(:error_code)
+    assert_equal false, retry_event.data.fetch(:partial_text)
     assert_equal :message_stop, events.last.type
+  end
+
+  def test_does_not_expose_arbitrary_provider_error_codes_on_retry
+    overloaded = sse([{
+      type: "error",
+      error: {
+        message: "busy",
+        code: "provider-secret-value",
+        metadata: {error_type: "provider_overloaded"}
+      }
+    }])
+    completed = ["data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"]
+
+    events = provider(
+      transport: FakeTransport.new(overloaded, completed),
+      max_retries: 1,
+      sleeper: ->(*) {}
+    ).stream(request).to_a
+
+    retry_event = events.find { |event| event.type == :model_retry }
+    assert_equal "provider_overloaded", retry_event.data.fetch(:error_code)
+    refute_includes retry_event.data.values, "provider-secret-value"
   end
 
   def test_does_not_retry_permanent_structured_stream_errors

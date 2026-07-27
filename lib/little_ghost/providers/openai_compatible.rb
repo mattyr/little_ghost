@@ -87,8 +87,12 @@ module LittleGhost
         attempts = 0
 
         begin
+          partial_text = false
           request.cancellation_token.raise_if_cancelled!
-          stream_once(request) { |event| yield event }
+          stream_once(request) do |event|
+            partial_text ||= event.type == :text_delta && !event.data[:text].to_s.empty?
+            yield event
+          end
         rescue HTTPError, StreamError => error
           if context_window_overflow?(error)
             raise ContextWindowOverflowError, "The model context window was exceeded"
@@ -100,7 +104,14 @@ module LittleGhost
           delay = capped_retry_delay(request, retry_delay(attempts))
           @on_retry.call(attempts, error, delay)
           wait_before_retry(request, delay)
-          yield StreamEvent.build(:model_retry, attempt: attempts, delay:, error_class: error.class.name)
+          yield StreamEvent.build(
+            :model_retry,
+            attempt: attempts,
+            delay:,
+            error_class: error.class.name,
+            partial_text:,
+            **retry_error_metadata(error)
+          )
           retry
         end
       end
@@ -110,6 +121,27 @@ module LittleGhost
       end
 
       private
+
+      def retry_error_metadata(error)
+        case error
+        when HTTPError
+          {http_status: error.status}.compact
+        when StreamError
+          {error_code: safe_retry_error_code(error)}.compact
+        else
+          {}
+        end
+      end
+
+      def safe_retry_error_code(error)
+        code = error.code.to_s.strip.downcase
+        return code if code == "server_error"
+
+        status = Integer(code, exception: false)
+        return status.to_s if status == 408 || status == 429 || (status && status >= 500)
+
+        error.error_type if TRANSIENT_STREAM_ERROR_TYPES.include?(error.error_type)
+      end
 
       def context_window_overflow?(error)
         values = [error.message]
