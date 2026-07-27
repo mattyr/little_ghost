@@ -322,6 +322,8 @@ module LittleGhost
       @closed = false
       @close_mutex = Mutex.new
       @exclusive_tools_mutex = Mutex.new
+      @interruptions_mutex = Mutex.new
+      @active_interruptions = []
       raise ArgumentError, "max_turns must be at least 1" if @max_turns < 1
       raise ArgumentError, "max_tool_calls must be at least 1" if @max_tool_calls < 1
       apply_cancellation_decision!(run_callbacks(:after_initialize, self))
@@ -336,6 +338,55 @@ module LittleGhost
         result = event.data[:result] if event.type == :invocation_stop
       end
       result
+    end
+
+    def interrupt(
+      message,
+      cancellation_token: Support::CancellationToken.new,
+      deadline: nil,
+      target_operation_id: nil
+    )
+      unless message.is_a?(String)
+        raise ArgumentError, "interrupt message must be a string"
+      end
+
+      interruptions = @interruptions_mutex.synchronize do
+        active = if target_operation_id
+          @active_interruptions.select { |candidate| candidate.target_operation_id == target_operation_id }
+        else
+          @active_interruptions
+        end
+        if active.empty?
+          raise AgentInterruptError, "Agent is not currently running"
+        end
+        if active.length > 1
+          raise AgentInterruptError, "Agent has multiple active invocations; the interruption target is ambiguous"
+        end
+
+        active.first
+      end
+      ticket = interruptions.enqueue(message)
+      instrument(
+        :agent_interrupt_queued,
+        parent_operation_id: interruptions.operation_id,
+        interruption_id: ticket.id,
+        event_kind: :interrupt,
+        diagnostic: {input: message}
+      )
+      begin
+        ticket.value(cancellation_token:, deadline:)
+      rescue => error
+        interruptions.withdraw(ticket)
+        instrument(
+          :agent_interrupt_failed,
+          parent_operation_id: interruptions.operation_id,
+          interruption_id: ticket.id,
+          event_kind: :interrupt,
+          error_type: error.class.name,
+          diagnostic: {exception: diagnostic_exception(error)}
+        )
+        raise
+      end
     end
 
     def stream(
@@ -365,6 +416,7 @@ module LittleGhost
       end
       settings = @model_settings.merge(settings)
       Enumerator.new do |events|
+        interruptions = AgentInterruptions.new
         run_context = RunContext.new(
           state: context,
           cancellation_token: cancellation_token,
@@ -373,16 +425,25 @@ module LittleGhost
           metadata: {agent_id: self.class.agent_id},
           checkpoint:
         )
-        execute(
-          input,
-          history: history,
-          context: run_context,
-          settings: settings,
-          template_locals: template_locals,
-          template_paths: invocation_paths,
-          events: events,
-          parent_operation_id:
-        )
+        begin
+          execute(
+            input,
+            history: history,
+            context: run_context,
+            settings: settings,
+            template_locals: template_locals,
+            template_paths: invocation_paths,
+            events: events,
+            parent_operation_id:,
+            interruptions:
+          )
+        rescue => error
+          interruptions.close(error)
+          raise
+        ensure
+          interruptions.close(AgentInterruptError.new("Agent finished before the interruption was delivered"))
+          unregister_interruptions(interruptions)
+        end
       end
     end
 
@@ -433,13 +494,19 @@ module LittleGhost
     def tools = tool_registry
 
     def close
-      resources = @close_mutex.synchronize do
+      resources, interruptions = @close_mutex.synchronize do
         return if @closed
 
         @closed = true
-        [tool_registry]
+        [
+          [tool_registry],
+          @interruptions_mutex.synchronize { @active_interruptions.dup }
+        ]
       end
       first_error = nil
+      interruptions.each do |active|
+        active.close(AgentInterruptError.new("Agent was closed"))
+      end
       resources.each do |resource|
         resource.close if resource.respond_to?(:close)
       rescue => error
@@ -450,10 +517,63 @@ module LittleGhost
 
     private
 
-    def execute(input, history:, context:, settings:, template_locals:, template_paths:, events:, parent_operation_id:)
+    def register_interruptions(interruptions)
+      @interruptions_mutex.synchronize { @active_interruptions << interruptions }
+    end
+
+    def unregister_interruptions(interruptions)
+      @interruptions_mutex.synchronize { @active_interruptions.delete(interruptions) }
+    end
+
+    def interruption_message(interruption)
+      Message.new(
+        role: :user,
+        content: <<~MESSAGE.strip,
+          Agent interruption:
+          #{interruption.message}
+
+          Respond briefly in ordinary text before any tool calls, then continue the current task unless this
+          interruption asks you to finish.
+        MESSAGE
+        metadata: {little_ghost_interruption_id: interruption.id}
+      )
+    end
+
+    def request_with_interruption(request, interruption)
+      ModelRequest.new(
+        messages: [*request.messages, interruption_message(interruption)],
+        tools: request.tools,
+        settings: request.settings,
+        output_schema: nil,
+        tool_choice: nil,
+        required_capabilities: request.tools.empty? ? [] : [:tools],
+        cancellation_token: request.cancellation_token,
+        deadline: request.deadline
+      )
+    end
+
+    def request_contains_interruption?(request, interruption)
+      request.messages.any? do |message|
+        message.metadata[:little_ghost_interruption_id] == interruption.id
+      end
+    end
+
+    def execute(
+      input,
+      history:,
+      context:,
+      settings:,
+      template_locals:,
+      template_paths:,
+      events:,
+      parent_operation_id:,
+      interruptions:
+    )
       started_at = monotonic_time
       operation_id = SecureRandom.uuid
       context.bind_agent_operation_id(operation_id)
+      interruptions.bind(operation_id, target_operation_id: parent_operation_id)
+      register_interruptions(interruptions)
       instrument(
         :agent_start,
         operation_id:,
@@ -485,14 +605,15 @@ module LittleGhost
         )
         begin
           context.check!
-          response = invoke_model(
+          response, interrupted = invoke_model(
             messages,
             context,
             settings,
             turn,
             events,
             parent_operation_id: turn_operation_id,
-            structured_result_repair_due:
+            structured_result_repair_due:,
+            interruptions:
           )
           messages << response.message
           tool_uses = response.message.content.grep(Content::ToolUse)
@@ -506,6 +627,16 @@ module LittleGhost
             )
             unless validation_error
               messages[-1] = redact_structured_result_message(response.message)
+              unless interruptions.finish
+                context.checkpoint(messages)
+                instrument(
+                  :agent_turn_stop,
+                  operation_id: turn_operation_id,
+                  outcome: :interrupted,
+                  turn: turn + 1
+                )
+                next
+              end
               return complete_structured_result(
                 response,
                 messages,
@@ -556,7 +687,20 @@ module LittleGhost
               raise OutputLimitError, "The model stopped before completing its response"
             end
 
-            if @structured_output_strategy
+            if interrupted || !@structured_output_strategy
+              unless interruptions.finish
+                context.checkpoint(messages)
+                instrument(
+                  :agent_turn_stop,
+                  operation_id: turn_operation_id,
+                  outcome: :interrupted,
+                  turn: turn + 1
+                )
+                next
+              end
+            end
+
+            if @structured_output_strategy && !interrupted
               validation_error = if @structured_output_strategy.provider?
                 capture_structured_result(response.message.text, context)
               else
@@ -564,6 +708,16 @@ module LittleGhost
               end
               unless validation_error
                 messages[-1] = redact_structured_result_message(response.message)
+                unless interruptions.finish
+                  context.checkpoint(messages)
+                  instrument(
+                    :agent_turn_stop,
+                    operation_id: turn_operation_id,
+                    outcome: :interrupted,
+                    turn: turn + 1
+                  )
+                  next
+                end
                 return complete_structured_result(
                   response,
                   messages,
@@ -719,8 +873,10 @@ module LittleGhost
       turn,
       events,
       parent_operation_id:,
+      interruptions:,
       structured_result_repair_due: false,
-      recovery_attempt: 0
+      recovery_attempt: 0,
+      interruption: nil
     )
       started_at = monotonic_time
       operation_id = SecureRandom.uuid
@@ -744,6 +900,16 @@ module LittleGhost
       )
       apply_cancellation_decision!(decision)
       request = replacement_value(decision, :request, request)
+      interruption ||= interruptions.deliver
+      if interruption && !request_contains_interruption?(request, interruption)
+        request = request_with_interruption(request, interruption)
+        instrument(
+          :agent_interrupt_delivered,
+          parent_operation_id: operation_id,
+          interruption_id: interruption.id,
+          event_kind: :interrupt
+        )
+      end
       messages.replace(request.messages)
       context.checkpoint(messages)
       instrument(
@@ -788,6 +954,16 @@ module LittleGhost
       decision = run_callbacks(:after_model, {request: request, response: response, turn: turn}, context: context)
       apply_cancellation_decision!(decision)
       response = replacement_value(decision, :response, response)
+      interruptions.resolve(interruption, response.message.text)
+      if interruption
+        instrument(
+          :agent_interrupt_responded,
+          parent_operation_id: operation_id,
+          interruption_id: interruption.id,
+          event_kind: :interrupt,
+          diagnostic: {output: response.message.text}
+        )
+      end
       if buffered_events
         publish_model_events(
           events,
@@ -833,7 +1009,7 @@ module LittleGhost
           repair: structured_result_repair_due
         )
       )
-      response
+      [response, !interruption.nil?]
     rescue => error
       instrument(
         :model_stop,
@@ -868,7 +1044,9 @@ module LittleGhost
             events,
             parent_operation_id:,
             structured_result_repair_due:,
-            recovery_attempt: recovery_attempt + 1
+            recovery_attempt: recovery_attempt + 1,
+            interruptions:,
+            interruption:
           )
         end
       end

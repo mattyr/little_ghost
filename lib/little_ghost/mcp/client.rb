@@ -125,12 +125,24 @@ module LittleGhost
       DEFAULT_MAX_TOOLS = 1_000
       DEFAULT_MAX_PAGES = 100
 
-      def initialize(transport:, name: "mcp", prefix: nil, rejected_tools: [], max_tools: DEFAULT_MAX_TOOLS,
-        max_pages: DEFAULT_MAX_PAGES)
+      def initialize(
+        transport:,
+        name: "mcp",
+        prefix: nil,
+        rejected_tools: [],
+        definition_filter: nil,
+        max_tools: DEFAULT_MAX_TOOLS,
+        max_pages: DEFAULT_MAX_PAGES
+      )
+        if definition_filter && !definition_filter.respond_to?(:call)
+          raise ArgumentError, "definition_filter must respond to call"
+        end
+
         @transport = transport
         @name = String(name)
         @prefix = prefix&.to_s
         @rejected_tools = rejected_tools.map(&:to_s).freeze
+        @definition_filter = definition_filter
         @max_tools = positive_integer(max_tools, :max_tools)
         @max_pages = positive_integer(max_pages, :max_pages)
         @request_id = 0
@@ -145,6 +157,7 @@ module LittleGhost
         definitions.filter_map do |definition|
           source_name = definition_name(definition)
           next if @rejected_tools.include?(source_name)
+          next if @definition_filter && !@definition_filter.call(definition)
 
           build_tool(definition)
         end
