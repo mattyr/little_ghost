@@ -67,6 +67,10 @@ class AgentInterruptTest < Minitest::Test
     assert_equal "Still checking", interrupted.value
     assert runner.alive?, "child finished before executing its same-response tool"
 
+    delivered_index = telemetry.index { |name, _| name == :agent_interrupt_delivered }
+    model_start_indexes = telemetry.each_index.select { |index| telemetry.fetch(index).first == :model_start }
+    assert_operator delivered_index, :>, model_start_indexes.fetch(1)
+
     responded = telemetry.find { |name, _| name == :agent_interrupt_responded }.last
     assert_equal JSON.generate("Still checking"), responded.fetch(:diagnostic_output)
     refute_includes responded.fetch(:diagnostic_output), "private"

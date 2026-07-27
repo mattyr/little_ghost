@@ -95,7 +95,7 @@ class AGUITest < Minitest::Test
   def test_closes_partial_text_before_a_model_retry
     source = [
       LittleGhost::StreamEvent.build(:text_delta, text: "Partial"),
-      LittleGhost::StreamEvent.build(:model_retry, attempt: 1),
+      LittleGhost::StreamEvent.build(:model_retry, attempt: 1, partial_text: true),
       LittleGhost::StreamEvent.build(:text_delta, text: "Complete"),
       LittleGhost::StreamEvent.build(:run_stop, response: "Complete")
     ]
@@ -109,7 +109,25 @@ class AGUITest < Minitest::Test
       ],
       events.map { |event| event.fetch(:type) }
     )
-    assert_equal "little_ghost.model_retry", events.fetch(3).fetch(:name)
+    retry_event = events.fetch(3)
+    assert_equal "little_ghost.model_retry", retry_event.fetch(:name)
+    assert_equal true, retry_event.dig(:value, :partial_text)
+    assert_equal events.first.fetch(:messageId), retry_event.dig(:value, :superseded_message_id)
+  end
+
+  def test_retry_without_partial_text_has_no_superseded_message
+    source = [
+      LittleGhost::StreamEvent.build(:model_retry, attempt: 1, partial_text: false),
+      LittleGhost::StreamEvent.build(:text_delta, text: "Complete"),
+      LittleGhost::StreamEvent.build(:run_stop, response: "Complete")
+    ]
+
+    events = LittleGhost::AGUI::Adapter.new.stream(source, thread_id: "thread", run_id: "run").to_a
+    retry_event = events.first
+
+    assert_equal "little_ghost.model_retry", retry_event.fetch(:name)
+    assert_equal false, retry_event.dig(:value, :partial_text)
+    refute retry_event.fetch(:value).key?(:superseded_message_id)
   end
 
   def test_translates_reasoning_separately_from_visible_text

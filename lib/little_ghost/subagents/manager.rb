@@ -340,9 +340,9 @@ module LittleGhost
             name: "spawn_subagent",
             description: <<~DESCRIPTION.strip,
               Create a new subagent identity for an independent task. Choose sync when the next step depends on this
-              response; several sync spawns requested together can still run in parallel. Choose async to continue
-              other work immediately, then use wait_for_subagents to check in. Spawning the same kind repeatedly
-              creates separate identities.
+              response; several sync spawns requested together can still run in parallel. Choose async to coordinate
+              or perform explicitly non-overlapping work while the subagent runs, then use wait_for_subagents to
+              check in. Spawning the same kind repeatedly creates separate identities.
             DESCRIPTION
             input_schema: {
               type: "object",
@@ -355,7 +355,7 @@ module LittleGhost
                 task: {type: "string", description: "Independent task to delegate."},
                 mode: {
                   type: "string", enum: %w[sync async],
-                  description: "Use sync when the next step needs the result; async to continue immediately."
+                  description: "Use sync when the next step needs the result; async for coordination or non-overlapping work."
                 }
               },
               required: %w[kind task mode],

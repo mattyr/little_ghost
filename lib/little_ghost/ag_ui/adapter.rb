@@ -16,6 +16,7 @@ module LittleGhost
           tool_call_ids = {}
 
           events.each do |source|
+            superseded_message_id = message_id if source.type == :model_retry && message_started
             if reasoning_id && source.type != :reasoning_delta
               output << event("REASONING_MESSAGE_END", messageId: reasoning_message_id)
               output << event("REASONING_END", messageId: reasoning_id)
@@ -114,7 +115,10 @@ module LittleGhost
               )
             when :model_retry
               tool_call_ids.clear
-              output << custom("little_ghost.model_retry", source.data)
+              output << custom(
+                "little_ghost.model_retry",
+                source.data.merge(superseded_message_id:).compact
+              )
             when :subagent
               output << custom("little_ghost.subagent", source.data.fetch(:event, source.data))
             when :trace_context

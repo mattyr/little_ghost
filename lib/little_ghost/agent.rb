@@ -905,14 +905,9 @@ module LittleGhost
       apply_cancellation_decision!(decision)
       request = replacement_value(decision, :request, request)
       interruption ||= interruptions.deliver
-      if interruption && !request_contains_interruption?(request, interruption)
+      interruption_delivered = interruption && !request_contains_interruption?(request, interruption)
+      if interruption_delivered
         request = request_with_interruption(request, interruption)
-        instrument(
-          :agent_interrupt_delivered,
-          parent_operation_id: operation_id,
-          interruption_id: interruption.id,
-          event_kind: :interrupt
-        )
       end
       messages.replace(request.messages)
       context.checkpoint(messages)
@@ -928,6 +923,14 @@ module LittleGhost
         model_settings: request.settings,
         **model_attributes
       )
+      if interruption_delivered
+        instrument(
+          :agent_interrupt_delivered,
+          parent_operation_id: operation_id,
+          interruption_id: interruption.id,
+          event_kind: :interrupt
+        )
+      end
       emit(events, :model_start, turn: turn)
       response = nil
       time_to_first_token = nil
@@ -941,9 +944,14 @@ module LittleGhost
           instrument(
             :model_retry,
             parent_operation_id: operation_id,
-            attempt: event.data[:attempt],
-            delay: event.data[:delay],
-            error_class: event.data[:error_class],
+            **event.data.slice(
+              :attempt,
+              :delay,
+              :error_class,
+              :error_code,
+              :http_status,
+              :partial_text
+            ),
             **model_attributes
           )
         end

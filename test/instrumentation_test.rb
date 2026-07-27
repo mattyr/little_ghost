@@ -265,7 +265,16 @@ class InstrumentationTest < Minitest::Test
     invocation = LittleGhost::Invocation.new(message: "Hello")
     run = LittleGhost::Run.new(application:, invocation:)
 
-    run.publish(:model_retry, attempt: 2, delay: 0.5, error: RuntimeError.new("credential leaked"), private: "ignored")
+    run.publish(
+      :model_retry,
+      attempt: 2,
+      delay: 0.5,
+      error: RuntimeError.new("credential leaked"),
+      error_code: "server_error",
+      http_status: 503,
+      partial_text: true,
+      private: "ignored"
+    )
     run.publish(:model_retry, attempt: 3, error: "provider included secret text")
 
     name, attributes = recorded.fetch(0)
@@ -273,6 +282,9 @@ class InstrumentationTest < Minitest::Test
     assert_equal 2, attributes.fetch(:attempt)
     assert_equal 0.5, attributes.fetch(:delay)
     assert_equal "RuntimeError", attributes.fetch(:error_class)
+    assert_equal "server_error", attributes.fetch(:error_code)
+    assert_equal 503, attributes.fetch(:http_status)
+    assert_equal true, attributes.fetch(:partial_text)
     refute attributes.key?(:error)
     refute attributes.key?(:private)
     assert_equal invocation.run_id, attributes.fetch(:run_id)
