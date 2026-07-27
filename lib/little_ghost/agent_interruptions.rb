@@ -4,6 +4,14 @@ require "securerandom"
 
 module LittleGhost
   class AgentInterruptions
+    Response = Data.define(:text, :tool_calls) do
+      def initialize(text:, tool_calls:)
+        super(text: String(text), tool_calls: !!tool_calls)
+      end
+
+      def tool_calls? = tool_calls
+    end
+
     class Ticket
       attr_reader :id, :message
 
@@ -87,13 +95,13 @@ module LittleGhost
       end
     end
 
-    def resolve(ticket, text)
+    def resolve(ticket, response)
       @mutex.synchronize do
         return unless ticket && @delivered.equal?(ticket)
 
         @delivered = nil
       end
-      ticket.resolve(text)
+      ticket.resolve(response)
     end
 
     def pending?

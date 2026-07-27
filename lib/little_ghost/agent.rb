@@ -283,7 +283,7 @@ module LittleGhost
       end
     end
 
-    attr_reader :model, :tool_registry, :instrumentation, :run
+    attr_reader :model, :tool_registry, :instrumentation, :run, :delegation_activity, :agent_path
 
     def initialize(
       model:,
@@ -293,6 +293,8 @@ module LittleGhost
       template_paths: [],
       run: nil,
       executor: Support::Executor.new,
+      delegation_activity: nil,
+      agent_path: Subagents::AgentPath::ROOT,
       max_turns: 100,
       max_tool_calls: 1_000,
       model_settings: {}
@@ -317,6 +319,8 @@ module LittleGhost
       @model_settings = model_settings.to_h.freeze
       @template_resolver = template_resolver || default_template_resolver(template_paths)
       @executor = executor
+      @delegation_activity = delegation_activity
+      @agent_path = Subagents::AgentPath.validate!(agent_path)
       @max_turns = Integer(max_turns)
       @max_tool_calls = Integer(max_tool_calls)
       @closed = false
@@ -341,6 +345,20 @@ module LittleGhost
     end
 
     def interrupt(
+      message,
+      cancellation_token: Support::CancellationToken.new,
+      deadline: nil,
+      target_operation_id: nil
+    )
+      interrupt_response(
+        message,
+        cancellation_token:,
+        deadline:,
+        target_operation_id:
+      ).text
+    end
+
+    def interrupt_response(
       message,
       cancellation_token: Support::CancellationToken.new,
       deadline: nil,
@@ -968,7 +986,13 @@ module LittleGhost
       decision = run_callbacks(:after_model, {request: request, response: response, turn: turn}, context: context)
       apply_cancellation_decision!(decision)
       response = replacement_value(decision, :response, response)
-      interruptions.resolve(interruption, response.message.text)
+      interruptions.resolve(
+        interruption,
+        AgentInterruptions::Response.new(
+          text: response.message.text,
+          tool_calls: response.message.content.any? { |content| content.is_a?(Content::ToolUse) }
+        )
+      )
       if interruption
         instrument(
           :agent_interrupt_responded,
