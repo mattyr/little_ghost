@@ -414,6 +414,7 @@ module LittleGhost
       end
 
       def list(kind: nil, limit: DEFAULT_LIST_LIMIT, cursor: nil)
+        cursor = nil if cursor == ""
         unless limit.is_a?(Integer) && limit.between?(1, MAX_LIST_LIMIT)
           raise ToolError, "limit must be between 1 and #{MAX_LIST_LIMIT}"
         end
@@ -569,7 +570,8 @@ module LittleGhost
             name: "list_subagents",
             description: <<~DESCRIPTION.strip,
               List active and persisted subagent conversations newest-first without restoring inactive agents.
-              Use kind to filter and cursor to continue bounded pages.
+              Use kind to filter. Omit cursor for the first page; to continue, pass the exact non-empty next_cursor
+              from the preceding result.
             DESCRIPTION
             input_schema: {
               type: "object",
