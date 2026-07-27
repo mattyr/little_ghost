@@ -237,6 +237,20 @@ module LittleGhost
       )
     end
 
+    def open_subagent_session(run, conversation_id)
+      parent_link = Subagents::Manager.parent_link(run.session)
+      Session.new(
+        id: Subagents::Manager.conversation_session_id(conversation_id),
+        actor_id: session_actor_for(run.invocation),
+        store: session_store,
+        metadata: {
+          "little_ghost_kind" => "subagent_conversation",
+          "little_ghost_parent_link" => parent_link,
+          "little_ghost_conversation_id" => conversation_id
+        }
+      )
+    end
+
     def session_actor_for(invocation)
       @session_actor ? @session_actor.call(invocation) : invocation.actor_id
     end

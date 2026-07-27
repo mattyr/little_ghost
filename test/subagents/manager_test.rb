@@ -486,6 +486,598 @@ class SubagentManagerTest < Minitest::Test
     manager&.close
   end
 
+  def test_durable_conversation_restores_across_managers_with_compact_session_history
+    store = LittleGhost::SessionStores::Memory.new
+    parent = LittleGhost::Session.new(id: "parent", store:)
+    requests = []
+    responses = ["first response", "second response"]
+    factory = lambda do |_id|
+      model = Object.new
+      model.define_singleton_method(:stream) do |request|
+        requests << request
+        response = LittleGhost::ModelResponse.new(
+          message: LittleGhost::Message.new(role: :assistant, content: responses.shift),
+          stop_reason: :end_turn,
+          usage: LittleGhost::Usage.new
+        )
+        [LittleGhost::StreamEvent.build(:message_stop, response:)].each
+      end
+      LittleGhost::Agent.new(model:)
+    end
+    definition = LittleGhost::Subagents::Definition.new(
+      kind: "explore",
+      description: "Explore code",
+      factory:
+    )
+    first_manager = LittleGhost::Subagents::Manager.new([definition], parent_session: parent)
+    spawned = first_manager.spawn(kind: "explore", task: "inspect", mode: "sync")
+    subagent_id = spawned.fetch(:subagent_id)
+    conversation_id = first_manager.list.dig(:subagents, 0, :conversation_id)
+    first_manager.close
+
+    restored_parent = LittleGhost::Session.new(id: "parent", store:)
+    second_manager = LittleGhost::Subagents::Manager.new([definition], parent_session: restored_parent)
+    listed = second_manager.list.fetch(:subagents).first
+    followed_up = second_manager.send_message(
+      subagent_id:,
+      message: "go deeper",
+      mode: "sync"
+    )
+    child = LittleGhost::Session.new(
+      id: LittleGhost::Subagents::Manager.conversation_session_id(conversation_id),
+      store:
+    )
+    registry_record = LittleGhost::Session.new(
+      id: LittleGhost::Subagents::Manager.registry_session_id(restored_parent),
+      store:
+    ).state
+      .fetch("conversations")
+      .fetch(subagent_id)
+
+    assert_match(/\Asa_[0-9a-f]{32}\z/, subagent_id)
+    assert_equal true, listed.fetch(:resumed)
+    assert_equal conversation_id, listed.fetch(:conversation_id)
+    assert_equal 2, followed_up.fetch(:turn)
+    assert_equal %i[user assistant user], requests.last.messages.map(&:role)
+    assert_equal(
+      ["first response", "second response"],
+      child.history.select { |message| message.role == :assistant }.map(&:text)
+    )
+    assert_equal %i[user assistant user assistant], child.history.map(&:role)
+    assert_equal(
+      %w[commit_id commit_slot conversation_id kind latest_turn message_count updated_at],
+      registry_record.keys.sort
+    )
+  ensure
+    first_manager&.close
+    second_manager&.close
+  end
+
+  def test_structured_result_is_serialized_in_restored_history
+    store = LittleGhost::SessionStores::Memory.new
+    parent = LittleGhost::Session.new(id: "parent", store:)
+    restored_history = []
+    restored_state = {}
+    builds = 0
+    structured_message = LittleGhost::Message.new(role: :assistant, content: [])
+    structured_result = LittleGhost::RunResult.new(
+      message: structured_message,
+      stop_reason: :structured_result,
+      usage: LittleGhost::Usage.new,
+      messages: [structured_message],
+      state: {step: 1},
+      structured_result: LittleGhost::StructuredResult.new(
+        schema_name: "evidence",
+        value: {"claim" => "supported"}
+      )
+    )
+    resumed_result = run_result("resumed")
+    definition = LittleGhost::Subagents::Definition.new(
+      kind: "explore",
+      description: "Explore code",
+      factory: lambda do |_id|
+        builds += 1
+        agent = LittleGhost::Agent.new(model: Object.new)
+        agent.define_singleton_method(:stream) do |_message, **options|
+          Enumerator.new do |events|
+            if builds == 1
+              events << LittleGhost::StreamEvent.build(:invocation_stop, result: structured_result)
+            else
+              restored_history.concat(options.fetch(:history))
+              restored_state.merge!(options.fetch(:context))
+              events << LittleGhost::StreamEvent.build(:invocation_stop, result: resumed_result)
+            end
+          end
+        end
+        agent
+      end
+    )
+    first_manager = LittleGhost::Subagents::Manager.new([definition], parent_session: parent)
+    first = first_manager.spawn(kind: "explore", task: "inspect", mode: "sync")
+    first_manager.close
+
+    second_manager = LittleGhost::Subagents::Manager.new(
+      [definition],
+      parent_session: LittleGhost::Session.new(id: "parent", store:)
+    )
+    second_manager.send_message(
+      subagent_id: first.fetch(:subagent_id),
+      message: "continue",
+      mode: "sync"
+    )
+
+    assert_equal "{\"claim\":\"supported\"}", restored_history.fetch(1).text
+    assert_equal({step: 1}, restored_state)
+  ensure
+    first_manager&.close
+    second_manager&.close
+  end
+
+  def test_child_tools_receive_stable_distinct_conversation_ids_across_restore
+    observed = []
+    tool_class = LittleGhost::Tool.define(
+      name: "observe_conversation",
+      description: "Observe conversation"
+    ) do |_input, context:|
+      observed << context.conversation_id
+      "observed"
+    end
+    factory = lambda do |_id|
+      calls = 0
+      model = Object.new
+      model.define_singleton_method(:stream) do |_request|
+        calls += 1
+        message = if calls.odd?
+          LittleGhost::Message.new(
+            role: :assistant,
+            content: LittleGhost::Content::ToolUse.new(
+              id: "observe-#{calls}",
+              name: "observe_conversation",
+              input: {}
+            )
+          )
+        else
+          LittleGhost::Message.new(role: :assistant, content: "done")
+        end
+        response = LittleGhost::ModelResponse.new(
+          message:,
+          stop_reason: calls.odd? ? :tool_use : :end_turn,
+          usage: LittleGhost::Usage.new
+        )
+        [LittleGhost::StreamEvent.build(:message_stop, response:)].each
+      end
+      LittleGhost::Agent.new(model:, tools: [tool_class.new])
+    end
+    store = LittleGhost::SessionStores::Memory.new
+    parent = LittleGhost::Session.new(id: "parent", store:)
+    definition = LittleGhost::Subagents::Definition.new(
+      kind: "explore",
+      description: "Explore code",
+      factory:
+    )
+    first_manager = LittleGhost::Subagents::Manager.new([definition], parent_session: parent)
+    first = first_manager.spawn(kind: "explore", task: "first", mode: "sync")
+    first_id = first.fetch(:subagent_id)
+    first_conversation_id = first_manager.list.dig(:subagents, 0, :conversation_id)
+    first_manager.send_message(subagent_id: first_id, message: "follow up", mode: "sync")
+    second = first_manager.spawn(kind: "explore", task: "second", mode: "sync")
+    second_conversation_id = first_manager.list.fetch(:subagents)
+      .find { |identity| identity.fetch(:subagent_id) == second.fetch(:subagent_id) }
+      .fetch(:conversation_id)
+    first_manager.close
+
+    second_manager = LittleGhost::Subagents::Manager.new(
+      [definition],
+      parent_session: LittleGhost::Session.new(id: "parent", store:)
+    )
+    second_manager.send_message(subagent_id: first_id, message: "restored", mode: "sync")
+
+    assert_equal [first_conversation_id, first_conversation_id], observed.first(2)
+    assert_equal second_conversation_id, observed.fetch(2)
+    assert_equal first_conversation_id, observed.fetch(3)
+    refute_equal first_conversation_id, second_conversation_id
+  ensure
+    first_manager&.close
+    second_manager&.close
+  end
+
+  def test_run_context_conversation_id_is_optional_validated_and_frozen
+    assert_nil LittleGhost::RunContext.new.conversation_id
+    assert_raises(ArgumentError) { LittleGhost::RunContext.new(conversation_id: "") }
+
+    context = LittleGhost::RunContext.new(conversation_id: +"conversation")
+
+    assert_equal "conversation", context.conversation_id
+    assert_predicate context.conversation_id, :frozen?
+  end
+
+  def test_persist_false_definition_does_not_create_a_registry_or_child_session
+    store = LittleGhost::SessionStores::Memory.new
+    parent = LittleGhost::Session.new(id: "parent", store:)
+    definition = LittleGhost::Subagents::Definition.new(
+      kind: "explore",
+      description: "Explore code",
+      persist: false,
+      factory: ->(_id) { ControlledAgent.new }
+    )
+    manager = LittleGhost::Subagents::Manager.new([definition], parent_session: parent)
+
+    manager.spawn(kind: "explore", task: "inspect", mode: "sync")
+
+    refute parent.state.key?("little_ghost.subagent_conversations")
+    assert_empty LittleGhost::Subagents::Manager.new([definition], parent_session: parent).list.fetch(:subagents)
+  ensure
+    manager&.close
+  end
+
+  def test_parent_context_cannot_inject_the_framework_registry
+    store = LittleGhost::SessionStores::Memory.new
+    parent = LittleGhost::Session.new(id: "parent", store:)
+    parent.replace(
+      messages: [],
+      state: {
+        "little_ghost.subagent_conversations" => {
+          "version" => 1,
+          "conversations" => {
+            "sa_00000000000000000000000000000001" => {
+              "conversation_id" => "00000000-0000-4000-8000-000000000001",
+              "kind" => "explore"
+            }
+          }
+        }
+      }
+    )
+    definition = LittleGhost::Subagents::Definition.new(
+      kind: "explore",
+      description: "Explore code",
+      factory: ->(_id) { ControlledAgent.new }
+    )
+
+    manager = LittleGhost::Subagents::Manager.new([definition], parent_session: parent)
+
+    assert_empty manager.list.fetch(:subagents)
+  ensure
+    manager&.close
+  end
+
+  def test_failed_durable_turn_commits_neither_registry_nor_dialogue
+    store = LittleGhost::SessionStores::Memory.new
+    parent = LittleGhost::Session.new(id: "parent", store:)
+    definition = LittleGhost::Subagents::Definition.new(
+      kind: "explore",
+      description: "Explore code",
+      factory: ->(_id) { Class.new { def call(*) = raise("broken") }.new }
+    )
+    manager = LittleGhost::Subagents::Manager.new([definition], parent_session: parent)
+
+    _out, _err = capture_io do
+      @failed_durable_result = manager.spawn(kind: "explore", task: "inspect", mode: "sync")
+    end
+    conversation_id = manager.list.dig(:subagents, 0, :conversation_id)
+    child = LittleGhost::Session.new(
+      id: LittleGhost::Subagents::Manager.conversation_session_id(conversation_id),
+      store:
+    )
+
+    assert_equal "failed", @failed_durable_result.fetch(:status)
+    refute parent.state.key?("little_ghost.subagent_conversations")
+    assert_empty child.history
+  ensure
+    manager&.close
+  end
+
+  def test_persisted_list_is_newest_first_filterable_paginated_and_does_not_consume_spawn_capacity
+    store = LittleGhost::SessionStores::Memory.new
+    parent = LittleGhost::Session.new(id: "parent", store:)
+    seed_durable_registry(
+      store:,
+      parent:,
+      records: [
+        {
+          subagent_id: "sa_00000000000000000000000000000001",
+          conversation_id: "00000000-0000-4000-8000-000000000001",
+          commit_id: "10000000-0000-4000-8000-000000000001",
+          kind: "explore",
+          updated_at: "2026-01-01T00:00:00.000000Z",
+          messages: [
+            LittleGhost::Message.new(role: :user, content: "old"),
+            LittleGhost::Message.new(role: :assistant, content: "old answer")
+          ]
+        },
+        {
+          subagent_id: "sa_00000000000000000000000000000002",
+          conversation_id: "00000000-0000-4000-8000-000000000002",
+          commit_id: "10000000-0000-4000-8000-000000000002",
+          kind: "review",
+          updated_at: "2026-01-02T00:00:00.000000Z",
+          messages: [
+            LittleGhost::Message.new(role: :user, content: "new"),
+            LittleGhost::Message.new(role: :assistant, content: "new answer")
+          ]
+        }
+      ]
+    )
+    definitions = %w[explore review].map do |kind|
+      LittleGhost::Subagents::Definition.new(
+        kind:,
+        description: kind,
+        factory: ->(_id) { ControlledAgent.new }
+      )
+    end
+    manager = LittleGhost::Subagents::Manager.new(
+      definitions,
+      parent_session: parent,
+      max_identities: 2,
+      id_generator: -> { "sa_00000000000000000000000000000003" }
+    )
+
+    first_page = manager.list(limit: 1)
+    second_page = manager.list(limit: 1, cursor: first_page.fetch(:next_cursor))
+    filtered = manager.list(kind: "explore")
+    spawned = manager.spawn(kind: "explore", task: "new work", mode: "sync")
+
+    assert_equal ["sa_00000000000000000000000000000002"],
+      first_page.fetch(:subagents).map { |value| value.fetch(:subagent_id) }
+    assert_equal ["sa_00000000000000000000000000000001"],
+      second_page.fetch(:subagents).map { |value| value.fetch(:subagent_id) }
+    refute second_page.key?(:next_cursor)
+    assert_equal ["sa_00000000000000000000000000000001"],
+      filtered.fetch(:subagents).map { |value| value.fetch(:subagent_id) }
+    assert_equal "sa_00000000000000000000000000000003", spawned.fetch(:subagent_id)
+  ensure
+    manager&.close
+  end
+
+  def test_persisted_child_session_is_loaded_only_on_first_followup
+    store_class = Class.new(LittleGhost::SessionStores::Memory) do
+      attr_reader :loads
+
+      def initialize
+        super
+        @loads = []
+      end
+
+      def load(id, actor_id: nil)
+        @loads << id.to_s
+        super
+      end
+    end
+    store = store_class.new
+    conversation_id = "00000000-0000-4000-8000-000000000001"
+    parent = LittleGhost::Session.new(id: "parent", store:)
+    messages = [
+      LittleGhost::Message.new(role: :user, content: "initial"),
+      LittleGhost::Message.new(role: :assistant, content: "answer")
+    ]
+    seed_durable_registry(
+      store:,
+      parent:,
+      records: [{
+        subagent_id: "sa_00000000000000000000000000000001",
+        conversation_id:,
+        commit_id: "10000000-0000-4000-8000-000000000001",
+        kind: "explore",
+        updated_at: "2026-01-01T00:00:00.000000Z",
+        messages:
+      }]
+    )
+    store.loads.clear
+    definition = LittleGhost::Subagents::Definition.new(
+      kind: "explore",
+      description: "Explore code",
+      factory: ->(_id) { ControlledAgent.new }
+    )
+
+    manager = LittleGhost::Subagents::Manager.new(
+      [definition],
+      parent_session: parent
+    )
+    manager.list
+
+    registry_id = LittleGhost::Subagents::Manager.registry_session_id(parent)
+    child_id = LittleGhost::Subagents::Manager.conversation_session_id(conversation_id)
+    commit_id = LittleGhost::Subagents::Manager.commit_session_id(conversation_id, 0)
+    assert_equal [registry_id], store.loads
+
+    manager.send_message(
+      subagent_id: "sa_00000000000000000000000000000001",
+      message: "continue",
+      mode: "sync"
+    )
+
+    assert_equal 1, store.loads.count(child_id)
+    assert_equal 1, store.loads.count(commit_id)
+  ensure
+    manager&.close
+  end
+
+  def test_registry_failure_leaves_child_suffix_invisible_and_restore_repairs_it
+    store_class = Class.new(LittleGhost::SessionStores::Memory) do
+      attr_accessor :fail_id
+
+      def replace(id, **)
+        if id.to_s == fail_id
+          self.fail_id = nil
+          raise "injected registry failure"
+        end
+        super
+      end
+    end
+    store = store_class.new
+    parent = LittleGhost::Session.new(id: "parent", store:)
+    fail_factory = false
+    definition = LittleGhost::Subagents::Definition.new(
+      kind: "explore",
+      description: "Explore code",
+      factory: lambda do |_id|
+        raise "factory unavailable" if fail_factory
+
+        ControlledAgent.new
+      end
+    )
+    first_manager = LittleGhost::Subagents::Manager.new([definition], parent_session: parent)
+    first = first_manager.spawn(kind: "explore", task: "first", mode: "sync")
+    subagent_id = first.fetch(:subagent_id)
+    conversation_id = first_manager.list.dig(:subagents, 0, :conversation_id)
+    store.fail_id = LittleGhost::Subagents::Manager.registry_session_id(parent)
+
+    _out, _err = capture_io do
+      @registry_failed = first_manager.send_message(
+        subagent_id:,
+        message: "uncommitted",
+        mode: "sync"
+      )
+    end
+    first_manager.close
+    child_id = LittleGhost::Subagents::Manager.conversation_session_id(conversation_id)
+    assert_equal 4, LittleGhost::Session.new(id: child_id, store:).history.length
+
+    fail_factory = true
+    restored_parent = LittleGhost::Session.new(id: "parent", store:)
+    second_manager = LittleGhost::Subagents::Manager.new([definition], parent_session: restored_parent)
+    assert_equal 1, second_manager.list.dig(:subagents, 0, :latest_turn)
+    _out, _err = capture_io do
+      assert_raises(LittleGhost::ToolError) do
+        second_manager.send_message(subagent_id:, message: "retry", mode: "sync")
+      end
+    end
+
+    assert_equal "failed", @registry_failed.fetch(:status)
+    assert_equal ["first", "first"],
+      LittleGhost::Session.new(id: child_id, store:).history.map(&:text)
+  ensure
+    first_manager&.close
+    second_manager&.close
+  end
+
+  def test_child_persistence_failure_never_advances_the_registry
+    store_class = Class.new(LittleGhost::SessionStores::Memory) do
+      def append(id, **)
+        raise "injected child failure" if id.to_s.start_with?("lg_subagent_conversation_")
+
+        super
+      end
+    end
+    store = store_class.new
+    parent = LittleGhost::Session.new(id: "parent", store:)
+    definition = LittleGhost::Subagents::Definition.new(
+      kind: "explore",
+      description: "Explore code",
+      factory: ->(_id) { ControlledAgent.new }
+    )
+    manager = LittleGhost::Subagents::Manager.new([definition], parent_session: parent)
+
+    _out, _err = capture_io do
+      @child_failed = manager.spawn(kind: "explore", task: "first", mode: "sync")
+    end
+    restored = LittleGhost::Subagents::Manager.new(
+      [definition],
+      parent_session: LittleGhost::Session.new(id: "parent", store:)
+    )
+
+    assert_equal "failed", @child_failed.fetch(:status)
+    assert_empty restored.list.fetch(:subagents)
+  ensure
+    manager&.close
+    restored&.close
+  end
+
+  def test_restore_rejects_untrusted_registry_ids_metadata_and_persist_false_records
+    store = LittleGhost::SessionStores::Memory.new
+    parent = LittleGhost::Session.new(id: "parent", store:)
+    valid = {
+      subagent_id: "sa_00000000000000000000000000000001",
+      conversation_id: "00000000-0000-4000-8000-000000000001",
+      commit_id: "10000000-0000-4000-8000-000000000001",
+      kind: "explore",
+      updated_at: "2026-01-01T00:00:00.000000Z",
+      messages: [
+        LittleGhost::Message.new(role: :user, content: "initial"),
+        LittleGhost::Message.new(role: :assistant, content: "answer")
+      ]
+    }
+    seed_durable_registry(store:, parent:, records: [valid])
+    registry_metadata = {
+      "little_ghost_kind" => "subagent_registry",
+      "little_ghost_parent_link" => LittleGhost::Subagents::Manager.parent_link(parent)
+    }
+    registry = LittleGhost::Session.new(
+      id: LittleGhost::Subagents::Manager.registry_session_id(parent),
+      store:,
+      metadata: registry_metadata
+    )
+    registry_state = registry.state
+    valid_record = registry_state.fetch("conversations").fetch(valid.fetch(:subagent_id))
+    registry_state.fetch("conversations")["explore-1"] = valid_record
+    registry_state.fetch("conversations")["sa_00000000000000000000000000000002"] =
+      valid_record.merge("conversation_id" => "not-a-uuid")
+    registry.replace(messages: [], state: registry_state, metadata: registry_metadata)
+    child_id = LittleGhost::Subagents::Manager.conversation_session_id(valid.fetch(:conversation_id))
+    wrong_metadata = {
+      "little_ghost_kind" => "subagent_conversation",
+      "little_ghost_parent_link" => "wrong",
+      "little_ghost_conversation_id" => valid.fetch(:conversation_id)
+    }
+    LittleGhost::Session.new(id: child_id, store:).replace(
+      messages: valid.fetch(:messages),
+      metadata: wrong_metadata
+    )
+    definition = LittleGhost::Subagents::Definition.new(
+      kind: "explore",
+      description: "Explore code",
+      factory: ->(_id) { ControlledAgent.new }
+    )
+    manager = LittleGhost::Subagents::Manager.new([definition], parent_session: parent)
+    assert_equal [valid.fetch(:subagent_id)],
+      manager.list.fetch(:subagents).map { |record| record.fetch(:subagent_id) }
+
+    _out, _err = capture_io do
+      assert_raises(LittleGhost::ToolError) do
+        manager.send_message(
+          subagent_id: valid.fetch(:subagent_id),
+          message: "continue",
+          mode: "sync"
+        )
+      end
+    end
+
+    transient_definition = LittleGhost::Subagents::Definition.new(
+      kind: "explore",
+      description: "Explore code",
+      persist: false,
+      factory: ->(_id) { ControlledAgent.new }
+    )
+    transient_manager = LittleGhost::Subagents::Manager.new(
+      [transient_definition],
+      parent_session: LittleGhost::Session.new(id: "parent", store:)
+    )
+    assert_empty transient_manager.list.fetch(:subagents)
+  ensure
+    manager&.close
+    transient_manager&.close
+  end
+
+  def test_list_cursor_and_interrupt_aggregate_limits_are_bounded
+    gate = Gate.new
+    agent = InterruptibleAgent.new(gate:)
+    manager = manager_for(
+      ->(_id) { agent },
+      max_queued_turns_per_identity: 1,
+      max_message_chars: 5
+    )
+    spawned = manager.spawn(kind: "explore", task: "work", mode: "async")
+    subagent_id = spawned.dig(:subagent, :subagent_id)
+    agent.started.pop
+
+    manager.interrupt(subagent_id:, message: "12345")
+
+    assert_raises(LittleGhost::ToolError) { manager.interrupt(subagent_id:, message: "x") }
+    assert_raises(LittleGhost::ToolError) { manager.list(cursor: "x" * 513) }
+  ensure
+    gate&.open
+    manager&.close
+  end
+
   def test_extracts_text_from_agent_run_results
     agent = Class.new do
       def call(message, cancellation_token:)
@@ -955,7 +1547,221 @@ class SubagentManagerTest < Minitest::Test
     manager&.close
   end
 
+  def test_successful_interrupt_exchange_is_persisted_and_visible_after_resume
+    store = LittleGhost::SessionStores::Memory.new
+    parent = LittleGhost::Session.new(id: "parent", store:)
+    gate = Gate.new
+    started = Queue.new
+    resumed_history = []
+    builds = 0
+    first_result = run_result("final answer")
+    resumed_result = run_result("resumed answer")
+    factory = lambda do |_id|
+      builds += 1
+      agent = LittleGhost::Agent.new(model: Object.new)
+      if builds == 1
+        agent.define_singleton_method(:stream) do |_message, **_options|
+          Enumerator.new do |events|
+            started << true
+            gate.wait
+            events << LittleGhost::StreamEvent.build(:invocation_stop, result: first_result)
+          end
+        end
+        agent.define_singleton_method(:interrupt) do |_message, **_options|
+          "interrupt answer"
+        end
+      else
+        agent.define_singleton_method(:stream) do |_message, **options|
+          Enumerator.new do |events|
+            resumed_history.concat(options.fetch(:history))
+            events << LittleGhost::StreamEvent.build(:invocation_stop, result: resumed_result)
+          end
+        end
+      end
+      agent
+    end
+    definition = LittleGhost::Subagents::Definition.new(
+      kind: "explore",
+      description: "Explore code",
+      factory:
+    )
+    first_manager = LittleGhost::Subagents::Manager.new([definition], parent_session: parent)
+    spawned = first_manager.spawn(kind: "explore", task: "initial task", mode: "async")
+    subagent_id = spawned.dig(:subagent, :subagent_id)
+    conversation_id = spawned.dig(:subagent, :conversation_id)
+    started.pop
+
+    interrupted = first_manager.interrupt(subagent_id:, message: "status?")
+    gate.open
+    assert_equal "finished", first_manager.wait(subagent_ids: [subagent_id]).fetch(:status)
+    first_manager.close
+
+    restored_parent = LittleGhost::Session.new(id: "parent", store:)
+    second_manager = LittleGhost::Subagents::Manager.new([definition], parent_session: restored_parent)
+    second_manager.send_message(subagent_id:, message: "continue", mode: "sync")
+    child = LittleGhost::Session.new(
+      id: LittleGhost::Subagents::Manager.conversation_session_id(conversation_id),
+      store:
+    )
+
+    assert_equal "interrupt answer", interrupted.fetch(:response)
+    assert_equal(
+      ["initial task", "status?", "interrupt answer", "final answer"],
+      resumed_history.first(4).map(&:text)
+    )
+    assert_equal %i[user user assistant assistant user assistant], child.history.map(&:role)
+    assert_equal(
+      ["initial task", "status?", "interrupt answer", "final answer", "continue", "resumed answer"],
+      child.history.map(&:text)
+    )
+  ensure
+    gate&.open
+    first_manager&.close
+    second_manager&.close
+  end
+
+  def test_interrupt_exchange_is_not_persisted_when_the_durable_turn_fails
+    store = LittleGhost::SessionStores::Memory.new
+    parent = LittleGhost::Session.new(id: "parent", store:)
+    gate = Gate.new
+    started = Queue.new
+    agent = LittleGhost::Agent.new(model: Object.new)
+    agent.define_singleton_method(:stream) do |_message, **_options|
+      Enumerator.new do |_events|
+        started << true
+        gate.wait
+        raise "turn failed"
+      end
+    end
+    agent.define_singleton_method(:interrupt) { |_message, **_options| "temporary answer" }
+    definition = LittleGhost::Subagents::Definition.new(
+      kind: "explore",
+      description: "Explore code",
+      factory: ->(_id) { agent }
+    )
+    manager = LittleGhost::Subagents::Manager.new([definition], parent_session: parent)
+    spawned = manager.spawn(kind: "explore", task: "initial task", mode: "async")
+    subagent_id = spawned.dig(:subagent, :subagent_id)
+    conversation_id = spawned.dig(:subagent, :conversation_id)
+    started.pop
+
+    manager.interrupt(subagent_id:, message: "status?")
+    gate.open
+    _out, _err = capture_io { manager.wait(subagent_ids: [subagent_id]) }
+    child = LittleGhost::Session.new(
+      id: LittleGhost::Subagents::Manager.conversation_session_id(conversation_id),
+      store:
+    )
+
+    assert_empty child.history
+    refute parent.state.key?("little_ghost.subagent_conversations")
+  ensure
+    gate&.open
+    manager&.close
+  end
+
+  def test_interrupt_exchange_is_not_persisted_when_the_durable_turn_is_cancelled
+    store = LittleGhost::SessionStores::Memory.new
+    parent = LittleGhost::Session.new(id: "parent", store:)
+    gate = Gate.new
+    started = Queue.new
+    agent = LittleGhost::Agent.new(model: Object.new)
+    agent.define_singleton_method(:stream) do |_message, **options|
+      Enumerator.new do |_events|
+        started << true
+        gate.wait
+        options.fetch(:cancellation_token).raise_if_cancelled!
+      end
+    end
+    agent.define_singleton_method(:interrupt) { |_message, **_options| "temporary answer" }
+    definition = LittleGhost::Subagents::Definition.new(
+      kind: "explore",
+      description: "Explore code",
+      factory: ->(_id) { agent }
+    )
+    manager = LittleGhost::Subagents::Manager.new([definition], parent_session: parent)
+    spawned = manager.spawn(kind: "explore", task: "initial task", mode: "async")
+    subagent_id = spawned.dig(:subagent, :subagent_id)
+    conversation_id = spawned.dig(:subagent, :conversation_id)
+    started.pop
+    manager.interrupt(subagent_id:, message: "status?")
+
+    closer = Thread.new { manager.close }
+    wait_until { manager.list.dig(:subagents, 0, :status) == "cancelled" }
+    gate.open
+    closer.value
+    child = LittleGhost::Session.new(
+      id: LittleGhost::Subagents::Manager.conversation_session_id(conversation_id),
+      store:
+    )
+
+    assert_empty child.history
+    refute parent.state.key?("little_ghost.subagent_conversations")
+  ensure
+    gate&.open
+    closer&.join
+    manager&.close
+  end
+
   private
+
+  def seed_durable_registry(store:, parent:, records:)
+    parent_link = LittleGhost::Subagents::Manager.parent_link(parent)
+    conversations = {}
+    records.each do |record|
+      child_metadata = {
+        "little_ghost_kind" => "subagent_conversation",
+        "little_ghost_parent_link" => parent_link,
+        "little_ghost_conversation_id" => record.fetch(:conversation_id)
+      }
+      LittleGhost::Session.new(
+        id: LittleGhost::Subagents::Manager.conversation_session_id(record.fetch(:conversation_id)),
+        store:,
+        metadata: child_metadata
+      ).replace(
+        messages: record.fetch(:messages),
+        state: record.fetch(:state, {}),
+        metadata: child_metadata
+      )
+      commit_metadata = {
+        "little_ghost_kind" => "subagent_commit",
+        "little_ghost_parent_link" => parent_link,
+        "little_ghost_conversation_id" => record.fetch(:conversation_id),
+        "little_ghost_commit_id" => record.fetch(:commit_id),
+        "little_ghost_message_count" => record.fetch(:messages).length
+      }
+      LittleGhost::Session.new(
+        id: LittleGhost::Subagents::Manager.commit_session_id(record.fetch(:conversation_id), 0),
+        store:,
+        metadata: commit_metadata
+      ).replace(messages: [], state: record.fetch(:state, {}), metadata: commit_metadata)
+      conversations[record.fetch(:subagent_id)] = {
+        "conversation_id" => record.fetch(:conversation_id),
+        "kind" => record.fetch(:kind),
+        "latest_turn" => record.fetch(:latest_turn, 1),
+        "updated_at" => record.fetch(:updated_at),
+        "message_count" => record.fetch(:messages).length,
+        "commit_id" => record.fetch(:commit_id),
+        "commit_slot" => 0
+      }
+    end
+    metadata = {
+      "little_ghost_kind" => "subagent_registry",
+      "little_ghost_parent_link" => parent_link
+    }
+    LittleGhost::Session.new(
+      id: LittleGhost::Subagents::Manager.registry_session_id(parent),
+      store:,
+      metadata:
+    ).replace(
+      messages: [],
+      state: {
+        "version" => LittleGhost::Subagents::Manager::REGISTRY_VERSION,
+        "conversations" => conversations
+      },
+      metadata:
+    )
+  end
 
   def definition_for(factory)
     LittleGhost::Subagents::Definition.new(
@@ -966,6 +1772,8 @@ class SubagentManagerTest < Minitest::Test
   end
 
   def manager_for(factory, **options)
+    next_id = 0
+    options[:id_generator] ||= -> { "explore-#{next_id += 1}" }
     LittleGhost::Subagents::Manager.new([definition_for(factory)], **options)
   end
 

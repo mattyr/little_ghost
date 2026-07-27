@@ -399,7 +399,8 @@ module LittleGhost
       template_locals: UNSET,
       template_paths: UNSET,
       parent_operation_id: nil,
-      checkpoint: nil
+      checkpoint: nil,
+      conversation_id: nil
     )
       raise ArgumentError, "input is required" if input.equal?(UNSET)
 
@@ -423,7 +424,8 @@ module LittleGhost
           deadline: deadline,
           instrumentation: instrumentation,
           metadata: {agent_id: self.class.agent_id},
-          checkpoint:
+          checkpoint:,
+          conversation_id:
         )
         begin
           execute(

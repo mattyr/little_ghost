@@ -1158,6 +1158,88 @@ class ApplicationTest < Minitest::Test
     end
   end
 
+  def test_application_restores_nested_async_subagent_conversations
+    provider = Object.new
+    counts = Hash.new(0)
+    tool_id = 0
+    child_id = nil
+    grandchild_id = nil
+    provider.define_singleton_method(:stream) do |request|
+      system = request.messages.find { |message| message.role == :system }&.text
+      counts[system] += 1
+      count = counts.fetch(system)
+      latest_result = request.messages.reverse_each.lazy.flat_map do |message|
+        message.content.grep(LittleGhost::Content::ToolResult)
+      end.first
+      parsed = latest_result && JSON.parse(latest_result.content)
+      name, input, text = case [system, count]
+      when ["Parent", 1]
+        ["spawn_subagent", {"kind" => "child", "task" => "investigate", "mode" => "async"}, nil]
+      when ["Parent", 2]
+        child_id = parsed.dig("subagent", "subagent_id")
+        ["wait_for_subagents", {"subagent_ids" => [child_id]}, nil]
+      when ["Parent", 4]
+        ["send_message_to_subagent", {"subagent_id" => child_id, "message" => "continue", "mode" => "sync"}, nil]
+      when ["Child", 1]
+        ["spawn_subagent", {"kind" => "grandchild", "task" => "inspect", "mode" => "async"}, nil]
+      when ["Child", 2]
+        grandchild_id = parsed.dig("subagent", "subagent_id")
+        ["wait_for_subagents", {"subagent_ids" => [grandchild_id]}, nil]
+      when ["Child", 4]
+        ["send_message_to_subagent", {
+          "subagent_id" => grandchild_id,
+          "message" => "continue",
+          "mode" => "sync"
+        }, nil]
+      else
+        [nil, nil, "#{system} complete"]
+      end
+      message = if name
+        tool_id += 1
+        LittleGhost::Message.new(
+          role: :assistant,
+          content: LittleGhost::Content::ToolUse.new(id: "tool-#{tool_id}", name:, input:)
+        )
+      else
+        LittleGhost::Message.new(role: :assistant, content: text)
+      end
+      response = LittleGhost::ModelResponse.new(
+        message:,
+        stop_reason: name ? :tool_use : :end_turn,
+        usage: LittleGhost::Usage.new
+      )
+      [LittleGhost::StreamEvent.build(:message_stop, response:)].each
+    end
+    grandchild = Class.new(LittleGhost::Agent) do
+      model "main"
+      system_prompt "Grandchild"
+      description "Grandchild"
+    end
+    child = Class.new(LittleGhost::Agent) do
+      model "main"
+      system_prompt "Child"
+      description "Child"
+      subagent grandchild, kind: "grandchild"
+    end
+    parent = Class.new(LittleGhost::Agent) do
+      model "main"
+      system_prompt "Parent"
+      subagent child, kind: "child"
+    end
+    store = LittleGhost::SessionStores::Memory.new
+
+    with_application(agent: parent, provider:, session_store: store) do |application|
+      first = application.call(message: "start", session_id: "durable-nested")
+      second = application.call(message: "resume", session_id: "durable-nested")
+
+      assert first.completed?
+      assert second.completed?
+      assert_match(/\Asa_[0-9a-f]{32}\z/, child_id)
+      assert_match(/\Asa_[0-9a-f]{32}\z/, grandchild_id)
+      assert_equal 2, counts.fetch("Grandchild")
+    end
+  end
+
   private
 
   def assert_stubborn_producer_fails_run(interruption)
