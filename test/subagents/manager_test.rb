@@ -946,12 +946,14 @@ class SubagentManagerTest < Minitest::Test
     )
 
     first_page = manager.list(limit: 1)
+    blank_cursor_page = manager.list(limit: 1, cursor: "")
     second_page = manager.list(limit: 1, cursor: first_page.fetch(:next_cursor))
     filtered = manager.list(kind: "explore")
     spawned = manager.spawn(kind: "explore", task_name: "explore_new", task: "new work", mode: "sync")
 
     assert_equal ["/root/review_new"],
       first_page.fetch(:subagents).map { |value| value.fetch(:subagent_id) }
+    assert_equal first_page, blank_cursor_page
     assert_equal ["/root/explore_old"],
       second_page.fetch(:subagents).map { |value| value.fetch(:subagent_id) }
     refute second_page.key?(:next_cursor)
