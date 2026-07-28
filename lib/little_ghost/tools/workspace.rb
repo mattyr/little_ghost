@@ -40,7 +40,12 @@ module LittleGhost
 
         flags = File::WRONLY | File::CREAT | File::TRUNC
         flags |= File::NOFOLLOW if defined?(File::NOFOLLOW)
-        File.open(writable_path(path), flags, 0o644) { |file| file.write(content) }
+        flags |= File::NONBLOCK if defined?(File::NONBLOCK)
+        File.open(writable_path(path), flags, 0o644) do |file|
+          raise ToolError, "Path is not a file" unless file.stat.file?
+
+          file.write(content)
+        end
         "Wrote #{content.bytesize} bytes to #{display_path(path)}"
       rescue Errno::ELOOP
         raise ToolError, "Write target cannot be a symbolic link"
@@ -182,6 +187,7 @@ module LittleGhost
       def read_flags
         flags = File::RDONLY
         flags |= File::NOFOLLOW if defined?(File::NOFOLLOW)
+        flags |= File::NONBLOCK if defined?(File::NONBLOCK)
         flags
       end
 

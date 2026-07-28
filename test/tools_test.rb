@@ -75,6 +75,26 @@ class ToolsTest < Minitest::Test
     end
   end
 
+  def test_workspace_rejects_fifo_without_blocking
+    Dir.mktmpdir do |directory|
+      path = File.join(directory, "pipe")
+      assert system("mkfifo", path)
+      registry = LittleGhost::ToolRegistry.new(
+        LittleGhost::Tools::Workspace.new(root: directory, writable: true).tools
+      )
+      started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+      assert registry.fetch("read_file").execute({"path" => "pipe"}).error?
+      assert registry.fetch("write_file").execute({"path" => "pipe", "content" => "value"}).error?
+      File.open(path, File::RDONLY | File::NONBLOCK) do
+        assert registry.fetch("write_file").execute({
+          "path" => "pipe", "content" => "value"
+        }).error?
+      end
+      assert_operator Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at, :<, 1
+    end
+  end
+
   def test_workspace_rejects_root_replacement
     Dir.mktmpdir do |parent|
       Dir.mktmpdir do |outside|
