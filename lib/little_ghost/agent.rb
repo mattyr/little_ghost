@@ -999,6 +999,12 @@ module LittleGhost
             event_kind: :interrupt
           )
         end
+        emit(
+          events,
+          :agent_interrupt_delivered,
+          interruption_ids: interruption.interruption_ids,
+          batch_key: interruption.batch_key
+        )
       end
       emit(events, :model_start, turn: turn)
       response = nil

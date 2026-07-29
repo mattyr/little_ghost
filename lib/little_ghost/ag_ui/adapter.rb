@@ -119,6 +119,11 @@ module LittleGhost
                 "little_ghost.model_retry",
                 source.data.merge(superseded_message_id:).compact
               )
+            when :agent_interrupt_delivered
+              output << custom(
+                "little_ghost.agent_interrupt_delivered",
+                source.data.slice(:interruption_ids, :batch_key).compact
+              )
             when :subagent
               output << custom("little_ghost.subagent", source.data.fetch(:event, source.data))
             when :trace_context
