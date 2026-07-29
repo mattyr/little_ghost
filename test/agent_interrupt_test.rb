@@ -55,7 +55,15 @@ class AgentInterruptTest < Minitest::Test
       content_capture: LittleGhost::Support::ContentCapture.new(enabled: true)
     )
     agent = LittleGhost::Agent.new(model:, tools: [first, second], instrumentation:)
-    runner = Thread.new { agent.call("Investigate") }
+    stream_events = []
+    runner = Thread.new do
+      result = nil
+      agent.stream("Investigate").each do |event|
+        stream_events << event
+        result = event.data[:result] if event.type == :invocation_stop
+      end
+      result
+    end
 
     first_started.pop
     interrupted = Thread.new { agent.interrupt_response("Current status?") }
@@ -71,6 +79,14 @@ class AgentInterruptTest < Minitest::Test
     delivered_index = telemetry.index { |name, _| name == :agent_interrupt_delivered }
     model_start_indexes = telemetry.each_index.select { |index| telemetry.fetch(index).first == :model_start }
     assert_operator delivered_index, :>, model_start_indexes.fetch(1)
+    stream_delivery_index = stream_events.index { |event| event.type == :agent_interrupt_delivered }
+    stream_response_index = stream_events.index do |event|
+      event.type == :message_stop && event.data.fetch(:response).message.text == "Still checking"
+    end
+    refute_nil stream_delivery_index
+    refute_nil stream_response_index
+    assert_operator stream_delivery_index, :<, stream_response_index
+    assert_equal 1, stream_events.fetch(stream_delivery_index).data.fetch(:interruption_ids).length
 
     responded = telemetry.find { |name, _| name == :agent_interrupt_responded }.last
     assert_equal JSON.generate("Still checking"), responded.fetch(:diagnostic_output)
@@ -244,6 +260,39 @@ class AgentInterruptTest < Minitest::Test
     token = LittleGhost::Support::CancellationToken.new
     assert_same first_response, first_ticket.value(cancellation_token: token, deadline: nil)
     assert_same second_response, second_ticket.value(cancellation_token: token, deadline: nil)
+  end
+
+  def test_keyed_interruptions_split_at_the_batch_limit
+    interruptions = LittleGhost::AgentInterruptions.new
+    message = LittleGhost::Message.new(role: :user, content: "steer")
+    tickets = (LittleGhost::AgentInterruptions::MAX_BATCH_SIZE + 1).times.map do |index|
+      interruptions.enqueue(message, id: index.to_s, batch_key: "slack-thread")
+    end
+
+    first_batch = interruptions.deliver
+    assert_equal LittleGhost::AgentInterruptions::MAX_BATCH_SIZE, first_batch.tickets.length
+    interruptions.resolve(
+      first_batch,
+      LittleGhost::AgentInterruptions::Response.new(text: "first", tool_calls: false)
+    )
+
+    second_batch = interruptions.deliver
+    assert_equal [tickets.last.id], second_batch.interruption_ids
+  end
+
+  def test_interruptions_reject_new_ids_at_the_invocation_limit
+    interruptions = LittleGhost::AgentInterruptions.new
+    message = LittleGhost::Message.new(role: :user, content: "steer")
+    first = nil
+    LittleGhost::AgentInterruptions::MAX_INTERRUPTION_COUNT.times do |index|
+      ticket = interruptions.enqueue(message, id: index.to_s)
+      first ||= ticket
+    end
+
+    assert_same first, interruptions.enqueue(message, id: "0")
+    assert_raises(LittleGhost::AgentInterruptError) do
+      interruptions.enqueue(message, id: "overflow")
+    end
   end
 
   def test_duplicate_interruption_ids_inject_once_and_share_the_response

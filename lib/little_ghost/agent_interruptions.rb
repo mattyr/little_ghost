@@ -4,6 +4,9 @@ require "securerandom"
 
 module LittleGhost
   class AgentInterruptions
+    MAX_BATCH_SIZE = 100
+    MAX_INTERRUPTION_COUNT = 1_000
+
     Response = Data.define(:text, :tool_calls, :interruption_ids, :batch_key) do
       def initialize(text:, tool_calls:, interruption_ids: [], batch_key: nil)
         super(
@@ -114,6 +117,9 @@ module LittleGhost
           @waiters[existing] += 1
           return existing
         end
+        if @tickets_by_id.length >= MAX_INTERRUPTION_COUNT
+          raise AgentInterruptError, "Agent interruption capacity reached"
+        end
 
         ticket = Ticket.new(message, id: id.freeze, batch_key: batch_key&.freeze, metadata:)
         @tickets_by_id[id] = ticket
@@ -133,7 +139,9 @@ module LittleGhost
         tickets = []
         tickets << @queue.shift
         if batch_key
-          tickets << @queue.shift while @queue.first && @queue.first.batch_key == batch_key
+          while tickets.length < MAX_BATCH_SIZE && @queue.first&.batch_key == batch_key
+            tickets << @queue.shift
+          end
         end
         @delivered = Batch.new(tickets: tickets.freeze)
       end
