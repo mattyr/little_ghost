@@ -59,6 +59,7 @@ module LittleGhost
         allow_insecure_http: false,
         max_response_bytes: HTTPTransport::DEFAULT_MAX_RESPONSE_BYTES,
         max_retries: 2,
+        max_retry_delay: MAX_RETRY_DELAY,
         transport: nil,
         sleeper: nil,
         on_retry: ->(*) {}
@@ -70,6 +71,7 @@ module LittleGhost
 
         @headers = headers.transform_keys(&:to_s).freeze
         @max_retries = Integer(max_retries)
+        @max_retry_delay = Integer(max_retry_delay)
         @transport = transport || HTTPTransport.new(
           base_url:,
           open_timeout:,
@@ -103,7 +105,6 @@ module LittleGhost
           request.cancellation_token.raise_if_cancelled!
           delay = capped_retry_delay(request, retry_delay(attempts))
           @on_retry.call(attempts, error, delay)
-          wait_before_retry(request, delay)
           yield StreamEvent.build(
             :model_retry,
             attempt: attempts,
@@ -112,6 +113,7 @@ module LittleGhost
             partial_text:,
             **retry_error_metadata(error)
           )
+          wait_before_retry(request, delay)
           retry
         end
       end
@@ -374,7 +376,7 @@ module LittleGhost
       end
 
       def retry_delay(attempt)
-        [INITIAL_RETRY_DELAY * (2**(attempt - 1)), MAX_RETRY_DELAY].min
+        [INITIAL_RETRY_DELAY * (2**(attempt - 1)), @max_retry_delay].min
       end
 
       def capped_retry_delay(request, delay)
