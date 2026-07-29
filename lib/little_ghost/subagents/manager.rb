@@ -30,7 +30,16 @@ module LittleGhost
       UUID_PATTERN = /\A[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\z/
 
       InterruptExchange = Struct.new(:message, :response, :complete)
-      Turn = Struct.new(:number, :message, :completion, :operation_id, :parent_operation_id, :interrupts)
+      Turn = Struct.new(
+        :number,
+        :message,
+        :completion,
+        :operation_id,
+        :parent_operation_id,
+        :interrupts,
+        :interruption_metadata,
+        :interruption_ids
+      )
       Identity = Struct.new(
         :subagent_id,
         :conversation_id,
@@ -281,7 +290,8 @@ module LittleGhost
           task,
           event: "spawned",
           count_turn: false,
-          parent_operation_id:
+          parent_operation_id:,
+          context:
         )
         return {status: "working", subagent: queued_snapshot} if mode == "async"
 
@@ -300,7 +310,8 @@ module LittleGhost
           message,
           event: "message_queued",
           enforce_limits: true,
-          parent_operation_id:
+          parent_operation_id:,
+          context:
         )
         return queued if queued.is_a?(Hash)
 
@@ -988,7 +999,8 @@ module LittleGhost
         event:,
         enforce_limits: false,
         count_turn: true,
-        parent_operation_id: nil
+        parent_operation_id: nil,
+        context: nil
       )
         turn = nil
         queued_snapshot = nil
@@ -1009,7 +1021,9 @@ module LittleGhost
             completion: Completion.new,
             operation_id: SecureRandom.uuid,
             parent_operation_id:,
-            interrupts: []
+            interrupts: [],
+            interruption_metadata: context&.interruption_metadata,
+            interruption_ids: context&.interruption_ids || []
           )
           identity.next_turn += 1
           @turn_count += 1 if count_turn
@@ -1072,6 +1086,8 @@ module LittleGhost
                   options[:history] = identity.history
                   options[:context] = identity.state
                   options[:conversation_id] = identity.conversation_id
+                  options[:interruption_metadata] = turn.interruption_metadata
+                  options[:interruption_ids] = turn.interruption_ids
                 end
                 result = if identity.agent.is_a?(Agent)
                   run_agent_turn(identity, turn, options)

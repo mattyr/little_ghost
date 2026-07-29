@@ -272,6 +272,68 @@ class ApplicationTest < Minitest::Test
     end
   end
 
+  def test_run_interrupt_response_forwards_to_active_entrypoint_and_rejects_terminal_states
+    provider = Object.new
+    started = Queue.new
+    release = Queue.new
+    requests = []
+    response = lambda do |text|
+      LittleGhost::ModelResponse.new(
+        message: LittleGhost::Message.new(role: :assistant, content: text),
+        stop_reason: :end_turn
+      )
+    end
+    provider.define_singleton_method(:stream) do |request|
+      requests << request
+      if requests.length == 1
+        started << true
+        release.pop
+        value = response.call("would finish")
+      else
+        value = response.call("steered")
+      end
+      [LittleGhost::StreamEvent.build(:message_stop, response: value)].each
+    end
+    agent = Class.new(LittleGhost::Agent) do
+      model "main"
+      system_prompt "Test"
+    end
+
+    with_application(agent:, provider:) do |application|
+      run = application.build_run(message: "work")
+      not_ready = assert_raises(LittleGhost::AgentInterruptError) do
+        run.interrupt_response("too early")
+      end
+      assert_equal "Run entrypoint is not ready for interruptions", not_ready.message
+
+      runner = Thread.new { run.call }
+      started.pop
+      interrupted = Thread.new do
+        run.interrupt_response(
+          "steer",
+          interruption_id: "slack-1",
+          batch_key: "channel",
+          metadata: {authority: "signed"}
+        )
+      end
+      release << true
+
+      assert_equal "steered", interrupted.value.text
+      assert_equal ["slack-1"], interrupted.value.interruption_ids
+      assert_equal "channel", interrupted.value.batch_key
+      assert runner.value.completed?
+
+      terminal = assert_raises(LittleGhost::AgentInterruptError) do
+        run.interrupt_response("too late")
+      end
+      assert_equal "Run has already finished", terminal.message
+    ensure
+      release << true if runner&.alive?
+      runner&.kill
+      interrupted&.kill
+    end
+  end
+
   def test_abnormal_runs_report_cumulative_usage_once_end_to_end
     {
       LittleGhost::CancelledError.new("cancelled") => [:cancelled, :run_cancel],

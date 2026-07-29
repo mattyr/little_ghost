@@ -4,20 +4,33 @@ require "securerandom"
 
 module LittleGhost
   class AgentInterruptions
-    Response = Data.define(:text, :tool_calls) do
-      def initialize(text:, tool_calls:)
-        super(text: String(text), tool_calls: !!tool_calls)
+    Response = Data.define(:text, :tool_calls, :interruption_ids, :batch_key) do
+      def initialize(text:, tool_calls:, interruption_ids: [], batch_key: nil)
+        super(
+          text: String(text),
+          tool_calls: !!tool_calls,
+          interruption_ids: Array(interruption_ids).map { |id| String(id).dup.freeze }.freeze,
+          batch_key: batch_key.nil? ? nil : String(batch_key).dup.freeze
+        )
       end
 
       def tool_calls? = tool_calls
     end
 
-    class Ticket
-      attr_reader :id, :message
+    Batch = Data.define(:tickets) do
+      def interruption_ids = tickets.map(&:id)
+      def batch_key = tickets.first&.batch_key
+      def metadata = tickets.last&.metadata
+    end
 
-      def initialize(message)
-        @id = SecureRandom.uuid
+    class Ticket
+      attr_reader :id, :message, :batch_key, :metadata
+
+      def initialize(message, id:, batch_key:, metadata:)
+        @id = id
         @message = message
+        @batch_key = batch_key
+        @metadata = metadata
         @mutex = Mutex.new
         @condition = ConditionVariable.new
         @resolved = false
@@ -52,6 +65,8 @@ module LittleGhost
             timeout = deadline ? [deadline - Time.now, 0.05].min : 0.05
             @condition.wait(@mutex, [timeout, 0].max)
           end
+          cancellation_token.raise_if_cancelled!
+          raise DeadlineExceededError, "The run deadline was reached" if deadline && Time.now >= deadline
           raise @error if @error
 
           @value
@@ -64,6 +79,8 @@ module LittleGhost
     def initialize
       @mutex = Mutex.new
       @queue = []
+      @tickets_by_id = {}
+      @waiters = Hash.new(0)
       @delivered = nil
       @closed_error = nil
       @operation_id = nil
@@ -77,31 +94,59 @@ module LittleGhost
       end
     end
 
-    def enqueue(message)
-      ticket = Ticket.new(message)
+    def enqueue(message, id: SecureRandom.uuid, batch_key: nil, metadata: {})
+      id = String(id)
+      raise ArgumentError, "interruption_id cannot be empty" if id.empty?
+
+      batch_key = String(batch_key) unless batch_key.nil?
+      metadata = Support.immutable(metadata.to_h)
       @mutex.synchronize do
         raise @closed_error if @closed_error
 
+        existing = @tickets_by_id[id]
+        if existing
+          unless existing.message.to_h == message.to_h &&
+              existing.batch_key == batch_key &&
+              existing.metadata == metadata
+            raise ArgumentError, "interruption_id has already been used with different input"
+          end
+
+          @waiters[existing] += 1
+          return existing
+        end
+
+        ticket = Ticket.new(message, id: id.freeze, batch_key: batch_key&.freeze, metadata:)
+        @tickets_by_id[id] = ticket
+        @waiters[ticket] = 1
         @queue << ticket
+        ticket
       end
-      ticket
+    rescue TypeError, NoMethodError
+      raise ArgumentError, "interruption_id, batch_key, and metadata are invalid"
     end
 
     def deliver
       @mutex.synchronize do
-        return if @delivered
+        return if @delivered || @queue.empty?
 
-        @delivered = @queue.shift
+        batch_key = @queue.first.batch_key
+        tickets = []
+        tickets << @queue.shift
+        if batch_key
+          tickets << @queue.shift while @queue.first && @queue.first.batch_key == batch_key
+        end
+        @delivered = Batch.new(tickets: tickets.freeze)
       end
     end
 
-    def resolve(ticket, response)
-      @mutex.synchronize do
-        return unless ticket && @delivered.equal?(ticket)
+    def resolve(batch, response)
+      tickets = @mutex.synchronize do
+        return unless batch && @delivered.equal?(batch)
 
         @delivered = nil
+        batch.tickets
       end
-      ticket.resolve(response)
+      tickets.each { |ticket| ticket.resolve(response) }
     end
 
     def pending?
@@ -118,8 +163,14 @@ module LittleGhost
       end
     end
 
-    def withdraw(ticket)
-      @mutex.synchronize { @queue.delete(ticket) }
+    def release(ticket, withdraw: false)
+      @mutex.synchronize do
+        @waiters[ticket] -= 1
+        return unless withdraw && @waiters[ticket] <= 0 && @queue.delete(ticket)
+
+        @tickets_by_id.delete(ticket.id)
+        @waiters.delete(ticket)
+      end
     end
 
     def close(error)
@@ -127,7 +178,7 @@ module LittleGhost
         return if @closed_error
 
         @closed_error = error
-        values = [@delivered, *@queue].compact
+        values = [*@delivered&.tickets, *@queue].compact
         @delivered = nil
         @queue.clear
         values

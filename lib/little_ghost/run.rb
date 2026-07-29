@@ -20,6 +20,9 @@ module LittleGhost
       @mutex = Mutex.new
       @event_mutex = Mutex.new
       @exclusive_tools_mutex = Mutex.new
+      @interruption_mutex = Mutex.new
+      @interruption_state = :not_started
+      @entrypoint = nil
       @subagent_started_at = {}
       @usage = Usage.new
     end
@@ -44,6 +47,38 @@ module LittleGhost
     def failed? = outcome == "failed"
     def partial? = outcome == "partial"
     def cancelled? = outcome == "cancelled"
+
+    def interrupt_response(
+      message,
+      interruption_id: nil,
+      batch_key: nil,
+      metadata: {},
+      cancellation_token: Support::CancellationToken.new,
+      deadline: nil
+    )
+      entrypoint = @interruption_mutex.synchronize do
+        case @interruption_state
+        when :not_started, :starting
+          raise AgentInterruptError, "Run entrypoint is not ready for interruptions"
+        when :terminal
+          raise AgentInterruptError, "Run has already finished"
+        end
+
+        @entrypoint
+      end
+      unless entrypoint.respond_to?(:interrupt_response)
+        raise AgentInterruptError, "Run entrypoint does not support interruptions"
+      end
+
+      entrypoint.interrupt_response(
+        message,
+        interruption_id:,
+        batch_key:,
+        metadata:,
+        cancellation_token:,
+        deadline:
+      )
+    end
 
     def context(state: {}, metadata: {})
       RunContext.new(
@@ -117,13 +152,14 @@ module LittleGhost
       emit(:trace_context, context: trace_context) { |event| yield event } unless trace_context.nil? || trace_context.empty?
       @session = application.open_session(self)
       agent = application.build_entrypoint(run: self)
+      @interruption_mutex.synchronize do
+        @entrypoint = agent
+      end
       register(agent)
       invoke = lambda do
         history = session ? session.history(fallback: invocation.history) : invocation.history
         context = session ? session.state.merge(invocation.context) : invocation.context.dup
-
-        agent.stream(
-          invocation.message,
+        options = {
           history:,
           context:,
           settings: invocation.settings,
@@ -133,7 +169,16 @@ module LittleGhost
           deadline: invocation.deadline_at,
           parent_operation_id: operation_id,
           checkpoint: ->(messages:, state:) { session&.checkpoint(messages:, state:) }
-        ).each do |event|
+        }
+        if agent.is_a?(Agent)
+          options[:interrupt_ready] = lambda do
+            @interruption_mutex.synchronize { @interruption_state = :active }
+          end
+        else
+          @interruption_mutex.synchronize { @interruption_state = :active }
+        end
+
+        agent.stream(invocation.message, **options).each do |event|
           case event.type
           when :model_start
             response_before_model_attempt = last_response.dup
@@ -191,6 +236,10 @@ module LittleGhost
         }
       ]
     ensure
+      @interruption_mutex.synchronize do
+        @entrypoint = nil
+        @interruption_state = :terminal
+      end
       resource_cleanup_error = nil
       begin
         close
@@ -361,6 +410,7 @@ module LittleGhost
         raise Error, "run has already started" if @started
         @started = true
       end
+      @interruption_mutex.synchronize { @interruption_state = :starting }
     end
 
     def close_callback(resource)
