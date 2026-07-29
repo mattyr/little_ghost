@@ -266,7 +266,7 @@ class AgentInterruptTest < Minitest::Test
     interruptions = LittleGhost::AgentInterruptions.new
     message = LittleGhost::Message.new(role: :user, content: "steer")
     tickets = (LittleGhost::AgentInterruptions::MAX_BATCH_SIZE + 1).times.map do |index|
-      interruptions.enqueue(message, id: index.to_s, batch_key: "slack-thread")
+      interruptions.enqueue(message, id: index.to_s, batch_key: "conversation")
     end
 
     first_batch = interruptions.deliver

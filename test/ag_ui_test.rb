@@ -135,7 +135,7 @@ class AGUITest < Minitest::Test
       LittleGhost::StreamEvent.build(
         :agent_interrupt_delivered,
         interruption_ids: ["interrupt-1", "interrupt-2"],
-        batch_key: "slack-thread"
+        batch_key: "conversation"
       ),
       LittleGhost::StreamEvent.build(:text_delta, text: "Steered response")
     ]
@@ -144,7 +144,7 @@ class AGUITest < Minitest::Test
 
     assert_equal "little_ghost.agent_interrupt_delivered", events.first.fetch(:name)
     assert_equal ["interrupt-1", "interrupt-2"], events.first.dig(:value, :interruption_ids)
-    assert_equal "slack-thread", events.first.dig(:value, :batch_key)
+    assert_equal "conversation", events.first.dig(:value, :batch_key)
     assert_equal "TEXT_MESSAGE_START", events.fetch(1).fetch(:type)
   end
 
