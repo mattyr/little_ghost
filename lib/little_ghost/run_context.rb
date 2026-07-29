@@ -12,7 +12,9 @@ module LittleGhost
       instrumentation: nil,
       metadata: {},
       checkpoint: nil,
-      conversation_id: nil
+      conversation_id: nil,
+      interruption_metadata: nil,
+      interruption_ids: []
     )
       if conversation_id
         conversation_id = String(conversation_id)
@@ -32,6 +34,9 @@ module LittleGhost
       @structured_result_mutex = Mutex.new
       @agent_operation_id = nil
       @agent_operation_id_mutex = Mutex.new
+      @interruption_mutex = Mutex.new
+      @interruption_metadata = interruption_metadata && Support.immutable(interruption_metadata.to_h)
+      @interruption_ids = Array(interruption_ids).map { |id| String(id).dup.freeze }.freeze
     end
 
     def check!
@@ -66,6 +71,23 @@ module LittleGhost
 
     def structured_result
       @structured_result_mutex.synchronize { @structured_result }
+    end
+
+    def interruption_metadata
+      @interruption_mutex.synchronize { @interruption_metadata }
+    end
+
+    def interruption_ids
+      @interruption_mutex.synchronize { @interruption_ids }
+    end
+
+    def activate_interruption(metadata:, ids:)
+      value = metadata && Support.immutable(metadata.to_h)
+      values = Array(ids).map { |id| String(id).dup.freeze }.freeze
+      @interruption_mutex.synchronize do
+        @interruption_metadata = value
+        @interruption_ids = values
+      end
     end
 
     def bind_agent_operation_id(operation_id)

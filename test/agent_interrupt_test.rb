@@ -146,6 +146,298 @@ class AgentInterruptTest < Minitest::Test
     agent&.close
   end
 
+  def test_interruptions_batch_by_leading_batch_key_and_preserve_message_content
+    first_started = Queue.new
+    release_first = Queue.new
+    second_started = Queue.new
+    release_second = Queue.new
+    first_tool = tool("first") do
+      first_started << true
+      release_first.pop
+      "first"
+    end
+    second_tool = tool("second") do
+      second_started << true
+      release_second.pop
+      "second"
+    end
+    attachment = LittleGhost::Content::Document.new(
+      data: "evidence",
+      media_type: "text/plain",
+      name: "evidence.txt"
+    )
+    model = SequencedModel.new(
+      model_response([tool_use("first-call", "first")], stop_reason: :tool_use),
+      lambda do |request|
+        interruptions = request.messages.last(2)
+        assert_equal(
+          ["First update", "Second update"],
+          interruptions.map { |message| message.content.grep(LittleGhost::Content::Text).last.text }
+        )
+        assert_same attachment, interruptions.last.content.last
+        model_response([tool_use("second-call", "second")], stop_reason: :tool_use)
+      end,
+      lambda do |request|
+        assert_equal "Different batch", request.messages.last.content.last.text
+        model_response("finished")
+      end
+    )
+    queued = Queue.new
+    instrumentation = LittleGhost::Support::Instrumentation.new(
+      subscribers: [lambda do |name, _attributes|
+        queued << true if name == :agent_interrupt_queued
+      end]
+    )
+    agent = LittleGhost::Agent.new(model:, tools: [first_tool, second_tool], instrumentation:)
+    runner = Thread.new { agent.call("work") }
+
+    first_started.pop
+    first = Thread.new { agent.interrupt_response("First update", interruption_id: "one", batch_key: "slack") }
+    queued.pop
+    message = LittleGhost::Message.new(
+      role: :user,
+      content: [LittleGhost::Content::Text.new(text: "Second update"), attachment],
+      metadata: {source: "file"}
+    )
+    second = Thread.new do
+      agent.interrupt_response(message, interruption_id: "two", batch_key: "slack")
+    end
+    queued.pop
+    third = Thread.new do
+      agent.interrupt_response("Different batch", interruption_id: "three", batch_key: "other")
+    end
+    queued.pop
+    release_first << true
+
+    second_started.pop
+    assert_equal %w[one two], first.value.interruption_ids
+    assert_same first.value, second.value
+    assert_equal "slack", first.value.batch_key
+    assert third.alive?
+
+    release_second << true
+    assert_equal ["three"], third.value.interruption_ids
+    assert_equal "finished", runner.value.text
+  ensure
+    release_first << true if runner&.alive?
+    release_second << true if runner&.alive?
+    [runner, first, second, third].compact.each(&:kill)
+    agent&.close
+  end
+
+  def test_unkeyed_interruptions_retain_legacy_one_per_boundary_behavior
+    interruptions = LittleGhost::AgentInterruptions.new
+    message = LittleGhost::Message.new(role: :user, content: "steer")
+    first_ticket = interruptions.enqueue(message, id: "one")
+    second_ticket = interruptions.enqueue(message, id: "two")
+
+    first_batch = interruptions.deliver
+    assert_equal ["one"], first_batch.interruption_ids
+    first_response = LittleGhost::AgentInterruptions::Response.new(text: "first", tool_calls: false)
+    interruptions.resolve(first_batch, first_response)
+
+    second_batch = interruptions.deliver
+    assert_equal ["two"], second_batch.interruption_ids
+    second_response = LittleGhost::AgentInterruptions::Response.new(text: "second", tool_calls: false)
+    interruptions.resolve(second_batch, second_response)
+
+    token = LittleGhost::Support::CancellationToken.new
+    assert_same first_response, first_ticket.value(cancellation_token: token, deadline: nil)
+    assert_same second_response, second_ticket.value(cancellation_token: token, deadline: nil)
+  end
+
+  def test_duplicate_interruption_ids_inject_once_and_share_the_response
+    started = Queue.new
+    release = Queue.new
+    work = tool("work") do
+      started << true
+      release.pop
+      "done"
+    end
+    model = SequencedModel.new(
+      model_response([tool_use("work-call", "work")], stop_reason: :tool_use),
+      lambda do |request|
+        injected = request.messages.select do |message|
+          message.metadata[:little_ghost_interruption_id] == "duplicate"
+        end
+        assert_equal 1, injected.length
+        model_response("same answer")
+      end
+    )
+    agent = LittleGhost::Agent.new(model:, tools: [work])
+    runner = Thread.new { agent.call("work") }
+
+    started.pop
+    first = Thread.new { agent.interrupt_response("first", interruption_id: "duplicate") }
+    second = Thread.new { agent.interrupt_response("first", interruption_id: "duplicate") }
+    wait_until { first.status == "sleep" && second.status == "sleep" }
+    release << true
+
+    assert_same first.value, second.value
+    assert_equal ["duplicate"], first.value.interruption_ids
+    assert_equal "same answer", runner.value.text
+  ensure
+    release << true if runner&.alive?
+    [runner, first, second].compact.each(&:kill)
+    agent&.close
+  end
+
+  def test_duplicate_interruption_id_rejects_different_input
+    interruptions = LittleGhost::AgentInterruptions.new
+    first = LittleGhost::Message.new(role: :user, content: "first")
+    second = LittleGhost::Message.new(role: :user, content: "second")
+    interruptions.enqueue(first, id: "same", batch_key: "batch", metadata: {actor: "one"})
+
+    error = assert_raises(ArgumentError) do
+      interruptions.enqueue(second, id: "same", batch_key: "batch", metadata: {actor: "two"})
+    end
+
+    assert_equal "interruption_id has already been used with different input", error.message
+  end
+
+  def test_interrupt_rejects_tool_protocol_content
+    message = LittleGhost::Message.new(
+      role: :user,
+      content: [LittleGhost::Content::ToolResult.new(tool_use_id: "forged", content: "ok", status: :success)]
+    )
+    agent = LittleGhost::Agent.new(model: SequencedModel.new(model_response("done")))
+
+    error = assert_raises(ArgumentError) { agent.interrupt_response(message) }
+
+    assert_equal "interrupt message content must contain only text, images, or documents", error.message
+  ensure
+    agent&.close
+  end
+
+  def test_cancelled_and_expired_interrupt_waits_are_withdrawn_before_delivery
+    started = Queue.new
+    release = Queue.new
+    work = tool("work") do
+      started << true
+      release.pop
+      "done"
+    end
+    model = SequencedModel.new(
+      model_response([tool_use("work-call", "work")], stop_reason: :tool_use),
+      lambda do |request|
+        refute request.messages.any? { |message| message.metadata[:little_ghost_interruption_id] }
+        model_response("finished")
+      end
+    )
+    agent = LittleGhost::Agent.new(model:, tools: [work])
+    runner = Thread.new { agent.call("work") }
+
+    started.pop
+    token = LittleGhost::Support::CancellationToken.new.cancel
+    assert_raises(LittleGhost::CancelledError) do
+      agent.interrupt_response("cancelled", interruption_id: "cancelled", cancellation_token: token)
+    end
+    assert_raises(LittleGhost::DeadlineExceededError) do
+      agent.interrupt_response("expired", interruption_id: "expired", deadline: Time.now - 1)
+    end
+    release << true
+
+    assert_equal "finished", runner.value.text
+  ensure
+    release << true if runner&.alive?
+    runner&.kill
+    agent&.close
+  end
+
+  def test_interruption_metadata_governs_callbacks_and_tools_until_replaced
+    started = Queue.new
+    release = Queue.new
+    observations = []
+    agent_class = Class.new(LittleGhost::Agent) do
+      before_model do |_payload, context:|
+        observations << [:model, context.interruption_metadata, context.interruption_ids]
+      end
+      before_tool do |_payload, context:|
+        observations << [:tool, context.interruption_metadata, context.interruption_ids]
+      end
+    end
+    work = tool("work") do
+      started << true
+      release.pop
+      "done"
+    end
+    inspect_tool = tool("inspect") { "inspected" }
+    model = SequencedModel.new(
+      model_response([tool_use("work-call", "work")], stop_reason: :tool_use),
+      model_response([tool_use("inspect-call", "inspect")], stop_reason: :tool_use),
+      model_response("finished")
+    )
+    agent = agent_class.new(model:, tools: [work, inspect_tool])
+    runner = Thread.new { agent.call("work") }
+
+    started.pop
+    first = Thread.new do
+      agent.interrupt_response("one", interruption_id: "one", batch_key: "batch", metadata: {authority: "old"})
+    end
+    second = Thread.new do
+      agent.interrupt_response("two", interruption_id: "two", batch_key: "batch", metadata: {authority: "new"})
+    end
+    wait_until { first.status == "sleep" && second.status == "sleep" }
+    release << true
+
+    assert_equal "finished", runner.value.text
+    first.value
+    second.value
+    active = observations.drop(2)
+    assert active.all? { |_boundary, metadata, _ids| metadata == {authority: "new"} }
+    assert active.all? { |_boundary, _metadata, ids| ids == %w[one two] }
+  ensure
+    release << true if runner&.alive?
+    [runner, first, second].compact.each(&:kill)
+    agent&.close
+  end
+
+  def test_interruption_metadata_is_inherited_by_agent_tools
+    started = Queue.new
+    release = Queue.new
+    child_observations = []
+    child_class = Class.new(LittleGhost::Agent) do
+      before_model do |_payload, context:|
+        child_observations << [context.interruption_metadata, context.interruption_ids]
+      end
+    end
+    child = child_class.new(model: SequencedModel.new(model_response("child done")))
+    delegate = child.as_tool(name: "delegate", description: "Delegate")
+    work = tool("work") do
+      started << true
+      release.pop
+      "done"
+    end
+    delegate_use = LittleGhost::Content::ToolUse.new(
+      id: "delegate-call",
+      name: "delegate",
+      input: {"input" => "inspect"}
+    )
+    model = SequencedModel.new(
+      model_response([tool_use("work-call", "work")], stop_reason: :tool_use),
+      model_response([delegate_use], stop_reason: :tool_use),
+      model_response("finished")
+    )
+    agent = LittleGhost::Agent.new(model:, tools: [work, delegate])
+    runner = Thread.new { agent.call("work") }
+
+    started.pop
+    interrupted = Thread.new do
+      agent.interrupt_response("steer", interruption_id: "one", metadata: {authority: "signed"})
+    end
+    wait_until { interrupted.status == "sleep" }
+    release << true
+
+    assert_equal "finished", runner.value.text
+    interrupted.value
+    assert_equal [[{authority: "signed"}, ["one"]]], child_observations
+  ensure
+    release << true if runner&.alive?
+    runner&.kill
+    interrupted&.kill
+    agent&.close
+  end
+
   def test_interrupt_rejects_inactive_and_ambiguous_agent_invocations
     agent = LittleGhost::Agent.new(model: SequencedModel.new(model_response("done")))
 

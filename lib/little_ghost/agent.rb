@@ -348,13 +348,19 @@ module LittleGhost
       message,
       cancellation_token: Support::CancellationToken.new,
       deadline: nil,
-      target_operation_id: nil
+      target_operation_id: nil,
+      interruption_id: nil,
+      batch_key: nil,
+      metadata: {}
     )
       interrupt_response(
         message,
         cancellation_token:,
         deadline:,
-        target_operation_id:
+        target_operation_id:,
+        interruption_id:,
+        batch_key:,
+        metadata:
       ).text
     end
 
@@ -362,10 +368,20 @@ module LittleGhost
       message,
       cancellation_token: Support::CancellationToken.new,
       deadline: nil,
-      target_operation_id: nil
+      target_operation_id: nil,
+      interruption_id: nil,
+      batch_key: nil,
+      metadata: {}
     )
-      unless message.is_a?(String)
-        raise ArgumentError, "interrupt message must be a string"
+      message = Message.new(role: :user, content: message) if message.is_a?(String)
+      raise ArgumentError, "interrupt message must be a String or LittleGhost::Message" unless message.is_a?(Message)
+      safe_content = message.content.all? do |content|
+        content.is_a?(Content::Text) ||
+          content.is_a?(Content::Image) ||
+          content.is_a?(Content::Document)
+      end
+      unless safe_content
+        raise ArgumentError, "interrupt message content must contain only text, images, or documents"
       end
 
       interruptions = @interruptions_mutex.synchronize do
@@ -383,18 +399,22 @@ module LittleGhost
 
         active.first
       end
-      ticket = interruptions.enqueue(message)
+      options = {batch_key:, metadata:}
+      options[:id] = interruption_id unless interruption_id.nil?
+      ticket = interruptions.enqueue(message, **options)
       instrument(
         :agent_interrupt_queued,
         parent_operation_id: interruptions.operation_id,
         interruption_id: ticket.id,
         event_kind: :interrupt,
-        diagnostic: {input: message}
+        diagnostic: {input: diagnostic_message(message)}
       )
       begin
-        ticket.value(cancellation_token:, deadline:)
+        response = ticket.value(cancellation_token:, deadline:)
+        interruptions.release(ticket)
+        response
       rescue => error
-        interruptions.withdraw(ticket)
+        interruptions.release(ticket, withdraw: true)
         instrument(
           :agent_interrupt_failed,
           parent_operation_id: interruptions.operation_id,
@@ -418,7 +438,10 @@ module LittleGhost
       template_paths: UNSET,
       parent_operation_id: nil,
       checkpoint: nil,
-      conversation_id: nil
+      conversation_id: nil,
+      interruption_metadata: nil,
+      interruption_ids: [],
+      interrupt_ready: nil
     )
       raise ArgumentError, "input is required" if input.equal?(UNSET)
 
@@ -443,7 +466,9 @@ module LittleGhost
           instrumentation: instrumentation,
           metadata: {agent_id: self.class.agent_id},
           checkpoint:,
-          conversation_id:
+          conversation_id:,
+          interruption_metadata:,
+          interruption_ids:
         )
         begin
           execute(
@@ -455,7 +480,8 @@ module LittleGhost
             template_paths: invocation_paths,
             events: events,
             parent_operation_id:,
-            interruptions:
+            interruptions:,
+            interrupt_ready:
           )
         rescue => error
           interruptions.close(error)
@@ -488,6 +514,8 @@ module LittleGhost
             history: preserve_context ? retained_history : [],
             context: context&.state || {},
             cancellation_token: context&.cancellation_token || Support::CancellationToken.new,
+            interruption_metadata: context&.interruption_metadata,
+            interruption_ids: context&.interruption_ids || [],
             deadline: context&.deadline,
             parent_operation_id: run&.operation_id
           )
@@ -550,22 +578,33 @@ module LittleGhost
     end
 
     def interruption_message(interruption)
+      source = interruption.message
       Message.new(
         role: :user,
-        content: <<~MESSAGE.strip,
-          Agent interruption:
-          #{interruption.message}
+        content: [
+          Content::Text.new(text: <<~MESSAGE.strip),
+            Agent interruption:
 
-          Respond briefly in ordinary text before any tool calls, then continue the current task unless this
-          interruption asks you to finish.
-        MESSAGE
-        metadata: {little_ghost_interruption_id: interruption.id}
+            Respond briefly in ordinary text before any tool calls, then continue the current task unless this
+            interruption asks you to finish.
+          MESSAGE
+          *source.content
+        ],
+        metadata: source.metadata.merge(interruption.metadata).merge(
+          little_ghost_interruption_id: interruption.id,
+          little_ghost_interruption_batch_key: interruption.batch_key,
+          little_ghost_interruption_metadata: interruption.metadata
+        )
       )
     end
 
     def request_with_interruption(request, interruption)
       ModelRequest.new(
-        messages: [*request.messages, interruption_message(interruption)],
+        messages: [
+          *request.messages,
+          *interruption.tickets.reject { |ticket| request_contains_interruption?(request, ticket) }
+            .map { |ticket| interruption_message(ticket) }
+        ],
         tools: request.tools,
         settings: request.settings,
         output_schema: nil,
@@ -578,7 +617,8 @@ module LittleGhost
 
     def request_contains_interruption?(request, interruption)
       request.messages.any? do |message|
-        message.metadata[:little_ghost_interruption_id] == interruption.id
+        (message.metadata[:little_ghost_interruption_id] ||
+          message.metadata["little_ghost_interruption_id"]) == interruption.id
       end
     end
 
@@ -591,13 +631,15 @@ module LittleGhost
       template_paths:,
       events:,
       parent_operation_id:,
-      interruptions:
+      interruptions:,
+      interrupt_ready:
     )
       started_at = monotonic_time
       operation_id = SecureRandom.uuid
       context.bind_agent_operation_id(operation_id)
       interruptions.bind(operation_id, target_operation_id: parent_operation_id)
       register_interruptions(interruptions)
+      interrupt_ready&.call
       instrument(
         :agent_start,
         operation_id:,
@@ -917,6 +959,10 @@ module LittleGhost
         cancellation_token: context.cancellation_token,
         deadline: context.deadline
       )
+      interruption ||= interruptions.deliver
+      if interruption
+        context.activate_interruption(metadata: interruption.metadata, ids: interruption.interruption_ids)
+      end
       decision = run_callbacks(
         :before_model,
         {request: request, turn: turn, parent_operation_id:},
@@ -924,8 +970,9 @@ module LittleGhost
       )
       apply_cancellation_decision!(decision)
       request = replacement_value(decision, :request, request)
-      interruption ||= interruptions.deliver
-      interruption_delivered = interruption && !request_contains_interruption?(request, interruption)
+      interruption_delivered = interruption&.tickets&.any? do |ticket|
+        !request_contains_interruption?(request, ticket)
+      end
       if interruption_delivered
         request = request_with_interruption(request, interruption)
       end
@@ -944,12 +991,14 @@ module LittleGhost
         **model_attributes
       )
       if interruption_delivered
-        instrument(
-          :agent_interrupt_delivered,
-          parent_operation_id: operation_id,
-          interruption_id: interruption.id,
-          event_kind: :interrupt
-        )
+        interruption.tickets.each do |ticket|
+          instrument(
+            :agent_interrupt_delivered,
+            parent_operation_id: operation_id,
+            interruption_id: ticket.id,
+            event_kind: :interrupt
+          )
+        end
       end
       emit(events, :model_start, turn: turn)
       response = nil
@@ -990,14 +1039,16 @@ module LittleGhost
         interruption,
         AgentInterruptions::Response.new(
           text: response.message.text,
-          tool_calls: response.message.content.any? { |content| content.is_a?(Content::ToolUse) }
+          tool_calls: response.message.content.any? { |content| content.is_a?(Content::ToolUse) },
+          interruption_ids: interruption&.interruption_ids || [],
+          batch_key: interruption&.batch_key
         )
       )
-      if interruption
+      interruption&.tickets&.each do |ticket|
         instrument(
           :agent_interrupt_responded,
           parent_operation_id: operation_id,
-          interruption_id: interruption.id,
+          interruption_id: ticket.id,
           event_kind: :interrupt,
           diagnostic: {output: response.message.text}
         )
