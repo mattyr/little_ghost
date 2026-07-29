@@ -339,21 +339,46 @@ class OpenAICompatibleTest < Minitest::Test
     transport = FakeTransport.new(failure, ["data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"])
     delays = []
     retries = []
+    timeline = []
+    result = []
 
-    result = provider(
+    provider(
       transport:,
       max_retries: 1,
-      sleeper: ->(delay) { delays << delay },
+      sleeper: lambda do |delay|
+        delays << delay
+        timeline << :wait
+      end,
       on_retry: ->(*arguments) { retries << arguments }
-    ).stream(request).to_a
+    ).stream(request) do |event|
+      timeline << :retry_event if event.type == :model_retry
+      result << event
+    end
 
     assert_equal 2, transport.requests.length
     assert_equal [1], delays
+    assert_equal %i[retry_event wait], timeline
     assert_equal [[1, failure, 1]], retries
     retry_event = result.find { |event| event.type == :model_retry }
     assert_equal 429, retry_event.data.fetch(:http_status)
     assert_equal false, retry_event.data.fetch(:partial_text)
     assert_equal :message_stop, result.last.type
+  end
+
+  def test_caps_exponential_backoff_at_the_configured_retry_delay
+    failure = LittleGhost::Providers::HTTPError.new("busy", status: 429)
+    completed = ["data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"]
+    transport = FakeTransport.new(failure, failure, failure, failure, completed)
+    delays = []
+
+    provider(
+      transport:,
+      max_retries: 4,
+      max_retry_delay: 3,
+      sleeper: ->(delay) { delays << delay }
+    ).stream(request).to_a
+
+    assert_equal [1, 2, 3, 3], delays
   end
 
   def test_retries_a_transient_stream_failure_after_partial_output
@@ -644,13 +669,16 @@ class OpenAICompatibleTest < Minitest::Test
 
   private
 
-  def provider(transport:, api: :responses, max_retries: 2, sleeper: ->(_) {}, on_retry: ->(*) {})
+  def provider(transport:, api: :responses, max_retries: 2,
+    max_retry_delay: LittleGhost::Providers::OpenAICompatible::MAX_RETRY_DELAY,
+    sleeper: ->(_) {}, on_retry: ->(*) {})
     LittleGhost::Providers::OpenAI.new(
       api_key: "secret",
       model: "gpt-test",
       transport:,
       api:,
       max_retries:,
+      max_retry_delay:,
       sleeper:,
       on_retry:
     )
