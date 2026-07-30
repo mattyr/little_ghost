@@ -17,7 +17,7 @@ module LittleGhost
       DEFAULT_MAX_QUEUED_TURNS_PER_IDENTITY = 8
       DEFAULT_MAX_MESSAGE_CHARS = 50_000
       DEFAULT_MAX_RESPONSE_CHARS = 100_000
-      DEFAULT_LONG_POLL_DURATION = 20.0
+      DEFAULT_WAIT_TIMEOUT = 20.0
       DEFAULT_CLOSE_TIMEOUT = 5.0
       DEFAULT_LIST_LIMIT = 20
       MAX_LIST_LIMIT = 100
@@ -174,7 +174,7 @@ module LittleGhost
         max_queued_turns_per_identity: DEFAULT_MAX_QUEUED_TURNS_PER_IDENTITY,
         max_message_chars: DEFAULT_MAX_MESSAGE_CHARS,
         max_response_chars: DEFAULT_MAX_RESPONSE_CHARS,
-        long_poll_duration: DEFAULT_LONG_POLL_DURATION,
+        wait_timeout: DEFAULT_WAIT_TIMEOUT,
         close_timeout: DEFAULT_CLOSE_TIMEOUT,
         cancellation_token: Support::CancellationToken.new,
         deadline: nil,
@@ -188,7 +188,7 @@ module LittleGhost
         validate_limit(:max_queued_turns_per_identity, max_queued_turns_per_identity)
         validate_limit(:max_message_chars, max_message_chars)
         validate_limit(:max_response_chars, max_response_chars)
-        validate_timeout(:long_poll_duration, long_poll_duration)
+        validate_timeout(:wait_timeout, wait_timeout)
         validate_timeout(:close_timeout, close_timeout)
 
         @definitions = definitions.each_with_object({}) do |definition, index|
@@ -201,7 +201,7 @@ module LittleGhost
         @max_queued_turns_per_identity = max_queued_turns_per_identity
         @max_message_chars = max_message_chars
         @max_response_chars = max_response_chars
-        @long_poll_duration = long_poll_duration
+        @wait_timeout = wait_timeout
         @close_timeout = close_timeout
         @cancellation_token = cancellation_token.child
         @deadline = deadline
@@ -402,7 +402,7 @@ module LittleGhost
         end
         return {status: "finished", subagents: []} if identities.empty?
 
-        deadline = monotonic_time + @long_poll_duration
+        deadline = monotonic_time + @wait_timeout
         @mutex.synchronize do
           until identities.all? { |identity| finished?(identity) }
             @cancellation_token.raise_if_cancelled!
