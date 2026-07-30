@@ -724,8 +724,8 @@ class AgentTest < Minitest::Test
     parent = Class.new(LittleGhost::Agent)
     child = Class.new(parent)
 
-    assert_equal LittleGhost::Subagents::Manager::DEFAULT_WAIT_TIMEOUT, parent.subagent_long_poll_duration
-    assert_equal LittleGhost::Subagents::Manager::DEFAULT_WAIT_TIMEOUT, child.subagent_long_poll_duration
+    assert_equal LittleGhost::Subagents::Manager::DEFAULT_LONG_POLL_DURATION, parent.subagent_long_poll_duration
+    assert_equal LittleGhost::Subagents::Manager::DEFAULT_LONG_POLL_DURATION, child.subagent_long_poll_duration
 
     parent.subagent_long_poll_duration 30
 

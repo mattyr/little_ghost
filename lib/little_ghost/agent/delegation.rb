@@ -13,7 +13,7 @@ module LittleGhost
             return @subagent_long_poll_duration if instance_variable_defined?(:@subagent_long_poll_duration)
             return superclass.subagent_long_poll_duration if superclass.respond_to?(:subagent_long_poll_duration)
 
-            return Subagents::Manager::DEFAULT_WAIT_TIMEOUT
+            return Subagents::Manager::DEFAULT_LONG_POLL_DURATION
           end
 
           timeout = Float(value)

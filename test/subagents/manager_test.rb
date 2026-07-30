@@ -274,10 +274,10 @@ class SubagentManagerTest < Minitest::Test
     manager&.close
   end
 
-  def test_wait_timeout_is_normal_and_repeatable
+  def test_long_poll_duration_is_normal_and_repeatable
     gate = Gate.new
     agent = ControlledAgent.new(gate: gate)
-    manager = manager_for(->(_id) { agent }, wait_timeout: 0.001)
+    manager = manager_for(->(_id) { agent }, long_poll_duration: 0.001)
     manager.spawn(kind: "explore", task_name: "explore", task: "slow", mode: "async")
     agent.started.pop
 
@@ -323,7 +323,7 @@ class SubagentManagerTest < Minitest::Test
       ->(_id) { agent },
       observer: ->(event) { events << event },
       max_queued_turns_per_identity: 1,
-      wait_timeout: 0.001
+      long_poll_duration: 0.001
     )
 
     manager.spawn(kind: "explore", task_name: "explore", task: "inspect", mode: "async")
@@ -449,7 +449,7 @@ class SubagentManagerTest < Minitest::Test
     gate = Gate.new
     agent = ControlledAgent.new(gate: gate)
     token = LittleGhost::Support::CancellationToken.new
-    manager = manager_for(->(_id) { agent }, cancellation_token: token, wait_timeout: 30)
+    manager = manager_for(->(_id) { agent }, cancellation_token: token, long_poll_duration: 30)
     manager.spawn(kind: "explore", task_name: "explore", task: "slow", mode: "async")
     agent.started.pop
     result = Queue.new
