@@ -8,6 +8,24 @@ module LittleGhost
       end
 
       module ClassMethods
+        def subagent_wait_timeout(value = Agent::UNSET)
+          if value.equal?(Agent::UNSET)
+            return @subagent_wait_timeout if instance_variable_defined?(:@subagent_wait_timeout)
+            return superclass.subagent_wait_timeout if superclass.respond_to?(:subagent_wait_timeout)
+
+            return Subagents::Manager::DEFAULT_WAIT_TIMEOUT
+          end
+
+          timeout = Float(value)
+          unless timeout.positive? && timeout.finite?
+            raise ConfigurationError, "subagent_wait_timeout must be a positive finite number"
+          end
+
+          @subagent_wait_timeout = timeout
+        rescue ArgumentError, TypeError
+          raise ConfigurationError, "subagent_wait_timeout must be a positive finite number"
+        end
+
         def subagent(agent_class, kind: nil, description: nil, model: nil, tools: nil, factory: nil, persist: true)
           validate_delegated_tools!(tools)
           declaration = Support.immutable({

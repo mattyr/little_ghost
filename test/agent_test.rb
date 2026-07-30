@@ -720,6 +720,37 @@ class AgentTest < Minitest::Test
     assert_empty child.subagent_declarations.first.fetch(:tools)
   end
 
+  def test_subagent_wait_timeout_defaults_to_manager_default_and_is_inherited
+    parent = Class.new(LittleGhost::Agent)
+    child = Class.new(parent)
+
+    assert_equal LittleGhost::Subagents::Manager::DEFAULT_WAIT_TIMEOUT, parent.subagent_wait_timeout
+    assert_equal LittleGhost::Subagents::Manager::DEFAULT_WAIT_TIMEOUT, child.subagent_wait_timeout
+
+    parent.subagent_wait_timeout 30
+
+    assert_equal 30.0, parent.subagent_wait_timeout
+    assert_equal 30.0, child.subagent_wait_timeout
+  end
+
+  def test_subagent_wait_timeout_can_be_overridden_by_a_child
+    parent = Class.new(LittleGhost::Agent) { subagent_wait_timeout 30 }
+    child = Class.new(parent) { subagent_wait_timeout 5 }
+
+    parent.subagent_wait_timeout 45
+
+    assert_equal 45.0, parent.subagent_wait_timeout
+    assert_equal 5.0, child.subagent_wait_timeout
+  end
+
+  def test_subagent_wait_timeout_rejects_invalid_values
+    agent_class = Class.new(LittleGhost::Agent)
+
+    [0, -1, Float::INFINITY, "invalid"].each do |value|
+      assert_raises(LittleGhost::ConfigurationError) { agent_class.subagent_wait_timeout value }
+    end
+  end
+
   def test_static_delegation_rejects_shared_tool_instances
     delegated = Class.new(LittleGhost::Agent)
     tool = Class.new(LittleGhost::Tool) do
