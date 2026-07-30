@@ -144,7 +144,7 @@ module LittleGhost
 
       Subagents::Manager.new(
         definitions,
-        wait_timeout: agent_class.subagent_wait_timeout,
+        wait_timeout: agent_class.subagent_long_poll_duration,
         parent_session: conversation_id ? application.open_subagent_session(run, conversation_id) : run.session,
         cancellation_token: run.cancellation_token,
         deadline: run.invocation.deadline_at,
