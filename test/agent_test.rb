@@ -720,6 +720,37 @@ class AgentTest < Minitest::Test
     assert_empty child.subagent_declarations.first.fetch(:tools)
   end
 
+  def test_subagent_long_poll_duration_defaults_to_manager_default_and_is_inherited
+    parent = Class.new(LittleGhost::Agent)
+    child = Class.new(parent)
+
+    assert_equal LittleGhost::Subagents::Manager::DEFAULT_WAIT_TIMEOUT, parent.subagent_long_poll_duration
+    assert_equal LittleGhost::Subagents::Manager::DEFAULT_WAIT_TIMEOUT, child.subagent_long_poll_duration
+
+    parent.subagent_long_poll_duration 30
+
+    assert_equal 30.0, parent.subagent_long_poll_duration
+    assert_equal 30.0, child.subagent_long_poll_duration
+  end
+
+  def test_subagent_long_poll_duration_can_be_overridden_by_a_child
+    parent = Class.new(LittleGhost::Agent) { subagent_long_poll_duration 30 }
+    child = Class.new(parent) { subagent_long_poll_duration 5 }
+
+    parent.subagent_long_poll_duration 45
+
+    assert_equal 45.0, parent.subagent_long_poll_duration
+    assert_equal 5.0, child.subagent_long_poll_duration
+  end
+
+  def test_subagent_long_poll_duration_rejects_invalid_values
+    agent_class = Class.new(LittleGhost::Agent)
+
+    [0, -1, Float::INFINITY, "invalid"].each do |value|
+      assert_raises(LittleGhost::ConfigurationError) { agent_class.subagent_long_poll_duration value }
+    end
+  end
+
   def test_static_delegation_rejects_shared_tool_instances
     delegated = Class.new(LittleGhost::Agent)
     tool = Class.new(LittleGhost::Tool) do
