@@ -62,6 +62,7 @@ module LittleGhost
         :current,
         :latest_turn,
         :latest_response,
+        :latest_response_turn,
         :latest_response_truncated,
         :latest_error,
         :progress_message,
@@ -564,7 +565,10 @@ module LittleGhost
             description: <<~DESCRIPTION.strip,
               Wait briefly for selected subagents, or all subagents when omitted. A still_working response is expected
               when work takes longer than this check-in window. Call this tool again to keep waiting; timeout is not an
-              error and does not cancel the subagents.
+              error and does not cancel the subagents. A successful settled turn is returned as response. When newer
+              work is queued, running, persisting, failed, or cancelled, the most recent successful result may instead
+              appear as previous_response for context; it is not the result of that newer work. Inspect each subagent's
+              status and keep waiting while selected work is active.
             DESCRIPTION
             input_schema: {
               type: "object",
@@ -1227,6 +1231,7 @@ module LittleGhost
         @mutex.synchronize do
           identity.latest_turn = turn.number
           identity.latest_response = response
+          identity.latest_response_turn = turn.number
           identity.latest_response_truncated = truncated
           identity.latest_error = nil
           identity.progress_message = nil
@@ -1290,8 +1295,6 @@ module LittleGhost
 
           warn_failure("turn", identity.subagent_id, error)
           identity.latest_turn = turn.number
-          identity.latest_response = nil
-          identity.latest_response_truncated = false
           identity.latest_error = "Subagent turn failed."
           identity.progress_message = nil
           identity.current_turn = nil
@@ -1318,6 +1321,7 @@ module LittleGhost
         @mutex.synchronize do
           newly_cancelled = identity.status != "cancelled"
           turn.completion.resolve(cancelled_turn(identity, turn))
+          identity.latest_turn = turn.number
           identity.progress_message = nil
           identity.current_turn = nil
           identity.current = nil
@@ -1431,8 +1435,15 @@ module LittleGhost
         }
         value[:resumed] = true if identity.resumed
         if include_response && identity.latest_response
-          value[:response] = identity.latest_response
-          value[:response_truncated] = true if identity.latest_response_truncated
+          if identity.status == "idle" && identity.latest_response_turn == identity.latest_turn
+            value[:response] = identity.latest_response
+            value[:response_turn] = identity.latest_response_turn
+            value[:response_truncated] = true if identity.latest_response_truncated
+          else
+            value[:previous_response] = identity.latest_response
+            value[:previous_response_turn] = identity.latest_response_turn
+            value[:previous_response_truncated] = true if identity.latest_response_truncated
+          end
         end
         if include_progress && identity.progress_sequence.positive? && %w[queued running].include?(identity.status)
           value[:progress] = {sequence: identity.progress_sequence}
