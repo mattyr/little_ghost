@@ -56,6 +56,28 @@ class SubagentManagerTest < Minitest::Test
     end
   end
 
+  class SequencedAgent
+    attr_reader :started
+
+    def initialize(gates: {}, failures: {})
+      @gates = gates
+      @failures = failures
+      @started = Queue.new
+      @turn = 0
+    end
+
+    def call(message, cancellation_token:)
+      @turn += 1
+      turn = @turn
+      @started << turn
+      @gates[turn]&.wait
+      cancellation_token.raise_if_cancelled!
+      raise @failures.fetch(turn) if @failures.key?(turn)
+
+      "response for #{message}"
+    end
+  end
+
   class ClosableAgent < ControlledAgent
     attr_reader :closed
 
@@ -289,7 +311,105 @@ class SubagentManagerTest < Minitest::Test
     assert_equal "running", working.dig(:subagents, 0, :status)
     assert_equal "finished", finished[:status]
     assert_equal "slow", finished.dig(:subagents, 0, :response)
+    assert_equal 1, finished.dig(:subagents, 0, :response_turn)
   ensure
+    manager&.close
+  end
+
+  def test_wait_labels_an_earlier_turn_response_as_previous_while_followup_runs
+    gate = Gate.new
+    agent = SequencedAgent.new(gates: {2 => gate})
+    manager = manager_for(->(_id) { agent }, wait_timeout: 0.001)
+    spawned = manager.spawn(kind: "explore", task_name: "explore", task: "first", mode: "sync")
+    agent.started.pop
+    manager.send_message(subagent_id: spawned.fetch(:subagent_id), message: "second", mode: "async")
+    agent.started.pop
+
+    working = manager.wait
+
+    assert_equal "still_working", working[:status]
+    assert_equal "running", working.dig(:subagents, 0, :status)
+    assert_equal 2, working.dig(:subagents, 0, :current_turn)
+    assert_equal 1, working.dig(:subagents, 0, :previous_response_turn)
+    assert_equal "response for first", working.dig(:subagents, 0, :previous_response)
+    refute working.dig(:subagents, 0).key?(:response)
+
+    gate.open
+    finished = manager.wait
+
+    assert_equal "finished", finished[:status]
+    assert_equal "idle", finished.dig(:subagents, 0, :status)
+    assert_equal 2, finished.dig(:subagents, 0, :response_turn)
+    assert_equal "response for second", finished.dig(:subagents, 0, :response)
+    refute finished.dig(:subagents, 0).key?(:previous_response)
+  ensure
+    gate&.open
+    manager&.close
+  end
+
+  def test_wait_preserves_the_previous_success_when_a_followup_fails
+    agent = SequencedAgent.new(failures: {2 => RuntimeError.new("boom")})
+    manager = manager_for(->(_id) { agent })
+    spawned = manager.spawn(kind: "explore", task_name: "explore", task: "first", mode: "sync")
+    agent.started.pop
+    manager.send_message(subagent_id: spawned.fetch(:subagent_id), message: "second", mode: "async")
+    agent.started.pop
+
+    finished = manager.wait
+
+    assert_equal "finished", finished[:status]
+    assert_equal "failed", finished.dig(:subagents, 0, :status)
+    assert_equal "Subagent turn failed.", finished.dig(:subagents, 0, :error)
+    assert_equal 1, finished.dig(:subagents, 0, :previous_response_turn)
+    assert_equal "response for first", finished.dig(:subagents, 0, :previous_response)
+    refute finished.dig(:subagents, 0).key?(:response)
+  ensure
+    manager&.close
+  end
+
+  def test_wait_preserves_the_previous_success_when_a_followup_is_cancelled
+    agent = SequencedAgent.new(failures: {2 => LittleGhost::CancelledError.new})
+    manager = manager_for(->(_id) { agent })
+    spawned = manager.spawn(kind: "explore", task_name: "explore", task: "first", mode: "sync")
+    agent.started.pop
+    manager.send_message(subagent_id: spawned.fetch(:subagent_id), message: "second", mode: "async")
+    agent.started.pop
+
+    finished = manager.wait
+
+    assert_equal "finished", finished[:status]
+    assert_equal "cancelled", finished.dig(:subagents, 0, :status)
+    assert_equal 2, finished.dig(:subagents, 0, :latest_turn)
+    assert_equal 1, finished.dig(:subagents, 0, :previous_response_turn)
+    assert_equal "response for first", finished.dig(:subagents, 0, :previous_response)
+    refute finished.dig(:subagents, 0).key?(:response)
+  ensure
+    manager&.close
+  end
+
+  def test_wait_keeps_settled_and_previous_responses_distinct_across_identities
+    gate = Gate.new
+    agents = {}
+    manager = manager_for(lambda { |id|
+      agents[id] = SequencedAgent.new(gates: id.end_with?("slow") ? {2 => gate} : {})
+    }, wait_timeout: 0.001)
+    slow = manager.spawn(kind: "explore", task_name: "slow", task: "first slow", mode: "sync")
+    fast = manager.spawn(kind: "explore", task_name: "fast", task: "first fast", mode: "sync")
+    agents.fetch(slow.fetch(:subagent_id)).started.pop
+    agents.fetch(fast.fetch(:subagent_id)).started.pop
+    manager.send_message(subagent_id: slow.fetch(:subagent_id), message: "second slow", mode: "async")
+    agents.fetch(slow.fetch(:subagent_id)).started.pop
+
+    working = manager.wait
+    snapshots = working.fetch(:subagents).to_h { |snapshot| [snapshot.fetch(:subagent_id), snapshot] }
+
+    assert_equal "still_working", working[:status]
+    assert_equal "response for first fast", snapshots.dig(fast.fetch(:subagent_id), :response)
+    assert_equal "response for first slow", snapshots.dig(slow.fetch(:subagent_id), :previous_response)
+    refute snapshots.fetch(fast.fetch(:subagent_id)).key?(:previous_response)
+    refute snapshots.fetch(slow.fetch(:subagent_id)).key?(:response)
+  ensure
+    gate&.open
     manager&.close
   end
 
