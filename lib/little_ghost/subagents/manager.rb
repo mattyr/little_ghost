@@ -463,11 +463,11 @@ module LittleGhost
           Tool.define(
             name: "spawn_subagent",
             description: <<~DESCRIPTION.strip,
-              Create a new subagent identity for an independent task. Choose sync when the next step depends on this
-              response; several sync spawns requested together can still run in parallel. Choose async to coordinate
-              or perform explicitly non-overlapping work while the subagent runs, then use wait_for_subagents to
-              check in. Give the task a concise lowercase name. The returned identity is its canonical path beneath
-              the current agent. Task names must be unique among that agent's children.
+              Create a new subagent identity for an independent task. Mode controls delivery: sync waits for the
+              response in this call, while async returns immediately and leaves the response for
+              wait_for_subagents. Several sync spawns requested together can still run in parallel. Give the task a
+              concise lowercase name. The returned identity is its canonical path beneath the current agent. Task
+              names must be unique among that agent's children.
             DESCRIPTION
             input_schema: {
               type: "object",
@@ -486,7 +486,7 @@ module LittleGhost
                 task: {type: "string", description: "Independent task to delegate."},
                 mode: {
                   type: "string", enum: %w[sync async],
-                  description: "Use sync when the next step needs the result; async for coordination or non-overlapping work."
+                  description: "sync waits for the response; async returns while the subagent continues."
                 }
               },
               required: %w[kind task_name task mode],
@@ -508,8 +508,8 @@ module LittleGhost
               Send a follow-up turn to an existing active or persisted subagent identity. Persisted conversations
               are restored transparently before the follow-up. Messages are processed in order after the
               current turn and never interrupt active work. Do not use this for status, steering, stopping, or
-              finalization; use interrupt_subagent for an active subagent. Choose sync when the next step depends on
-              the later turn, or async to enqueue it and continue immediately.
+              finalization; use interrupt_subagent for an active subagent. Mode controls delivery: sync waits for the
+              later turn's response, while async enqueues the turn and returns immediately.
             DESCRIPTION
             input_schema: {
               type: "object",
@@ -518,7 +518,7 @@ module LittleGhost
                 message: {type: "string", description: "Follow-up task or context."},
                 mode: {
                   type: "string", enum: %w[sync async],
-                  description: "Use sync to wait for this turn; async to enqueue it."
+                  description: "sync waits for this turn; async enqueues it and returns immediately."
                 }
               },
               required: %w[subagent_id message mode],
