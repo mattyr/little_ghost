@@ -174,47 +174,6 @@ class AgentToolLoopTest < Minitest::Test
     assert_equal "turn", attributes[:parent_operation_id]
   end
 
-  def test_composes_with_tool_result_offloading
-    agent_class = Class.new(LittleGhost::Agent) do
-      detect_tool_loops warning_at: 2, terminate_at: 4
-      offload_large_tool_results max_chars: 1, preview_chars: 1
-    end
-    agent = agent_class.new(model: Object.new)
-    context = LittleGhost::RunContext.new
-    run_callback(agent, :before_invocation, {}, context)
-    tool = LittleGhost::Tool.define(name: "search", description: "Search") { "result" }.new
-    tool_use = LittleGhost::Content::ToolUse.new(id: "1", name: "search", input: {})
-
-    first = call_tool(agent, tool_use, tool, execution("same"), context)
-    call_tool(agent, tool_use.with(id: "2"), tool, execution("same"), context)
-    call_tool(agent, tool_use.with(id: "3"), tool, execution("same"), context)
-    fourth = run_callback(agent, :before_tool, {tool_use: tool_use.with(id: "4"), tool: tool}, context)
-
-    assert first.replace?
-    assert_includes first.value.fetch(:result).content, "[Offloaded:"
-    assert fourth.cancel?
-    assert_raises(LittleGhost::ToolLoopError) { run_callback(agent, :before_model, {}, context) }
-  end
-
-  def test_observes_raw_results_when_tool_result_offloading_is_declared_first
-    agent_class = Class.new(LittleGhost::Agent) do
-      offload_large_tool_results max_chars: 1, preview_chars: 1
-      detect_tool_loops warning_at: 2, terminate_at: 4
-    end
-    agent = agent_class.new(model: Object.new)
-    context = LittleGhost::RunContext.new
-    run_callback(agent, :before_invocation, {}, context)
-    tool = LittleGhost::Tool.define(name: "search", description: "Search") { "result" }.new
-    tool_use = LittleGhost::Content::ToolUse.new(id: "1", name: "search", input: {})
-
-    call_tool(agent, tool_use, tool, execution("same"), context)
-    call_tool(agent, tool_use.with(id: "2"), tool, execution("same"), context)
-    call_tool(agent, tool_use.with(id: "3"), tool, execution("same"), context)
-    fourth = run_callback(agent, :before_tool, {tool_use: tool_use.with(id: "4"), tool: tool}, context)
-
-    assert fourth.cancel?
-  end
-
   private
 
   def build_agent(instrumentation: nil)

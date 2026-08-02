@@ -78,16 +78,17 @@ end
 
 class SupportAgent < ApplicationAgent
   tools LittleGhost::Tools::WriteTodos
-  offload_large_tool_results
   manage_context
 end
 ```
 
-The public mixins are `Agent::Skills`, `Agent::ToolLoop`, `Agent::ToolResultOffloading`, `Agent::ContextManagement`, and `Agent::Delegation`. They can also be included directly when building a custom base. `offload_large_tool_results` gives the model a bounded retrieval tool with pattern and line-range selection; `manage_context` summarizes older history as the model's context window fills. Todos are a normal tool, enabled with `tools LittleGhost::Tools::WriteTodos`. Tool-loop exclusions accept tool classes, instances, or names:
+The public mixins are `Agent::Skills`, `Agent::ToolLoop`, `Agent::ContextManagement`, and `Agent::Delegation`. They can also be included directly when building a custom base. `manage_context` summarizes older history as the model's context window fills. Todos are a normal tool, enabled with `tools LittleGhost::Tools::WriteTodos`. Tool-loop exclusions accept tool classes, instances, or names:
 
 ```ruby
 detect_tool_loops except: AccountTool
 ```
+
+Tool results are universally limited to approximately 10,000 tokens before they enter model context, session history, streams, or diagnostics. LittleGhost estimates one token per four UTF-8 bytes and preserves the beginning and end of oversized results. Set a different per-agent budget with `limits max_tool_result_tokens: 5_000`. Removed middle content is not retained.
 
 Agent callbacks are an inheritable class-level DSL. Capability methods register only the callbacks they need when the capability is enabled; merely including a mixin has no runtime effect. `after_initialize` is available for per-agent state, while invocation, model, and tool callbacks handle runtime behavior. Tools remain class-level declarations; zero-argument tool blocks run against the agent instance and can use `run` directly. Custom agent behavior uses the same interface:
 
