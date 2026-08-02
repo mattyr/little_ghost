@@ -136,6 +136,61 @@ class AgentTest < Minitest::Test
     assert_equal :success, result_block.status
   end
 
+  def test_truncates_tool_results_after_callbacks_using_the_configured_token_budget
+    raw_content = nil
+    telemetry = []
+    instrumentation = LittleGhost::Support::Instrumentation.new(
+      content_capture: LittleGhost::Support::ContentCapture.new(enabled: true)
+    )
+    instrumentation.subscribe(->(name, attributes) { telemetry << [name, attributes] })
+    tool = LittleGhost::Tool.define(name: "echo", description: "Echo") { "abcdefghij" }
+    tool_use = LittleGhost::Content::ToolUse.new(id: "call-1", name: "echo", input: {})
+    agent_class = Class.new(LittleGhost::Agent) do
+      limits max_tool_result_tokens: 1
+      after_tool do |payload|
+        raw_content = payload.fetch(:result).content
+        LittleGhost::Support::Callbacks.continue
+      end
+    end
+    model = ScriptedModel.new(response([tool_use], stop_reason: :tool_use), response("done"))
+    agent = agent_class.new(model:, tools: [tool], instrumentation:, **agent_class.limits)
+
+    events = agent.stream("go").to_a
+    result = events.last.data.fetch(:result)
+    streamed_result = events.find { |event| event.type == :tool_stop }.data.fetch(:result)
+
+    assert_equal "abcdefghij", raw_content
+    assert_equal "ab…2 tokens truncated…ij", model.requests.last.messages.last.content.first.content
+    assert_equal "ab…2 tokens truncated…ij", result.messages.find { |message| message.role == :tool }.content.first.content
+    assert_equal "ab…2 tokens truncated…ij", streamed_result.content
+    assert_equal "ab…2 tokens truncated…ij", JSON.parse(telemetry.assoc(:tool_stop).last.fetch(:diagnostic_output))
+  ensure
+    agent&.close
+  end
+
+  def test_truncates_failed_tool_results_without_changing_their_status
+    tool = LittleGhost::Tool.define(name: "fail", description: "Fail") { raise LittleGhost::ToolError, "abcdefghij" }
+    tool_use = LittleGhost::Content::ToolUse.new(id: "call-1", name: "fail", input: {})
+    model = ScriptedModel.new(response([tool_use], stop_reason: :tool_use), response("done"))
+    agent = LittleGhost::Agent.new(model:, tools: [tool], max_tool_result_tokens: 1)
+
+    agent.call("go")
+
+    result = model.requests.last.messages.last.content.first
+    assert_equal :error, result.status
+    assert_equal "ab…2 tokens truncated…ij", result.content
+  ensure
+    agent&.close
+  end
+
+  def test_rejects_non_positive_tool_result_token_budgets
+    error = assert_raises(ArgumentError) do
+      LittleGhost::Agent.new(model: Object.new, max_tool_result_tokens: 0)
+    end
+
+    assert_equal "max_tool_result_tokens must be at least 1", error.message
+  end
+
   def test_streams_parallel_tool_results_as_they_finish_without_reordering_model_results
     slow_started = Queue.new
     release_slow = Queue.new
@@ -437,6 +492,50 @@ class AgentTest < Minitest::Test
     agent&.close
   end
 
+  def test_tool_failure_diagnostics_bound_the_exception_message
+    telemetry = []
+    instrumentation = LittleGhost::Support::Instrumentation.new(
+      content_capture: LittleGhost::Support::ContentCapture.new(enabled: true)
+    )
+    instrumentation.subscribe(->(name, attributes) { telemetry << [name, attributes] })
+    tool = LittleGhost::Tool.define(name: "fail", description: "Fail") do
+      raise LittleGhost::ToolError, "abcdefghij"
+    end
+    tool_use = LittleGhost::Content::ToolUse.new(id: "call-1", name: "fail", input: {})
+    model = ScriptedModel.new(response([tool_use], stop_reason: :tool_use), response("done"))
+    agent = LittleGhost::Agent.new(model:, tools: [tool], instrumentation:, max_tool_result_tokens: 1)
+
+    agent.call("go")
+
+    stop = telemetry.assoc(:tool_stop).last
+    exception = JSON.parse(stop.fetch(:diagnostic_exception))
+    assert_equal "LittleGhost::ToolError", exception.fetch("type")
+    assert_equal "ab…2 tokens truncated…ij", exception.fetch("message")
+  ensure
+    agent&.close
+  end
+
+  def test_unknown_tool_diagnostics_bound_the_exception_message
+    telemetry = []
+    instrumentation = LittleGhost::Support::Instrumentation.new(
+      content_capture: LittleGhost::Support::ContentCapture.new(enabled: true)
+    )
+    instrumentation.subscribe(->(name, attributes) { telemetry << [name, attributes] })
+    tool_use = LittleGhost::Content::ToolUse.new(id: "call-1", name: "abcdefghij", input: {})
+    model = ScriptedModel.new(response([tool_use], stop_reason: :tool_use), response("done"))
+    agent = LittleGhost::Agent.new(model:, instrumentation:, max_tool_result_tokens: 1)
+
+    agent.call("go")
+
+    expected = LittleGhost::Support::OutputTruncation
+      .truncate_middle_with_token_budget("Unknown tool: abcdefghij", 1).first
+    stop = telemetry.assoc(:tool_stop).last
+    assert_equal expected, JSON.parse(stop.fetch(:diagnostic_output))
+    assert_equal expected, JSON.parse(stop.fetch(:diagnostic_exception)).fetch("message")
+  ensure
+    agent&.close
+  end
+
   def test_tool_failure_telemetry_retains_the_original_exception
     telemetry = []
     instrumentation = LittleGhost::Support::Instrumentation.new(
@@ -616,25 +715,10 @@ class AgentTest < Minitest::Test
 
     assert_includes agent_class.ancestors, LittleGhost::Agent::Skills
     assert_includes agent_class.ancestors, LittleGhost::Agent::ToolLoop
-    assert_includes agent_class.ancestors, LittleGhost::Agent::ToolResultOffloading
     assert_includes agent_class.ancestors, LittleGhost::Agent::Delegation
     assert_empty agent.tool_registry.names
     assert_instance_of LittleGhost::Support::Callbacks, agent.class.callbacks
     assert LittleGhost::Agent.const_defined?(:UNSET, false)
-  ensure
-    agent&.close
-  end
-
-  def test_a_capability_mixin_can_be_included_directly_without_installing_twice
-    agent_class = Class.new(LittleGhost::Agent) do
-      include LittleGhost::Agent::ToolResultOffloading
-
-      offload_large_tool_results
-    end
-
-    agent = agent_class.new(model: ScriptedModel.new(response("done")))
-
-    assert_equal ["retrieve_offloaded_content"], agent.tool_registry.names
   ensure
     agent&.close
   end
@@ -649,31 +733,6 @@ class AgentTest < Minitest::Test
 
     assert decision.cancel?
     assert_equal "blocked", decision.reason
-  end
-
-  def test_capabilities_added_to_a_parent_are_visible_to_existing_subclasses
-    parent = Class.new(LittleGhost::Agent)
-    child = Class.new(parent)
-    parent.offload_large_tool_results
-
-    agent = child.new(model: Object.new)
-
-    assert_equal ["retrieve_offloaded_content"], agent.tools.names
-  ensure
-    agent&.close
-  end
-
-  def test_child_capability_overrides_survive_later_parent_reconfiguration
-    parent = Class.new(LittleGhost::Agent) { offload_large_tool_results max_chars: 10 }
-    child = Class.new(parent) { offload_large_tool_results max_chars: 20 }
-    parent.offload_large_tool_results max_chars: 30
-
-    agent = child.new(model: Object.new)
-
-    assert_equal ["retrieve_offloaded_content"], agent.tools.names
-    assert_equal 20, child.tool_result_offloading_configuration.fetch(:max_chars)
-  ensure
-    agent&.close
   end
 
   def test_after_initialize_callbacks_use_the_agent_instance
@@ -817,12 +876,11 @@ class AgentTest < Minitest::Test
           [root]
         }
         detect_tool_loops
-        offload_large_tool_results
       end
       model = ScriptedModel.new(response("done"))
       agent = agent_class.new(model:, run:)
 
-      assert_equal %w[write_todos retrieve_offloaded_content skills].sort, agent.tool_registry.names.sort
+      assert_equal %w[write_todos skills].sort, agent.tool_registry.names.sort
       assert_includes agent.prompt_locals.fetch(:skills_prompt), "inspect"
       decision = agent.send(
         :include_skills_prompt,

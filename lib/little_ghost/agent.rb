@@ -1,10 +1,12 @@
 # frozen_string_literal: true
 
 require "securerandom"
+require_relative "support/output_truncation"
 
 module LittleGhost
   class Agent
     UNSET = Object.new.freeze
+    DEFAULT_MAX_TOOL_RESULT_TOKENS = 10_000
     MAX_STRUCTURED_RESULT_BYTES = 1_000_000
     MAX_STRUCTURED_RESULT_DEPTH = 64
     MAX_STRUCTURED_RESULT_NODES = 100_000
@@ -297,6 +299,7 @@ module LittleGhost
       agent_path: Subagents::AgentPath::ROOT,
       max_turns: 100,
       max_tool_calls: 1_000,
+      max_tool_result_tokens: DEFAULT_MAX_TOOL_RESULT_TOKENS,
       model_settings: {}
     )
       @model = model
@@ -323,6 +326,7 @@ module LittleGhost
       @agent_path = Subagents::AgentPath.validate!(agent_path)
       @max_turns = Integer(max_turns)
       @max_tool_calls = Integer(max_tool_calls)
+      @max_tool_result_tokens = Integer(max_tool_result_tokens)
       @closed = false
       @close_mutex = Mutex.new
       @exclusive_tools_mutex = Mutex.new
@@ -330,6 +334,7 @@ module LittleGhost
       @active_interruptions = []
       raise ArgumentError, "max_turns must be at least 1" if @max_turns < 1
       raise ArgumentError, "max_tool_calls must be at least 1" if @max_tool_calls < 1
+      raise ArgumentError, "max_tool_result_tokens must be at least 1" if @max_tool_result_tokens < 1
       apply_cancellation_decision!(run_callbacks(:after_initialize, self))
     rescue
       @tool_registry&.close
@@ -1177,7 +1182,7 @@ module LittleGhost
           }
         )
         if tool.is_a?(ToolError)
-          result = Content::ToolResult.new(tool_use_id: tool_use.id, content: tool.message, status: :error)
+          result = build_tool_result(tool_use_id: tool_use.id, content: tool.message, status: :error)
           instrument(
             :tool_stop,
             operation_id:,
@@ -1188,7 +1193,7 @@ module LittleGhost
             error_type: tool.class.name,
             diagnostic: {
               output: diagnostic_tool_result(result, tool:),
-              exception: diagnostic_exception(tool)
+              exception: diagnostic_tool_exception(tool, tool:)
             }
           )
           next result
@@ -1205,7 +1210,7 @@ module LittleGhost
         decision = run_callbacks(:before_tool, callback_payload, context: context)
         if decision.cancel?
           rejection = ToolError.new(decision.reason)
-          result = Content::ToolResult.new(
+          result = build_tool_result(
             tool_use_id: tool_use.id,
             content: decision.reason,
             status: :error
@@ -1237,13 +1242,13 @@ module LittleGhost
           context: context
         )
         tool_result = replacement_value(after_decision, :result, tool_result)
-        result = Content::ToolResult.new(
+        result = build_tool_result(
           tool_use_id: tool_use.id,
           content: tool_result.content,
           status: tool_result.status
         )
         tool_error = tool_result.error
-        tool_error ||= ToolError.new(tool_result.content) if result.status == :error
+        tool_error ||= ToolError.new(result.content) if result.status == :error
         instrument(
           :tool_stop,
           operation_id:,
@@ -1259,7 +1264,7 @@ module LittleGhost
         )
         result
       rescue ToolError => error
-        result = Content::ToolResult.new(tool_use_id: tool_use.id, content: error.message, status: :error)
+        result = build_tool_result(tool_use_id: tool_use.id, content: error.message, status: :error)
         instrument(
           :tool_stop,
           operation_id:,
@@ -1314,6 +1319,11 @@ module LittleGhost
       end
     end
 
+    def build_tool_result(tool_use_id:, content:, status:)
+      truncated = truncated_tool_result(content)
+      Content::ToolResult.new(tool_use_id:, content: truncated.freeze, status:)
+    end
+
     def capture_structured_result(text, context)
       value = JSON.parse(text)
       capture_structured_result_value(value, context)
@@ -1355,7 +1365,7 @@ module LittleGhost
 
     def structured_result_tool_errors(tool_uses)
       tool_uses.map do |tool_use|
-        Content::ToolResult.new(
+        build_tool_result(
           tool_use_id: tool_use.id,
           content: "The structured result was invalid. Submit it again using the required schema.",
           status: :error
@@ -1728,7 +1738,9 @@ module LittleGhost
       value.respond_to?(:role) ? diagnostic_message(value) : value.to_s
     end
 
-    def diagnostic_tool_exception(error, tool:) = diagnostic_exception(error)
+    def diagnostic_tool_exception(error, tool:)
+      diagnostic_exception(error).merge(message: truncated_tool_result(error.message))
+    end
 
     def diagnostic_exception(error)
       {
@@ -1736,6 +1748,10 @@ module LittleGhost
         message: error.message,
         stacktrace: Array(error.backtrace).join("\n")
       }
+    end
+
+    def truncated_tool_result(content)
+      Support::OutputTruncation.truncate_middle_with_token_budget(content, @max_tool_result_tokens).first
     end
 
     def monotonic_time
@@ -1754,14 +1770,12 @@ end
 
 require_relative "agent/skills"
 require_relative "agent/tool_loop"
-require_relative "agent/tool_result_offloading"
 require_relative "agent/context_management"
 require_relative "agent/delegation"
 
 LittleGhost::Agent.include(
   LittleGhost::Agent::Delegation,
   LittleGhost::Agent::Skills,
-  LittleGhost::Agent::ToolResultOffloading,
   LittleGhost::Agent::ContextManagement,
   LittleGhost::Agent::ToolLoop
 )
