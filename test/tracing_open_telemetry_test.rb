@@ -485,6 +485,67 @@ class TracingOpenTelemetryTest < Minitest::Test
     tracing&.shutdown
   end
 
+  def test_attaches_custom_events_to_an_active_operation_after_its_parent_finishes
+    tracer = Tracer.new
+    tracing = LittleGhost::Tracing::OpenTelemetry.new(tracer:)
+
+    tracing.call(:model_start, {operation_id: "model", model_id: "model"})
+    tracing.call(
+      :tool_start,
+      {operation_id: "tool", parent_operation_id: "model", tool_name: "lookup"}
+    )
+    tracing.call(:model_stop, {operation_id: "model"})
+    tracing.call(
+      :tool_loop,
+      {
+        operation_id: "tool",
+        parent_operation_id: "model",
+        action: :final_warning,
+        tool_name: "lookup",
+        count: 4
+      }
+    )
+
+    tool_span = tracer.started.fetch(1).last
+    name, attributes = tool_span.events.one? ? tool_span.events.first : flunk("expected one tool-loop event")
+    assert_equal "little_ghost.tool_loop", name
+    assert_equal "final_warning", attributes.fetch("little_ghost.action")
+    assert_empty tracer.instant
+  ensure
+    tracing&.shutdown
+  end
+
+  def test_prefers_the_active_operation_span_over_its_active_parent
+    tracer = Tracer.new
+    tracing = LittleGhost::Tracing::OpenTelemetry.new(tracer:)
+
+    tracing.call(:model_start, {operation_id: "model", model_id: "model"})
+    tracing.call(
+      :tool_start,
+      {operation_id: "tool", parent_operation_id: "model", tool_name: "lookup"}
+    )
+    tracing.call(
+      :tool_loop,
+      {
+        operation_id: "tool",
+        parent_operation_id: "model",
+        action: :warn,
+        tool_name: "lookup",
+        count: 3
+      }
+    )
+
+    model_span = tracer.started.fetch(0).last
+    tool_span = tracer.started.fetch(1).last
+    assert_empty model_span.events
+    name, attributes = tool_span.events.one? ? tool_span.events.first : flunk("expected one tool-loop event")
+    assert_equal "little_ghost.tool_loop", name
+    assert_equal "warn", attributes.fetch("little_ghost.action")
+    assert_empty tracer.instant
+  ensure
+    tracing&.shutdown
+  end
+
   def test_attaches_safe_retry_details_to_the_model_span
     tracer = Tracer.new
     tracing = LittleGhost::Tracing::OpenTelemetry.new(tracer:)
