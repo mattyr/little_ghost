@@ -194,8 +194,10 @@ module LittleGhost
       end
 
       def add_event(name, attributes)
-        owner_id = attributes[:parent_operation_id] || attributes[:operation_id]
-        span = @mutex.synchronize { @entries.dig(owner_id, :span) }
+        owner_ids = [attributes[:operation_id], attributes[:parent_operation_id]].compact.uniq
+        span = @mutex.synchronize do
+          owner_ids.filter_map { |owner_id| @entries.dig(owner_id, :span) }.first
+        end
         kind = attributes[:event_kind]&.to_sym
         if span
           span.add_event("little_ghost.#{name}", attributes: span_attributes(attributes, kind:))
