@@ -518,6 +518,74 @@ class SubagentManagerTest < Minitest::Test
     manager&.close
   end
 
+  def test_tool_activity_events_expose_only_safe_lifecycle_metadata
+    events = []
+    tool_use = LittleGhost::Content::ToolUse.new(
+      id: "tool-1", name: "inspect_source", input: {"credential" => "secret-input"}
+    )
+    result = LittleGhost::Content::ToolResult.new(
+      tool_use_id: tool_use.id, content: "secret-output", status: :success
+    )
+    agent = streaming_agent do |stream|
+      stream << LittleGhost::StreamEvent.build(:tool_start, tool_use:)
+      stream << LittleGhost::StreamEvent.build(:tool_stop, tool_use:, result:)
+      stream << LittleGhost::StreamEvent.build(:invocation_stop, result: run_result("done"))
+    end
+    manager = manager_for(->(_id) { agent }, observer: ->(event) { events << event })
+
+    manager.spawn(kind: "explore", task_name: "explore", task: "inspect", mode: "sync")
+
+    started = events.find { |event| event[:event] == "tool_started" }
+    finished = events.find { |event| event[:event] == "tool_finished" }
+    assert_equal ["/root/explore", 1, "tool-1", "inspect_source"],
+      started.values_at(:subagent_id, :turn, :tool_call_id, :tool_name)
+    assert_equal ["/root/explore", 1, "tool-1", "inspect_source"],
+      finished.values_at(:subagent_id, :turn, :tool_call_id, :tool_name)
+    refute_includes [started, finished].inspect, "secret-input"
+    refute_includes [started, finished].inspect, "secret-output"
+  ensure
+    manager&.close
+  end
+
+  def test_tool_activity_cannot_arrive_after_concurrent_cancellation
+    emit_gate = Gate.new
+    activity_entered = Queue.new
+    events = []
+    tool_use = LittleGhost::Content::ToolUse.new(id: "tool-1", name: "inspect_source", input: {})
+    agent = LittleGhost::Agent.new(model: Object.new, agent_path: "/root/explore")
+    agent.define_singleton_method(:stream) do |_message, **options|
+      Enumerator.new do |stream|
+        stream << LittleGhost::StreamEvent.build(:tool_start, tool_use:)
+        token = options.fetch(:cancellation_token)
+        Thread.pass until token.cancelled?
+        token.raise_if_cancelled!
+      end
+    end
+    manager = manager_for(->(_id) { agent }, observer: ->(event) { events << event })
+    original_emit = manager.method(:emit)
+    manager.define_singleton_method(:emit) do |event, identity, turn: nil, **attributes|
+      if event == "tool_started"
+        activity_entered << true
+        emit_gate.wait
+      end
+      original_emit.call(event, identity, turn:, **attributes)
+    end
+
+    manager.spawn(kind: "explore", task_name: "explore", task: "inspect", mode: "async")
+    activity_entered.pop
+    closer = Thread.new { manager.close }
+    wait_until { closer.status == "sleep" }
+    emit_gate.open
+    closer.join
+
+    lifecycle = events.filter_map { |event| event[:event] if %w[tool_started cancelled].include?(event[:event]) }
+    assert_equal %w[tool_started cancelled], lifecycle
+  ensure
+    emit_gate&.open
+    closer&.join
+    manager&.close
+  end
+
   def test_nested_delegation_activity_advances_the_existing_progress_sequence
     gate = Gate.new
     agent = DelegatingAgent.new(gate:)
@@ -1592,7 +1660,7 @@ class SubagentManagerTest < Minitest::Test
     gate&.open
   end
 
-  def test_sync_turn_propagates_and_retains_cleanup_errors
+  def test_sync_turn_delivers_cleanup_error_once
     cleanup_error = LittleGhost::CleanupError.new("subagent work is still running")
     agent = Object.new
     agent.define_singleton_method(:call) { |_message, cancellation_token:| raise cleanup_error }
@@ -1601,24 +1669,43 @@ class SubagentManagerTest < Minitest::Test
     raised = assert_raises(LittleGhost::CleanupError) do
       manager.spawn(kind: "explore", task_name: "explore", task: "inspect", mode: "sync")
     end
-    close_error = assert_raises(LittleGhost::CleanupError) { manager.close }
+    closed = manager.close
 
     assert_same cleanup_error, raised
-    assert_same cleanup_error, close_error
+    assert_nil closed
   end
 
-  def test_async_turn_retains_cleanup_errors_until_close
+  def test_async_turn_reports_cleanup_error_as_failed_once
     cleanup_error = LittleGhost::CleanupError.new("subagent work is still running")
     agent = Object.new
     agent.define_singleton_method(:call) { |_message, cancellation_token:| raise cleanup_error }
     manager = manager_for(->(_id) { agent })
 
     manager.spawn(kind: "explore", task_name: "explore", task: "inspect", mode: "async")
-    wait_until { manager.list.dig(:subagents, 0, :status) == "failed" }
+    result = manager.wait
+    failed = result.dig(:subagents, 0)
 
-    raised = assert_raises(LittleGhost::CleanupError) { manager.close }
+    assert_equal "finished", result[:status]
+    assert_equal "failed", failed[:status]
+    assert_equal "Subagent turn failed.", failed[:error]
+    assert_nil manager.close
+  end
 
-    assert_same cleanup_error, raised
+  def test_close_still_reports_a_distinct_agent_close_failure
+    turn_error = LittleGhost::CleanupError.new("subagent work is still running")
+    close_error = RuntimeError.new("agent close failed")
+    agent = Object.new
+    agent.define_singleton_method(:call) { |_message, cancellation_token:| raise turn_error }
+    agent.define_singleton_method(:close) { raise close_error }
+    manager = manager_for(->(_id) { agent })
+
+    raised = assert_raises(LittleGhost::CleanupError) do
+      manager.spawn(kind: "explore", task_name: "explore", task: "inspect", mode: "sync")
+    end
+    closed = assert_raises(RuntimeError) { manager.close }
+
+    assert_same turn_error, raised
+    assert_same close_error, closed
   end
 
   def test_external_cancellation_revokes_active_and_queued_turns
