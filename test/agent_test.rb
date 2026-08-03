@@ -289,6 +289,58 @@ class AgentTest < Minitest::Test
     agent&.close
   end
 
+  def test_agent_subclasses_can_scope_tool_invocation_without_changing_tools
+    invocations = []
+    agent_class = Class.new(LittleGhost::Agent) do
+      define_method(:invoke_tool) do |tool_use, tool, context, operation_id:, parent_operation_id:|
+        invocations << {
+          tool_call_id: tool_use.id,
+          operation_id:,
+          parent_operation_id:
+        }
+        super(tool_use, tool, context, operation_id:, parent_operation_id:)
+      end
+      private :invoke_tool
+    end
+    tool = LittleGhost::Tool.define(name: "echo", description: "Echo") { "done" }
+    tool_use = LittleGhost::Content::ToolUse.new(id: "call-1", name: "echo", input: {})
+    model = ScriptedModel.new(response([tool_use], stop_reason: :tool_use), response("done"))
+    agent = agent_class.new(model:, tools: [tool])
+
+    agent.call("go")
+
+    invocation = invocations.fetch(0)
+    refute_nil invocation.fetch(:operation_id)
+    refute_nil invocation.fetch(:parent_operation_id)
+    assert_equal "call-1", invocation.fetch(:tool_call_id)
+  ensure
+    agent&.close
+  end
+
+  def test_nested_tool_execution_propagates_an_explicit_parent_trace_context
+    telemetry = []
+    instrumentation = LittleGhost::Support::Instrumentation.new
+    instrumentation.subscribe(->(name, attributes) { telemetry << [name, attributes] })
+    tool = LittleGhost::Tool.define(name: "echo", description: "Echo") { "done" }
+    tool_use = LittleGhost::Content::ToolUse.new(id: "call-1", name: "echo", input: {})
+    agent = LittleGhost::Agent.new(model: Object.new, tools: [tool], instrumentation:)
+    context = LittleGhost::RunContext.new(instrumentation:)
+    trace_context = {"traceparent" => "00-#{"1" * 32}-#{"2" * 16}-01"}
+
+    agent.send(
+      :execute_tools,
+      [tool_use], context, [],
+      parent_operation_id: "parent-operation",
+      parent_trace_context: trace_context
+    )
+
+    tool_start = telemetry.assoc(:tool_start).last
+    assert_equal "parent-operation", tool_start.fetch(:parent_operation_id)
+    assert_equal trace_context, tool_start.fetch(:trace_context)
+  ensure
+    agent&.close
+  end
+
   def test_explicit_capture_records_model_tool_and_reasoning_content_without_binary_data
     telemetry = []
     instrumentation = LittleGhost::Support::Instrumentation.new(

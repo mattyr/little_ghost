@@ -609,4 +609,32 @@ class TracingOpenTelemetryTest < Minitest::Test
   ensure
     tracing&.shutdown
   end
+
+  def test_explicit_trace_context_parents_a_span_after_the_local_parent_is_gone
+    tracer = Tracer.new
+    tracing = LittleGhost::Tracing::OpenTelemetry.new(tracer:)
+    parent = OpenTelemetry::Trace::SpanContext.new(
+      trace_id: ["1".rjust(32, "0")].pack("H*"),
+      span_id: ["2".rjust(16, "0")].pack("H*"),
+      trace_flags: OpenTelemetry::Trace::TraceFlags::SAMPLED
+    )
+    carrier = {
+      "traceparent" => "00-#{parent.hex_trace_id}-#{parent.hex_span_id}-01"
+    }
+
+    tracing.call(
+      :tool_start,
+      operation_id: "nested-tool",
+      parent_operation_id: "finished-parent",
+      trace_context: carrier,
+      tool_name: "lookup"
+    )
+
+    _name, parent_context, = tracer.started.fetch(0)
+    remote_parent = OpenTelemetry::Trace.current_span(parent_context).context
+    assert_equal parent.hex_trace_id, remote_parent.hex_trace_id
+    assert_equal parent.hex_span_id, remote_parent.hex_span_id
+  ensure
+    tracing&.shutdown
+  end
 end

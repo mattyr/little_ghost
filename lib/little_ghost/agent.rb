@@ -1153,7 +1153,7 @@ module LittleGhost
       raise
     end
 
-    def execute_tools(tool_uses, context, events, parent_operation_id:)
+    def execute_tools(tool_uses, context, events, parent_operation_id:, parent_trace_context: nil)
       if tool_uses.map(&:id).uniq.length != tool_uses.length
         raise ProtocolError, "The model returned duplicate tool use ids"
       end
@@ -1173,6 +1173,7 @@ module LittleGhost
           :tool_start,
           operation_id:,
           parent_operation_id:,
+          **parent_trace_attributes(parent_trace_context),
           tool_name: telemetry_tool_name,
           tool_type: "function",
           tool_call_id: tool_use.id,
@@ -1231,11 +1232,13 @@ module LittleGhost
           next result
         end
 
-        tool_result = if tool.exclusive?
-          synchronize_exclusive_tools { tool.execute(tool_use.input, context: context) }
-        else
-          tool.execute(tool_use.input, context: context)
+        invoke = lambda do
+          invoke_tool(
+            tool_use, tool, context,
+            operation_id:, parent_operation_id:
+          )
         end
+        tool_result = tool.exclusive? ? synchronize_exclusive_tools(&invoke) : invoke.call
         after_decision = run_callbacks(
           :after_tool,
           callback_payload.merge(result: tool_result),
@@ -1309,6 +1312,16 @@ module LittleGhost
           execution.call(tool_use, tool)
         end
       end
+    end
+
+    def invoke_tool(tool_use, tool, context, operation_id:, parent_operation_id:)
+      tool.execute(tool_use.input, context:)
+    end
+
+    def parent_trace_attributes(trace_context)
+      return {} unless trace_context.is_a?(Hash) && !trace_context.empty?
+
+      {trace_context:}
     end
 
     def synchronize_exclusive_tools(&block)
