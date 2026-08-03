@@ -220,7 +220,6 @@ module LittleGhost
         @reserved_agent_paths = {}
         @identity_slots = 0
         @turn_count = 0
-        @cleanup_error = nil
         @closed = false
         restore_identities
       end
@@ -646,7 +645,7 @@ module LittleGhost
 
           worker.join(remaining)
         end
-        first_error = @mutex.synchronize { @cleanup_error }
+        first_error = nil
         survivors = workers.select(&:alive?)
         unless survivors.empty?
           first_error ||= CleanupError.new(
@@ -1104,7 +1103,6 @@ module LittleGhost
                 cancel_unrun_turn(identity, turn)
               rescue LittleGhost::CleanupError => error
                 failed = true
-                record_cleanup_error(error)
                 fail_turn(identity, turn, error, propagate: true)
               rescue => error
                 failed = true
@@ -1143,14 +1141,20 @@ module LittleGhost
         return unless %i[tool_start tool_stop message_stop invocation_stop].include?(event.type)
 
         message = progress_message(event)
+        tool_use = event.data[:tool_use]
         @mutex.synchronize do
           return unless identity.current.equal?(turn)
 
           identity.progress_message = message unless message.to_s.empty?
           identity.progress_sequence += 1
           @condition.broadcast
+          if tool_use
+            event_name = (event.type == :tool_start) ? "tool_started" : "tool_finished"
+            emit(event_name, identity, turn:, tool_call_id: tool_use.id, tool_name: tool_use.name)
+          else
+            emit("activity", identity, turn:)
+          end
         end
-        emit("activity", identity, turn:)
       end
 
       def progress_message(event)
@@ -1332,10 +1336,6 @@ module LittleGhost
         end
       end
 
-      def record_cleanup_error(error)
-        @mutex.synchronize { @cleanup_error ||= error }
-      end
-
       def cancelled_turn(identity, turn)
         {
           status: "cancelled",
@@ -1457,7 +1457,7 @@ module LittleGhost
         %w[idle failed cancelled].include?(identity.status)
       end
 
-      def emit(event, identity, turn: nil)
+      def emit(event, identity, turn: nil, **attributes)
         return unless @observer
 
         value = {
@@ -1475,6 +1475,7 @@ module LittleGhost
             value[:parent_operation_id] = turn.parent_operation_id
           end
         end
+        value.merge!(attributes)
         @observer.call(value.freeze)
       rescue
         nil
