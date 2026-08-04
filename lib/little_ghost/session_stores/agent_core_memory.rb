@@ -2,6 +2,8 @@
 
 require "digest"
 require "json"
+require "logger"
+require "opentelemetry-api"
 require "securerandom"
 require_relative "../session_store"
 
@@ -49,13 +51,26 @@ module LittleGhost
         "lg_#{Digest::SHA256.hexdigest(String(value))}"
       end
 
-      def initialize(memory_id:, client: nil, region: nil, clock: -> { Time.now })
+      def initialize(
+        memory_id:,
+        client: nil,
+        client_factory: nil,
+        region: nil,
+        clock: -> { Time.now },
+        logger: Logger.new($stderr),
+        tracer: nil
+      )
         super()
         @memory_id = String(memory_id)
         raise ArgumentError, "memory_id must not be empty" if @memory_id.empty?
 
-        @client = client || build_client(region)
+        @region = region
+        @client_factory = client_factory || -> { build_client(@region) }
+        @client = client || @client_factory.call
         @clock = clock
+        @logger = logger
+        @tracer = tracer
+        @client_mutex = Mutex.new
         @persistence_locks = {}
         @persistence_locks_mutex = Mutex.new
       end
@@ -148,7 +163,8 @@ module LittleGhost
           value = metadata[key] || metadata[key.to_sym]
           event_metadata[key] = {string_value: value.to_s} unless value.nil?
         end
-        @client.create_event(
+        agent_core_call(
+          :create_event,
           memory_id: @memory_id,
           actor_id: self.class.safe_id(required_actor_id(actor_id)),
           session_id: self.class.safe_id(id),
@@ -182,6 +198,97 @@ module LittleGhost
         Aws::BedrockAgentCore::Client.new(**({region:} if region))
       rescue LoadError
         raise ConfigurationError, "AgentCore Memory requires the optional aws-sdk-bedrockagentcore gem"
+      end
+
+      def agent_core_call(operation, **parameters)
+        retries = 0
+        refreshes = 0
+
+        with_memory_span(operation) do |span|
+          client = current_client
+          result = client.public_send(operation, **parameters)
+          record_memory_outcome(span, retries:, refreshes:, client:)
+          result
+        rescue => error
+          unless expired_token?(error) && retries.zero?
+            record_memory_failure(span, error, retries:, refreshes:)
+            raise
+          end
+
+          retries += 1
+          refreshed = refresh_client(client)
+          refreshes += 1 if refreshed
+          record_client_refresh(operation, error, retry_count: retries, refreshed:)
+          retry
+        end
+      end
+
+      def current_client
+        @client_mutex.synchronize { @client }
+      end
+
+      def refresh_client(previous_client)
+        @client_mutex.synchronize do
+          return false unless @client.equal?(previous_client)
+
+          @client = @client_factory.call
+          true
+        end
+      end
+
+      def expired_token?(error)
+        defined?(Aws::BedrockAgentCore::Errors::ExpiredTokenException) &&
+          error.instance_of?(Aws::BedrockAgentCore::Errors::ExpiredTokenException)
+      end
+
+      def with_memory_span(operation)
+        attributes = {
+          "aws.operation.name" => operation.to_s,
+          "aws.service.name" => "bedrock-agentcore"
+        }
+        attributes["aws.region"] = @region.to_s if @region
+        tracer.in_span("agentcore_memory #{operation}", attributes:) { |span| yield span }
+      end
+
+      def record_memory_outcome(span, retries:, refreshes:, client:)
+        span.set_attribute("atlas.agentcore_memory.retry_count", retries)
+        span.set_attribute("atlas.agentcore_memory.client_refresh_count", refreshes)
+        span.set_attribute("atlas.agentcore_memory.recovered", retries.positive?)
+        seconds = credential_seconds_to_expiry(client)
+        span.set_attribute("atlas.agentcore_memory.credential_seconds_to_expiry", seconds) if seconds
+      end
+
+      def record_memory_failure(span, error, retries:, refreshes:)
+        span.set_attribute("atlas.agentcore_memory.retry_count", retries)
+        span.set_attribute("atlas.agentcore_memory.client_refresh_count", refreshes)
+        span.set_attribute("error.type", error.class.name)
+        span.status = OpenTelemetry::Trace::Status.error(error.class.name)
+      end
+
+      def record_client_refresh(operation, error, retry_count:, refreshed:)
+        @logger.warn(JSON.generate(
+          event: "atlas_agentcore_memory_client_refresh",
+          operation:,
+          error_type: error.class.name,
+          retry_count:,
+          refreshed:
+        ))
+      rescue
+        nil
+      end
+
+      def credential_seconds_to_expiry(client)
+        credentials = client.config.credentials
+        expiration = credentials.expiration if credentials.respond_to?(:expiration)
+        return unless expiration.respond_to?(:to_time)
+
+        [(expiration.to_time - @clock.call).round, 0].max
+      rescue
+        nil
+      end
+
+      def tracer
+        @tracer || OpenTelemetry.tracer_provider.tracer("little_ghost")
       end
 
       def latest_checkpoint(actor_id, session_id)
@@ -312,7 +419,8 @@ module LittleGhost
           page_count += 1
           raise ProtocolError, "AgentCore session exceeds the page limit" if page_count > MAX_LIST_PAGES
 
-          response = @client.list_events(
+          response = agent_core_call(
+            :list_events,
             memory_id: @memory_id,
             actor_id:,
             session_id:,
@@ -632,7 +740,8 @@ module LittleGhost
 
       def create_message_event(actor_id, session_id, event, generation:, commit_id:, previous_timestamp:)
         timestamp = next_event_timestamp(previous_timestamp)
-        @client.create_event(
+        agent_core_call(
+          :create_event,
           memory_id: @memory_id,
           actor_id:,
           session_id:,
@@ -655,7 +764,8 @@ module LittleGhost
 
       def create_session_event(actor_id, session_id, checkpoint:, previous_timestamp:)
         timestamp = next_event_timestamp(previous_timestamp)
-        @client.create_event(
+        agent_core_call(
+          :create_event,
           memory_id: @memory_id,
           actor_id:,
           session_id:,

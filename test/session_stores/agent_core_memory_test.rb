@@ -3,6 +3,17 @@
 require "test_helper"
 require "little_ghost/session_stores/agent_core_memory"
 
+unless defined?(Aws::BedrockAgentCore::Errors::ExpiredTokenException)
+  module Aws
+    module BedrockAgentCore
+      module Errors
+        class ExpiredTokenException < StandardError
+        end
+      end
+    end
+  end
+end
+
 class AgentCoreMemoryTest < Minitest::Test
   Content = Struct.new(:text)
   Conversational = Struct.new(:role, :content)
@@ -65,6 +76,59 @@ class AgentCoreMemoryTest < Minitest::Test
     end
   end
 
+  class ExpiredTokenClient < Client
+    def initialize(list_failures: 0, create_failures: 0, events: [])
+      super(events)
+      @list_failures = list_failures
+      @create_failures = create_failures
+    end
+
+    def list_events(**parameters)
+      if @list_failures.positive?
+        @list_failures -= 1
+        raise Aws::BedrockAgentCore::Errors::ExpiredTokenException, "expired"
+      end
+
+      super
+    end
+
+    def create_event(**parameters)
+      if @create_failures.positive?
+        @create_failures -= 1
+        raise Aws::BedrockAgentCore::Errors::ExpiredTokenException, "expired"
+      end
+
+      super
+    end
+  end
+
+  class Span
+    attr_reader :attributes
+    attr_accessor :status
+
+    def initialize
+      @attributes = {}
+    end
+
+    def set_attribute(name, value)
+      @attributes[name] = value
+    end
+  end
+
+  class Tracer
+    attr_reader :spans
+
+    def initialize
+      @spans = []
+    end
+
+    def in_span(name, attributes:)
+      span = Span.new
+      @spans << {name:, attributes:, span:}
+      yield span
+    end
+  end
+
   def test_requires_memory_and_actor_ids
     assert_raises(ArgumentError) do
       LittleGhost::SessionStores::AgentCoreMemory.new(memory_id: "", client: Client.new)
@@ -76,6 +140,79 @@ class AgentCoreMemoryTest < Minitest::Test
     assert_raises(LittleGhost::ConfigurationError) do
       store.replace("session", messages: [], state: {}, metadata: {})
     end
+  end
+
+  def test_refreshes_the_client_after_an_expired_token_during_load
+    replacement = Client.new
+    tracer = Tracer.new
+    factory_calls = 0
+    store = LittleGhost::SessionStores::AgentCoreMemory.new(
+      memory_id: "memory",
+      client: ExpiredTokenClient.new(list_failures: 1),
+      client_factory: -> {
+        factory_calls += 1
+        replacement
+      },
+      logger: Logger.new(IO::NULL),
+      tracer:
+    )
+
+    assert_nil store.load("session", actor_id: "actor")
+
+    assert_equal 1, factory_calls
+    span = tracer.spans.fetch(0)
+    assert_equal "list_events", span.fetch(:attributes).fetch("aws.operation.name")
+    assert_equal 1, span.fetch(:span).attributes.fetch("atlas.agentcore_memory.retry_count")
+    assert_equal 1, span.fetch(:span).attributes.fetch("atlas.agentcore_memory.client_refresh_count")
+    assert_equal true, span.fetch(:span).attributes.fetch("atlas.agentcore_memory.recovered")
+  end
+
+  def test_refreshes_the_client_after_an_expired_token_during_create
+    replacement = Client.new
+    tracer = Tracer.new
+    store = LittleGhost::SessionStores::AgentCoreMemory.new(
+      memory_id: "memory",
+      client: ExpiredTokenClient.new(create_failures: 1),
+      client_factory: -> { replacement },
+      logger: Logger.new(IO::NULL),
+      tracer:
+    )
+
+    store.project_conversation(
+      "session",
+      actor_id: "actor",
+      messages: [LittleGhost::Message.new(role: :user, content: "hello")],
+      metadata: {}
+    )
+
+    assert_equal 1, replacement.created.length
+    assert_equal 1, tracer.spans.fetch(0).fetch(:span).attributes.fetch("atlas.agentcore_memory.retry_count")
+  end
+
+  def test_does_not_retry_after_a_second_expired_token
+    replacement = ExpiredTokenClient.new(list_failures: 1)
+    tracer = Tracer.new
+    factory_calls = 0
+    store = LittleGhost::SessionStores::AgentCoreMemory.new(
+      memory_id: "memory",
+      client: ExpiredTokenClient.new(list_failures: 1),
+      client_factory: -> {
+        factory_calls += 1
+        replacement
+      },
+      logger: Logger.new(IO::NULL),
+      tracer:
+    )
+
+    error = assert_raises(Aws::BedrockAgentCore::Errors::ExpiredTokenException) do
+      store.load("session", actor_id: "actor")
+    end
+
+    assert_equal "expired", error.message
+    assert_equal 1, factory_calls
+    span = tracer.spans.fetch(0)
+    assert_equal "Aws::BedrockAgentCore::Errors::ExpiredTokenException", span.fetch(:span).attributes.fetch("error.type")
+    assert_equal 1, span.fetch(:span).attributes.fetch("atlas.agentcore_memory.retry_count")
   end
 
   def test_loads_canonical_events_and_appends_only_new_messages
