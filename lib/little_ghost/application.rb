@@ -239,7 +239,8 @@ module LittleGhost
       Session.new(
         id: run.invocation.session_id,
         actor_id: session_actor_for(run.invocation),
-        store: session_store
+        store: session_store,
+        operation_id: run.operation_id
       )
     end
 
@@ -249,6 +250,7 @@ module LittleGhost
         id: Subagents::Manager.conversation_session_id(conversation_id),
         actor_id: session_actor_for(run.invocation),
         store: session_store,
+        operation_id: run.operation_id,
         metadata: {
           "little_ghost_kind" => "subagent_conversation",
           "little_ghost_parent_link" => parent_link,
@@ -288,7 +290,11 @@ module LittleGhost
     end
 
     def build_session_store(value)
-      store = value.is_a?(Proc) ? value.call : value
+      store = if value.is_a?(Proc)
+        value.arity.zero? ? value.call : value.call(self)
+      else
+        value
+      end
       store ||= SessionStores::Memory.new
       unless store.is_a?(SessionStore)
         raise ConfigurationError, "session_store must be a LittleGhost::SessionStore"

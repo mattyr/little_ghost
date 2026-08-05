@@ -671,6 +671,27 @@ class TracingOpenTelemetryTest < Minitest::Test
     tracing&.shutdown
   end
 
+  def test_with_span_uses_an_active_operation_as_parent
+    tracer = Tracer.new
+    tracing = LittleGhost::Tracing::OpenTelemetry.new(tracer:)
+    tracing.call(:run_start, operation_id: "run", agent_id: "main")
+
+    tracing.with_span(
+      "BedrockAgentCore/list_events",
+      attributes: {"rpc.method" => "list_events"},
+      parent_operation_id: "run"
+    ) { |span| span.set_attribute("test", true) }
+
+    _root_name, _root_parent, root_span = tracer.started.fetch(0)
+    child_name, child_parent, child_span = tracer.started.fetch(1)
+    assert_equal "BedrockAgentCore/list_events", child_name
+    assert_equal root_span.context, OpenTelemetry::Trace.current_span(child_parent).context
+    assert_equal true, child_span.attributes.fetch("test")
+    assert child_span.finished?
+  ensure
+    tracing&.shutdown
+  end
+
   def test_explicit_trace_context_parents_a_span_after_the_local_parent_is_gone
     tracer = Tracer.new
     tracing = LittleGhost::Tracing::OpenTelemetry.new(tracer:)

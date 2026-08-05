@@ -59,7 +59,8 @@ module LittleGhost
         clock: -> { Time.now },
         logger: Logger.new($stderr),
         on_client_refresh: nil,
-        tracer: nil
+        tracer: nil,
+        instrumentation: nil
       )
         super()
         @memory_id = String(memory_id)
@@ -72,6 +73,8 @@ module LittleGhost
         @logger = logger
         @on_client_refresh = on_client_refresh
         @tracer = tracer
+        @instrumentation = instrumentation
+        @operation_context_key = :"little_ghost_session_store_operation_#{object_id}"
         @client_mutex = Mutex.new
         @persistence_locks = {}
         @persistence_locks_mutex = Mutex.new
@@ -177,6 +180,14 @@ module LittleGhost
         )
       end
 
+      def with_operation_context(operation_id)
+        previous = Thread.current[@operation_context_key]
+        Thread.current[@operation_context_key] = operation_id
+        yield
+      ensure
+        Thread.current[@operation_context_key] = previous
+      end
+
       private
 
       def synchronize_persistence(key)
@@ -251,7 +262,15 @@ module LittleGhost
           "rpc.system" => "aws-api"
         }
         attributes["cloud.region"] = @region.to_s if @region
-        tracer.in_span("BedrockAgentCore/#{operation}", attributes:) { |span| yield span }
+        if @instrumentation&.respond_to?(:with_span)
+          @instrumentation.with_span(
+            "BedrockAgentCore/#{operation}",
+            attributes:,
+            parent_operation_id: Thread.current[@operation_context_key]
+          ) { |span| yield span }
+        else
+          tracer.in_span("BedrockAgentCore/#{operation}", attributes:) { |span| yield span }
+        end
       end
 
       def record_memory_outcome(span, retries:, refreshes:, client:)

@@ -168,7 +168,9 @@ module LittleGhost
           cancellation_token:,
           deadline: invocation.deadline_at,
           parent_operation_id: operation_id,
-          checkpoint: ->(messages:, state:) { session&.checkpoint(messages:, state:) }
+          checkpoint: lambda do |messages:, state:, parent_operation_id:|
+            session&.checkpoint(messages:, state:, parent_operation_id:)
+          end
         }
         if agent.is_a?(Agent)
           options[:interrupt_ready] = lambda do

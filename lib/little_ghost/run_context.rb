@@ -45,7 +45,13 @@ module LittleGhost
     end
 
     def checkpoint(messages)
-      @checkpoint&.call(messages:, state:)
+      return unless @checkpoint
+
+      if agent_operation_id
+        @checkpoint.call(messages:, state:, parent_operation_id: agent_operation_id)
+      else
+        @checkpoint.call(messages:, state:)
+      end
     end
 
     def record_usage(value)
