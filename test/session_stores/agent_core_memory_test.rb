@@ -129,6 +129,42 @@ class AgentCoreMemoryTest < Minitest::Test
     end
   end
 
+  class Instrumentation
+    attr_reader :spans
+
+    def initialize
+      @spans = []
+    end
+
+    def with_span(name, attributes:, parent_operation_id:)
+      span = Span.new
+      @spans << {name:, attributes:, parent_operation_id:, span:}
+      yield span
+    end
+  end
+
+  def test_uses_the_active_operation_as_the_memory_span_parent
+    instrumentation = Instrumentation.new
+    store = LittleGhost::SessionStores::AgentCoreMemory.new(
+      memory_id: "memory",
+      client: Client.new,
+      instrumentation:
+    )
+
+    store.with_operation_context("agent-operation") do
+      store.project_conversation(
+        "session",
+        actor_id: "actor",
+        messages: [LittleGhost::Message.new(role: :user, content: "hello")],
+        metadata: {}
+      )
+    end
+
+    span = instrumentation.spans.fetch(0)
+    assert_equal "BedrockAgentCore/create_event", span.fetch(:name)
+    assert_equal "agent-operation", span.fetch(:parent_operation_id)
+  end
+
   def test_requires_memory_and_actor_ids
     assert_raises(ArgumentError) do
       LittleGhost::SessionStores::AgentCoreMemory.new(memory_id: "", client: Client.new)

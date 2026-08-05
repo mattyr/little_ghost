@@ -88,6 +88,13 @@ module LittleGhost
         {}
       end
 
+      def with_span(name, attributes:, parent_operation_id: nil)
+        subscriber = subscribers.find { |candidate| candidate.respond_to?(:with_span) }
+        return yield unless subscriber
+
+        subscriber.with_span(name, attributes:, parent_operation_id:) { |span| yield span }
+      end
+
       private
 
       def subscribers

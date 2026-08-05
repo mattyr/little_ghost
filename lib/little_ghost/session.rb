@@ -4,10 +4,11 @@ module LittleGhost
   class Session
     attr_reader :id, :actor_id, :store
 
-    def initialize(id:, store:, actor_id: nil, metadata: {})
+    def initialize(id:, store:, actor_id: nil, metadata: {}, operation_id: nil)
       @id = String(id)
       @actor_id = actor_id&.to_s
       @store = store
+      @operation_id = operation_id
       @metadata = metadata.to_h.freeze
       @loaded = false
     end
@@ -15,7 +16,7 @@ module LittleGhost
     def load
       return @snapshot if @loaded
 
-      value = store.load(id, actor_id:)
+      value = with_store_operation_context { store.load(id, actor_id:) }
       @snapshot = normalize(value)
       @loaded = true
       @snapshot
@@ -42,42 +43,46 @@ module LittleGhost
         state:,
         metadata:
       )
-      store.append(
-        id,
-        messages: added,
-        state: snapshot.fetch(:state),
-        metadata: snapshot.fetch(:metadata),
-        expected_count: current.fetch(:messages).length,
-        actor_id:
-      )
+      with_store_operation_context do
+        store.append(
+          id,
+          messages: added,
+          state: snapshot.fetch(:state),
+          metadata: snapshot.fetch(:metadata),
+          expected_count: current.fetch(:messages).length,
+          actor_id:
+        )
+      end
       remember(snapshot)
     end
 
     def replace(messages:, state: self.state, metadata: self.metadata)
       snapshot = build_snapshot(messages:, state:, metadata:)
-      store.replace(id, actor_id:, **snapshot)
+      with_store_operation_context { store.replace(id, actor_id:, **snapshot) }
       remember(snapshot)
     end
 
-    def checkpoint(messages:, state: self.state, metadata: self.metadata)
-      snapshot = build_snapshot(messages:, state:, metadata:)
-      current = current_snapshot
-      if message_prefix?(current.fetch(:messages), snapshot.fetch(:messages))
-        added = snapshot.fetch(:messages).drop(current.fetch(:messages).length)
-        unless added.empty? && same_session_data?(current, snapshot)
-          store.append(
-            id,
-            messages: added,
-            state: snapshot.fetch(:state),
-            metadata: snapshot.fetch(:metadata),
-            expected_count: current.fetch(:messages).length,
-            actor_id:
-          )
+    def checkpoint(messages:, state: self.state, metadata: self.metadata, parent_operation_id: @operation_id)
+      with_store_operation_context(parent_operation_id) do
+        snapshot = build_snapshot(messages:, state:, metadata:)
+        current = current_snapshot
+        if message_prefix?(current.fetch(:messages), snapshot.fetch(:messages))
+          added = snapshot.fetch(:messages).drop(current.fetch(:messages).length)
+          unless added.empty? && same_session_data?(current, snapshot)
+            store.append(
+              id,
+              messages: added,
+              state: snapshot.fetch(:state),
+              metadata: snapshot.fetch(:metadata),
+              expected_count: current.fetch(:messages).length,
+              actor_id:
+            )
+          end
+        else
+          store.replace(id, actor_id:, **snapshot)
         end
-      else
-        store.replace(id, actor_id:, **snapshot)
+        remember(snapshot)
       end
-      remember(snapshot)
     end
 
     def checkpoint_result(result)
@@ -92,6 +97,10 @@ module LittleGhost
 
     def current_snapshot
       load || build_snapshot(messages: [], state: {}, metadata: @metadata)
+    end
+
+    def with_store_operation_context(operation_id = @operation_id)
+      store.with_operation_context(operation_id) { yield }
     end
 
     def build_snapshot(messages:, state:, metadata:)

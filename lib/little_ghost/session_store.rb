@@ -25,6 +25,10 @@ module LittleGhost
       nil
     end
 
+    def with_operation_context(_operation_id)
+      yield
+    end
+
     def synchronize(id, actor_id: nil)
       key = [actor_id&.to_s, id.to_s].freeze
       entry = @session_locks_mutex.synchronize do

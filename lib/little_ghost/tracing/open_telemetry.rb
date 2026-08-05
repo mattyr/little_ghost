@@ -84,6 +84,20 @@ module LittleGhost
         context&.valid? ? {trace_id: context.hex_trace_id} : {}
       end
 
+      def with_span(name, attributes:, parent_operation_id: nil)
+        parent = @mutex.synchronize { @entries[parent_operation_id] }
+        parent_context = parent && ::OpenTelemetry::Trace.context_with_span(parent.fetch(:span))
+        options = {kind: :internal, attributes:}
+        options[:with_parent] = parent_context if parent_context
+        span = tracer.start_span(name, **options)
+        yield span
+      rescue => error
+        span.status = ::OpenTelemetry::Trace::Status.error(error.class.name) if span
+        raise
+      ensure
+        span&.finish
+      end
+
       def flush
         provider = ::OpenTelemetry.tracer_provider
         provider.force_flush if provider.respond_to?(:force_flush)
