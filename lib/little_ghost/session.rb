@@ -2,7 +2,7 @@
 
 module LittleGhost
   class Session
-    attr_reader :id, :actor_id, :store
+    attr_reader :id, :actor_id, :store, :operation_id
 
     def initialize(id:, store:, actor_id: nil, metadata: {}, operation_id: nil)
       @id = String(id)
@@ -91,6 +91,12 @@ module LittleGhost
 
     def synchronize(&block)
       store.synchronize(id, actor_id:, &block)
+    end
+
+    def project_conversation(messages:, metadata: self.metadata)
+      with_store_operation_context do
+        store.project_conversation(id, messages:, metadata:, actor_id:)
+      end
     end
 
     private

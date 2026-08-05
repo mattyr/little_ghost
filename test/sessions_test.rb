@@ -3,6 +3,33 @@
 require "test_helper"
 
 class SessionsTest < Minitest::Test
+  def test_project_conversation_uses_session_operation_context
+    store_class = Class.new(LittleGhost::SessionStores::Memory) do
+      attr_reader :operation_ids
+
+      def initialize
+        super
+        @operation_ids = []
+      end
+
+      def with_operation_context(operation_id)
+        @operation_ids << operation_id
+        super
+      end
+    end
+    store = store_class.new
+    session = LittleGhost::Session.new(
+      id: "conversation",
+      actor_id: "actor",
+      store:,
+      operation_id: "run-operation"
+    )
+
+    session.project_conversation(messages: [], metadata: {})
+
+    assert_equal ["run-operation"], store.operation_ids
+  end
+
   def test_memory_store_persists_messages_state_and_metadata
     store = LittleGhost::SessionStores::Memory.new
     session = LittleGhost::Session.new(

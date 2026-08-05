@@ -1215,6 +1215,52 @@ class SubagentManagerTest < Minitest::Test
     manager&.close
   end
 
+  def test_auxiliary_sessions_inherit_parent_operation_context
+    store_class = Class.new(LittleGhost::SessionStores::Memory) do
+      attr_reader :operation_ids, :project_operation_ids
+
+      def initialize
+        super
+        @operation_ids = []
+        @project_operation_ids = []
+      end
+
+      def with_operation_context(operation_id)
+        @operation_ids << operation_id
+        previous_operation_id = @active_operation_id
+        @active_operation_id = operation_id
+        super
+      ensure
+        @active_operation_id = previous_operation_id
+      end
+
+      def project_conversation(*)
+        @project_operation_ids << @active_operation_id
+        super
+      end
+    end
+    store = store_class.new
+    parent = LittleGhost::Session.new(
+      id: "parent",
+      store:,
+      operation_id: "run-operation"
+    )
+    definition = LittleGhost::Subagents::Definition.new(
+      kind: "explore",
+      description: "Explore code",
+      factory: ->(_id) { ControlledAgent.new }
+    )
+    manager = LittleGhost::Subagents::Manager.new([definition], parent_session: parent)
+
+    manager.spawn(kind: "explore", task_name: "inspect", task: "inspect", mode: "sync")
+
+    assert store.operation_ids.any?, "expected auxiliary session store operations"
+    assert_equal ["run-operation"], store.operation_ids.uniq
+    assert_equal ["run-operation"], store.project_operation_ids.uniq
+  ensure
+    manager&.close
+  end
+
   def test_registry_failure_leaves_child_suffix_invisible_and_restore_repairs_it
     store_class = Class.new(LittleGhost::SessionStores::Memory) do
       attr_accessor :fail_id
