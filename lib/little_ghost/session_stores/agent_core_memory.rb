@@ -271,7 +271,7 @@ module LittleGhost
 
       def record_client_refresh(operation, error, retry_count:, refreshed:)
         @logger.warn(JSON.generate(
-          event: "atlas_agentcore_memory_client_refresh",
+          event: "little_ghost_session_store_client_refresh",
           operation:,
           error_type: error.class.name,
           retry_count:,
