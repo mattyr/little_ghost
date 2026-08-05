@@ -719,6 +719,7 @@ module LittleGhost
           id: self.class.registry_session_id(@parent_session),
           actor_id: @parent_session.actor_id,
           store: @parent_session.store,
+          operation_id: @parent_session.operation_id,
           metadata: registry_metadata
         )
       end
@@ -728,6 +729,7 @@ module LittleGhost
           id: self.class.conversation_session_id(conversation_id),
           actor_id: @parent_session.actor_id,
           store: @parent_session.store,
+          operation_id: @parent_session.operation_id,
           metadata: child_metadata(conversation_id)
         )
       end
@@ -737,6 +739,7 @@ module LittleGhost
           id: self.class.commit_session_id(conversation_id, slot),
           actor_id: @parent_session.actor_id,
           store: @parent_session.store,
+          operation_id: @parent_session.operation_id,
           metadata: commit_metadata(conversation_id, commit_id, message_count)
         )
       end
@@ -1277,10 +1280,8 @@ module LittleGhost
       end
 
       def project_conversation(identity, turn, messages)
-        identity.session.store.project_conversation(
-          identity.session.id,
+        identity.session.project_conversation(
           messages:,
-          actor_id: identity.session.actor_id,
           metadata: {
             "little_ghost_parent_link" => @parent_link,
             "little_ghost_conversation_id" => identity.conversation_id,
