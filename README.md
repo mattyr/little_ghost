@@ -2,7 +2,7 @@
 
 LittleGhost was extracted from an experimental self-improving AI-framework called Algernon.  While functional, it is still in an early stage so the API is not stable.
 
-LittleGhost is a dependency-light agent framework for Ruby. It provides a conventional application layout, a streaming tool-calling loop, model providers, sessions, subagents, ERB prompts, and instrumentation.
+LittleGhost is a dependency-light agent framework for Ruby. It provides a conventional agent layout, a streaming tool-calling loop, model providers, sessions, subagents, ERB prompts, and instrumentation.
 
 LittleGhost requires Ruby 3.3 or newer and is licensed under the MIT License.
 
@@ -14,9 +14,9 @@ gem "little_ghost"
 
 Provider SDKs and OpenTelemetry exporters are optional application dependencies. LittleGhost includes the OpenTelemetry API and native agent tracing; applications choose the SDK, processors, and exporters. The core uses Ruby standard libraries where practical.
 
-## An application
+## An agent
 
-LittleGhost applications follow a small conventional layout:
+LittleGhost agents follow a small conventional layout:
 
 ```text
 my_agent/
@@ -30,22 +30,23 @@ my_agent/
 │   ├── skills/
 │   └── tools/
 ├── config/
-│   ├── application.rb
-│   └── environment.rb
+│   └── little_ghost.rb
 └── config.ru
 ```
 
-`SupportApplication` resolves `SupportAgent` automatically. `SupportAgent` resolves `app/prompts/support/system.erb` automatically.
-For a namespaced application, `Support::Application` resolves `Support::Agent` and `app/prompts/support/system.erb`.
+`SupportAgent` resolves `app/prompts/support/system.erb` automatically. For a namespaced agent, `Support::Agent` resolves the matching prompt path.
 
 ```ruby
-# config/application.rb
+# config/little_ghost.rb
 require "little_ghost"
 
-class SupportApplication < LittleGhost::Application
-  models SupportModels
+LittleGhost.configure do |config|
+  config.models SupportModels
+  config.agent "SupportAgent"
 end
 ```
+
+LittleGhost does not load the configuration file when the gem is required. The first `SupportAgent.call`, `SupportAgent.stream`, or `SupportAgent.runtime` resolves the configured root, requires `config/little_ghost.rb` if it exists, and materializes the resulting settings into the runtime used by the agent. Configuration changes must therefore be made before that first runtime access.
 
 ```ruby
 # app/agents/support_agent.rb
@@ -65,7 +66,7 @@ class SupportAgent < LittleGhost::Agent
 end
 ```
 
-Application classes configure shared framework services. Agent classes own agent behavior: model role, prompts, tools, limits, and delegation.
+The configuration object owns shared framework services. Agent classes own agent behavior: model role, prompts, tools, limits, and delegation. Agents can be invoked directly with `SupportAgent.call(payload)` or `SupportAgent.stream(payload)`.
 
 ### Agent capabilities
 
@@ -124,15 +125,18 @@ invocation.message
 invocation[:account_id]
 ```
 
-LittleGhost generates missing run, invocation, and session identifiers. Actor identity remains an explicit caller value. Transport identifiers, callback details, and other application data stay in the invocation hash without becoming framework configuration. `Application.call` returns the completed `Run`; `Application.stream` yields generic `StreamEvent` objects and returns the run when enumeration finishes.
+LittleGhost generates missing run, invocation, and session identifiers. Actor identity remains an explicit caller value. Transport identifiers, callback details, and other application data stay in the invocation hash without becoming framework configuration. `Agent.call` returns the completed `Run`; `Agent.stream` yields generic `StreamEvent` objects and returns the run when enumeration finishes.
 
 ```ruby
-run = SupportApplication.call(message: "Help")
+run = SupportAgent.call(message: "Help")
 puts run.response
 
-SupportApplication.stream(message: "Help").each do |event|
+SupportAgent.stream(message: "Help").each do |event|
   puts event.type
 end
+
+SupportAgent.ask("Help")
+SupportAgent.stream_ask("Help").each { |event| puts event.type }
 ```
 
 The run opens and closes its session, agents, subagent managers, and other registered resources. Application-specific resources can be registered on the run for the same lifecycle management.
@@ -223,7 +227,7 @@ Active subagent snapshots include one monotonic `progress.sequence`. It advances
 
 `wait_for_subagents` distinguishes a settled result from historical context. An idle identity whose latest turn succeeded returns `response` and `response_turn`. If newer work is queued, running, persisting, failed, or cancelled, the latest successful result remains available as `previous_response` and `previous_response_turn` alongside the current status, progress, or error. A previous response is context only and never represents the result of the newer turn.
 
-Subagent conversations are durable by default when the application has a `SessionStore`. The primary agent is `/root`; `spawn_subagent` accepts a model-chosen `task_name` and returns a stable canonical path such as `/root/check_provider_health` or `/root/investigate_customer/explore_source`. Names use lowercase letters, digits, and underscores, are limited to 40 characters, and must be unique among siblings; a collision returns an actionable error so the caller can choose a different name. The full path can be up to 1,024 characters. A custom subagent factory that returns a `LittleGhost::Agent` must build it with the supplied canonical ID as `agent_path`; `Application#build_agent(..., agent_path:)` provides that binding. The persistence conversation ID remains a separate UUID. LittleGhost owns a derived registry session, a compact child transcript, and bounded two-slot committed-state snapshots; invocation context cannot replace the registry. Store-visible parent links are SHA-256 pseudonyms rather than raw parent session IDs. A later application invocation can discover inactive conversations with `list_subagents` and pass the same canonical path to `send_message_to_subagent`; LittleGhost restores the child transparently. Listing is newest-first, supports kind filtering and bounded cursor pagination, retains at most the configured identity limit, and does not activate persisted children. `wait_for_subagents` and `interrupt_subagent` operate only on work active in the current invocation.
+Subagent conversations are durable by default when the configuration has a `SessionStore`. The primary agent is `/root`; `spawn_subagent` accepts a model-chosen `task_name` and returns a stable canonical path such as `/root/check_provider_health` or `/root/investigate_customer/explore_source`. Names use lowercase letters, digits, and underscores, are limited to 40 characters, and must be unique among siblings; a collision returns an actionable error so the caller can choose a different name. The full path can be up to 1,024 characters. A custom subagent factory that returns a `LittleGhost::Agent` must build it with the supplied canonical ID as `agent_path`; the agent's runtime provides that binding. The persistence conversation ID remains a separate UUID. LittleGhost owns a derived registry session, a compact child transcript, and bounded two-slot committed-state snapshots; invocation context cannot replace the registry. Store-visible parent links are SHA-256 pseudonyms rather than raw parent session IDs. A later invocation can discover inactive conversations with `list_subagents` and pass the same canonical path to `send_message_to_subagent`; LittleGhost restores the child transparently. Listing is newest-first, supports kind filtering and bounded cursor pagination, retains at most the configured identity limit, and does not activate persisted children. `wait_for_subagents` and `interrupt_subagent` operate only on work active in the current invocation.
 
 The durable transcript is intentionally compact. LittleGhost persists delegated tasks and follow-ups, successful interrupt message/ordinary-text response pairs, and each successful turn's final returned response; structured values use their serialized JSON representation. Internal tool calls, reasoning, progress updates, and other execution details remain inside the live child. A child transcript and state snapshot become visible only when the framework registry advances their committed message-count boundary. Failed registry writes can leave unreachable storage, but restoration never exposes it and repairs an orphaned child suffix back to the last committed boundary. Failed or cancelled turns therefore do not expose a partial exchange. A child can declare subagents of its own; their registries and derived sessions follow the same rules, so nested conversations also resume across invocations.
 
@@ -284,12 +288,12 @@ class ResponseWorkflow < LittleGhost::Workflow
 end
 ```
 
-Declare the workflow as the application's entrypoint:
+Declare a workflow as the configured entrypoint:
 
 ```ruby
-class SupportApplication < LittleGhost::Application
-  agent MainAgent
-  entrypoint ResponseWorkflow
+LittleGhost.configure do |config|
+  config.agent MainAgent
+  config.entrypoint ResponseWorkflow
 end
 ```
 
@@ -299,13 +303,13 @@ Agent entrypoints produce one fused root `invoke_agent` span. Workflow entrypoin
 
 ## Prompts and components
 
-Prompts are ERB. Templates can render partials with `partial "shared/rules"`. Application prompts override component prompts.
+Prompts are ERB. Templates can render partials with `partial "shared/rules"`. Agent prompts override component prompts.
 
 Reusable agents, tools, prompts, and skills can be packaged as a component:
 
 ```ruby
-class SupportApplication < LittleGhost::Application
-  component LittleGhost::Component.new(root: File.expand_path("../shared_agents", __dir__))
+LittleGhost.configure do |config|
+  config.component LittleGhost::Component.new(root: File.expand_path("../shared_agents", __dir__))
 end
 ```
 
@@ -318,15 +322,17 @@ Sessions work without application code. The fixed default is an in-memory store;
 ```ruby
 require "little_ghost/session_stores/agent_core_memory"
 
-SupportApplication.session_store do
-  LittleGhost::SessionStores::AgentCoreMemory.new(
-    memory_id: ENV.fetch("SUPPORT_AGENTCORE_MEMORY_ID"),
-    region: ENV.fetch("AWS_REGION")
-  )
+LittleGhost.configure do |config|
+  config.session_store do
+    LittleGhost::SessionStores::AgentCoreMemory.new(
+      memory_id: ENV.fetch("SUPPORT_AGENTCORE_MEMORY_ID"),
+      region: ENV.fetch("AWS_REGION")
+    )
+  end
 end
 ```
 
-Applications can pass any `LittleGhost::SessionStore` to `session_store`, or use a block to create one when the application boots. Session history and state are loaded before the agent runs and checkpointed as coherent conversation turns complete, including before partial, canceled, or failed runs return. Private model reasoning is retained only while a run needs it for model continuation and is removed from session checkpoints. Stores implement explicit append and replacement operations, receive actor identity explicitly, and surface persistence failures.
+Applications can pass any `LittleGhost::SessionStore` to `session_store`, or use a block to create one when the runtime is materialized. Session history and state are loaded before the agent runs and checkpointed as coherent conversation turns complete, including before partial, canceled, or failed runs return. Private model reasoning is retained only while a run needs it for model continuation and is removed from session checkpoints. Stores implement explicit append and replacement operations, receive actor identity explicitly, and surface persistence failures.
 
 `AgentCoreMemory` requires one active writer for each actor/session pair. It serializes writers inside one Ruby process, but AgentCore's immutable event API does not provide compare-and-swap across processes. Horizontally scaled applications must enforce that invariant with an external lock or a unique active-run record. If the invariant is violated, LittleGhost resolves the immutable fork deterministically when reading, so one concurrent commit is not retained.
 
@@ -351,7 +357,9 @@ class MetricsSubscriber
   end
 end
 
-SupportApplication.instrument MetricsSubscriber
+LittleGhost.configure do |config|
+  config.instrument MetricsSubscriber
+end
 ```
 
 `instrument` installs each declared instrumentation setup object and supplies the application's instrumentation plus a conventional service name. This is the natural place to register an OpenTelemetry tracer provider or add custom subscribers. Subscribers receive the event name and its complete structured attributes. Instrumentation failures are isolated from the agent run. The instrumentation object delegates flush, shutdown, and trace-context behavior to subscribers that provide those capabilities.
@@ -360,7 +368,7 @@ Generic framework utilities live under `LittleGhost::Support`: callbacks, loadin
 
 ## Direct agents
 
-Applications are optional for small or embedded uses:
+The configuration file is optional for small or embedded uses:
 
 ```ruby
 agent = SupportAgent.new(model: model, tools: [weather])

@@ -1,192 +1,64 @@
 # frozen_string_literal: true
 
-require "logger"
-require "pathname"
+require_relative "configuration"
 
 module LittleGhost
-  class Application
+  class Runtime
     class << self
-      CONFIGURATION_KEYS = %i[agent entrypoint invocation models default_model instrumentation service_name].freeze
-
-      def inherited(subclass)
-        super
-        configuration = application_configuration.dup
-        configuration[:components] = Array(configuration[:components]).dup
-        configuration[:instruments] = Array(configuration[:instruments]).dup
-        subclass.instance_variable_set(:@application_configuration, configuration)
-        subclass.instance_variable_set(:@application_source_path, caller_locations(1, 1).first&.absolute_path)
-      end
-
-      CONFIGURATION_KEYS.each do |name|
-        define_method(name) do |value = :__read__|
-          return application_configuration[name] if value == :__read__
-
-          ensure_not_booted!
-          application_configuration[name] = (name == :default_model) ? value.to_s : value
-        end
-      end
-
-      def application_configuration
-        @application_configuration ||= {components: [], instruments: []}
-      end
-
-      def configure(&block)
-        class_eval(&block) if block
-        self
-      end
-
-      def instrument(installer, **options)
-        ensure_not_booted!
-        application_configuration[:instruments] << [installer, options]
-        installer
-      end
-
-      def session_store(value = :__read__, &factory)
-        return application_configuration[:session_store] if value == :__read__ && !factory
-
-        ensure_not_booted!
-        raise ArgumentError, "Provide a session store or a block, not both" if value != :__read__ && factory
-
-        application_configuration[:session_store] = factory || value
-      end
-
-      def session_actor(value = :__read__, &resolver)
-        return application_configuration[:session_actor] if value == :__read__ && !resolver
-
-        ensure_not_booted!
-        raise ArgumentError, "Provide a session actor resolver or a block, not both" if value != :__read__ && resolver
-
-        configured = resolver || value
-        unless configured.respond_to?(:call)
-          raise ArgumentError, "session_actor must be callable"
-        end
-
-        application_configuration[:session_actor] = configured
-      end
-
-      def root(value = :__read__)
-        if value != :__read__
-          ensure_not_booted!
-          return application_configuration[:root] = canonical_root(value)
-        end
-
-        configured = application_configuration[:root]
-        configured ? canonical_root(configured) : inferred_root
-      end
-
-      def component(value = nil, root: nil)
-        ensure_not_booted!
-        configured = value || Component.new(root: root)
-        raise ArgumentError, "component must be a LittleGhost::Component" unless configured.is_a?(Component)
-
-        application_configuration[:components] << configured
-        configured
-      end
-
-      def build(**overrides)
-        values = (@boot_configuration || unbooted_configuration).merge(overrides)
-        values[:loader] = loader_for(values.fetch(:root)) unless overrides.key?(:loader)
-        new(values)
-      end
-
-      def boot!(root: nil)
-        return @booted_application if @booted_application
-
-        (@boot_mutex ||= Mutex.new).synchronize do
-          return @booted_application if @booted_application
-
-          values = application_configuration.dup
-          values[:components] = Array(values[:components]).dup
-          values[:root] = root || values[:root] || self.root
-          values[:loader] ||= loader_for(values.fetch(:root))
-          @boot_configuration = Support.immutable(values)
-          @booted_application = new(@boot_configuration)
-        end
-      end
-
-      def boot_configuration
-        boot!
-        @boot_configuration
-      end
-
-      def call(payload) = boot!.call(payload)
-      def stream(payload) = boot!.stream(payload)
-
-      private
-
-      def ensure_not_booted!
-        raise ConfigurationError, "#{self} is already booted" if @booted_application
-      end
-
-      def inferred_root
-        source = @application_source_path
-        directory = source && File.dirname(source)
-        while directory
-          return canonical_root(directory) if File.file?(File.join(directory, "config/application.rb"))
-
-          parent = File.dirname(directory)
-          break if parent == directory
-          directory = parent
-        end
-        raise ConfigurationError, "Could not infer #{self}.root; define root explicitly"
-      end
-
-      def canonical_root(value)
-        path = Pathname.new(File.realpath(File.expand_path(value)))
-        raise ConfigurationError, "application root must be a directory" unless path.directory?
-
-        path
-      rescue Errno::ENOENT
-        raise ConfigurationError, "application root must exist"
-      end
-
-      def unbooted_configuration
-        values = application_configuration.dup
-        values[:components] = Array(values[:components]).dup
-        values[:instruments] = Array(values[:instruments]).dup
-        values[:root] = values[:root] || root
-        Support.immutable(values)
-      end
-
       def loader_for(root)
         path = canonical_root(root).to_s
         (@loader_mutex ||= Mutex.new).synchronize do
-          (@application_loaders ||= {})[path] ||= Support::Loader.new(root: path)
+          (@loaders ||= {})[path] ||= Support::Loader.new(root: path)
         end
+      end
+
+      private
+
+      def canonical_root(value)
+        Pathname.new(File.realpath(File.expand_path(value)))
+      rescue Errno::ENOENT
+        raise ConfigurationError, "application root must exist"
       end
     end
 
-    attr_reader :root, :loader, :components, :instrumentation, :models, :session_store, :agent_class,
+    attr_reader :configuration, :root, :loader, :components, :instrumentation, :models, :session_store, :agent_class,
       :entrypoint_class
 
-    def initialize(configuration)
-      @configuration = configuration
-      @root = canonical_application_root(configuration.fetch(:root))
-      @loader = configuration[:loader] || Support::Loader.new(root: @root)
-      @components = Array(configuration[:components]).freeze
+    def initialize(configuration:, agent: nil)
+      @configuration = configuration.respond_to?(:settings) ? configuration.settings : configuration
+      @root = canonical_application_root(@configuration.fetch(:root))
+      @loader = @configuration[:loader] || self.class.loader_for(@root)
+      @components = Array(@configuration[:components]).freeze
       loaders = [loader, *components.map(&:loader)]
       validate_loader_conflicts!(loaders)
       loaders.each(&:setup)
       loaders.each(&:eager_load)
-      @agent_class = resolve_agent_class(configuration[:agent] || default_agent_name)
-      @entrypoint_class = resolve_entrypoint_class(configuration[:entrypoint] || @agent_class)
-      @invocation_class = configuration[:invocation] || Invocation
-      @models = build_service(configuration[:models], default: -> { ModelRegistry.new })
-      @default_model = configuration.fetch(:default_model, "default").to_s
+      @agent_class = resolve_agent_class(agent || @configuration[:agent] || Agent)
+      @entrypoint_class = resolve_entrypoint_class(@configuration[:entrypoint] || @agent_class)
+      @invocation_class = @configuration[:invocation] || Invocation
+      @models = build_service(@configuration[:models], default: -> { ModelRegistry.new })
+      @default_model = @configuration.fetch(:default_model, "default").to_s
       @instrumentation = build_service(
-        configuration[:instrumentation],
+        @configuration[:instrumentation],
         default: -> { Support::Instrumentation.new }
       )
-      install_instrumentation(configuration[:instruments])
-      @session_store = build_session_store(configuration[:session_store])
-      @session_actor = configuration[:session_actor]
+      install_instrumentation(@configuration[:instruments])
+      @session_store = build_session_store(@configuration[:session_store])
+      @session_actor = @configuration[:session_actor]
       @prompt_paths = discover_prompt_paths
       @agent_builder = AgentBuilder.new(
-        application: self,
+        configuration: self,
         primary_agent: @agent_class,
         prompt_paths: @prompt_paths,
         resolve_agent: method(:resolve_agent_class)
       )
+    end
+
+    def build(**overrides)
+      values = configuration.merge(overrides)
+      values[:root] = canonical_application_root(values.fetch(:root))
+      values[:loader] = loader unless overrides.key?(:loader) || overrides.key?(:root)
+      self.class.new(configuration: values, agent: @agent_class)
     end
 
     def parse(payload)
@@ -194,16 +66,13 @@ module LittleGhost
     end
 
     def build_run(payload)
-      Run.new(invocation: parse(payload), application: self)
+      run_class = @agent_class.respond_to?(:run_class) ? @agent_class.run_class : Run
+      run_class.new(invocation: parse(payload), configuration: self, agent_class: @agent_class,
+        entrypoint_class: @entrypoint_class)
     end
 
-    def call(payload)
-      build_run(payload).call
-    end
-
-    def stream(payload)
-      build_run(payload).each
-    end
+    def call(payload) = build_run(payload).call
+    def stream(payload) = build_run(payload).each
 
     def build_agent(
       agent_class_or_name = @agent_class,
@@ -217,6 +86,7 @@ module LittleGhost
 
     def build_entrypoint(run:)
       return @entrypoint_class.new(run:) if workflow_entrypoint?
+
       return build_agent(run:) if @entrypoint_class == @agent_class
 
       build_agent(@entrypoint_class, run:)
@@ -225,9 +95,11 @@ module LittleGhost
     def workflow_entrypoint? = @entrypoint_class <= Workflow
 
     def entrypoint_name
-      return @entrypoint_class.agent_id unless workflow_entrypoint?
+      workflow_entrypoint? ? @entrypoint_class.name.to_s : @entrypoint_class.agent_id
+    end
 
-      @entrypoint_class.name.to_s
+    def service_name
+      @configuration[:service_name] || default_service_name
     end
 
     def model_for(agent_class, run)
@@ -282,6 +154,10 @@ module LittleGhost
       "#{@agent_class.agent_id} failed: #{error.class}"
     end
 
+    def resolve_agent(value)
+      resolve_agent_class(value)
+    end
+
     private
 
     def build_service(value, default:)
@@ -322,11 +198,7 @@ module LittleGhost
     def default_service_name
       return @configuration[:service_name].to_s if @configuration[:service_name]
 
-      name = self.class.name.to_s
-      return "little-ghost" if name.empty?
-
-      name.delete_suffix("Application").gsub("::", "-")
-        .gsub(/([a-z\d])([A-Z])/, '\\1-\\2').downcase
+      "little-ghost"
     end
 
     def canonical_application_root(value)
@@ -336,17 +208,6 @@ module LittleGhost
       path.freeze
     rescue Errno::ENOENT
       raise ConfigurationError, "application root must exist"
-    end
-
-    def default_agent_name
-      parts = self.class.name.to_s.split("::")
-      raise ConfigurationError, "agent must be configured for anonymous applications" if parts.empty?
-
-      leaf = parts.pop.delete_suffix("Application")
-      return "#{leaf}Agent" unless leaf.empty?
-      raise ConfigurationError, "agent must be configured for anonymous applications" if parts.empty?
-
-      "#{parts.join("::")}::Agent"
     end
 
     def resolve_agent_class(value)
@@ -371,22 +232,18 @@ module LittleGhost
       else
         value
       end
-      unless valid_entrypoint_class?(klass)
+      unless klass.is_a?(Class) && [Agent, Workflow].any? { |base| klass <= base }
         raise ConfigurationError, "entrypoint must inherit from LittleGhost::Agent or LittleGhost::Workflow"
       end
 
       klass
     rescue NameError
       klass = loader.constant(value)
-      unless valid_entrypoint_class?(klass)
+      unless klass.is_a?(Class) && [Agent, Workflow].any? { |base| klass <= base }
         raise ConfigurationError, "entrypoint must inherit from LittleGhost::Agent or LittleGhost::Workflow"
       end
 
       klass
-    end
-
-    def valid_entrypoint_class?(value)
-      value.is_a?(Class) && [Agent, Workflow].any? { |base| value <= base }
     end
 
     def discover_prompt_paths

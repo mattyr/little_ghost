@@ -5,7 +5,7 @@ require "tmpdir"
 require "test_helper"
 require "little_ghost/ag_ui"
 
-class ApplicationTest < Minitest::Test
+class ConfigurationTest < Minitest::Test
   class EntrypointWorkflow < LittleGhost::Workflow
     class << self
       attr_accessor :agent_class
@@ -200,7 +200,7 @@ class ApplicationTest < Minitest::Test
       assert_equal "Done", run.response
       assert_equal Pathname.new(File.realpath(root)), application.root
       assert_equal "Prompt for Build it", provider.requests.first.messages.first.text
-      assert_same application, run.application
+      assert_same application, run.configuration
     end
   end
 
@@ -503,7 +503,7 @@ class ApplicationTest < Minitest::Test
   end
 
   def test_default_model_names_are_normalized_to_strings
-    application = Class.new(LittleGhost::Application)
+    application = Class.new(TestConfiguration)
 
     application.default_model :support
 
@@ -667,15 +667,12 @@ class ApplicationTest < Minitest::Test
   end
 
   def test_default_entrypoint_preserves_keyword_only_build_agent_overrides
-    configure = lambda do |application_class|
-      application_class.attr_reader :overridden_build_run
-      application_class.define_method(:build_agent) do |run:, **options|
+    with_application do |application|
+      application.define_singleton_method(:overridden_build_run) { @overridden_build_run }
+      application.define_singleton_method(:build_agent) do |run:, **options|
         @overridden_build_run = run
         super(run:, **options)
       end
-    end
-
-    with_application(configure:) do |application|
       run = application.build_run(message: "hello")
 
       entrypoint = application.build_entrypoint(run:)
@@ -694,7 +691,7 @@ class ApplicationTest < Minitest::Test
 
       assert_equal EntrypointWorkflow, application.entrypoint_class
       assert application.workflow_entrypoint?
-      assert_equal "ApplicationTest::EntrypointWorkflow", application.entrypoint_name
+      assert_equal "ConfigurationTest::EntrypointWorkflow", application.entrypoint_name
       assert_instance_of EntrypointWorkflow, entrypoint
       assert_same run, entrypoint.run
     ensure
@@ -723,9 +720,9 @@ class ApplicationTest < Minitest::Test
     run_stop = recorded.assoc(:run_stop).last
     agent_start = recorded.assoc(:agent_start).last
     assert_equal :workflow, run_start.fetch(:entrypoint_kind)
-    assert_equal "ApplicationTest::EntrypointWorkflow", run_start.fetch(:workflow_name)
+    assert_equal "ConfigurationTest::EntrypointWorkflow", run_start.fetch(:workflow_name)
     refute run_start.key?(:agent_id)
-    assert_equal "ApplicationTest::EntrypointWorkflow", run_stop.fetch(:workflow_name)
+    assert_equal "ConfigurationTest::EntrypointWorkflow", run_stop.fetch(:workflow_name)
     refute run_stop.key?(:agent_id)
     assert_equal expected_agent_id, agent_start.fetch(:agent_id)
     assert_equal run_start.fetch(:operation_id), agent_start.fetch(:parent_operation_id)
@@ -788,11 +785,8 @@ class ApplicationTest < Minitest::Test
 
   def test_cleanup_failure_cannot_emit_stale_success_when_error_formatting_fails
     events = []
-    configure = lambda do |application_class|
-      application_class.define_method(:error_message) { |_error, _run| raise "formatter failed" }
-    end
-
-    with_application(configure:) do |application|
+    with_application do |application|
+      application.agent_class.define_singleton_method(:error_message) { |_error, _run| raise "formatter failed" }
       run = application.build_run(message: "hello")
       run.register { raise "cleanup failed" }
 
@@ -1020,12 +1014,12 @@ class ApplicationTest < Minitest::Test
     with_application do |application|
       replacement_provider = ScriptedProvider.new("Replacement")
       replacement_models = models_for(replacement_provider)
-      isolated = application.class.build(models: replacement_models)
+      isolated = application.build(models: replacement_models)
 
       result = isolated.call(message: "hello")
 
       assert_equal "Replacement", result.response
-      assert application.class.boot_configuration.frozen?
+      assert application.configuration.frozen?
       refute_same application.models, isolated.models
     end
   end
@@ -1033,7 +1027,7 @@ class ApplicationTest < Minitest::Test
   def test_build_can_override_external_services_before_the_application_boots
     Dir.mktmpdir do |root|
       FileUtils.mkdir_p(File.join(root, "config"))
-      File.write(File.join(root, "config/application.rb"), "# application fixture\n")
+      File.write(File.join(root, "config/little_ghost.rb"), "# application fixture\n")
       agent = Class.new(LittleGhost::Agent) do
         model "main"
         system_prompt "Test"
@@ -1041,7 +1035,7 @@ class ApplicationTest < Minitest::Test
       installer = Module.new do
         def self.install(**) = raise("external instrumentation was installed")
       end
-      application_class = Class.new(LittleGhost::Application)
+      application_class = Class.new(TestConfiguration)
       application_class.root root
       application_class.agent agent
       application_class.instrument installer
@@ -1061,21 +1055,24 @@ class ApplicationTest < Minitest::Test
     end
   end
 
-  def test_preboot_build_and_later_boot_share_the_application_loader
+  def test_runtime_consumes_configuration_settings
     Dir.mktmpdir do |root|
       agent_path = File.join(root, "app/agents/probe_agent.rb")
       FileUtils.mkdir_p(File.dirname(agent_path))
       FileUtils.mkdir_p(File.join(root, "config"))
-      File.write(File.join(root, "config/application.rb"), "# application fixture\n")
+      File.write(File.join(root, "config/little_ghost.rb"), "# application fixture\n")
       File.write(agent_path, "class ProbeAgent < LittleGhost::Agent; end\n")
-      application_class = Class.new(LittleGhost::Application)
+      application_class = Class.new(TestConfiguration)
       application_class.root root
       application_class.agent "ProbeAgent"
 
-      built = application_class.build
-      booted = application_class.boot!
+      runtime = LittleGhost::Runtime.new(
+        configuration: application_class.settings(root:),
+        agent: "ProbeAgent"
+      )
 
-      assert_same built.loader, booted.loader
+      assert_equal File.realpath(root), runtime.root.to_s
+      assert_equal File.realpath(root), runtime.loader.root
     end
   end
 
@@ -1083,9 +1080,9 @@ class ApplicationTest < Minitest::Test
     with_application do |application|
       Dir.mktmpdir do |other_root|
         FileUtils.mkdir_p(File.join(other_root, "config"))
-        File.write(File.join(other_root, "config/application.rb"), "# alternate application\n")
+        File.write(File.join(other_root, "config/little_ghost.rb"), "# alternate application\n")
 
-        isolated = application.class.build(root: other_root)
+        isolated = application.build(root: other_root)
 
         assert_equal File.realpath(other_root), isolated.root.to_s
         assert_equal File.realpath(other_root), isolated.loader.root
@@ -1431,18 +1428,18 @@ class ApplicationTest < Minitest::Test
         system_template "fixture/system"
       end
       prompt = File.join(root, "app/prompts/fixture/system.erb")
-      config = File.join(root, "config/application.rb")
+      config = File.join(root, "config/little_ghost.rb")
       FileUtils.mkdir_p(File.dirname(prompt))
       FileUtils.mkdir_p(File.dirname(config))
       File.write(prompt, "Prompt for <%= invocation.message.text %>")
       File.write(config, "# application fixture\n")
-      application_class = Class.new(LittleGhost::Application)
+      application_class = Class.new(TestConfiguration)
       application_class.agent agent
       application_class.models models_for(provider, settings:)
       application_class.session_store session_store if session_store
       application_class.instrumentation instrumentation if instrumentation
       configure&.call(application_class)
-      application = application_class.boot!(root:)
+      application = application_class.runtime(root:)
       yield application, provider, root
     end
   end

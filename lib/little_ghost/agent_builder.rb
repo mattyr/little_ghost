@@ -17,8 +17,8 @@ module LittleGhost
       end
     end
 
-    def initialize(application:, primary_agent:, prompt_paths:, resolve_agent:)
-      @application = application
+    def initialize(configuration:, primary_agent:, prompt_paths:, resolve_agent:)
+      @configuration = configuration
       @primary_agent = primary_agent
       @prompt_paths = prompt_paths
       @resolve_agent = resolve_agent
@@ -38,13 +38,13 @@ module LittleGhost
 
     private
 
-    attr_reader :application, :prompt_paths
+    attr_reader :configuration, :prompt_paths
 
     def instantiate(agent_class, run:, tools:, model:, delegation_activity:, agent_path:)
       agent_class.new(
         model:,
         tools:,
-        instrumentation: application.instrumentation,
+        instrumentation: configuration.instrumentation,
         template_paths: prompt_paths,
         run:,
         delegation_activity:,
@@ -66,7 +66,7 @@ module LittleGhost
       configured_tools.concat(
         delegation_tools(agent_class, run, conversation_id:, delegation_activity:, agent_path:)
       )
-      resolved_model = model || application.model_for(agent_class, run)
+      resolved_model = model || configuration.model_for(agent_class, run)
       transferred = true
       instantiate(
         agent_class,
@@ -145,7 +145,7 @@ module LittleGhost
       Subagents::Manager.new(
         definitions,
         wait_timeout: agent_class.subagent_long_poll_duration,
-        parent_session: conversation_id ? application.open_subagent_session(run, conversation_id) : run.session,
+        parent_session: conversation_id ? configuration.open_subagent_session(run, conversation_id) : run.session,
         cancellation_token: run.cancellation_token,
         deadline: run.invocation.deadline_at,
         parent_agent_path: agent_path,

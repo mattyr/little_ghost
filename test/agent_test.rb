@@ -40,6 +40,18 @@ class AgentTest < Minitest::Test
     end
   end
 
+  def test_ask_and_stream_ask_wrap_a_raw_message
+    agent = Class.new(LittleGhost::Agent)
+    calls = []
+    agent.define_singleton_method(:call) { |payload| calls << [:call, payload] }
+    agent.define_singleton_method(:stream) { |payload| calls << [:stream, payload] }
+
+    agent.ask("hello")
+    agent.stream_ask("goodbye")
+
+    assert_equal [[:call, {message: "hello"}], [:stream, {message: "goodbye"}]], calls
+  end
+
   def test_runs_model_and_returns_normalized_result
     model = ScriptedModel.new(response("hello", usage: LittleGhost::Usage.new(input_tokens: 2, output_tokens: 1)))
 
@@ -658,7 +670,8 @@ class AgentTest < Minitest::Test
   def test_mixed_exclusive_and_agent_tool_batch_does_not_hold_the_run_lock_during_delegation
     run = LittleGhost::Run.new(
       invocation: LittleGhost::Invocation.new(message: "go"),
-      application: Object.new
+      configuration: Struct.new(:instrumentation).new(LittleGhost::Support::Instrumentation.new),
+      agent_class: LittleGhost::Agent
     )
     exclusive_tool = Class.new(LittleGhost::Tool) do
       tool_name "mutate"
@@ -1111,7 +1124,8 @@ class AgentTest < Minitest::Test
     end
     run = LittleGhost::Run.new(
       invocation: LittleGhost::Invocation.new(message: "go"),
-      application: Object.new
+      configuration: Struct.new(:instrumentation).new(LittleGhost::Support::Instrumentation.new),
+      agent_class: LittleGhost::Agent
     )
     agent_class = Class.new(LittleGhost::Agent) { system_prompt "" }
     agents = 2.times.map do |index|

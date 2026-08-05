@@ -22,6 +22,55 @@ module LittleGhost
     ].freeze
 
     class << self
+      def configuration
+        LittleGhost.configuration
+      end
+
+      def runtime
+        @runtime ||= Runtime.new(configuration: configuration.settings, agent: self)
+      end
+
+      def run_class = LittleGhost::Run
+
+      def parse(payload)
+        runtime.parse(payload)
+      end
+
+      def build_run(payload)
+        run = run_class.new(invocation: parse(payload), configuration: runtime, agent_class: self)
+        prepare_run(run)
+      rescue
+        run&.close
+        raise
+      end
+
+      def call(payload)
+        build_run(payload).call
+      end
+
+      def ask(message)
+        call(message: message)
+      end
+
+      def stream(payload)
+        build_run(payload).each
+      end
+
+      def stream_ask(message)
+        stream(message: message)
+      end
+
+      def build_agent(agent_class_or_name = self, run:, **options)
+        runtime.build_agent(agent_class_or_name, run:, **options)
+      end
+
+      def prepare_run(run) = run
+      def prepare_interruption(_run, interruption) = interruption
+      def open_session(run) = run.configuration.open_session(run)
+      def instrumentation_attributes(run:, agent: nil) = {}
+      def error_message(error, run) = run.configuration.error_message(error, run)
+      def entrypoint_name = agent_id
+
       def inherited(subclass)
         super
         subclass.instance_variable_set(:@agent_id, @agent_id)
@@ -1669,10 +1718,7 @@ module LittleGhost
         invocation_id: run.invocation.invocation_id,
         session_id: run.invocation.session_id,
         agent_id: self.class.agent_id
-      }.merge(
-        run.application.respond_to?(:instrumentation_attributes) ?
-          run.application.instrumentation_attributes(run:, agent: self) : {}
-      )
+      }.merge(run.agent_class.instrumentation_attributes(run:, agent: self))
     end
 
     def model_attributes

@@ -6,11 +6,14 @@ module LittleGhost
   class Run
     include Enumerable
 
-    attr_reader :application, :invocation, :cancellation_token, :result, :operation_id,
+    attr_reader :configuration, :agent_class, :entrypoint_class, :invocation, :cancellation_token, :result, :operation_id,
       :outcome, :response, :error, :session, :usage
 
-    def initialize(invocation:, application:, cancellation_token: Support::CancellationToken.new)
-      @application = application
+    def initialize(invocation:, configuration:, agent_class:, entrypoint_class: agent_class,
+      cancellation_token: Support::CancellationToken.new)
+      @configuration = configuration
+      @agent_class = agent_class
+      @entrypoint_class = entrypoint_class
       @invocation = invocation
       @cancellation_token = cancellation_token
       @operation_id = SecureRandom.uuid
@@ -85,7 +88,7 @@ module LittleGhost
         state:,
         cancellation_token:,
         deadline: invocation.deadline_at,
-        instrumentation: application.instrumentation,
+        instrumentation: configuration.instrumentation,
         metadata:
       )
     end
@@ -142,16 +145,20 @@ module LittleGhost
       instrument(
         :run_start,
         entrypoint_kind: workflow_entrypoint? ? :workflow : :agent,
-        workflow_name: workflow_entrypoint? ? application_entrypoint_name : nil,
+        workflow_name: workflow_entrypoint? ? entrypoint_name : nil,
         trace_context: invocation[:parent_trace_context],
         trace_links: invocation[:trace_links],
         diagnostic: {input: diagnostic_invocation_message}
       )
       emit(:run_start, run_id: invocation.run_id, thread_id: invocation.session_id) { |event| yield event }
-      trace_context = application.instrumentation.trace_context(operation_id:) if application.instrumentation.respond_to?(:trace_context)
+      trace_context = configuration.instrumentation.trace_context(operation_id:) if configuration.instrumentation.respond_to?(:trace_context)
       emit(:trace_context, context: trace_context) { |event| yield event } unless trace_context.nil? || trace_context.empty?
-      @session = application.open_session(self)
-      agent = application.build_entrypoint(run: self)
+      @session = entrypoint_class.respond_to?(:open_session) ? entrypoint_class.open_session(self) : configuration.open_session(self)
+      agent = if entrypoint_class <= Agent
+        configuration.build_agent(entrypoint_class, run: self)
+      else
+        configuration.build_entrypoint(run: self)
+      end
       @interruption_mutex.synchronize do
         @entrypoint = agent
       end
@@ -163,7 +170,7 @@ module LittleGhost
           history:,
           context:,
           settings: invocation.settings,
-          template_locals: application.template_locals(run: self, agent:),
+          template_locals: configuration.template_locals(run: self, agent:),
           template_paths: Array(invocation[:template_paths]),
           cancellation_token:,
           deadline: invocation.deadline_at,
@@ -233,7 +240,7 @@ module LittleGhost
         {
           outcome:,
           error: caught,
-          message: cleanup_failed ? cleanup_error_message(caught) : application.error_message(caught, self),
+          message: cleanup_failed ? cleanup_error_message(caught) : agent_class.error_message(caught, self),
           cleanup_failed:
         }
       ]
@@ -303,7 +310,7 @@ module LittleGhost
     end
 
     def instrument(name, attributes = {})
-      application.instrumentation.emit(name, **correlation_attributes, **attributes.compact)
+      configuration.instrumentation.emit(name, **correlation_attributes, **attributes.compact)
     end
 
     def correlation_attributes
@@ -312,20 +319,25 @@ module LittleGhost
         run_id: invocation.run_id,
         invocation_id: invocation.invocation_id,
         session_id: invocation.session_id,
-        agent_id: workflow_entrypoint? ? nil : application_entrypoint_name,
-        workflow_name: workflow_entrypoint? ? application_entrypoint_name : nil
-      }.merge(application.respond_to?(:instrumentation_attributes) ? application.instrumentation_attributes(run: self) : {})
+        agent_id: workflow_entrypoint? ? nil : entrypoint_name,
+        workflow_name: workflow_entrypoint? ? entrypoint_name : nil
+      }.merge(
+        configuration.respond_to?(:instrumentation_attributes) ?
+          configuration.instrumentation_attributes(run: self) : {}
+      )
+        .merge(
+          entrypoint_class.respond_to?(:instrumentation_attributes) ?
+            entrypoint_class.instrumentation_attributes(run: self) : {}
+        )
         .compact
     end
 
-    def workflow_entrypoint?
-      application.respond_to?(:workflow_entrypoint?) && application.workflow_entrypoint?
-    end
+    def workflow_entrypoint? = entrypoint_class <= Workflow
 
-    def application_entrypoint_name
-      return application.entrypoint_name if application.respond_to?(:entrypoint_name)
+    def entrypoint_name
+      return entrypoint_class.name.to_s if workflow_entrypoint?
 
-      application.agent_class.agent_id if application.respond_to?(:agent_class)
+      entrypoint_class.entrypoint_name
     end
 
     def subagent_telemetry(data)
@@ -422,7 +434,7 @@ module LittleGhost
     end
 
     def cleanup_error_message(error)
-      application.error_message(error, self)
+      entrypoint_class.error_message(error, self)
     rescue
       "The run could not cleanly stop all work."
     end

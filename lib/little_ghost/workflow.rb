@@ -184,7 +184,7 @@ module LittleGhost
         history:,
         context: isolated_state(context),
         build: lambda {
-          agent = run.application.build_agent(agent_class_or_name, run:)
+          agent = run.configuration.build_agent(agent_class_or_name, run:)
           begin
             [
               agent,
@@ -240,7 +240,7 @@ module LittleGhost
     end
 
     def template_locals_for(agent)
-      @template_locals.merge(run.application.template_locals(run:, agent:))
+      @template_locals.merge(run.configuration.template_locals(run:, agent:))
     end
 
     def isolated_state(value)

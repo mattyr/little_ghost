@@ -40,7 +40,16 @@ require_relative "little_ghost/agent_interruptions"
 require_relative "little_ghost/agent"
 require_relative "little_ghost/agent_builder"
 require_relative "little_ghost/workflow"
-require_relative "little_ghost/application"
+require_relative "little_ghost/runtime"
 
 module LittleGhost
+  class << self
+    def configuration
+      Configuration
+    end
+
+    def configure(&block)
+      Configuration.configure(&block)
+    end
+  end
 end
