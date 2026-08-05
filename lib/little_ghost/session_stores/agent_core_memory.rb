@@ -58,6 +58,7 @@ module LittleGhost
         region: nil,
         clock: -> { Time.now },
         logger: Logger.new($stderr),
+        on_client_refresh: nil,
         tracer: nil
       )
         super()
@@ -69,6 +70,7 @@ module LittleGhost
         @client = client || @client_factory.call
         @clock = clock
         @logger = logger
+        @on_client_refresh = on_client_refresh
         @tracer = tracer
         @client_mutex = Mutex.new
         @persistence_locks = {}
@@ -243,24 +245,26 @@ module LittleGhost
 
       def with_memory_span(operation)
         attributes = {
-          "aws.operation.name" => operation.to_s,
-          "aws.service.name" => "bedrock-agentcore"
+          "cloud.provider" => "aws",
+          "rpc.method" => operation.to_s,
+          "rpc.service" => "BedrockAgentCore",
+          "rpc.system" => "aws-api"
         }
-        attributes["aws.region"] = @region.to_s if @region
-        tracer.in_span("agentcore_memory #{operation}", attributes:) { |span| yield span }
+        attributes["cloud.region"] = @region.to_s if @region
+        tracer.in_span("BedrockAgentCore/#{operation}", attributes:) { |span| yield span }
       end
 
       def record_memory_outcome(span, retries:, refreshes:, client:)
-        span.set_attribute("atlas.agentcore_memory.retry_count", retries)
-        span.set_attribute("atlas.agentcore_memory.client_refresh_count", refreshes)
-        span.set_attribute("atlas.agentcore_memory.recovered", retries.positive?)
+        span.set_attribute("little_ghost.session_store.retry_count", retries)
+        span.set_attribute("little_ghost.session_store.client_refresh_count", refreshes)
+        span.set_attribute("little_ghost.session_store.recovered", retries.positive?)
         seconds = credential_seconds_to_expiry(client)
-        span.set_attribute("atlas.agentcore_memory.credential_seconds_to_expiry", seconds) if seconds
+        span.set_attribute("little_ghost.session_store.credential_seconds_to_expiry", seconds) if seconds
       end
 
       def record_memory_failure(span, error, retries:, refreshes:)
-        span.set_attribute("atlas.agentcore_memory.retry_count", retries)
-        span.set_attribute("atlas.agentcore_memory.client_refresh_count", refreshes)
+        span.set_attribute("little_ghost.session_store.retry_count", retries)
+        span.set_attribute("little_ghost.session_store.client_refresh_count", refreshes)
         span.set_attribute("error.type", error.class.name)
         span.status = OpenTelemetry::Trace::Status.error(error.class.name)
       end
@@ -273,6 +277,12 @@ module LittleGhost
           retry_count:,
           refreshed:
         ))
+        @on_client_refresh&.call(
+          operation:,
+          error_type: error.class.name,
+          retry_count:,
+          refreshed:
+        )
       rescue
         nil
       end
