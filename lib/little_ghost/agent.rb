@@ -24,13 +24,6 @@ module LittleGhost
     class << self
       def run_class = LittleGhost::Run
 
-      def prepare_run(run) = run
-      def prepare_interruption(_run, interruption) = interruption
-      def open_session(run) = run.runtime.open_session(run)
-      def instrumentation_attributes(run:, agent: nil) = {}
-      def error_message(error, run) = run.runtime.error_message(error, run)
-      def entrypoint_name = agent_id
-
       def inherited(subclass)
         super
         subclass.instance_variable_set(:@agent_id, @agent_id)
@@ -364,16 +357,19 @@ module LittleGhost
 
     attr_reader :runtime
 
+    def prepare_run(run) = run
+    def prepare_interruption(_run, interruption) = interruption
+    def open_session(run) = run.runtime.open_session(run)
+    def instrumentation_attributes(run:, agent: nil) = {}
+    def error_message(error, run) = run.runtime.error_message(error, run)
+    def entrypoint_name = self.class.agent_id
+
     def build_run(payload)
       run = runtime.build_run(payload)
-      self.class.prepare_run(run)
+      prepare_run(run)
     rescue
       run&.close
       raise
-    end
-
-    def prepare_interruption(run, interruption)
-      self.class.prepare_interruption(run, interruption)
     end
 
     def call(input = UNSET, **options)
@@ -1729,7 +1725,7 @@ module LittleGhost
         invocation_id: run.invocation.invocation_id,
         session_id: run.invocation.session_id,
         agent_id: self.class.agent_id
-      }.merge(run.agent_class.instrumentation_attributes(run:, agent: self))
+      }.merge(instrumentation_attributes(run:, agent: self))
     end
 
     def model_attributes

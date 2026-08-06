@@ -826,7 +826,7 @@ class ConfigurationTest < Minitest::Test
   def test_cleanup_failure_cannot_emit_stale_success_when_error_formatting_fails
     events = []
     with_application do |application|
-      application.agent_class.define_singleton_method(:error_message) { |_error, _run| raise "formatter failed" }
+      application.agent_class.define_method(:error_message) { |_error, _run| raise "formatter failed" }
       run = application.build_run(message: "hello")
       run.register { raise "cleanup failed" }
 

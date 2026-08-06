@@ -153,7 +153,12 @@ module LittleGhost
       emit(:run_start, run_id: invocation.run_id, thread_id: invocation.session_id) { |event| yield event }
       trace_context = runtime.instrumentation.trace_context(operation_id:) if runtime.instrumentation.respond_to?(:trace_context)
       emit(:trace_context, context: trace_context) { |event| yield event } unless trace_context.nil? || trace_context.empty?
-      @session = entrypoint_class.respond_to?(:open_session) ? entrypoint_class.open_session(self) : runtime.open_session(self)
+      session_entrypoint = runtime.entrypoint if entrypoint_class <= Agent
+      @session = if session_entrypoint&.respond_to?(:open_session)
+        session_entrypoint.open_session(self)
+      else
+        runtime.open_session(self)
+      end
       agent = if entrypoint_class <= Agent
         runtime.build_agent(entrypoint_class, run: self)
       else
@@ -240,12 +245,13 @@ module LittleGhost
         {
           outcome:,
           error: caught,
-          message: cleanup_failed ? cleanup_error_message(caught) : agent_class.error_message(caught, self),
+          message: cleanup_failed ? cleanup_error_message(caught) : error_message(caught),
           cleanup_failed:
         }
       ]
     ensure
       @interruption_mutex.synchronize do
+        @last_entrypoint = @entrypoint
         @entrypoint = nil
         @interruption_state = :terminal
       end
@@ -326,8 +332,8 @@ module LittleGhost
           runtime.instrumentation_attributes(run: self) : {}
       )
         .merge(
-          entrypoint_class.respond_to?(:instrumentation_attributes) ?
-            entrypoint_class.instrumentation_attributes(run: self) : {}
+          @entrypoint&.respond_to?(:instrumentation_attributes) ?
+            @entrypoint.instrumentation_attributes(run: self) : {}
         )
         .compact
     end
@@ -337,7 +343,9 @@ module LittleGhost
     def entrypoint_name
       return entrypoint_class.name.to_s if workflow_entrypoint?
 
-      entrypoint_class.entrypoint_name
+      return @entrypoint.entrypoint_name if @entrypoint&.respond_to?(:entrypoint_name)
+
+      entrypoint_class.agent_id
     end
 
     def subagent_telemetry(data)
@@ -434,9 +442,14 @@ module LittleGhost
     end
 
     def cleanup_error_message(error)
-      entrypoint_class.error_message(error, self)
+      error_message(error)
     rescue
       "The run could not cleanly stop all work."
+    end
+
+    def error_message(error)
+      entrypoint = @entrypoint || @last_entrypoint
+      entrypoint&.respond_to?(:error_message) ? entrypoint.error_message(error, self) : runtime.error_message(error, self)
     end
 
     def diagnostic_invocation_message
