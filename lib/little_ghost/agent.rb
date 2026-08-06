@@ -22,53 +22,13 @@ module LittleGhost
     ].freeze
 
     class << self
-      def configuration
-        LittleGhost.configuration
-      end
-
-      def runtime
-        @runtime ||= Runtime.new(configuration:, entrypoint: self)
-      end
-
       def run_class = LittleGhost::Run
-
-      def parse(payload)
-        runtime.parse(payload)
-      end
-
-      def build_run(payload)
-        run = run_class.new(invocation: parse(payload), configuration: runtime, agent_class: self)
-        prepare_run(run)
-      rescue
-        run&.close
-        raise
-      end
-
-      def call(payload)
-        build_run(payload).call
-      end
-
-      def ask(message)
-        call(message: message)
-      end
-
-      def stream(payload)
-        build_run(payload).each
-      end
-
-      def stream_ask(message)
-        stream(message: message)
-      end
-
-      def build_agent(agent_class_or_name = self, run:, **options)
-        runtime.build_agent(agent_class_or_name, run:, **options)
-      end
 
       def prepare_run(run) = run
       def prepare_interruption(_run, interruption) = interruption
-      def open_session(run) = run.configuration.open_session(run)
+      def open_session(run) = run.runtime.open_session(run)
       def instrumentation_attributes(run:, agent: nil) = {}
-      def error_message(error, run) = run.configuration.error_message(error, run)
+      def error_message(error, run) = run.runtime.error_message(error, run)
       def entrypoint_name = agent_id
 
       def inherited(subclass)
@@ -338,6 +298,7 @@ module LittleGhost
 
     def initialize(
       model: UNSET,
+      runtime: nil,
       tools: [],
       instrumentation: nil,
       template_resolver: nil,
@@ -353,6 +314,7 @@ module LittleGhost
     )
       if model.equal?(UNSET) && run.nil?
         @entrypoint = true
+        @runtime = runtime || Runtime.new(configuration: LittleGhost.configuration, entrypoint: self)
         @closed = false
         @close_mutex = Mutex.new
         @interruptions_mutex = Mutex.new
@@ -361,6 +323,7 @@ module LittleGhost
       end
 
       @model = model
+      @runtime = runtime || run&.runtime
       @run = run
       @tool_registry = ToolRegistry.new(tools, run:)
       self.class.tool_declarations.each do |declaration|
@@ -399,15 +362,9 @@ module LittleGhost
       raise
     end
 
-    def runtime
-      return run.configuration if run
-
-      @runtime ||= Runtime.new(configuration: self.class.configuration, entrypoint: self)
-    end
+    attr_reader :runtime
 
     def build_run(payload)
-      return self.class.build_run(payload) unless @entrypoint
-
       run = runtime.build_run(payload)
       self.class.prepare_run(run)
     rescue
@@ -430,8 +387,6 @@ module LittleGhost
     end
 
     def ask(message, **options)
-      return runtime.call(message: message, **options) if @entrypoint
-
       call(message, **options)
     end
 

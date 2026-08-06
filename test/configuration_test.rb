@@ -192,6 +192,46 @@ class ConfigurationTest < Minitest::Test
     end
   end
 
+  def test_configuration_instances_do_not_share_declarations
+    first = LittleGhost::Configuration.new
+    second = LittleGhost::Configuration.new
+
+    first.agent "FirstAgent"
+    second.agent "SecondAgent"
+
+    assert_equal "FirstAgent", first.agent
+    assert_equal "SecondAgent", second.agent
+    refute_same first, second
+  end
+
+  def test_configuration_files_apply_to_the_configuration_instance_loading_them
+    Dir.mktmpdir do |first_root|
+      Dir.mktmpdir do |second_root|
+        [
+          [first_root, "FirstAgent"],
+          [second_root, "SecondAgent"]
+        ].each do |root, agent|
+          FileUtils.mkdir_p(File.join(root, "config"))
+          File.write(
+            File.join(root, "config/little_ghost.rb"),
+            "LittleGhost.configure { |config| config.agent #{agent.inspect} }\n"
+          )
+        end
+
+        first = LittleGhost::Configuration.new
+        second = LittleGhost::Configuration.new
+        first.root first_root
+        second.root second_root
+
+        first.load_file!
+        second.load_file!
+
+        assert_equal "FirstAgent", first.agent
+        assert_equal "SecondAgent", second.agent
+      end
+    end
+  end
+
   def test_minimal_application_resolves_root_agent_prompt_and_model
     with_application do |application, provider, root|
       run = application.call(message: "Build it")
@@ -200,7 +240,7 @@ class ConfigurationTest < Minitest::Test
       assert_equal "Done", run.response
       assert_equal Pathname.new(File.realpath(root)), application.root
       assert_equal "Prompt for Build it", provider.requests.first.messages.first.text
-      assert_same application, run.configuration
+      assert_same application, run.runtime
     end
   end
 
@@ -503,7 +543,7 @@ class ConfigurationTest < Minitest::Test
   end
 
   def test_default_model_names_are_normalized_to_strings
-    application = Class.new(TestConfiguration)
+    application = TestConfiguration.new
 
     application.default_model :support
 
@@ -1019,7 +1059,7 @@ class ConfigurationTest < Minitest::Test
       result = isolated.call(message: "hello")
 
       assert_equal "Replacement", result.response
-      assert application.configuration.frozen?
+      refute application.settings.frozen?
       refute_same application.models, isolated.models
     end
   end
@@ -1035,7 +1075,7 @@ class ConfigurationTest < Minitest::Test
       installer = Module.new do
         def self.install(**) = raise("external instrumentation was installed")
       end
-      application_class = Class.new(TestConfiguration)
+      application_class = TestConfiguration.new
       application_class.root root
       application_class.agent agent
       application_class.instrument installer
@@ -1062,14 +1102,11 @@ class ConfigurationTest < Minitest::Test
       FileUtils.mkdir_p(File.join(root, "config"))
       File.write(File.join(root, "config/little_ghost.rb"), "# application fixture\n")
       File.write(agent_path, "class ProbeAgent < LittleGhost::Agent; end\n")
-      application_class = Class.new(TestConfiguration)
+      application_class = TestConfiguration.new
       application_class.root root
       application_class.agent "ProbeAgent"
 
-      runtime = LittleGhost::Runtime.new(
-        configuration: application_class.settings(root:),
-        agent: "ProbeAgent"
-      )
+      runtime = LittleGhost::Runtime.new(configuration: application_class, entrypoint: "ProbeAgent")
 
       assert_equal File.realpath(root), runtime.root.to_s
       assert_equal File.realpath(root), runtime.loader.root
@@ -1433,7 +1470,7 @@ class ConfigurationTest < Minitest::Test
       FileUtils.mkdir_p(File.dirname(config))
       File.write(prompt, "Prompt for <%= invocation.message.text %>")
       File.write(config, "# application fixture\n")
-      application_class = Class.new(TestConfiguration)
+      application_class = TestConfiguration.new
       application_class.agent agent
       application_class.models models_for(provider, settings:)
       application_class.session_store session_store if session_store

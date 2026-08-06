@@ -125,18 +125,16 @@ invocation.message
 invocation[:account_id]
 ```
 
-LittleGhost generates missing run, invocation, and session identifiers. Actor identity remains an explicit caller value. Transport identifiers, callback details, and other application data stay in the invocation hash without becoming framework configuration. `Agent.call` returns the completed `Run`; `Agent.stream` yields generic `StreamEvent` objects and returns the run when enumeration finishes.
+LittleGhost generates missing run, invocation, and session identifiers. Actor identity remains an explicit caller value. Transport identifiers, callback details, and other application data stay in the invocation hash without becoming framework configuration. Agent instances are the invocation boundary: `SupportAgent.new.ask(...)` returns the completed `Run`, while `SupportAgent.new.stream_ask(...)` yields generic `StreamEvent` objects and returns the run when enumeration finishes.
 
 ```ruby
-run = SupportAgent.call(message: "Help")
+agent = SupportAgent.new
+run = agent.ask("Help")
 puts run.response
 
-SupportAgent.stream(message: "Help").each do |event|
+agent.stream_ask("Help").each do |event|
   puts event.type
 end
-
-SupportAgent.ask("Help")
-SupportAgent.stream_ask("Help").each { |event| puts event.type }
 
 SupportAgent.new.ask("Help")
 SupportAgent.new.stream_ask("Help").each { |event| puts event.type }

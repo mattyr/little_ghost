@@ -4,57 +4,37 @@ require_relative "configuration"
 
 module LittleGhost
   class Runtime
-    class << self
-      def loader_for(root)
-        path = canonical_root(root).to_s
-        (@loader_mutex ||= Mutex.new).synchronize do
-          (@loaders ||= {})[path] ||= Support::Loader.new(root: path)
-        end
-      end
-
-      private
-
-      def canonical_root(value)
-        Pathname.new(File.realpath(File.expand_path(value)))
-      rescue Errno::ENOENT
-        raise ConfigurationError, "application root must exist"
-      end
-    end
-
-    attr_reader :configuration, :root, :loader, :components, :instrumentation, :models, :session_store, :agent_class,
+    attr_reader :configuration, :settings, :root, :loader, :components, :instrumentation, :models, :session_store, :agent_class,
       :entrypoint, :entrypoint_class
 
-    def initialize(configuration:, entrypoint: nil, agent: nil)
-      raise ArgumentError, "Provide an entrypoint or agent, not both" if entrypoint && agent
+    def initialize(configuration:, entrypoint: nil, settings: nil)
+      raise ArgumentError, "configuration must be a LittleGhost::Configuration" unless configuration.is_a?(Configuration)
 
-      configured_entrypoint = entrypoint || agent
-      configuration_store = configuration if configuration.respond_to?(:load_file!)
-      bootstrap_root = configuration_store && canonical_application_root(configuration_store.root)
-      if configuration_store
-        @loader = self.class.loader_for(bootstrap_root)
-        configuration_store.load_file!(root: bootstrap_root)
-        @configuration = configuration_store.settings(root: bootstrap_root)
+      @configuration = configuration
+      if settings
+        @settings = settings
       else
-        @configuration = configuration
+        bootstrap_root = canonical_application_root(configuration.root)
+        configuration.load_file!(root: bootstrap_root)
+        @settings = configuration.settings(root: bootstrap_root)
       end
+      configured_entrypoint = entrypoint
 
-      @root = canonical_application_root(@configuration.fetch(:root))
-      @loader = @configuration[:loader] || @loader || self.class.loader_for(@root)
-      @components = Array(@configuration[:components]).freeze
+      @root = canonical_application_root(@settings.fetch(:root))
+      @loader = @settings[:loader] || Support::Loader.new(root: @root)
+      @components = Array(@settings[:components])
       loaders = [loader, *components.map(&:loader)]
       validate_loader_conflicts!(loaders)
       loaders.each(&:setup)
       loaders.each(&:eager_load)
-      configured_entrypoint ||= @configuration[:entrypoint] || @configuration[:agent] || Agent
+      configured_entrypoint ||= @settings[:entrypoint] || @settings[:agent] || Agent
       @entrypoint_class = resolve_entrypoint_class(
         configured_entrypoint.is_a?(Agent) ? configured_entrypoint.class : configured_entrypoint
       )
-      @agent_class = if entrypoint && !agent
+      @agent_class = if entrypoint
         @entrypoint_class
-      elsif agent
-        resolve_agent_class(agent)
-      elsif @configuration[:agent]
-        resolve_agent_class(@configuration[:agent])
+      elsif @settings[:agent]
+        resolve_agent_class(@settings[:agent])
       elsif @entrypoint_class <= Agent
         @entrypoint_class
       else
@@ -63,33 +43,36 @@ module LittleGhost
       @entrypoint = if configured_entrypoint.is_a?(Agent)
         configured_entrypoint
       elsif @entrypoint_class <= Agent
-        @entrypoint_class.new
+        @entrypoint_class.new(runtime: self)
       end
-      @invocation_class = @configuration[:invocation] || Invocation
-      @models = build_service(@configuration[:models], default: -> { ModelRegistry.new })
-      @default_model = @configuration.fetch(:default_model, "default").to_s
+      @invocation_class = @settings[:invocation] || Invocation
+      @models = build_service(@settings[:models], default: -> { ModelRegistry.new })
+      @default_model = @settings.fetch(:default_model, "default").to_s
       @instrumentation = build_service(
-        @configuration[:instrumentation],
+        @settings[:instrumentation],
         default: -> { Support::Instrumentation.new }
       )
-      install_instrumentation(@configuration[:instruments])
-      @session_store = build_session_store(@configuration[:session_store])
-      @session_actor = @configuration[:session_actor]
+      install_instrumentation(@settings[:instruments])
+      @session_store = build_session_store(@settings[:session_store])
+      @session_actor = @settings[:session_actor]
       @prompt_paths = discover_prompt_paths
       @agent_builder = AgentBuilder.new(
-        configuration: self,
+        runtime: self,
         primary_agent: @agent_class,
         prompt_paths: @prompt_paths,
         resolve_agent: method(:resolve_agent_class)
       )
-      @entrypoint.instance_variable_set(:@runtime, self) if @entrypoint&.is_a?(Agent)
     end
 
     def build(**overrides)
-      values = configuration.merge(overrides)
+      values = @settings.merge(overrides)
       values[:root] = canonical_application_root(values.fetch(:root))
       values[:loader] = loader unless overrides.key?(:loader) || overrides.key?(:root)
-      self.class.new(configuration: values, entrypoint: @entrypoint_class)
+      self.class.new(
+        configuration:,
+        entrypoint: @entrypoint_class,
+        settings: values
+      )
     end
 
     def parse(payload)
@@ -98,7 +81,7 @@ module LittleGhost
 
     def build_run(payload)
       run_class = @agent_class.respond_to?(:run_class) ? @agent_class.run_class : Run
-      run_class.new(invocation: parse(payload), configuration: self, agent_class: @agent_class,
+      run_class.new(invocation: parse(payload), runtime: self, agent_class: @agent_class,
         entrypoint_class: @entrypoint_class)
     end
 
@@ -121,7 +104,7 @@ module LittleGhost
     end
 
     def build_entrypoint(run:)
-      return @entrypoint_class.new(run:) if workflow_entrypoint?
+      return @entrypoint_class.new(run:, runtime: self) if workflow_entrypoint?
 
       return build_agent(run:) if @entrypoint_class == @agent_class
 
@@ -135,7 +118,7 @@ module LittleGhost
     end
 
     def service_name
-      @configuration[:service_name] || default_service_name
+      @settings[:service_name] || default_service_name
     end
 
     def model_for(agent_class, run)
@@ -232,7 +215,7 @@ module LittleGhost
     end
 
     def default_service_name
-      return @configuration[:service_name].to_s if @configuration[:service_name]
+      return @settings[:service_name].to_s if @settings[:service_name]
 
       "little-ghost"
     end

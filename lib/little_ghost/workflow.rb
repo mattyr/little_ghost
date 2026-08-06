@@ -75,10 +75,11 @@ module LittleGhost
       end
     end
 
-    attr_reader :run
+    attr_reader :run, :runtime
 
-    def initialize(run:)
+    def initialize(run:, runtime: run.runtime)
       @run = run
+      @runtime = runtime
       @mutex = Mutex.new
       @closed = false
       @started = false
@@ -184,7 +185,7 @@ module LittleGhost
         history:,
         context: isolated_state(context),
         build: lambda {
-          agent = run.configuration.build_agent(agent_class_or_name, run:)
+          agent = runtime.build_agent(agent_class_or_name, run:)
           begin
             [
               agent,
@@ -240,7 +241,7 @@ module LittleGhost
     end
 
     def template_locals_for(agent)
-      @template_locals.merge(run.configuration.template_locals(run:, agent:))
+      @template_locals.merge(runtime.template_locals(run:, agent:))
     end
 
     def isolated_state(value)

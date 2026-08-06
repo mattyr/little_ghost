@@ -69,7 +69,7 @@ class WorkflowTest < Minitest::Test
     end
   end
 
-  Run = Struct.new(:configuration)
+  Run = Struct.new(:runtime)
 
   class ExampleWorkflow < LittleGhost::Workflow
     attr_reader :route, :note
@@ -92,7 +92,7 @@ class WorkflowTest < Minitest::Test
     main_result = result(text: "final", usage: LittleGhost::Usage.new(input_tokens: 5))
     main = FakeAgent.new(main_result)
     application = Application.new(router: [router], note: [note], main: [main])
-    run = Run.new(configuration: application)
+    run = Run.new(application)
     workflow = ExampleWorkflow.new(run:)
     cancellation = LittleGhost::Support::CancellationToken.new
     deadline = Time.now + 60
@@ -150,7 +150,7 @@ class WorkflowTest < Minitest::Test
     error = RuntimeError.new("failed")
     router = FakeAgent.new(error, failure_usage: LittleGhost::Usage.new(input_tokens: 7))
     application = Application.new(router: [router])
-    workflow = ExampleWorkflow.new(run: Run.new(configuration: application))
+    workflow = ExampleWorkflow.new(run: Run.new(application))
     events = []
 
     caught = assert_raises(RuntimeError) do
@@ -169,7 +169,7 @@ class WorkflowTest < Minitest::Test
 
       def perform = "not a response"
     end
-    workflow = workflow_class.new(run: Run.new(configuration: Application.new({})))
+    workflow = workflow_class.new(run: Run.new(Application.new({})))
 
     error = assert_raises(LittleGhost::ProtocolError) { workflow.stream("question").to_a }
 

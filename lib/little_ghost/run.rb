@@ -6,12 +6,12 @@ module LittleGhost
   class Run
     include Enumerable
 
-    attr_reader :configuration, :agent_class, :entrypoint_class, :invocation, :cancellation_token, :result, :operation_id,
+    attr_reader :runtime, :agent_class, :entrypoint_class, :invocation, :cancellation_token, :result, :operation_id,
       :outcome, :response, :error, :session, :usage
 
-    def initialize(invocation:, configuration:, agent_class:, entrypoint_class: agent_class,
+    def initialize(invocation:, agent_class:, runtime:, entrypoint_class: agent_class,
       cancellation_token: Support::CancellationToken.new)
-      @configuration = configuration
+      @runtime = runtime
       @agent_class = agent_class
       @entrypoint_class = entrypoint_class
       @invocation = invocation
@@ -88,7 +88,7 @@ module LittleGhost
         state:,
         cancellation_token:,
         deadline: invocation.deadline_at,
-        instrumentation: configuration.instrumentation,
+        instrumentation: runtime.instrumentation,
         metadata:
       )
     end
@@ -151,13 +151,13 @@ module LittleGhost
         diagnostic: {input: diagnostic_invocation_message}
       )
       emit(:run_start, run_id: invocation.run_id, thread_id: invocation.session_id) { |event| yield event }
-      trace_context = configuration.instrumentation.trace_context(operation_id:) if configuration.instrumentation.respond_to?(:trace_context)
+      trace_context = runtime.instrumentation.trace_context(operation_id:) if runtime.instrumentation.respond_to?(:trace_context)
       emit(:trace_context, context: trace_context) { |event| yield event } unless trace_context.nil? || trace_context.empty?
-      @session = entrypoint_class.respond_to?(:open_session) ? entrypoint_class.open_session(self) : configuration.open_session(self)
+      @session = entrypoint_class.respond_to?(:open_session) ? entrypoint_class.open_session(self) : runtime.open_session(self)
       agent = if entrypoint_class <= Agent
-        configuration.build_agent(entrypoint_class, run: self)
+        runtime.build_agent(entrypoint_class, run: self)
       else
-        configuration.build_entrypoint(run: self)
+        runtime.build_entrypoint(run: self)
       end
       @interruption_mutex.synchronize do
         @entrypoint = agent
@@ -170,7 +170,7 @@ module LittleGhost
           history:,
           context:,
           settings: invocation.settings,
-          template_locals: configuration.template_locals(run: self, agent:),
+          template_locals: runtime.template_locals(run: self, agent:),
           template_paths: Array(invocation[:template_paths]),
           cancellation_token:,
           deadline: invocation.deadline_at,
@@ -310,7 +310,7 @@ module LittleGhost
     end
 
     def instrument(name, attributes = {})
-      configuration.instrumentation.emit(name, **correlation_attributes, **attributes.compact)
+      runtime.instrumentation.emit(name, **correlation_attributes, **attributes.compact)
     end
 
     def correlation_attributes
@@ -322,8 +322,8 @@ module LittleGhost
         agent_id: workflow_entrypoint? ? nil : entrypoint_name,
         workflow_name: workflow_entrypoint? ? entrypoint_name : nil
       }.merge(
-        configuration.respond_to?(:instrumentation_attributes) ?
-          configuration.instrumentation_attributes(run: self) : {}
+        runtime.respond_to?(:instrumentation_attributes) ?
+          runtime.instrumentation_attributes(run: self) : {}
       )
         .merge(
           entrypoint_class.respond_to?(:instrumentation_attributes) ?

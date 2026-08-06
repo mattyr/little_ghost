@@ -30,6 +30,7 @@ module LittleGhost
           if namespace.const_defined?(name, false) || namespace.autoload?(name)
             existing = namespace.autoload?(name)
             next if existing && File.expand_path(existing) == path
+            next if !existing && constant_source_location(constant_name)&.then { |location| File.realpath(location.first) == path }
             raise ConflictError, "#{constant_name} is already defined"
           end
           namespace.autoload(name, path)

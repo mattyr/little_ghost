@@ -43,11 +43,15 @@ class AgentTest < Minitest::Test
   def test_ask_and_stream_ask_wrap_a_raw_message
     agent = Class.new(LittleGhost::Agent)
     calls = []
-    agent.define_singleton_method(:call) { |payload| calls << [:call, payload] }
-    agent.define_singleton_method(:stream) { |payload| calls << [:stream, payload] }
+    runtime = Object.new
+    runtime.define_singleton_method(:call) { |payload| calls << [:call, payload] }
+    runtime.define_singleton_method(:stream) { |payload| calls << [:stream, payload] }
 
-    agent.ask("hello")
-    agent.stream_ask("goodbye")
+    LittleGhost::Runtime.stub(:new, ->(**) { runtime }) do
+      entrypoint = agent.new
+      entrypoint.ask("hello")
+      entrypoint.stream_ask("goodbye")
+    end
 
     assert_equal [[:call, {message: "hello"}], [:stream, {message: "goodbye"}]], calls
   end
@@ -64,6 +68,8 @@ class AgentTest < Minitest::Test
 
       entrypoint.ask("hello")
       entrypoint.stream_ask("goodbye")
+
+      assert_same runtime, entrypoint.runtime
     end
 
     assert_equal [[:call, {message: "hello"}], [:stream, {message: "goodbye"}]], calls
@@ -687,7 +693,7 @@ class AgentTest < Minitest::Test
   def test_mixed_exclusive_and_agent_tool_batch_does_not_hold_the_run_lock_during_delegation
     run = LittleGhost::Run.new(
       invocation: LittleGhost::Invocation.new(message: "go"),
-      configuration: Struct.new(:instrumentation).new(LittleGhost::Support::Instrumentation.new),
+      runtime: Struct.new(:instrumentation).new(LittleGhost::Support::Instrumentation.new),
       agent_class: LittleGhost::Agent
     )
     exclusive_tool = Class.new(LittleGhost::Tool) do
@@ -1141,7 +1147,7 @@ class AgentTest < Minitest::Test
     end
     run = LittleGhost::Run.new(
       invocation: LittleGhost::Invocation.new(message: "go"),
-      configuration: Struct.new(:instrumentation).new(LittleGhost::Support::Instrumentation.new),
+      runtime: Struct.new(:instrumentation).new(LittleGhost::Support::Instrumentation.new),
       agent_class: LittleGhost::Agent
     )
     agent_class = Class.new(LittleGhost::Agent) { system_prompt "" }

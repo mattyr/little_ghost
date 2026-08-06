@@ -261,9 +261,9 @@ class InstrumentationTest < Minitest::Test
     recorded = []
     instrumentation = LittleGhost::Support::Instrumentation.new
     instrumentation.subscribe { |name, attributes| recorded << [name, attributes] }
-    application = Struct.new(:instrumentation).new(instrumentation)
+    runtime = Struct.new(:instrumentation).new(instrumentation)
     invocation = LittleGhost::Invocation.new(message: "Hello")
-    run = LittleGhost::Run.new(configuration: application, agent_class: LittleGhost::Agent, invocation:)
+    run = LittleGhost::Run.new(runtime:, agent_class: LittleGhost::Agent, invocation:)
 
     run.publish(
       :model_retry,

@@ -45,11 +45,21 @@ require_relative "little_ghost/runtime"
 module LittleGhost
   class << self
     def configuration
-      Configuration
+      Thread.current[:little_ghost_configuration] || (@configuration ||= Configuration.new)
     end
 
+    alias_method :default_configuration, :configuration
+
     def configure(&block)
-      Configuration.configure(&block)
+      configuration.configure(&block)
+    end
+
+    def with_configuration(configuration)
+      previous = Thread.current[:little_ghost_configuration]
+      Thread.current[:little_ghost_configuration] = configuration
+      yield
+    ensure
+      Thread.current[:little_ghost_configuration] = previous
     end
   end
 end

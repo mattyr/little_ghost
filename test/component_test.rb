@@ -67,7 +67,7 @@ class ComponentTest < Minitest::Test
         "module Example; class Agent < LittleGhost::Agent; end; end")
       write(application_root, "app/prompts/example/system.erb", "namespaced prompt")
       Object.const_set(:Example, Module.new)
-      application = Class.new(TestConfiguration)
+      application = TestConfiguration.new
       Example.const_set(:Application, application)
       application.root application_root
       application.agent "Example::Agent"
@@ -90,7 +90,7 @@ class ComponentTest < Minitest::Test
       write(application_root, "app/agents/convention_main_agent.rb",
         "class ConventionMainAgent < LittleGhost::Agent; system_prompt 'main'; end")
       Object.const_set(:ApplicationNamespace, Module.new)
-      application = Class.new(TestConfiguration)
+      application = TestConfiguration.new
       ApplicationNamespace.const_set(:ConventionMainApplication, application)
       application.root application_root
       application.agent "ConventionMainAgent"
@@ -117,7 +117,7 @@ class ComponentTest < Minitest::Test
             "module InterdependentComponent; module SharedPrompt; TEXT = 'shared'; end; end")
           write(second_root, "app/tools/interdependent_component/later_prompt.rb",
             "module InterdependentComponent; module LaterPrompt; TEXT = 'later'; end; end")
-          application = Class.new(TestConfiguration)
+          application = TestConfiguration.new
           application.root application_root
           application.agent "InterdependentComponent::MainAgent"
           application.invocation Invocation
@@ -206,7 +206,7 @@ class ComponentTest < Minitest::Test
           write(first_root, "app/prompts/ordered_components/main/system.erb", "first component")
           write(second_root, "app/prompts/ordered_components/main/system.erb", "second component")
           model = RecordingModel.new
-          application = Class.new(TestConfiguration)
+          application = TestConfiguration.new
           application.root application_root
           application.agent "OrderedComponents::MainAgent"
           application.invocation Invocation
@@ -234,7 +234,7 @@ class ComponentTest < Minitest::Test
             "module RepeatableComponent; class FirstTool < LittleGhost::Tool; end; end")
           write(second_root, "app/tools/repeatable_component/second_tool.rb",
             "module RepeatableComponent; class SecondTool < LittleGhost::Tool; end; end")
-          application = Class.new(TestConfiguration)
+          application = TestConfiguration.new
           application.root application_root
           application.agent "RepeatableComponent::MainAgent"
           application.invocation Invocation
@@ -277,7 +277,7 @@ class ComponentTest < Minitest::Test
         write(component_root, "app/tools/repeated_owner_tool.rb",
           "RepeatedOwnerFileLoaded = true; class RepeatedOwnerTool < LittleGhost::Tool; end")
         component = LittleGhost::Component.new(root: component_root)
-        application = Class.new(TestConfiguration)
+        application = TestConfiguration.new
         application.root application_root
         application.agent "RepeatedOwnerMainAgent"
         application.invocation Invocation
@@ -407,7 +407,7 @@ class ComponentTest < Minitest::Test
   private
 
   def build_application(root, component_root, agent_name, model: RecordingModel.new)
-    Class.new(TestConfiguration).tap do |application|
+    TestConfiguration.new.tap do |application|
       application.root root
       application.agent agent_name
       application.invocation Invocation
