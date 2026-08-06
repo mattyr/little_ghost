@@ -24,21 +24,13 @@ module LittleGhost
     class << self
       def run_class = LittleGhost::Run
 
-      def inherited(subclass)
-        super
-        subclass.instance_variable_set(:@agent_id, @agent_id)
-        subclass.instance_variable_set(:@agent_description, @agent_description)
-        subclass.instance_variable_set(:@system_template, @system_template)
-        subclass.instance_variable_set(:@system_prompt, @system_prompt)
-        subclass.instance_variable_set(:@system_prompt_builder, @system_prompt_builder)
-        subclass.instance_variable_set(:@model_role, @model_role)
-        subclass.instance_variable_set(:@result_schema_configuration, @result_schema_configuration)
-        subclass.instance_variable_set(:@capture_diagnostics, @capture_diagnostics)
-        subclass.instance_variable_set(:@limits, limits.dup)
-      end
-
       def agent_id(value = nil)
-        return @agent_id || default_agent_id if value.nil?
+        if value.nil?
+          return @agent_id if instance_variable_defined?(:@agent_id)
+          return inherited_agent.agent_id if inherited_agent
+
+          return default_agent_id
+        end
 
         @agent_id = Support.immutable(value.to_s)
       end
@@ -50,12 +42,20 @@ module LittleGhost
       end
 
       def description(value = nil)
-        return @agent_description.to_s if value.nil?
+        if value.nil?
+          return @agent_description.to_s if instance_variable_defined?(:@agent_description)
+          return inherited_agent.description if inherited_agent
+
+          return ""
+        end
 
         @agent_description = Support.immutable(value.to_s)
       end
 
       def model(value = nil, &block)
+        return @model_role if instance_variable_defined?(:@model_role) && value.nil? && !block
+        return inherited_agent.model if inherited_agent && value.nil? && !block
+
         @model_role = block || Support.immutable(value.to_s) unless value.nil? && !block
         @model_role
       end
@@ -67,13 +67,24 @@ module LittleGhost
       end
 
       def limits(**values)
-        @limits = Support.immutable(limits.merge(values.transform_keys(&:to_sym))) unless values.empty?
-        @limits ||= {}.freeze
+        if values.empty?
+          return @limits if instance_variable_defined?(:@limits)
+          return inherited_agent.limits if inherited_agent
+
+          return {}.freeze
+        end
+
+        @limits = Support.immutable(limits.merge(values.transform_keys(&:to_sym)))
       end
 
       def result_schema(schema = UNSET, name: nil, description: nil, strategy: :auto, **schema_keywords)
         if schema.equal?(UNSET)
-          return @result_schema_configuration if schema_keywords.empty?
+          if schema_keywords.empty?
+            return @result_schema_configuration if instance_variable_defined?(:@result_schema_configuration)
+            return inherited_agent.result_schema if inherited_agent
+
+            return nil
+          end
 
           schema = schema_keywords
         elsif !schema_keywords.empty?
@@ -106,19 +117,36 @@ module LittleGhost
       end
 
       def capture_diagnostics(value = UNSET)
-        return @capture_diagnostics != false if value.equal?(UNSET)
+        if value.equal?(UNSET)
+          return @capture_diagnostics != false if instance_variable_defined?(:@capture_diagnostics)
+          return inherited_agent.capture_diagnostics if inherited_agent
+
+          return true
+        end
 
         @capture_diagnostics = value == true
       end
 
       def system_template(value = nil)
-        return @system_template if value.nil?
+        if value.nil?
+          return @system_template if instance_variable_defined?(:@system_template)
+          return inherited_agent.system_template if inherited_agent
+
+          return nil
+        end
 
         @system_template = Support.immutable(value.to_s)
       end
 
       def system_prompt(value = nil, &block)
-        return @system_prompt_builder || @system_prompt if value.nil? && !block
+        if value.nil? && !block
+          if instance_variable_defined?(:@system_prompt_builder) || instance_variable_defined?(:@system_prompt)
+            return @system_prompt_builder || @system_prompt
+          end
+          return inherited_agent.system_prompt if inherited_agent
+
+          return nil
+        end
 
         @system_template = nil
         if block
@@ -187,6 +215,11 @@ module LittleGhost
 
       def local_tool_declarations
         @tool_declarations ||= []
+      end
+
+      def inherited_agent
+        parent = superclass
+        parent if parent.respond_to?(:agent_id) && parent <= Agent
       end
 
       def validate_result_schema_keywords!(schema, path = "$")
