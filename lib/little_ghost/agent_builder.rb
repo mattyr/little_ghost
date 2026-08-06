@@ -17,15 +17,14 @@ module LittleGhost
       end
     end
 
-    def initialize(application:, primary_agent:, prompt_paths:, resolve_agent:)
-      @application = application
-      @primary_agent = primary_agent
+    def initialize(runtime:, prompt_paths:, resolve_agent:)
+      @runtime = runtime
       @prompt_paths = prompt_paths
       @resolve_agent = resolve_agent
     end
 
     def build(
-      agent_class_or_name = @primary_agent,
+      agent_class_or_name,
       run:,
       model: nil,
       tools: [],
@@ -38,13 +37,14 @@ module LittleGhost
 
     private
 
-    attr_reader :application, :prompt_paths
+    attr_reader :runtime, :prompt_paths
 
     def instantiate(agent_class, run:, tools:, model:, delegation_activity:, agent_path:)
       agent_class.new(
         model:,
+        runtime:,
         tools:,
-        instrumentation: application.instrumentation,
+        instrumentation: runtime.instrumentation,
         template_paths: prompt_paths,
         run:,
         delegation_activity:,
@@ -66,7 +66,7 @@ module LittleGhost
       configured_tools.concat(
         delegation_tools(agent_class, run, conversation_id:, delegation_activity:, agent_path:)
       )
-      resolved_model = model || application.model_for(agent_class, run)
+      resolved_model = model || runtime.model_for(agent_class, run)
       transferred = true
       instantiate(
         agent_class,
@@ -120,7 +120,7 @@ module LittleGhost
           factory: lambda do |subagent_id, child_conversation_id = nil|
             factory = declaration[:factory]
             if factory
-              factory.call(subagent_id, run)
+              invoke_factory(factory, subagent_id, run)
             else
               declared_agent(
                 declaration,
@@ -144,8 +144,9 @@ module LittleGhost
 
       Subagents::Manager.new(
         definitions,
+        runtime:,
         wait_timeout: agent_class.subagent_long_poll_duration,
-        parent_session: conversation_id ? application.open_subagent_session(run, conversation_id) : run.session,
+        parent_session: conversation_id ? runtime.open_subagent_session(run, conversation_id) : run.session,
         cancellation_token: run.cancellation_token,
         deadline: run.invocation.deadline_at,
         parent_agent_path: agent_path,
@@ -177,6 +178,13 @@ module LittleGhost
 
     def resolve(value, run)
       value.is_a?(Proc) ? value.call(run) : value
+    end
+
+    def invoke_factory(factory, *arguments)
+      accepts_runtime = factory.parameters.any? do |kind, name|
+        %i[key keyreq keyrest].include?(kind) && (name == :runtime || kind == :keyrest)
+      end
+      accepts_runtime ? factory.call(*arguments, runtime: @runtime) : factory.call(*arguments)
     end
   end
 end

@@ -6,11 +6,14 @@ module LittleGhost
   class Run
     include Enumerable
 
-    attr_reader :application, :invocation, :cancellation_token, :result, :operation_id,
+    attr_reader :runtime, :agent_class, :entrypoint_class, :invocation, :cancellation_token, :result, :operation_id,
       :outcome, :response, :error, :session, :usage
 
-    def initialize(invocation:, application:, cancellation_token: Support::CancellationToken.new)
-      @application = application
+    def initialize(invocation:, agent_class:, runtime:, entrypoint_class: agent_class,
+      cancellation_token: Support::CancellationToken.new)
+      @runtime = runtime
+      @agent_class = agent_class
+      @entrypoint_class = entrypoint_class
       @invocation = invocation
       @cancellation_token = cancellation_token
       @operation_id = SecureRandom.uuid
@@ -85,7 +88,7 @@ module LittleGhost
         state:,
         cancellation_token:,
         deadline: invocation.deadline_at,
-        instrumentation: application.instrumentation,
+        instrumentation: runtime.instrumentation,
         metadata:
       )
     end
@@ -141,17 +144,26 @@ module LittleGhost
       execution_cleanup_error = nil
       instrument(
         :run_start,
-        entrypoint_kind: workflow_entrypoint? ? :workflow : :agent,
-        workflow_name: workflow_entrypoint? ? application_entrypoint_name : nil,
+        entrypoint_kind: workflow_run? ? :workflow : :agent,
+        workflow_name: workflow_run? ? entrypoint_name : nil,
         trace_context: invocation[:parent_trace_context],
         trace_links: invocation[:trace_links],
         diagnostic: {input: diagnostic_invocation_message}
       )
       emit(:run_start, run_id: invocation.run_id, thread_id: invocation.session_id) { |event| yield event }
-      trace_context = application.instrumentation.trace_context(operation_id:) if application.instrumentation.respond_to?(:trace_context)
+      trace_context = runtime.instrumentation.trace_context(operation_id:) if runtime.instrumentation.respond_to?(:trace_context)
       emit(:trace_context, context: trace_context) { |event| yield event } unless trace_context.nil? || trace_context.empty?
-      @session = application.open_session(self)
-      agent = application.build_entrypoint(run: self)
+      session_agent = entrypoint_class.new(runtime:) if entrypoint_class <= Agent
+      @session = if session_agent&.respond_to?(:open_session)
+        session_agent.open_session(self)
+      else
+        runtime.open_session(self)
+      end
+      agent = if entrypoint_class <= Agent
+        runtime.build_agent(entrypoint_class, run: self)
+      else
+        entrypoint_class.new(run: self, runtime:)
+      end
       @interruption_mutex.synchronize do
         @entrypoint = agent
       end
@@ -163,7 +175,7 @@ module LittleGhost
           history:,
           context:,
           settings: invocation.settings,
-          template_locals: application.template_locals(run: self, agent:),
+          template_locals: runtime.template_locals(run: self, agent:),
           template_paths: Array(invocation[:template_paths]),
           cancellation_token:,
           deadline: invocation.deadline_at,
@@ -233,12 +245,13 @@ module LittleGhost
         {
           outcome:,
           error: caught,
-          message: cleanup_failed ? cleanup_error_message(caught) : application.error_message(caught, self),
+          message: cleanup_failed ? cleanup_error_message(caught) : error_message(caught),
           cleanup_failed:
         }
       ]
     ensure
       @interruption_mutex.synchronize do
+        @last_entrypoint = @entrypoint
         @entrypoint = nil
         @interruption_state = :terminal
       end
@@ -303,7 +316,7 @@ module LittleGhost
     end
 
     def instrument(name, attributes = {})
-      application.instrumentation.emit(name, **correlation_attributes, **attributes.compact)
+      runtime.instrumentation.emit(name, **correlation_attributes, **attributes.compact)
     end
 
     def correlation_attributes
@@ -312,20 +325,27 @@ module LittleGhost
         run_id: invocation.run_id,
         invocation_id: invocation.invocation_id,
         session_id: invocation.session_id,
-        agent_id: workflow_entrypoint? ? nil : application_entrypoint_name,
-        workflow_name: workflow_entrypoint? ? application_entrypoint_name : nil
-      }.merge(application.respond_to?(:instrumentation_attributes) ? application.instrumentation_attributes(run: self) : {})
+        agent_id: workflow_run? ? nil : entrypoint_name,
+        workflow_name: workflow_run? ? entrypoint_name : nil
+      }.merge(
+        runtime.respond_to?(:instrumentation_attributes) ?
+          runtime.instrumentation_attributes(run: self) : {}
+      )
+        .merge(
+          @entrypoint&.respond_to?(:instrumentation_attributes) ?
+            @entrypoint.instrumentation_attributes(run: self) : {}
+        )
         .compact
     end
 
-    def workflow_entrypoint?
-      application.respond_to?(:workflow_entrypoint?) && application.workflow_entrypoint?
-    end
+    def workflow_run? = entrypoint_class <= Workflow
 
-    def application_entrypoint_name
-      return application.entrypoint_name if application.respond_to?(:entrypoint_name)
+    def entrypoint_name
+      return entrypoint_class.name.to_s if workflow_run?
 
-      application.agent_class.agent_id if application.respond_to?(:agent_class)
+      return @entrypoint.entrypoint_name if @entrypoint&.respond_to?(:entrypoint_name)
+
+      entrypoint_class.agent_id
     end
 
     def subagent_telemetry(data)
@@ -422,9 +442,14 @@ module LittleGhost
     end
 
     def cleanup_error_message(error)
-      application.error_message(error, self)
+      error_message(error)
     rescue
       "The run could not cleanly stop all work."
+    end
+
+    def error_message(error)
+      entrypoint = @entrypoint || @last_entrypoint
+      entrypoint&.respond_to?(:error_message) ? entrypoint.error_message(error, self) : runtime.error_message(error, self)
     end
 
     def diagnostic_invocation_message

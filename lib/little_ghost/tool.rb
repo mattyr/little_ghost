@@ -4,7 +4,6 @@ require "json"
 
 module LittleGhost
   class Tool
-    UNSET = Object.new.freeze
     ExecutionResult = Data.define(:content, :status, :error) do
       def initialize(content:, status:, error: nil)
         super
@@ -19,39 +18,39 @@ module LittleGhost
       end
     end
 
+    extend Support::ClassAttributes
+
+    class_attribute :tool_name_value
+    class_attribute :description_value
+    class_attribute :input_schema_value
+    class_attribute :exclusive_value, default: false
+
     class << self
-      def inherited(subclass)
-        super
-        subclass.instance_variable_set(:@tool_name, @tool_name)
-        subclass.instance_variable_set(:@description, @description)
-        subclass.instance_variable_set(:@input_schema, @input_schema)
-        subclass.instance_variable_set(:@exclusive, @exclusive)
+      def tool_name(*values)
+        return configured_name if values.empty?
+
+        self.tool_name_value = String(values.fetch(0)).freeze
       end
 
-      def tool_name(value = UNSET)
-        return configured_name if value.equal?(UNSET)
+      def description(*values)
+        return description_value if values.empty?
 
-        @tool_name = String(value).freeze
+        self.description_value = String(values.fetch(0)).freeze
       end
 
-      def description(value = UNSET)
-        return @description if value.equal?(UNSET)
+      def input_schema(*values)
+        return input_schema_value || {}.freeze if values.empty?
 
-        @description = String(value).freeze
-      end
-
-      def input_schema(value = UNSET)
-        return @input_schema || {}.freeze if value.equal?(UNSET)
-
+        value = values.fetch(0)
         raise ArgumentError, "input_schema must be a hash" unless value.is_a?(Hash)
 
-        @input_schema = deep_freeze(value)
+        self.input_schema_value = deep_freeze(value)
       end
 
-      def exclusive(value = UNSET)
-        return !!@exclusive if value.equal?(UNSET)
+      def exclusive(*values)
+        return !!exclusive_value if values.empty?
 
-        @exclusive = !!value
+        self.exclusive_value = !!values.fetch(0)
       end
 
       def define(name:, description:, input_schema: {}, &implementation)
@@ -86,7 +85,7 @@ module LittleGhost
       private
 
       def configured_name
-        return @tool_name if @tool_name
+        return tool_name_value if tool_name_value
 
         class_name = Module.instance_method(:name).bind_call(self)
         return if class_name.nil?

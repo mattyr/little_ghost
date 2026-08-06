@@ -25,8 +25,8 @@ module LittleGhost
         messages: messages.map { |message| Message.coerce(message) }.freeze,
         tools: tools.freeze,
         settings: settings.freeze,
-        output_schema: output_schema && Support.immutable(output_schema),
-        tool_choice: tool_choice && Support.immutable(tool_choice),
+        output_schema:,
+        tool_choice:,
         required_capabilities: required_capabilities.map(&:to_sym).uniq.freeze,
         cancellation_token: cancellation_token,
         deadline:

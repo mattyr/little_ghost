@@ -40,7 +40,26 @@ require_relative "little_ghost/agent_interruptions"
 require_relative "little_ghost/agent"
 require_relative "little_ghost/agent_builder"
 require_relative "little_ghost/workflow"
-require_relative "little_ghost/application"
+require_relative "little_ghost/runtime"
 
 module LittleGhost
+  class << self
+    def configuration
+      Thread.current[:little_ghost_configuration] || (@configuration ||= Configuration.new)
+    end
+
+    alias_method :default_configuration, :configuration
+
+    def configure(&block)
+      configuration.configure(&block)
+    end
+
+    def with_configuration(configuration)
+      previous = Thread.current[:little_ghost_configuration]
+      Thread.current[:little_ghost_configuration] = configuration
+      yield
+    ensure
+      Thread.current[:little_ghost_configuration] = previous
+    end
+  end
 end

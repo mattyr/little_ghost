@@ -169,6 +169,7 @@ module LittleGhost
 
       def initialize(
         definitions,
+        runtime: nil,
         max_concurrent: DEFAULT_MAX_CONCURRENT,
         max_identities: DEFAULT_MAX_IDENTITIES,
         max_turns: DEFAULT_MAX_TURNS,
@@ -183,6 +184,7 @@ module LittleGhost
         parent_session: nil,
         parent_agent_path: AgentPath::ROOT
       )
+        @runtime = runtime
         validate_limit(:max_concurrent, max_concurrent)
         validate_limit(:max_identities, max_identities)
         validate_limit(:max_turns, max_turns)
@@ -763,9 +765,9 @@ module LittleGhost
 
       def build_agent(definition, subagent_id, conversation_id)
         agent = if definition.accepts_conversation_id
-          definition.factory.call(subagent_id, conversation_id)
+          invoke_factory(definition.factory, subagent_id, conversation_id)
         else
-          definition.factory.call(subagent_id)
+          invoke_factory(definition.factory, subagent_id)
         end
         if agent.is_a?(Agent) && agent.agent_path != subagent_id
           raise ConfigurationError,
@@ -773,6 +775,13 @@ module LittleGhost
         end
 
         agent
+      end
+
+      def invoke_factory(factory, *arguments)
+        accepts_runtime = factory.parameters.any? do |kind, name|
+          %i[key keyreq keyrest].include?(kind) && (name == :runtime || kind == :keyrest)
+        end
+        accepts_runtime ? factory.call(*arguments, runtime: @runtime) : factory.call(*arguments)
       end
 
       def restore_agent!(identity)

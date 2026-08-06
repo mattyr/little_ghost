@@ -28,10 +28,9 @@ class InstrumentationTest < Minitest::Test
 
     assert_equal [:invocation_stop, attributes], received
     assert_same returned, received.last
-    assert returned.frozen?
-    assert returned.fetch(:invocation).frozen?
-    assert returned.dig(:invocation, :message, :content).frozen?
-    assert returned.dig(:invocation, :message, :content, 0).frozen?
+    refute returned.frozen?
+    refute returned.fetch(:invocation).frozen?
+    refute returned.dig(:invocation, :message, :content).frozen?
   end
 
   def test_diagnostic_content_is_disabled_by_default
@@ -261,9 +260,9 @@ class InstrumentationTest < Minitest::Test
     recorded = []
     instrumentation = LittleGhost::Support::Instrumentation.new
     instrumentation.subscribe { |name, attributes| recorded << [name, attributes] }
-    application = Struct.new(:instrumentation).new(instrumentation)
+    runtime = Struct.new(:instrumentation).new(instrumentation)
     invocation = LittleGhost::Invocation.new(message: "Hello")
-    run = LittleGhost::Run.new(application:, invocation:)
+    run = LittleGhost::Run.new(runtime:, agent_class: LittleGhost::Agent, invocation:)
 
     run.publish(
       :model_retry,

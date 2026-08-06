@@ -65,7 +65,7 @@ class MessageTest < Minitest::Test
     decoded = LittleGhost::Message.coerce(JSON.parse(JSON.generate(message)))
 
     assert_equal message.to_h, decoded.to_h
-    assert decoded.content.first.details.frozen?
+    refute decoded.content.first.details.frozen?
   end
 
   def test_invalid_binary_content_has_a_coherent_error

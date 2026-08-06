@@ -23,7 +23,7 @@ module LittleGhost
         raise ArgumentError, "tool use name is required" if name.empty?
         raise ArgumentError, "tool use input must be an object" unless input.is_a?(Hash)
 
-        super(id: id.freeze, name: name.freeze, input: Support.immutable(input))
+        super(id: id.to_s, name: name.to_s, input:)
       rescue TypeError
         raise ArgumentError, "tool use id and name must be strings"
       end
@@ -53,7 +53,6 @@ module LittleGhost
           unless details.is_a?(Array) && details.all? { |detail| detail.is_a?(Hash) }
             raise ArgumentError, "reasoning details must be an array of objects"
           end
-          details = Support.immutable(details)
         end
         if redacted_content && (!text.empty? || !signature.to_s.empty?)
           raise ArgumentError, "reasoning content cannot contain both text and redacted content"

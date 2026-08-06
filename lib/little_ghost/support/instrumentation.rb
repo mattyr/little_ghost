@@ -51,7 +51,6 @@ module LittleGhost
         rescue => error
           warn_failure(error)
         end
-        attributes = Support.immutable(attributes)
         subscribers.each do |subscriber|
           subscriber.call(name, attributes)
         rescue => error

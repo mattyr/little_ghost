@@ -12,6 +12,7 @@ module LittleGhost
 
       def self.included(base)
         base.extend(ClassMethods)
+        base.class_attribute :tool_loop_configuration_value
       end
 
       module ClassMethods
@@ -21,11 +22,11 @@ module LittleGhost
           raise ArgumentError, "warning_at must be at least 2" if warning_at < 2
           raise ArgumentError, "terminate_at must be greater than warning_at" if terminate_at <= warning_at
 
-          @tool_loop_configuration = Support.immutable({
+          self.tool_loop_configuration_value = {
             warning_at:,
             terminate_at:,
             except: Array(except).map { |tool| tool_name(tool) }
-          })
+          }
           after_initialize :initialize_tool_loop
           before_invocation :reset_tool_loop
           after_invocation :clear_tool_loop
@@ -34,11 +35,7 @@ module LittleGhost
           after_tool :detect_repeated_tool_call, prepend: true
         end
 
-        def tool_loop_configuration
-          return @tool_loop_configuration if instance_variable_defined?(:@tool_loop_configuration)
-
-          superclass.tool_loop_configuration if superclass.respond_to?(:tool_loop_configuration)
-        end
+        def tool_loop_configuration = tool_loop_configuration_value
 
         private
 

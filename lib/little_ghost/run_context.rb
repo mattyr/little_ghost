@@ -35,7 +35,7 @@ module LittleGhost
       @agent_operation_id = nil
       @agent_operation_id_mutex = Mutex.new
       @interruption_mutex = Mutex.new
-      @interruption_metadata = interruption_metadata && Support.immutable(interruption_metadata.to_h)
+      @interruption_metadata = interruption_metadata&.to_h
       @interruption_ids = Array(interruption_ids).map { |id| String(id).dup.freeze }.freeze
     end
 
@@ -88,7 +88,7 @@ module LittleGhost
     end
 
     def activate_interruption(metadata:, ids:)
-      value = metadata && Support.immutable(metadata.to_h)
+      value = metadata&.to_h
       values = Array(ids).map { |id| String(id).dup.freeze }.freeze
       @interruption_mutex.synchronize do
         @interruption_metadata = value

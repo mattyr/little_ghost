@@ -267,7 +267,7 @@ class OpenAICompatibleTest < Minitest::Test
       },
       {"type" => "reasoning.encrypted", "index" => 1, "data" => "opaque"}
     ], reasoning.details
-    assert reasoning.details.frozen?
+    refute reasoning.details.frozen?
   end
 
   def test_chat_completions_emits_one_start_when_identity_is_repeated

@@ -69,7 +69,7 @@ class WorkflowTest < Minitest::Test
     end
   end
 
-  Run = Struct.new(:application)
+  Run = Struct.new(:runtime)
 
   class ExampleWorkflow < LittleGhost::Workflow
     attr_reader :route, :note

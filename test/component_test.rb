@@ -48,9 +48,9 @@ class ComponentTest < Minitest::Test
           "module ComponentLoading; class HelperAgent < LittleGhost::Agent; end; end")
         write(component_root, "app/tools/component_loading/echo_tool.rb",
           "module ComponentLoading; class EchoTool < LittleGhost::Tool; tool_name 'echo'; end; end")
-        application = build_application(application_root, component_root, "ComponentLoading::MainAgent")
+        harness = build_application(application_root, component_root, "ComponentLoading::MainAgent")
 
-        instance = application.boot!
+        instance = harness.runtime
 
         assert_equal ComponentLoading::HelperAgent, instance.components.first.loader.constant("ComponentLoading::HelperAgent")
         assert_equal "ComponentLoading::EchoTool", ComponentLoading::EchoTool.name
@@ -67,16 +67,16 @@ class ComponentTest < Minitest::Test
         "module Example; class Agent < LittleGhost::Agent; end; end")
       write(application_root, "app/prompts/example/system.erb", "namespaced prompt")
       Object.const_set(:Example, Module.new)
-      application = Class.new(LittleGhost::Application)
-      Example.const_set(:Application, application)
-      application.root application_root
+      harness = TestHarness.new
+      Example.const_set(:Application, harness)
+      harness.root application_root
+      harness.select_agent "Example::Agent"
       model = RecordingModel.new
-      application.models models_for(model)
+      harness.models models_for(model)
 
-      instance = application.boot!
-      application.call(message: "hello")
+      harness.agent_instance.call(message: "hello")
 
-      assert_equal Example::Agent, instance.instance_variable_get(:@agent_class)
+      assert_equal Example::Agent, harness.agent_class
       assert_equal "namespaced prompt", model.requests.first.messages.first.text
       assert_equal "hello", model.requests.first.messages.last.text
     ensure
@@ -89,14 +89,14 @@ class ComponentTest < Minitest::Test
       write(application_root, "app/agents/convention_main_agent.rb",
         "class ConventionMainAgent < LittleGhost::Agent; system_prompt 'main'; end")
       Object.const_set(:ApplicationNamespace, Module.new)
-      application = Class.new(LittleGhost::Application)
-      ApplicationNamespace.const_set(:ConventionMainApplication, application)
-      application.root application_root
-      application.models models_for(RecordingModel.new)
+      harness = TestHarness.new
+      ApplicationNamespace.const_set(:ConventionMainApplication, harness)
+      harness.root application_root
+      harness.select_agent "ConventionMainAgent"
+      harness.models models_for(RecordingModel.new)
 
-      instance = application.boot!
-
-      assert_equal ConventionMainAgent, instance.instance_variable_get(:@agent_class)
+      harness.runtime
+      assert_equal ConventionMainAgent, harness.agent_class
     ensure
       remove_constant(:ApplicationNamespace)
       remove_constant(:ConventionMainAgent)
@@ -115,15 +115,15 @@ class ComponentTest < Minitest::Test
             "module InterdependentComponent; module SharedPrompt; TEXT = 'shared'; end; end")
           write(second_root, "app/tools/interdependent_component/later_prompt.rb",
             "module InterdependentComponent; module LaterPrompt; TEXT = 'later'; end; end")
-          application = Class.new(LittleGhost::Application)
-          application.root application_root
-          application.agent "InterdependentComponent::MainAgent"
-          application.invocation Invocation
-          application.models models_for(RecordingModel.new)
-          application.component LittleGhost::Component.new(root: first_root)
-          application.component LittleGhost::Component.new(root: second_root)
+          harness = TestHarness.new
+          harness.root application_root
+          harness.select_agent "InterdependentComponent::MainAgent"
+          harness.invocation Invocation
+          harness.models models_for(RecordingModel.new)
+          harness.component LittleGhost::Component.new(root: first_root)
+          harness.component LittleGhost::Component.new(root: second_root)
 
-          application.boot!
+          harness.runtime
 
           assert_equal "shared", InterdependentComponent::MainAgent.system_prompt
           assert_equal "later", InterdependentComponent::HelperAgent.system_prompt
@@ -140,13 +140,13 @@ class ComponentTest < Minitest::Test
         write(application_root, "app/agents/component_prompts/main_agent.rb",
           "module ComponentPrompts; class MainAgent < LittleGhost::Agent; end; end")
         write(component_root, "app/prompts/component_prompts/main/system.erb", "component prompt")
-        write(application_root, "app/prompts/component_prompts/main/system.erb", "application prompt")
+        write(application_root, "app/prompts/component_prompts/main/system.erb", "harness prompt")
         model = RecordingModel.new
-        application = build_application(application_root, component_root, "ComponentPrompts::MainAgent", model:)
+        harness = build_application(application_root, component_root, "ComponentPrompts::MainAgent", model:)
 
-        application.call("message" => "hello")
+        harness.agent_instance.call("message" => "hello")
 
-        assert_equal "application prompt", model.requests.first.messages.first.text
+        assert_equal "harness prompt", model.requests.first.messages.first.text
       ensure
         remove_constant(:ComponentPrompts)
       end
@@ -160,9 +160,9 @@ class ComponentTest < Minitest::Test
           "module ComponentFallback; class MainAgent < LittleGhost::Agent; end; end")
         write(component_root, "app/prompts/component_fallback/main/system.erb", "component prompt")
         model = RecordingModel.new
-        application = build_application(application_root, component_root, "ComponentFallback::MainAgent", model:)
+        harness = build_application(application_root, component_root, "ComponentFallback::MainAgent", model:)
 
-        application.call("message" => "hello")
+        harness.agent_instance.call("message" => "hello")
 
         assert_equal "component prompt", model.requests.first.messages.first.text
       ensure
@@ -177,12 +177,12 @@ class ComponentTest < Minitest::Test
         Dir.mktmpdir do |invocation_root|
           write(application_root, "app/agents/invocation_prompt/main_agent.rb",
             "module InvocationPrompt; class MainAgent < LittleGhost::Agent; end; end")
-          write(application_root, "app/prompts/invocation_prompt/main/system.erb", "application prompt")
+          write(application_root, "app/prompts/invocation_prompt/main/system.erb", "harness prompt")
           write(component_root, "app/prompts/invocation_prompt/main/system.erb", "component prompt")
           write(invocation_root, "invocation_prompt/main/system.erb", "invocation prompt")
           model = RecordingModel.new
-          application = build_application(application_root, component_root, "InvocationPrompt::MainAgent", model:)
-          application.call(
+          harness = build_application(application_root, component_root, "InvocationPrompt::MainAgent", model:)
+          harness.agent_instance.call(
             "message" => "hello",
             "template_paths" => [LittleGhost::Templates::TrustedPath.new(path: invocation_root)]
           )
@@ -204,15 +204,15 @@ class ComponentTest < Minitest::Test
           write(first_root, "app/prompts/ordered_components/main/system.erb", "first component")
           write(second_root, "app/prompts/ordered_components/main/system.erb", "second component")
           model = RecordingModel.new
-          application = Class.new(LittleGhost::Application)
-          application.root application_root
-          application.agent "OrderedComponents::MainAgent"
-          application.invocation Invocation
-          application.models models_for(model)
-          application.component LittleGhost::Component.new(root: first_root)
-          application.component LittleGhost::Component.new(root: second_root)
+          harness = TestHarness.new
+          harness.root application_root
+          harness.select_agent "OrderedComponents::MainAgent"
+          harness.invocation Invocation
+          harness.models models_for(model)
+          harness.component LittleGhost::Component.new(root: first_root)
+          harness.component LittleGhost::Component.new(root: second_root)
 
-          application.call("message" => "hello")
+          harness.agent_instance.call("message" => "hello")
 
           assert_equal "first component", model.requests.first.messages.first.text
         ensure
@@ -232,15 +232,15 @@ class ComponentTest < Minitest::Test
             "module RepeatableComponent; class FirstTool < LittleGhost::Tool; end; end")
           write(second_root, "app/tools/repeatable_component/second_tool.rb",
             "module RepeatableComponent; class SecondTool < LittleGhost::Tool; end; end")
-          application = Class.new(LittleGhost::Application)
-          application.root application_root
-          application.agent "RepeatableComponent::MainAgent"
-          application.invocation Invocation
-          application.models models_for(RecordingModel.new)
-          application.component LittleGhost::Component.new(root: first_root)
-          application.component LittleGhost::Component.new(root: second_root)
+          harness = TestHarness.new
+          harness.root application_root
+          harness.select_agent "RepeatableComponent::MainAgent"
+          harness.invocation Invocation
+          harness.models models_for(RecordingModel.new)
+          harness.component LittleGhost::Component.new(root: first_root)
+          harness.component LittleGhost::Component.new(root: second_root)
 
-          instance = application.boot!
+          instance = harness.runtime
 
           assert_equal 2, instance.components.length
           assert RepeatableComponent.const_defined?(:FirstTool, false)
@@ -259,9 +259,9 @@ class ComponentTest < Minitest::Test
           "class DuplicateComponentAgent < LittleGhost::Agent; end")
         write(component_root, "app/tools/duplicate_component_agent.rb",
           "class DuplicateComponentAgent < LittleGhost::Tool; end")
-        application = build_application(application_root, component_root, "DuplicateComponentAgent")
+        harness = build_application(application_root, component_root, "DuplicateComponentAgent")
 
-        assert_raises(LittleGhost::Support::Loader::ConflictError) { application.boot! }
+        assert_raises(LittleGhost::Support::Loader::ConflictError) { harness.runtime }
         refute Object.const_defined?(:DuplicateComponentAgent, false)
       end
     end
@@ -275,15 +275,15 @@ class ComponentTest < Minitest::Test
         write(component_root, "app/tools/repeated_owner_tool.rb",
           "RepeatedOwnerFileLoaded = true; class RepeatedOwnerTool < LittleGhost::Tool; end")
         component = LittleGhost::Component.new(root: component_root)
-        application = Class.new(LittleGhost::Application)
-        application.root application_root
-        application.agent "RepeatedOwnerMainAgent"
-        application.invocation Invocation
-        application.models models_for(RecordingModel.new)
-        application.component component
-        application.component component
+        harness = TestHarness.new
+        harness.root application_root
+        harness.select_agent "RepeatedOwnerMainAgent"
+        harness.invocation Invocation
+        harness.models models_for(RecordingModel.new)
+        harness.component component
+        harness.component component
 
-        assert_raises(LittleGhost::Support::Loader::ConflictError) { application.boot! }
+        assert_raises(LittleGhost::Support::Loader::ConflictError) { harness.runtime }
         refute Object.const_defined?(:RepeatedOwnerFileLoaded, false)
       end
     end
@@ -296,9 +296,9 @@ class ComponentTest < Minitest::Test
           "NamespaceCollisionLoaded = true; class NamespaceCollision < LittleGhost::Agent; end")
         write(component_root, "app/tools/namespace_collision/helper_tool.rb",
           "class NamespaceCollision::HelperTool < LittleGhost::Tool; end")
-        application = build_application(application_root, component_root, "NamespaceCollision")
+        harness = build_application(application_root, component_root, "NamespaceCollision")
 
-        assert_raises(LittleGhost::Support::Loader::ConflictError) { application.boot! }
+        assert_raises(LittleGhost::Support::Loader::ConflictError) { harness.runtime }
         refute Object.const_defined?(:NamespaceCollisionLoaded, false)
       end
     end
@@ -310,9 +310,9 @@ class ComponentTest < Minitest::Test
       Dir.mktmpdir do |component_root|
         write(application_root, "app/agents/existing_component_agent.rb",
           "ExistingComponentFileLoaded = true; class ExistingComponentAgent < LittleGhost::Agent; end")
-        application = build_application(application_root, component_root, "ExistingComponentAgent")
+        harness = build_application(application_root, component_root, "ExistingComponentAgent")
 
-        assert_raises(LittleGhost::Support::Loader::ConflictError) { application.boot! }
+        assert_raises(LittleGhost::Support::Loader::ConflictError) { harness.runtime }
         refute Object.const_defined?(:ExistingComponentFileLoaded, false)
       end
     end
@@ -325,12 +325,12 @@ class ComponentTest < Minitest::Test
       Dir.mktmpdir do |component_root|
         write(application_root, "app/agents/build_after_boot_agent.rb",
           "class BuildAfterBootAgent < LittleGhost::Agent; system_prompt 'main'; end")
-        application = build_application(application_root, component_root, "BuildAfterBootAgent")
-        application.boot!
+        harness = build_application(application_root, component_root, "BuildAfterBootAgent")
+        harness.runtime
 
-        isolated = application.build(models: models_for(RecordingModel.new))
+        isolated = harness.build(models: models_for(RecordingModel.new))
 
-        assert_equal BuildAfterBootAgent, isolated.instance_variable_get(:@agent_class)
+        assert_equal BuildAfterBootAgent, isolated.agent_class
       ensure
         remove_constant(:BuildAfterBootAgent)
       end
@@ -369,9 +369,9 @@ class ComponentTest < Minitest::Test
             "class ApplicationPromptEscape < LittleGhost::Agent; end")
           FileUtils.mkdir_p(File.join(application_root, "app"))
           File.symlink(outside, File.join(application_root, "app/prompts"))
-          application = build_application(application_root, component_root, "ApplicationPromptEscape")
+          harness = build_application(application_root, component_root, "ApplicationPromptEscape")
 
-          assert_raises(LittleGhost::Support::Loader::ConflictError) { application.boot! }
+          assert_raises(LittleGhost::Support::Loader::ConflictError) { harness.runtime }
         end
       end
     end
@@ -405,12 +405,12 @@ class ComponentTest < Minitest::Test
   private
 
   def build_application(root, component_root, agent_name, model: RecordingModel.new)
-    Class.new(LittleGhost::Application).tap do |application|
-      application.root root
-      application.agent agent_name
-      application.invocation Invocation
-      application.models models_for(model)
-      application.component LittleGhost::Component.new(root: component_root)
+    TestHarness.new.tap do |harness|
+      harness.root root
+      harness.select_agent agent_name
+      harness.invocation Invocation
+      harness.models models_for(model)
+      harness.component LittleGhost::Component.new(root: component_root)
     end
   end
 
