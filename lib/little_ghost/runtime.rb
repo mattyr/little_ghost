@@ -22,19 +22,49 @@ module LittleGhost
     end
 
     attr_reader :configuration, :root, :loader, :components, :instrumentation, :models, :session_store, :agent_class,
-      :entrypoint_class
+      :entrypoint, :entrypoint_class
 
-    def initialize(configuration:, agent: nil)
-      @configuration = configuration.respond_to?(:settings) ? configuration.settings : configuration
+    def initialize(configuration:, entrypoint: nil, agent: nil)
+      raise ArgumentError, "Provide an entrypoint or agent, not both" if entrypoint && agent
+
+      configured_entrypoint = entrypoint || agent
+      configuration_store = configuration if configuration.respond_to?(:load_file!)
+      bootstrap_root = configuration_store && canonical_application_root(configuration_store.root)
+      if configuration_store
+        @loader = self.class.loader_for(bootstrap_root)
+        configuration_store.load_file!(root: bootstrap_root)
+        @configuration = configuration_store.settings(root: bootstrap_root)
+      else
+        @configuration = configuration
+      end
+
       @root = canonical_application_root(@configuration.fetch(:root))
-      @loader = @configuration[:loader] || self.class.loader_for(@root)
+      @loader = @configuration[:loader] || @loader || self.class.loader_for(@root)
       @components = Array(@configuration[:components]).freeze
       loaders = [loader, *components.map(&:loader)]
       validate_loader_conflicts!(loaders)
       loaders.each(&:setup)
       loaders.each(&:eager_load)
-      @agent_class = resolve_agent_class(agent || @configuration[:agent] || Agent)
-      @entrypoint_class = resolve_entrypoint_class(@configuration[:entrypoint] || @agent_class)
+      configured_entrypoint ||= @configuration[:entrypoint] || @configuration[:agent] || Agent
+      @entrypoint_class = resolve_entrypoint_class(
+        configured_entrypoint.is_a?(Agent) ? configured_entrypoint.class : configured_entrypoint
+      )
+      @agent_class = if entrypoint && !agent
+        @entrypoint_class
+      elsif agent
+        resolve_agent_class(agent)
+      elsif @configuration[:agent]
+        resolve_agent_class(@configuration[:agent])
+      elsif @entrypoint_class <= Agent
+        @entrypoint_class
+      else
+        Agent
+      end
+      @entrypoint = if configured_entrypoint.is_a?(Agent)
+        configured_entrypoint
+      elsif @entrypoint_class <= Agent
+        @entrypoint_class.new
+      end
       @invocation_class = @configuration[:invocation] || Invocation
       @models = build_service(@configuration[:models], default: -> { ModelRegistry.new })
       @default_model = @configuration.fetch(:default_model, "default").to_s
@@ -52,13 +82,14 @@ module LittleGhost
         prompt_paths: @prompt_paths,
         resolve_agent: method(:resolve_agent_class)
       )
+      @entrypoint.instance_variable_set(:@runtime, self) if @entrypoint&.is_a?(Agent)
     end
 
     def build(**overrides)
       values = configuration.merge(overrides)
       values[:root] = canonical_application_root(values.fetch(:root))
       values[:loader] = loader unless overrides.key?(:loader) || overrides.key?(:root)
-      self.class.new(configuration: values, agent: @agent_class)
+      self.class.new(configuration: values, entrypoint: @entrypoint_class)
     end
 
     def parse(payload)
@@ -71,8 +102,13 @@ module LittleGhost
         entrypoint_class: @entrypoint_class)
     end
 
-    def call(payload) = build_run(payload).call
-    def stream(payload) = build_run(payload).each
+    def call(payload = nil, **options)
+      build_run(payload || options).call
+    end
+
+    def stream(payload = nil, **options)
+      build_run(payload || options).each
+    end
 
     def build_agent(
       agent_class_or_name = @agent_class,

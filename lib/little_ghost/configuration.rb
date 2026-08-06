@@ -93,13 +93,21 @@ module LittleGhost
       end
 
       def settings(root: nil)
-        return @settings if @settings
-
         requested_root = root && canonical_root(root)
-        load_configuration_file!(root: requested_root)
+        if @settings
+          if requested_root && @settings.fetch(:root) != requested_root
+            raise ConfigurationError, "configuration is already materialized for #{@settings.fetch(:root)}"
+          end
+          return @settings
+        end
 
         (@settings_mutex ||= Mutex.new).synchronize do
-          return @settings if @settings
+          if @settings
+            if requested_root && @settings.fetch(:root) != requested_root
+              raise ConfigurationError, "configuration is already materialized for #{@settings.fetch(:root)}"
+            end
+            return @settings
+          end
 
           values = configuration_values.dup
           values[:components] = Array(values[:components]).dup
@@ -108,24 +116,28 @@ module LittleGhost
         end
       end
 
-      def load(root: nil)
-        settings(root:)
+      def load_file!(root: nil)
+        requested_root = canonical_root(root || self.root)
+        (@configuration_file_mutex ||= Mutex.new).synchronize do
+          if @configuration_file_root
+            return self if @configuration_file_root == requested_root
+
+            raise ConfigurationError, "configuration file is already loaded for #{@configuration_file_root}"
+          end
+
+          path = File.join(requested_root, "config/little_ghost.rb")
+          require path if File.file?(path)
+          @configuration_file_root = requested_root
+        end
+
         self
       end
 
-      private
-
-      def load_configuration_file!(root: nil)
-        return if @configuration_file_loaded
-
-        (@configuration_file_mutex ||= Mutex.new).synchronize do
-          return if @configuration_file_loaded
-
-          path = File.join(root || self.root, "config/little_ghost.rb")
-          require path if File.file?(path)
-          @configuration_file_loaded = true
-        end
+      def load(root: nil)
+        load_file!(root:)
       end
+
+      private
 
       def ensure_not_loaded!
         raise ConfigurationError, "#{self} is already loaded" if @settings

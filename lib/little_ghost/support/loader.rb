@@ -100,8 +100,18 @@ module LittleGhost
       end
 
       def loaded_constant?(name)
-        path = @loaded_constants[name.to_s]
-        return false unless path && path == registry[name.to_s]
+        path = registry[name.to_s]
+        return false unless path
+
+        names = name.to_s.split("::")
+        leaf = names.pop
+        namespace = names.inject(Object) do |parent, child|
+          break unless parent.const_defined?(child, false)
+
+          parent.const_get(child, false)
+        end
+        autoload_path = namespace&.autoload?(leaf)
+        return File.realpath(autoload_path) == path if autoload_path
 
         location = constant_source_location(name.to_s)
         location && File.realpath(location.first) == path

@@ -52,6 +52,23 @@ class AgentTest < Minitest::Test
     assert_equal [[:call, {message: "hello"}], [:stream, {message: "goodbye"}]], calls
   end
 
+  def test_an_entrypoint_instance_delegates_manual_calls_to_its_runtime
+    agent = Class.new(LittleGhost::Agent)
+    calls = []
+    runtime = Object.new
+    runtime.define_singleton_method(:call) { |payload| calls << [:call, payload] }
+    runtime.define_singleton_method(:stream) { |payload| calls << [:stream, payload] }
+
+    LittleGhost::Runtime.stub(:new, ->(**) { runtime }) do
+      entrypoint = agent.new
+
+      entrypoint.ask("hello")
+      entrypoint.stream_ask("goodbye")
+    end
+
+    assert_equal [[:call, {message: "hello"}], [:stream, {message: "goodbye"}]], calls
+  end
+
   def test_runs_model_and_returns_normalized_result
     model = ScriptedModel.new(response("hello", usage: LittleGhost::Usage.new(input_tokens: 2, output_tokens: 1)))
 

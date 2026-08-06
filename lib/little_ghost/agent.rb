@@ -27,7 +27,7 @@ module LittleGhost
       end
 
       def runtime
-        @runtime ||= Runtime.new(configuration: configuration.settings, agent: self)
+        @runtime ||= Runtime.new(configuration:, entrypoint: self)
       end
 
       def run_class = LittleGhost::Run
@@ -337,7 +337,7 @@ module LittleGhost
     attr_reader :model, :tool_registry, :instrumentation, :run, :delegation_activity, :agent_path
 
     def initialize(
-      model:,
+      model: UNSET,
       tools: [],
       instrumentation: nil,
       template_resolver: nil,
@@ -351,6 +351,15 @@ module LittleGhost
       max_tool_result_tokens: DEFAULT_MAX_TOOL_RESULT_TOKENS,
       model_settings: {}
     )
+      if model.equal?(UNSET) && run.nil?
+        @entrypoint = true
+        @closed = false
+        @close_mutex = Mutex.new
+        @interruptions_mutex = Mutex.new
+        @active_interruptions = []
+        return
+      end
+
       @model = model
       @run = run
       @tool_registry = ToolRegistry.new(tools, run:)
@@ -390,12 +399,40 @@ module LittleGhost
       raise
     end
 
+    def runtime
+      return run.configuration if run
+
+      @runtime ||= Runtime.new(configuration: self.class.configuration, entrypoint: self)
+    end
+
+    def build_run(payload)
+      return self.class.build_run(payload) unless @entrypoint
+
+      run = runtime.build_run(payload)
+      self.class.prepare_run(run)
+    rescue
+      run&.close
+      raise
+    end
+
+    def prepare_interruption(run, interruption)
+      self.class.prepare_interruption(run, interruption)
+    end
+
     def call(input = UNSET, **options)
+      return runtime.call(entrypoint_payload(input, options)) if @entrypoint
+
       result = nil
       stream(input, **options).each do |event|
         result = event.data[:result] if event.type == :invocation_stop
       end
       result
+    end
+
+    def ask(message, **options)
+      return runtime.call(message: message, **options) if @entrypoint
+
+      call(message, **options)
     end
 
     def interrupt(
@@ -497,6 +534,12 @@ module LittleGhost
       interruption_ids: [],
       interrupt_ready: nil
     )
+      if @entrypoint
+        raise ArgumentError, "input is required" if input.equal?(UNSET)
+
+        return runtime.stream(entrypoint_payload(input, {}))
+      end
+
       raise ArgumentError, "input is required" if input.equal?(UNSET)
 
       history = [] if history.equal?(UNSET)
@@ -545,6 +588,12 @@ module LittleGhost
           unregister_interruptions(interruptions)
         end
       end
+    end
+
+    def stream_ask(message, **options)
+      return runtime.stream(message: message, **options) if @entrypoint
+
+      stream(message, **options)
     end
 
     def as_tool(name: self.class.agent_id, description: self.class.description, preserve_context: false)
@@ -618,6 +667,13 @@ module LittleGhost
     end
 
     private
+
+    def entrypoint_payload(input, options)
+      return options if input.equal?(UNSET)
+      return input.merge(options) if input.is_a?(Hash)
+
+      {message: input, **options}
+    end
 
     def register_interruptions(interruptions)
       @close_mutex.synchronize do

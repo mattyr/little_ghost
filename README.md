@@ -42,11 +42,11 @@ require "little_ghost"
 
 LittleGhost.configure do |config|
   config.models SupportModels
-  config.agent "SupportAgent"
+  config.entrypoint "SupportAgent"
 end
 ```
 
-LittleGhost does not load the configuration file when the gem is required. The first `SupportAgent.call`, `SupportAgent.stream`, or `SupportAgent.runtime` resolves the configured root, requires `config/little_ghost.rb` if it exists, and materializes the resulting settings into the runtime used by the agent. Configuration changes must therefore be made before that first runtime access.
+LittleGhost does not load the configuration file when the gem is required. The first `SupportAgent` runtime access resolves the configured root, requires `config/little_ghost.rb` if it exists, and materializes the resulting settings into the runtime used by the agent. Configuration changes must therefore be made before that first runtime access.
 
 ```ruby
 # app/agents/support_agent.rb
@@ -66,7 +66,7 @@ class SupportAgent < LittleGhost::Agent
 end
 ```
 
-The configuration object owns shared framework services. Agent classes own agent behavior: model role, prompts, tools, limits, and delegation. Agents can be invoked directly with `SupportAgent.call(payload)` or `SupportAgent.stream(payload)`.
+The configuration object owns shared framework services. Agent classes own agent behavior: model role, prompts, tools, limits, and delegation. The configured agent is the primary entrypoint. It can be invoked through class methods, or instantiated for a console-friendly interface: `SupportAgent.new.ask("Help")` and `SupportAgent.new.stream_ask("Help")`.
 
 ### Agent capabilities
 
@@ -137,6 +137,9 @@ end
 
 SupportAgent.ask("Help")
 SupportAgent.stream_ask("Help").each { |event| puts event.type }
+
+SupportAgent.new.ask("Help")
+SupportAgent.new.stream_ask("Help").each { |event| puts event.type }
 ```
 
 The run opens and closes its session, agents, subagent managers, and other registered resources. Application-specific resources can be registered on the run for the same lifecycle management.
