@@ -7,7 +7,8 @@ require_relative "configuration"
 
 module LittleGhost
   class Runtime
-    attr_reader :configuration, :settings, :root, :loader, :components, :instrumentation, :models, :session_store
+    attr_reader :configuration, :settings, :root, :loader, :prompt_paths, :skill_paths,
+      :instrumentation, :models, :session_store
 
     def initialize(configuration:, settings: nil, logger: Logger.new($stderr))
       @logger = logger
@@ -39,11 +40,8 @@ module LittleGhost
 
         @startup_phase = "loader"
         @loader = @settings[:loader] || Support::Loader.new(root: @root)
-        @components = Array(@settings[:components])
-        loaders = [loader, *components.map(&:loader)]
-        validate_loader_conflicts!(loaders)
-        loaders.each(&:setup)
-        loaders.each(&:eager_load)
+        loader.setup
+        loader.eager_load
 
         @startup_phase = "models"
         @invocation_class = @settings[:invocation] || Invocation
@@ -55,7 +53,8 @@ module LittleGhost
         @session_actor = @settings[:session_actor]
 
         @startup_phase = "prompts"
-        @prompt_paths = discover_prompt_paths
+        @prompt_paths = build_lookup_paths(:prompt_paths)
+        @skill_paths = build_lookup_paths(:skill_paths)
 
         @startup_phase = "agent_builder"
         @agent_builder = AgentBuilder.new(
@@ -279,63 +278,19 @@ module LittleGhost
       klass
     end
 
-    def discover_prompt_paths
-      paths = []
-      application_path = File.join(root, "app/prompts")
-      if File.exist?(application_path) || File.symlink?(application_path)
-        resolved = File.realpath(application_path)
-        unless File.directory?(resolved) && inside_root?(resolved, root)
-          raise Support::Loader::ConflictError, "Application prompt directory escapes application root: #{application_path}"
-        end
-        paths << Templates::Root.new(path: resolved, boundary: root)
+    def build_lookup_paths(name)
+      configured = Array(@settings.fetch(name))
+      default = if name == :prompt_paths
+        Configuration::DEFAULT_PROMPT_PATHS
+      else
+        Configuration::DEFAULT_SKILL_PATHS
       end
-      paths.concat(components.flat_map(&:prompt_paths)).freeze
-    rescue Errno::ENOENT
-      raise Support::Loader::ConflictError, "Application prompt directory is invalid: #{application_path}"
-    end
-
-    def inside_root?(path, boundary)
-      path.to_s == boundary.to_s || path.to_s.start_with?("#{boundary}#{File::SEPARATOR}")
-    end
-
-    def validate_loader_conflicts!(loaders)
-      owners = {}
-      loaders.each do |candidate|
-        candidate.registered_constants.each do |constant_name, path|
-          validate_existing_constant!(constant_name, owner: candidate)
-          conflict = owners.keys.find do |owned|
-            owned == constant_name || owned.start_with?("#{constant_name}::") || constant_name.start_with?("#{owned}::")
-          end
-          if conflict
-            raise Support::Loader::ConflictError,
-              "Conflicting constant mappings: #{conflict} (#{owners[conflict]}) and #{constant_name} (#{path})"
-          end
-          owners[constant_name] = path
-        end
+      roots = configured.map do |path|
+        expanded = File.expand_path(path, root)
+        boundary = default.include?(path.to_s) ? root : nil
+        Lookup::Root.new(path: expanded, boundary:)
       end
-    end
-
-    def validate_existing_constant!(constant_name, owner:)
-      return if owner.loaded_constant?(constant_name)
-
-      names = constant_name.split("::")
-      leaf = names.pop
-      namespace = Object
-      names.each do |name|
-        raise Support::Loader::ConflictError, "Existing autoload conflicts with #{constant_name}" if namespace.autoload?(name)
-        unless namespace.const_defined?(name, false)
-          namespace = nil
-          break
-        end
-
-        namespace = namespace.const_get(name, false)
-        raise Support::Loader::ConflictError, "#{name} is not a namespace for #{constant_name}" unless namespace.is_a?(Module)
-      end
-      return unless namespace
-
-      if namespace.const_defined?(leaf, false) || namespace.autoload?(leaf)
-        raise Support::Loader::ConflictError, "#{constant_name} is already defined"
-      end
+      Lookup::PathSet.new(roots)
     end
   end
 end

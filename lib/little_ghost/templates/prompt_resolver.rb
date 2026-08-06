@@ -14,23 +14,16 @@ module LittleGhost
       end
     end
 
-    Root = Data.define(:path, :boundary) do
-      def initialize(path:, boundary: nil)
-        super(path: File.expand_path(path).freeze, boundary: boundary && File.expand_path(boundary).freeze)
-      end
-    end
-
     class Error < LittleGhost::Error; end
     class MissingTemplateError < Error; end
     class InvalidTemplateError < Error; end
     class MissingLocalError < Error; end
 
-    class Resolver
+    class PromptResolver
       DEFAULT_MAX_DEPTH = 20
 
-      def initialize(application_paths: [], gem_paths: [], max_depth: DEFAULT_MAX_DEPTH)
-        @application_paths = normalize_roots(application_paths)
-        @gem_paths = normalize_roots(gem_paths)
+      def initialize(paths: [], max_depth: DEFAULT_MAX_DEPTH)
+        @paths = normalize_roots(paths)
         @max_depth = Integer(max_depth)
         raise ArgumentError, "max_depth must be positive" unless @max_depth.positive?
 
@@ -39,7 +32,7 @@ module LittleGhost
       end
 
       def render(name, locals: {}, invocation_paths: [])
-        roots = normalize_invocation_roots(invocation_paths) + @application_paths + @gem_paths
+        roots = normalize_invocation_roots(invocation_paths) + @paths
         render_template(normalize_name(name), locals, roots, [])
       end
 
@@ -114,7 +107,7 @@ module LittleGhost
 
       def normalize_roots(paths)
         Array(paths).map do |path|
-          path.is_a?(Root) ? path : Root.new(path: path.to_s)
+          path.is_a?(Lookup::Root) ? path : Lookup::Root.new(path: path.to_s)
         end.freeze
       end
 
@@ -123,7 +116,7 @@ module LittleGhost
           unless path.is_a?(TrustedPath)
             raise ArgumentError, "invocation template paths must be LittleGhost::Templates::TrustedPath values"
           end
-          Root.new(path: path.path)
+          Lookup::Root.new(path: path.path)
         end.freeze
       end
 

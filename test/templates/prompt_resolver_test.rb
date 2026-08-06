@@ -3,7 +3,7 @@
 require "test_helper"
 require "fileutils"
 require "tmpdir"
-require "little_ghost/templates/resolver"
+require "little_ghost/templates/prompt_resolver"
 
 class TemplatesResolverTest < Minitest::Test
   def setup
@@ -12,9 +12,8 @@ class TemplatesResolverTest < Minitest::Test
     @application = File.join(@directory, "application")
     @gem = File.join(@directory, "gem")
     [@invocation, @application, @gem].each { |path| FileUtils.mkdir_p(path) }
-    @resolver = LittleGhost::Templates::Resolver.new(
-      application_paths: [@application],
-      gem_paths: [@gem]
+    @resolver = LittleGhost::Templates::PromptResolver.new(
+      paths: [@application, @gem]
     )
   end
 
@@ -83,7 +82,7 @@ class TemplatesResolverTest < Minitest::Test
 
     assert_raises(LittleGhost::Templates::InvalidTemplateError) { @resolver.render("loop") }
 
-    shallow = LittleGhost::Templates::Resolver.new(application_paths: [@application], max_depth: 1)
+    shallow = LittleGhost::Templates::PromptResolver.new(paths: [@application], max_depth: 1)
     write(@application, "one.erb", "<%= partial \"two\" %>")
     write(@application, "_two.erb", "done")
     assert_raises(LittleGhost::Templates::InvalidTemplateError) { shallow.render("one") }

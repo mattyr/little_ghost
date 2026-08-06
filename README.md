@@ -302,19 +302,20 @@ Agent entrypoints produce one fused root `invoke_agent` span. Workflow entrypoin
 
 `RunResult#output` returns the validated structured value when the agent has a result schema and otherwise returns its text. Workflows use ordinary Ruby branching; use a graph runtime only when the application needs durable node state, joins, or cycles.
 
-## Prompts and components
+## Prompts and lookup paths
 
-Prompts are ERB. Templates can render partials with `partial "shared/rules"`. Agent prompts override component prompts.
+Prompts are ERB. Templates can render partials with `partial "shared/rules"`. Agent prompts override configured fallback prompts.
 
-Reusable agents, tools, prompts, and skills can be packaged as a component:
+Prompt and skill lookup roots default to the application directories and can be extended or replaced in configuration:
 
 ```ruby
 LittleGhost.configure do |config|
-  config.component LittleGhost::Component.new(root: File.expand_path("../shared_agents", __dir__))
+  config.prompt_paths << File.expand_path("../shared_agents/prompts", __dir__)
+  config.skill_paths << File.expand_path("../shared_agents/skills", __dir__)
 end
 ```
 
-LittleGhost validates component ownership and rejects conflicting constants or prompt paths that escape their trusted roots.
+Use `config.prompt_paths = ["/little_ghost_app/prompts"]` or `config.skill_paths = ["/little_ghost_app/skills"]` to replace the conventional `app/` roots. Lookup paths are ordered: the first matching prompt wins, while later skill roots override duplicate skill names.
 
 ## Sessions
 

@@ -6,6 +6,8 @@ require "pathname"
 module LittleGhost
   class Configuration
     CONFIGURATION_KEYS = %i[invocation models default_model instrumentation service_name].freeze
+    DEFAULT_PROMPT_PATHS = ["app/prompts"].freeze
+    DEFAULT_SKILL_PATHS = ["app/skills"].freeze
 
     CONFIGURATION_KEYS.each do |name|
       define_method(name) do |value = :__read__|
@@ -20,7 +22,14 @@ module LittleGhost
     end
 
     def initialize(values = {})
-      @configuration_values = {components: [], instruments: []}.merge(values)
+      @configuration_values = {
+        prompt_paths: DEFAULT_PROMPT_PATHS.dup,
+        skill_paths: DEFAULT_SKILL_PATHS.dup,
+        instruments: []
+      }.merge(values)
+      @configuration_values[:prompt_paths] = Array(@configuration_values[:prompt_paths]).dup
+      @configuration_values[:skill_paths] = Array(@configuration_values[:skill_paths]).dup
+      @configuration_values[:instruments] = Array(@configuration_values[:instruments]).dup
     end
 
     def configure
@@ -73,18 +82,24 @@ module LittleGhost
       configured ? canonical_root(configured) : inferred_root
     end
 
-    def component(value = nil, root: nil)
-      configured = value || Component.new(root: root)
-      raise ArgumentError, "component must be a LittleGhost::Component" unless configured.is_a?(Component)
+    def prompt_paths = configuration_values[:prompt_paths]
 
-      configuration_values[:components] << configured
-      configured
+    def prompt_paths=(value)
+      configuration_values[:prompt_paths] = Array(value)
+    end
+
+    def skill_paths = configuration_values[:skill_paths]
+
+    def skill_paths=(value)
+      configuration_values[:skill_paths] = Array(value)
     end
 
     def settings(root: nil)
       requested_root = root && canonical_root(root)
       values = configuration_values.dup
-      values[:components] = Array(values[:components]).dup
+      values[:prompt_paths] = Array(values[:prompt_paths]).dup
+      values[:skill_paths] = Array(values[:skill_paths]).dup
+      values[:instruments] = Array(values[:instruments]).dup
       values[:root] = requested_root || values[:root] || self.root
       values
     end

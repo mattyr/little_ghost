@@ -1666,9 +1666,7 @@ module LittleGhost
     end
 
     def default_template_resolver(paths)
-      return unless defined?(Templates::Resolver)
-
-      Templates::Resolver.new(application_paths: paths)
+      Templates::PromptResolver.new(paths:)
     end
 
     def apply_cancellation_decision!(decision)

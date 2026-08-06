@@ -11,7 +11,13 @@ module LittleGhost
 
       module ClassMethods
         def skills(*values, **options)
-          configured_paths = options.key?(:paths) ? options.delete(:paths) : values.flatten
+          configured_paths = if options.key?(:paths)
+            options.delete(:paths)
+          elsif values.empty?
+            nil
+          else
+            values.flatten
+          end
           self.skills_configuration_value = options.merge(paths: configured_paths)
           resolver = lambda do
             configuration = self.class.skills_configuration
@@ -19,7 +25,8 @@ module LittleGhost
             if paths.is_a?(Proc)
               paths = paths.parameters.empty? ? instance_exec(&paths) : paths.call(run)
             end
-            catalog = LittleGhost::Skills::Catalog.new(**configuration.merge(paths: Array(paths)))
+            paths ||= run.runtime.skill_paths
+            catalog = LittleGhost::Skills::Catalog.new(**configuration.merge(paths:))
             next [] if catalog.names.empty?
 
             catalog.tool.tap { |tool| tool.define_method(:catalog) { catalog } }

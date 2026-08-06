@@ -46,31 +46,27 @@ class RuntimeTest < Minitest::Test
 
   def test_runtime_reports_failed_startup_and_flushes_telemetry
     Dir.mktmpdir do |root|
-      Dir.mktmpdir do |component_root|
-        write(root, "app/agents/conflict_agent.rb", "class ConflictAgent; end")
-        write(component_root, "app/tools/conflict_agent.rb", "class ConflictAgent; end")
-        instrumentation = RecordingInstrumentation.new
-        log = StringIO.new
-        configuration = LittleGhost::Configuration.new(
-          root:,
-          service_name: "runtime-test",
-          instrumentation:
-        )
-        configuration.component(LittleGhost::Component.new(root: component_root))
-
-        error = assert_raises(LittleGhost::Support::Loader::ConflictError) do
-          LittleGhost::Runtime.new(configuration:, logger: Logger.new(log))
-        end
-
-        assert_equal [:runtime_start, :runtime_stop], instrumentation.events.map(&:first)
-        failure = instrumentation.events.last.last
-        assert_equal "failed", failure.fetch(:outcome)
-        assert_equal error.class.name, failure.fetch(:error_type)
-        assert_equal error.class.name, JSON.parse(failure.fetch(:diagnostic_exception)).fetch("type")
-        assert_equal 1, instrumentation.flush_count
-        assert_includes log.string, "phase=loader"
-        assert_includes log.string, "status=failed"
+      write(root, "app/agents/conflict_agent.rb", "class ConflictAgent; end")
+      write(root, "app/tools/conflict_agent.rb", "class ConflictAgent; end")
+      instrumentation = RecordingInstrumentation.new
+      log = StringIO.new
+      configuration = LittleGhost::Configuration.new(
+        root:,
+        service_name: "runtime-test",
+        instrumentation:
+      )
+      error = assert_raises(LittleGhost::Support::Loader::ConflictError) do
+        LittleGhost::Runtime.new(configuration:, logger: Logger.new(log))
       end
+
+      assert_equal [:runtime_start, :runtime_stop], instrumentation.events.map(&:first)
+      failure = instrumentation.events.last.last
+      assert_equal "failed", failure.fetch(:outcome)
+      assert_equal error.class.name, failure.fetch(:error_type)
+      assert_equal error.class.name, JSON.parse(failure.fetch(:diagnostic_exception)).fetch("type")
+      assert_equal 1, instrumentation.flush_count
+      assert_includes log.string, "phase=loader"
+      assert_includes log.string, "status=failed"
     end
   end
 
