@@ -326,7 +326,7 @@ module LittleGhost
         boundary = default.include?(path.to_s) ? root : nil
         Lookup::Root.new(path: expanded, boundary:)
       end
-      Lookup::PathSet.new(roots)
+      PathSet.new(roots)
     end
   end
 end

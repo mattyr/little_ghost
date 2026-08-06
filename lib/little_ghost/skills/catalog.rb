@@ -27,7 +27,7 @@ module LittleGhost
         only: nil,
         resource_root: nil
       )
-        @paths = Lookup::PathSet.new(paths)
+        @paths = PathSet.new(paths)
         @max_skills = positive_integer(max_skills, :max_skills)
         @max_file_bytes = positive_integer(max_file_bytes, :max_file_bytes)
         @max_resource_files = positive_integer(max_resource_files, :max_resource_files)
