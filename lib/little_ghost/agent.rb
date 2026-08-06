@@ -20,9 +20,9 @@ module LittleGhost
       before_tool after_tool
     ].freeze
 
-    module Definition
-      include Support::ClassAttributes
+    extend Support::ClassAttributes
 
+    class << self
       def run_class = LittleGhost::Run
 
       def agent_id(*values)
@@ -254,8 +254,6 @@ module LittleGhost
         value.gsub(/([a-z\d])([A-Z])/, "\\1_\\2").downcase
       end
     end
-
-    extend Definition
 
     class_attribute :agent_id_value
     class_attribute :description_value
