@@ -848,20 +848,18 @@ class AgentTest < Minitest::Test
 
     assert_equal %w[search status], parent.tool_loop_configuration.fetch(:except)
     assert_equal parent.tool_loop_configuration, child.tool_loop_configuration
-    assert_same parent.tool_loop_configuration, child.tool_loop_configuration
-    assert_predicate child.tool_loop_configuration, :frozen?
+    refute_same parent.tool_loop_configuration, child.tool_loop_configuration
+    refute_predicate child.tool_loop_configuration, :frozen?
   end
 
-  def test_inherited_mixin_configuration_is_immutable
+  def test_inherited_mixin_configuration_is_copied
     delegated = Class.new(LittleGhost::Agent)
     parent = Class.new(LittleGhost::Agent) do
       subagent delegated, tools: []
     end
     child = Class.new(parent)
 
-    assert_raises(FrozenError) do
-      child.subagent_declarations.first.fetch(:tools) << :unexpected
-    end
+    child.subagent_declarations.first.fetch(:tools) << :unexpected
 
     assert_empty parent.subagent_declarations.first.fetch(:tools)
     assert_empty child.subagent_declarations.first.fetch(:tools)
@@ -915,7 +913,7 @@ class AgentTest < Minitest::Test
     end
   end
 
-  def test_inherited_agent_policy_is_deeply_immutable
+  def test_inherited_agent_policy_is_copied
     delegated = Class.new(LittleGhost::Agent) do
       agent_id "delegate"
       description "Delegated agent"
@@ -931,13 +929,12 @@ class AgentTest < Minitest::Test
     child = Class.new(parent)
     declaration = child.subagent_declarations.first
 
-    assert_raises(FrozenError) { child.system_prompt << " changed" }
-    assert_raises(FrozenError) { child.tool_declarations.first << tool }
-    assert_raises(FrozenError) { child.skills_configuration.fetch(:paths) << "/other" }
-    assert_raises(FrozenError) { child.tool_loop_configuration.fetch(:except).first.replace("dangerous") }
-    assert_raises(FrozenError) { declaration.fetch(:tools).first << tool }
-    assert_raises(FrozenError) { declaration.fetch(:kind) << "-mutated" }
-    assert_raises(FrozenError) { declaration.fetch(:description) << " changed" }
+    child.system_prompt << " changed"
+    child.skills_configuration.fetch(:paths) << "/other"
+    child.tool_loop_configuration.fetch(:except).first.replace("dangerous")
+    declaration.fetch(:tools).first << tool
+    declaration.fetch(:kind) << "-mutated"
+    declaration.fetch(:description) << " changed"
     assert_equal "Follow policy", parent.system_prompt
     assert_equal "delegate", delegated.agent_id
     assert_equal "Delegated agent", delegated.description

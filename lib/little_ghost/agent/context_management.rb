@@ -47,12 +47,12 @@ module LittleGhost
           end
           raise ArgumentError, "preserve_recent_messages must be at least 2" if preserve_recent_messages < 2
 
-          @context_management_configuration = Support.immutable({
+          @context_management_configuration = {
             context_window_tokens:,
             compression_threshold:,
             summary_ratio:,
             preserve_recent_messages:
-          })
+          }
           before_model :compact_model_context
           after_model_error :compact_context_after_overflow
         end
@@ -60,7 +60,7 @@ module LittleGhost
         def context_management_configuration
           return @context_management_configuration if instance_variable_defined?(:@context_management_configuration)
 
-          superclass.context_management_configuration if superclass.respond_to?(:context_management_configuration)
+          Support.deep_dup(superclass.context_management_configuration) if superclass.respond_to?(:context_management_configuration)
         end
       end
 

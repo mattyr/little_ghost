@@ -21,7 +21,7 @@ module LittleGhost
       before_tool after_tool
     ].freeze
 
-    class << self
+    module Definition
       def run_class = LittleGhost::Run
 
       def agent_id(value = nil)
@@ -32,7 +32,7 @@ module LittleGhost
           return default_agent_id
         end
 
-        @agent_id = Support.immutable(value.to_s)
+        @agent_id = value.to_s
       end
 
       def logical_path
@@ -49,14 +49,14 @@ module LittleGhost
           return ""
         end
 
-        @agent_description = Support.immutable(value.to_s)
+        @agent_description = value.to_s
       end
 
       def model(value = nil, &block)
         return @model_role if instance_variable_defined?(:@model_role) && value.nil? && !block
         return inherited_agent.model if inherited_agent && value.nil? && !block
 
-        @model_role = block || Support.immutable(value.to_s) unless value.nil? && !block
+        @model_role = block || value.to_s unless value.nil? && !block
         @model_role
       end
 
@@ -74,7 +74,7 @@ module LittleGhost
           return {}.freeze
         end
 
-        @limits = Support.immutable(limits.merge(values.transform_keys(&:to_sym)))
+        @limits = limits.merge(values.transform_keys(&:to_sym))
       end
 
       def result_schema(schema = UNSET, name: nil, description: nil, strategy: :auto, **schema_keywords)
@@ -108,12 +108,12 @@ module LittleGhost
           raise ConfigurationError, "result_schema strategy must be auto, provider, or tool"
         end
 
-        @result_schema_configuration = Support.immutable(
+        @result_schema_configuration = {
           schema: normalized_schema,
           name: schema_name,
           description: description&.to_s,
           strategy:
-        )
+        }
       end
 
       def capture_diagnostics(value = UNSET)
@@ -130,12 +130,12 @@ module LittleGhost
       def system_template(value = nil)
         if value.nil?
           return @system_template if instance_variable_defined?(:@system_template)
-          return inherited_agent.system_template if inherited_agent
+          return inherited_agent.system_template&.dup if inherited_agent
 
           return nil
         end
 
-        @system_template = Support.immutable(value.to_s)
+        @system_template = value.to_s
       end
 
       def system_prompt(value = nil, &block)
@@ -143,7 +143,8 @@ module LittleGhost
           if instance_variable_defined?(:@system_prompt_builder) || instance_variable_defined?(:@system_prompt)
             return @system_prompt_builder || @system_prompt
           end
-          return inherited_agent.system_prompt if inherited_agent
+          value = inherited_agent.system_prompt if inherited_agent
+          return value.is_a?(String) ? value.dup : value if inherited_agent
 
           return nil
         end
@@ -153,7 +154,7 @@ module LittleGhost
           @system_prompt = nil
           @system_prompt_builder = block
         else
-          @system_prompt = Support.immutable(value.to_s)
+          @system_prompt = value.to_s
           @system_prompt_builder = nil
         end
       end
@@ -165,7 +166,7 @@ module LittleGhost
             "Class-level tools must be LittleGhost::Tool classes; use a block for per-agent tool instances"
         end
 
-        local_tool_declarations.concat(values.map { |value| Support.immutable(value) })
+        local_tool_declarations.concat(values)
         local_tool_declarations << resolver if resolver
         tool_declarations
       end
@@ -179,7 +180,7 @@ module LittleGhost
         raise ArgumentError, "Provide a prompt local value or block" if value.equal?(UNSET) && !resolver
         raise ArgumentError, "Provide a prompt local value or block, not both" unless value.equal?(UNSET) || !resolver
 
-        local_prompt_locals[name.to_sym] = resolver || Support.immutable(value)
+        local_prompt_locals[name.to_sym] = resolver || value
       end
 
       def prompt_local_resolvers
@@ -319,6 +320,8 @@ module LittleGhost
         value.gsub(/([a-z\d])([A-Z])/, "\\1_\\2").downcase
       end
     end
+
+    extend Definition
 
     attr_reader :model, :tool_registry, :instrumentation, :run, :delegation_activity, :agent_path
 
@@ -1452,7 +1455,7 @@ module LittleGhost
       return "Structured result does not match its schema: #{errors.join("; ")}" unless errors.empty?
 
       context.submit_structured_result(
-        StructuredResult.new(schema_name:, value: Support.immutable(value))
+        StructuredResult.new(schema_name:, value:)
       )
       nil
     rescue ToolError => error

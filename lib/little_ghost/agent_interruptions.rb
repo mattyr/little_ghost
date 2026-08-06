@@ -102,7 +102,7 @@ module LittleGhost
       raise ArgumentError, "interruption_id cannot be empty" if id.empty?
 
       batch_key = String(batch_key) unless batch_key.nil?
-      metadata = Support.immutable(metadata.to_h)
+      metadata = metadata.to_h
       @mutex.synchronize do
         raise @closed_error if @closed_error
 

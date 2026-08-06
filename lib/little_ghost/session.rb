@@ -112,8 +112,8 @@ module LittleGhost
     def build_snapshot(messages:, state:, metadata:)
       {
         messages: persistable_messages(messages),
-        state: Support.immutable(state.to_h),
-        metadata: Support.immutable(metadata.to_h)
+        state: Support.deep_dup(state.to_h),
+        metadata: Support.deep_dup(metadata.to_h)
       }.freeze
     end
 
@@ -140,8 +140,8 @@ module LittleGhost
 
       {
         messages: persistable_messages(Array(value.fetch(:messages))),
-        state: Support.immutable(value.fetch(:state, {}).to_h),
-        metadata: Support.immutable(value.fetch(:metadata, {}).to_h)
+        state: Support.deep_dup(value.fetch(:state, {}).to_h),
+        metadata: Support.deep_dup(value.fetch(:metadata, {}).to_h)
       }.freeze
     rescue KeyError, NoMethodError, TypeError => error
       raise ProtocolError, "Session store returned an invalid value: #{error.class}"

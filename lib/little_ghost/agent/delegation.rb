@@ -28,7 +28,7 @@ module LittleGhost
 
         def subagent(agent_class, kind: nil, description: nil, model: nil, tools: nil, factory: nil, persist: true)
           validate_delegated_tools!(tools)
-          declaration = Support.immutable({
+          declaration = {
             agent: agent_class,
             kind: (kind || agent_class.agent_id).to_s,
             description: description || agent_class.description,
@@ -36,7 +36,7 @@ module LittleGhost
             tools:,
             factory:,
             persist:
-          })
+          }
           @subagent_declarations = [*subagent_declarations, declaration].freeze
         end
 
@@ -49,26 +49,26 @@ module LittleGhost
         def subagent_declarations
           return @subagent_declarations if instance_variable_defined?(:@subagent_declarations)
 
-          superclass.respond_to?(:subagent_declarations) ? superclass.subagent_declarations : [].freeze
+          superclass.respond_to?(:subagent_declarations) ? Support.deep_dup(superclass.subagent_declarations) : []
         end
 
         def subagent_resolvers
           return @subagent_resolvers if instance_variable_defined?(:@subagent_resolvers)
 
-          superclass.respond_to?(:subagent_resolvers) ? superclass.subagent_resolvers : [].freeze
+          superclass.respond_to?(:subagent_resolvers) ? superclass.subagent_resolvers.dup : []
         end
 
         def agent_as_tool(agent_class, name: nil, description: nil, model: nil, tools: nil,
           preserve_context: false)
           validate_delegated_tools!(tools)
-          declaration = Support.immutable({
+          declaration = {
             agent: agent_class,
             name: (name || agent_class.agent_id).to_s,
             description: description || agent_class.description,
             model:,
             tools:,
             preserve_context:
-          })
+          }
           @agent_tool_declarations = [*agent_tool_declarations, declaration].freeze
         end
 
@@ -80,7 +80,7 @@ module LittleGhost
         def agent_tool_declarations
           return @agent_tool_declarations if instance_variable_defined?(:@agent_tool_declarations)
 
-          superclass.respond_to?(:agent_tool_declarations) ? superclass.agent_tool_declarations : [].freeze
+          superclass.respond_to?(:agent_tool_declarations) ? Support.deep_dup(superclass.agent_tool_declarations) : []
         end
 
         private

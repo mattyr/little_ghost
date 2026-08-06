@@ -12,7 +12,7 @@ module LittleGhost
       module ClassMethods
         def skills(*values, paths: PATHS_UNSET, **options)
           configured_paths = paths.equal?(PATHS_UNSET) ? values.flatten : paths
-          @skills_configuration = Support.immutable(options.merge(paths: configured_paths))
+          @skills_configuration = options.merge(paths: configured_paths)
           @skills_tool_resolver = lambda do
             configuration = self.class.skills_configuration
             paths = configuration.fetch(:paths)
@@ -35,7 +35,7 @@ module LittleGhost
         def skills_configuration
           return @skills_configuration if instance_variable_defined?(:@skills_configuration)
 
-          superclass.skills_configuration if superclass.respond_to?(:skills_configuration)
+          Support.deep_dup(superclass.skills_configuration) if superclass.respond_to?(:skills_configuration)
         end
 
         private
