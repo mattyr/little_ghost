@@ -2,8 +2,6 @@
 
 module LittleGhost
   class Workflow
-    UNSET = Object.new.freeze
-
     class Invocation
       attr_reader :result
 
@@ -89,18 +87,18 @@ module LittleGhost
     def prompt_locals = {}
 
     def stream(
-      input = UNSET,
-      history: UNSET,
-      context: UNSET,
+      input = nil,
+      history: nil,
+      context: nil,
       cancellation_token: Support::CancellationToken.new,
       deadline: nil,
-      settings: UNSET,
-      template_locals: UNSET,
-      template_paths: UNSET,
+      settings: nil,
+      template_locals: nil,
+      template_paths: nil,
       parent_operation_id: nil,
       checkpoint: nil
     )
-      raise ArgumentError, "input is required" if input.equal?(UNSET)
+      raise ArgumentError, "input is required" if input.nil?
 
       @mutex.synchronize do
         raise Error, "workflow is already closed" if @closed
@@ -109,12 +107,12 @@ module LittleGhost
         @started = true
         @input = input.is_a?(Message) ? input : Message.new(role: :user, content: input)
         @history = normalize_history(history)
-        @context = context.equal?(UNSET) ? {} : context
+        @context = context || {}
         @cancellation_token = cancellation_token
         @deadline = deadline
-        @settings = settings.equal?(UNSET) ? {} : settings
-        @template_locals = template_locals.equal?(UNSET) ? {} : template_locals
-        @template_paths = template_paths.equal?(UNSET) ? [] : template_paths
+        @settings = settings || {}
+        @template_locals = template_locals || {}
+        @template_paths = template_paths || []
         @parent_operation_id = parent_operation_id
         @checkpoint = checkpoint
         @intermediate_usage = Usage.new
@@ -268,7 +266,7 @@ module LittleGhost
     end
 
     def normalize_history(value)
-      return [].freeze if value.equal?(UNSET)
+      return [].freeze if value.nil?
 
       Array(value).map { |message| Message.coerce(message) }.freeze
     end

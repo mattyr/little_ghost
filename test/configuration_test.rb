@@ -196,11 +196,11 @@ class ConfigurationTest < Minitest::Test
     first = LittleGhost::Configuration.new
     second = LittleGhost::Configuration.new
 
-    first.agent "FirstAgent"
-    second.agent "SecondAgent"
+    first.service_name "FirstAgent"
+    second.service_name "SecondAgent"
 
-    assert_equal "FirstAgent", first.agent
-    assert_equal "SecondAgent", second.agent
+    assert_equal "FirstAgent", first.service_name
+    assert_equal "SecondAgent", second.service_name
     refute_same first, second
   end
 
@@ -214,7 +214,7 @@ class ConfigurationTest < Minitest::Test
           FileUtils.mkdir_p(File.join(root, "config"))
           File.write(
             File.join(root, "config/little_ghost.rb"),
-            "LittleGhost.configure { |config| config.agent #{agent.inspect} }\n"
+            "LittleGhost.configure { |config| config.service_name #{agent.inspect} }\n"
           )
         end
 
@@ -226,27 +226,27 @@ class ConfigurationTest < Minitest::Test
         first.load_file!
         second.load_file!
 
-        assert_equal "FirstAgent", first.agent
-        assert_equal "SecondAgent", second.agent
+        assert_equal "FirstAgent", first.service_name
+        assert_equal "SecondAgent", second.service_name
       end
     end
   end
 
   def test_minimal_application_resolves_root_agent_prompt_and_model
-    with_application do |application, provider, root|
-      run = application.call(message: "Build it")
+    with_runtime do |harness, provider, root|
+      run = harness.agent_instance.call(message: "Build it")
 
       assert run.completed?
       assert_equal "Done", run.response
-      assert_equal Pathname.new(File.realpath(root)), application.root
+      assert_equal Pathname.new(File.realpath(root)), harness.root
       assert_equal "Prompt for Build it", provider.requests.first.messages.first.text
-      assert_same application, run.runtime
+      assert_same harness.runtime_instance, run.runtime
     end
   end
 
   def test_stream_is_generic_and_call_returns_the_run
-    with_application do |application|
-      events = application.stream(message: "Build it").to_a
+    with_runtime do |harness|
+      events = harness.agent_instance.stream({message: "Build it"}).to_a
 
       assert_equal :run_start, events.first.type
       assert_equal :run_stop, events.last.type
@@ -258,8 +258,8 @@ class ConfigurationTest < Minitest::Test
   def test_partial_run_uses_the_latest_assistant_message_instead_of_concatenating_progress
     agent = progress_agent
 
-    with_application(agent:, provider: ProgressThenDeadlineProvider.new) do |application|
-      run = application.call(message: "Build it", session_id: "conversation")
+    with_runtime(agent:, provider: ProgressThenDeadlineProvider.new) do |harness|
+      run = harness.agent_instance.call(message: "Build it", session_id: "conversation")
 
       assert run.partial?
       assert_equal "Progress 2", run.response
@@ -273,8 +273,8 @@ class ConfigurationTest < Minitest::Test
     [false, true].each do |complete_failed_attempt|
       provider = ProgressThenRetryDeadlineProvider.new(complete_failed_attempt:)
 
-      with_application(agent: progress_agent, provider:) do |application|
-        run = application.call(message: "Build it", session_id: "conversation")
+      with_runtime(agent: progress_agent, provider:) do |harness|
+        run = harness.agent_instance.call(message: "Build it", session_id: "conversation")
 
         assert run.partial?
         assert_equal "Stable progress", run.response
@@ -286,8 +286,8 @@ class ConfigurationTest < Minitest::Test
   def test_cancelled_run_checkpoints_completed_turns
     provider = ProgressThenDeadlineProvider.new(LittleGhost::CancelledError.new("cancelled"))
 
-    with_application(agent: progress_agent, provider:) do |application|
-      run = application.call(message: "Build it", session_id: "conversation")
+    with_runtime(agent: progress_agent, provider:) do |harness|
+      run = harness.agent_instance.call(message: "Build it", session_id: "conversation")
 
       assert run.cancelled?
       assert_equal 5, run.usage.total_tokens
@@ -302,8 +302,8 @@ class ConfigurationTest < Minitest::Test
   def test_failed_run_checkpoints_completed_turns
     provider = ProgressThenDeadlineProvider.new(LittleGhost::ProviderError.new("offline"))
 
-    with_application(agent: progress_agent, provider:) do |application|
-      run = application.call(message: "Build it", session_id: "conversation")
+    with_runtime(agent: progress_agent, provider:) do |harness|
+      run = harness.agent_instance.call(message: "Build it", session_id: "conversation")
 
       assert run.failed?
       assert_equal 5, run.usage.total_tokens
@@ -339,8 +339,8 @@ class ConfigurationTest < Minitest::Test
       system_prompt "Test"
     end
 
-    with_application(agent:, provider:) do |application|
-      run = application.build_run(message: "work")
+    with_runtime(agent:, provider:) do |harness|
+      run = harness.agent_instance.build_run(message: "work")
       not_ready = assert_raises(LittleGhost::AgentInterruptError) do
         run.interrupt_response("too early")
       end
@@ -384,8 +384,8 @@ class ConfigurationTest < Minitest::Test
       instrumentation.subscribe(->(name, attributes) { recorded << [name, attributes] })
       provider = ProgressThenDeadlineProvider.new(error)
 
-      with_application(agent: progress_agent, provider:, instrumentation:) do |application|
-        run = application.build_run(message: "Build it", session_id: "conversation")
+      with_runtime(agent: progress_agent, provider:, instrumentation:) do |harness|
+        run = harness.agent_instance.build_run(message: "Build it", session_id: "conversation")
         source_events = run.to_a
         translated = LittleGhost::AGUI::Adapter.new
           .stream(source_events, thread_id: "conversation", run_id: run.invocation.run_id)
@@ -422,8 +422,8 @@ class ConfigurationTest < Minitest::Test
     }
 
     failures.each do |error, expected|
-      with_application(provider: FailingProvider.new(error)) do |application|
-        terminal = application.stream(message: "Build it").to_a.last
+      with_runtime(provider: FailingProvider.new(error)) do |harness|
+        terminal = harness.agent_instance.stream({message: "Build it"}).to_a.last
 
         assert_equal :run_error, terminal.type
         assert_equal expected, terminal.data.fetch(:message)
@@ -434,8 +434,8 @@ class ConfigurationTest < Minitest::Test
 
   def test_deadline_is_propagated_to_the_model_request
     deadline = Time.now + 60
-    with_application do |application, provider|
-      application.call(message: "Build it", deadline_at: deadline)
+    with_runtime do |harness, provider|
+      harness.agent_instance.call(message: "Build it", deadline_at: deadline)
 
       assert_equal deadline, provider.requests.first.deadline
     end
@@ -446,8 +446,8 @@ class ConfigurationTest < Minitest::Test
     instrumentation = LittleGhost::Support::Instrumentation.new
     instrumentation.subscribe(->(name, attributes) { recorded << [name, attributes] })
 
-    with_application(instrumentation:) do |application|
-      application.call(message: "Build it")
+    with_runtime(instrumentation:) do |harness|
+      harness.agent_instance.call(message: "Build it")
     end
 
     names = recorded.map(&:first)
@@ -484,8 +484,8 @@ class ConfigurationTest < Minitest::Test
     )
     instrumentation.subscribe(->(name, attributes) { recorded << [name, attributes] })
 
-    with_application(instrumentation:) do |application|
-      application.call(message: "Build it", session_id: "session-1")
+    with_runtime(instrumentation:) do |harness|
+      harness.agent_instance.call(message: "Build it", session_id: "session-1")
     end
 
     run_start = recorded.assoc(:run_start).last
@@ -510,8 +510,8 @@ class ConfigurationTest < Minitest::Test
       )
     )
 
-    with_application(instrumentation:) do |application|
-      application.call(message:)
+    with_runtime(instrumentation:) do |harness|
+      harness.agent_instance.call(message:)
     end
 
     captured = JSON.parse(recorded.assoc(:run_start).last.fetch(:diagnostic_input))
@@ -525,8 +525,8 @@ class ConfigurationTest < Minitest::Test
     instrumentation = LittleGhost::Support::Instrumentation.new
     instrumentation.subscribe(->(name, attributes) { recorded << [name, attributes] })
 
-    with_application(provider: FailingProvider.new(LittleGhost::ProviderError.new("offline")), instrumentation:) do |application|
-      application.call(message: "Build it")
+    with_runtime(provider: FailingProvider.new(LittleGhost::ProviderError.new("offline")), instrumentation:) do |harness|
+      harness.agent_instance.call(message: "Build it")
     end
 
     model_stop = recorded.assoc(:model_stop).last
@@ -535,19 +535,19 @@ class ConfigurationTest < Minitest::Test
   end
 
   def test_application_is_host_neutral_and_uses_generic_instrumentation_by_default
-    with_application do |application|
-      refute_respond_to application, :hosted
-      refute_respond_to application.class, :rack_app
-      assert_instance_of LittleGhost::Support::Instrumentation, application.instrumentation
+    with_runtime do |harness|
+      refute_respond_to harness, :hosted
+      refute_respond_to harness.class, :rack_app
+      assert_instance_of LittleGhost::Support::Instrumentation, harness.instrumentation
     end
   end
 
   def test_default_model_names_are_normalized_to_strings
-    application = TestConfiguration.new
+    harness = TestHarness.new
 
-    application.default_model :support
+    harness.default_model :support
 
-    assert_equal "support", application.default_model
+    assert_equal "support", harness.default_model
   end
 
   def test_instrument_dsl_installs_providers_on_application_instrumentation
@@ -558,8 +558,8 @@ class ConfigurationTest < Minitest::Test
       end
     end
 
-    with_application(configure: ->(application) { application.instrument installer, endpoint: "https://example.test" }) do |application|
-      assert_same application.instrumentation, installed.first[0]
+    with_runtime(configure: ->(harness) { harness.instrument installer, endpoint: "https://example.test" }) do |harness|
+      assert_same harness.instrumentation, installed.first[0]
       assert_equal "https://example.test", installed.first[2]
     end
   end
@@ -572,8 +572,8 @@ class ConfigurationTest < Minitest::Test
       end
     end
 
-    with_application(configure: ->(application) { application.instrument installer, label: "runtime" }) do |application|
-      assert_same application.instrumentation, installed.first[0]
+    with_runtime(configure: ->(harness) { harness.instrument installer, label: "runtime" }) do |harness|
+      assert_same harness.instrumentation, installed.first[0]
       assert_equal "runtime", installed.first[2]
     end
   end
@@ -588,8 +588,8 @@ class ConfigurationTest < Minitest::Test
       def initialize = raise("the installer class should be used directly")
     end
 
-    with_application(configure: ->(application) { application.instrument installer }) do |application|
-      assert_same application.instrumentation, installed.first[0]
+    with_runtime(configure: ->(harness) { harness.instrument installer }) do |harness|
+      assert_same harness.instrumentation, installed.first[0]
     end
   end
 
@@ -599,9 +599,9 @@ class ConfigurationTest < Minitest::Test
       define_singleton_method(:install) { |service_name:, **| installed << service_name }
     end
 
-    with_application(configure: lambda { |application|
-      application.service_name "support-agent"
-      application.instrument installer
+    with_runtime(configure: lambda { |harness|
+      harness.service_name "support-agent"
+      harness.instrument installer
     }) { nil }
 
     assert_equal ["support-agent"], installed
@@ -613,44 +613,44 @@ class ConfigurationTest < Minitest::Test
       define_singleton_method(:install) { |service_name:, **| installed << service_name }
     end
 
-    with_application(configure: lambda { |application|
-      application.service_name "support-agent"
-      application.instrument installer, service_name: "support-worker"
+    with_runtime(configure: lambda { |harness|
+      harness.service_name "support-agent"
+      harness.instrument installer, service_name: "support-worker"
     }) { nil }
 
     assert_equal ["support-worker"], installed
   end
 
   def test_application_uses_an_in_memory_session_store_by_default
-    with_application do |application|
-      assert_instance_of LittleGhost::SessionStores::Memory, application.session_store
+    with_runtime do |harness|
+      assert_instance_of LittleGhost::SessionStores::Memory, harness.session_store
     end
   end
 
   def test_session_store_dsl_accepts_a_store
     store = LittleGhost::SessionStores::Memory.new
 
-    with_application(configure: ->(application) { application.session_store store }) do |application|
-      assert_same store, application.session_store
+    with_runtime(configure: ->(harness) { harness.session_store store }) do |harness|
+      assert_same store, harness.session_store
     end
   end
 
   def test_session_store_dsl_accepts_a_lazy_factory_block
     store = LittleGhost::SessionStores::Memory.new
 
-    with_application(configure: ->(application) { application.session_store { store } }) do |application|
-      assert_same store, application.session_store
+    with_runtime(configure: ->(harness) { harness.session_store { store } }) do |harness|
+      assert_same store, harness.session_store
     end
   end
 
   def test_session_actor_can_be_resolved_from_the_invocation
     store = LittleGhost::SessionStores::Memory.new
 
-    with_application(
+    with_runtime(
       session_store: store,
-      configure: ->(application) { application.session_actor { |invocation| invocation.session_id } }
-    ) do |application|
-      run = application.call(message: "Continue", session_id: "conversation", actor_id: "principal")
+      configure: ->(harness) { harness.session_actor { |invocation| invocation.session_id } }
+    ) do |harness|
+      run = harness.agent_instance.call(message: "Continue", session_id: "conversation", actor_id: "principal")
 
       assert_equal "principal", run.invocation.actor_id
       assert_raises(LittleGhost::Error) { store.load("conversation", actor_id: "principal") }
@@ -663,16 +663,16 @@ class ConfigurationTest < Minitest::Test
       model "main"
       system_prompt { |locals| "#{locals.fetch(:invocation)[:channel]}:#{locals.fetch(:run).invocation.message.text}" }
     end
-    with_application(agent:) do |application, provider|
-      application.call(message: "hello", channel: "slack")
+    with_runtime(agent:) do |harness, provider|
+      harness.agent_instance.call(message: "hello", channel: "slack")
 
       assert_equal "slack:hello", provider.requests.first.messages.first.text
     end
   end
 
   def test_invocation_model_profile_overrides_are_applied_by_models
-    with_application(settings: {temperature: 0.1}) do |application, provider|
-      application.call(
+    with_runtime(settings: {temperature: 0.1}) do |harness, provider|
+      harness.agent_instance.call(
         message: "hello",
         model_profiles: {"main" => {"parameters" => {"temperature" => 0.7, "max_tokens" => 50}}}
       )
@@ -696,46 +696,13 @@ class ConfigurationTest < Minitest::Test
       tools { |run| run.invocation[:dynamic] ? [dynamic_tool] : [] }
     end
 
-    with_application(agent:) do |application, provider|
-      run = application.build_run(message: "hello", dynamic: true)
-      built_agent = application.build_agent(run:, agent_path: "/root/dynamic_child")
+    with_runtime(agent:) do |harness, provider|
+      run = harness.agent_instance.build_run(message: "hello", dynamic: true)
+      built_agent = harness.build_agent(run:, agent_path: "/root/dynamic_child")
 
       assert_equal %w[static dynamic], built_agent.tool_registry.names
       assert built_agent.tool_registry.all? { |tool| tool.run }
       assert_equal "/root/dynamic_child", built_agent.agent_path
-    end
-  end
-
-  def test_default_entrypoint_preserves_keyword_only_build_agent_overrides
-    with_application do |application|
-      application.define_singleton_method(:overridden_build_run) { @overridden_build_run }
-      application.define_singleton_method(:build_agent) do |run:, **options|
-        @overridden_build_run = run
-        super(run:, **options)
-      end
-      run = application.build_run(message: "hello")
-
-      entrypoint = application.build_entrypoint(run:)
-
-      assert_instance_of application.agent_class, entrypoint
-      assert_same run, application.overridden_build_run
-    ensure
-      entrypoint&.close
-    end
-  end
-
-  def test_entrypoint_dsl_builds_a_workflow
-    with_application(configure: ->(application_class) { application_class.entrypoint EntrypointWorkflow }) do |application|
-      run = application.build_run(message: "hello")
-      entrypoint = application.build_entrypoint(run:)
-
-      assert_equal EntrypointWorkflow, application.entrypoint_class
-      assert application.workflow_entrypoint?
-      assert_equal "ConfigurationTest::EntrypointWorkflow", application.entrypoint_name
-      assert_instance_of EntrypointWorkflow, entrypoint
-      assert_same run, entrypoint.run
-    ensure
-      entrypoint&.close
     end
   end
 
@@ -745,15 +712,19 @@ class ConfigurationTest < Minitest::Test
     instrumentation = LittleGhost::Support::Instrumentation.new
     instrumentation.subscribe(->(name, attributes) { recorded << [name, attributes] })
 
-    with_application(
+    with_runtime(
       instrumentation:,
-      configure: lambda do |application_class|
-        EntrypointWorkflow.agent_class = application_class.agent
-        expected_agent_id = application_class.agent.agent_id
-        application_class.entrypoint EntrypointWorkflow
+      configure: lambda do |configuration|
+        EntrypointWorkflow.agent_class = configuration.agent_class
+        expected_agent_id = configuration.agent_class.agent_id
       end
-    ) do |application|
-      application.call(message: "hello")
+    ) do |harness|
+      run = harness.runtime_instance.build_run(
+        {message: "hello"},
+        agent_class: EntrypointWorkflow.agent_class,
+        entrypoint_class: EntrypointWorkflow
+      )
+      run.call
     end
 
     run_start = recorded.assoc(:run_start).last
@@ -787,7 +758,7 @@ class ConfigurationTest < Minitest::Test
       tools tool
     end
 
-    with_application(agent:) { |application| application.call(message: "hello") }
+    with_runtime(agent:) { |harness| harness.agent_instance.call(message: "hello") }
 
     assert_equal 1, tool.closes
   end
@@ -795,8 +766,8 @@ class ConfigurationTest < Minitest::Test
   def test_run_closes_resources_before_emitting_its_terminal_event
     order = []
 
-    with_application do |application|
-      run = application.build_run(message: "hello")
+    with_runtime do |harness|
+      run = harness.agent_instance.build_run(message: "hello")
       run.register { order << :closed }
       run.each do |event|
         order << :terminal if %i[run_partial run_cancel run_stop run_error].include?(event.type)
@@ -809,8 +780,8 @@ class ConfigurationTest < Minitest::Test
   def test_cleanup_failure_replaces_success_with_a_failed_terminal_event
     events = []
 
-    with_application do |application|
-      run = application.build_run(message: "hello")
+    with_runtime do |harness|
+      run = harness.agent_instance.build_run(message: "hello")
       run.register { raise "cleanup failed" }
 
       error = assert_raises(RuntimeError) { run.each { |event| events << event } }
@@ -825,9 +796,9 @@ class ConfigurationTest < Minitest::Test
 
   def test_cleanup_failure_cannot_emit_stale_success_when_error_formatting_fails
     events = []
-    with_application do |application|
-      application.agent_class.define_method(:error_message) { |_error, _run| raise "formatter failed" }
-      run = application.build_run(message: "hello")
+    with_runtime do |harness|
+      harness.agent_class.define_method(:error_message) { |_error, _run| raise "formatter failed" }
+      run = harness.agent_instance.build_run(message: "hello")
       run.register { raise "cleanup failed" }
 
       error = assert_raises(RuntimeError) { run.each { |event| events << event } }
@@ -844,8 +815,8 @@ class ConfigurationTest < Minitest::Test
     cleanup_error = LittleGhost::CleanupError.new("work is still running")
     consumer_error = RuntimeError.new("terminal consumer failed")
 
-    with_application(provider: FailingProvider.new(cleanup_error)) do |application|
-      run = application.build_run(message: "hello")
+    with_runtime(provider: FailingProvider.new(cleanup_error)) do |harness|
+      run = harness.agent_instance.build_run(message: "hello")
 
       raised = assert_raises(LittleGhost::CleanupError) do
         run.each do |event|
@@ -867,8 +838,8 @@ class ConfigurationTest < Minitest::Test
       raise "run stop instrumentation failed" if name == :run_stop
     end
 
-    with_application(provider: FailingProvider.new(cleanup_error), instrumentation:) do |application|
-      run = application.build_run(message: "hello")
+    with_runtime(provider: FailingProvider.new(cleanup_error), instrumentation:) do |harness|
+      run = harness.agent_instance.build_run(message: "hello")
 
       raised = assert_raises(LittleGhost::CleanupError) { run.call }
 
@@ -881,8 +852,8 @@ class ConfigurationTest < Minitest::Test
     ordinary_error = RuntimeError.new("ordinary close failure")
     cleanup_error = LittleGhost::CleanupError.new("resource is still running")
 
-    with_application do |application|
-      run = application.build_run(message: "hello")
+    with_runtime do |harness|
+      run = harness.agent_instance.build_run(message: "hello")
       run.register { raise cleanup_error }
       run.register { raise ordinary_error }
 
@@ -924,7 +895,7 @@ class ConfigurationTest < Minitest::Test
       agent_as_tool child
     end
 
-    with_application(agent: parent) { |application| application.call(message: "hello") }
+    with_runtime(agent: parent) { |harness| harness.agent_instance.call(message: "hello") }
 
     assert_equal 2, tool_class.closes
   end
@@ -953,7 +924,7 @@ class ConfigurationTest < Minitest::Test
       agent_as_tool child
     end
 
-    with_application(agent: parent) { |application| application.call(message: "hello") }
+    with_runtime(agent: parent) { |harness| harness.agent_instance.call(message: "hello") }
 
     assert_equal 1, child.closes
   end
@@ -968,8 +939,8 @@ class ConfigurationTest < Minitest::Test
       metadata: {}
     )
 
-    with_application(session_store: store) do |application, provider|
-      application.call(message: "Continue", session_id: "conversation", actor_id: "actor")
+    with_runtime(session_store: store) do |harness, provider|
+      harness.agent_instance.call(message: "Continue", session_id: "conversation", actor_id: "actor")
 
       assert_includes provider.requests.first.messages.map(&:text), "Earlier"
       assert_includes store.load("conversation", actor_id: "actor").fetch(:messages).map(&:text), "Done"
@@ -980,8 +951,8 @@ class ConfigurationTest < Minitest::Test
     store = LittleGhost::SessionStores::Memory.new
     provider = ReasoningThenAnswerProvider.new
 
-    with_application(agent: progress_agent, provider:, session_store: store) do |application|
-      run = application.call(message: "Continue", session_id: "conversation", actor_id: "actor")
+    with_runtime(agent: progress_agent, provider:, session_store: store) do |harness|
+      run = harness.agent_instance.call(message: "Continue", session_id: "conversation", actor_id: "actor")
 
       continued_messages = provider.requests.fetch(1).messages
       continued_reasoning = continued_messages.flat_map(&:content).grep(LittleGhost::Content::Reasoning).fetch(0)
@@ -1008,8 +979,8 @@ class ConfigurationTest < Minitest::Test
       metadata: {}
     )
 
-    with_application(session_store: store) do |application, provider|
-      application.call(
+    with_runtime(session_store: store) do |harness, provider|
+      harness.agent_instance.call(
         message: "Continue",
         history: [{role: :user, content: "Supplied"}],
         session_id: "conversation",
@@ -1036,8 +1007,8 @@ class ConfigurationTest < Minitest::Test
     )
     instrumentation.subscribe(->(name, attributes) { recorded << [name, attributes] })
 
-    with_application(session_store: store, instrumentation:) do |application|
-      run = application.call(message: "Continue")
+    with_runtime(session_store: store, instrumentation:) do |harness|
+      run = harness.agent_instance.call(message: "Continue")
 
       assert run.failed?
       assert_empty run.response
@@ -1051,23 +1022,23 @@ class ConfigurationTest < Minitest::Test
   end
 
   def test_build_replaces_services_without_mutating_boot_configuration
-    with_application do |application|
+    with_runtime do |harness|
       replacement_provider = ScriptedProvider.new("Replacement")
       replacement_models = models_for(replacement_provider)
-      isolated = application.build(models: replacement_models)
+      isolated = harness.build(models: replacement_models)
 
-      result = isolated.call(message: "hello")
+      result = isolated.agent_instance.call(message: "hello")
 
       assert_equal "Replacement", result.response
-      refute application.settings.frozen?
-      refute_same application.models, isolated.models
+      refute harness.settings.frozen?
+      refute_same harness.models, isolated.models
     end
   end
 
   def test_build_can_override_external_services_before_the_application_boots
     Dir.mktmpdir do |root|
       FileUtils.mkdir_p(File.join(root, "config"))
-      File.write(File.join(root, "config/little_ghost.rb"), "# application fixture\n")
+      File.write(File.join(root, "config/little_ghost.rb"), "# harness fixture\n")
       agent = Class.new(LittleGhost::Agent) do
         model "main"
         system_prompt "Test"
@@ -1075,23 +1046,23 @@ class ConfigurationTest < Minitest::Test
       installer = Module.new do
         def self.install(**) = raise("external instrumentation was installed")
       end
-      application_class = TestConfiguration.new
-      application_class.root root
-      application_class.agent agent
-      application_class.instrument installer
-      application_class.session_store { raise "external sessions were initialized" }
+      configuration = TestHarness.new
+      configuration.root root
+      configuration.select_agent agent
+      configuration.instrument installer
+      configuration.session_store { raise "external sessions were initialized" }
       session_store = LittleGhost::SessionStores::Memory.new
 
-      application = application_class.build(
+      harness = configuration.build(
         models: models_for(ScriptedProvider.new),
         session_store:,
         instrumentation: LittleGhost::Support::Instrumentation.new,
         instruments: []
       )
 
-      assert_instance_of LittleGhost::Support::Instrumentation, application.instrumentation
-      assert_same session_store, application.session_store
-      refute application_class.instance_variable_defined?(:@booted_application)
+      assert_instance_of LittleGhost::Support::Instrumentation, harness.instrumentation
+      assert_same session_store, harness.session_store
+      refute configuration.instance_variable_defined?(:@booted_application)
     end
   end
 
@@ -1100,13 +1071,13 @@ class ConfigurationTest < Minitest::Test
       agent_path = File.join(root, "app/agents/probe_agent.rb")
       FileUtils.mkdir_p(File.dirname(agent_path))
       FileUtils.mkdir_p(File.join(root, "config"))
-      File.write(File.join(root, "config/little_ghost.rb"), "# application fixture\n")
+      File.write(File.join(root, "config/little_ghost.rb"), "# harness fixture\n")
       File.write(agent_path, "class ProbeAgent < LittleGhost::Agent; end\n")
-      application_class = TestConfiguration.new
-      application_class.root root
-      application_class.agent "ProbeAgent"
+      configuration = TestHarness.new
+      configuration.root root
+      configuration.select_agent "ProbeAgent"
 
-      runtime = LittleGhost::Runtime.new(configuration: application_class, entrypoint: "ProbeAgent")
+      runtime = LittleGhost::Runtime.new(configuration: configuration)
 
       assert_equal File.realpath(root), runtime.root.to_s
       assert_equal File.realpath(root), runtime.loader.root
@@ -1114,12 +1085,12 @@ class ConfigurationTest < Minitest::Test
   end
 
   def test_build_creates_a_loader_for_an_overridden_root
-    with_application do |application|
+    with_runtime do |harness|
       Dir.mktmpdir do |other_root|
         FileUtils.mkdir_p(File.join(other_root, "config"))
-        File.write(File.join(other_root, "config/little_ghost.rb"), "# alternate application\n")
+        File.write(File.join(other_root, "config/little_ghost.rb"), "# alternate harness\n")
 
-        isolated = application.build(root: other_root)
+        isolated = harness.build(root: other_root)
 
         assert_equal File.realpath(other_root), isolated.root.to_s
         assert_equal File.realpath(other_root), isolated.loader.root
@@ -1151,10 +1122,10 @@ class ConfigurationTest < Minitest::Test
       subagents { raise "broken discovery" }
     end
 
-    with_application(agent: parent) do |application|
-      run = application.build_run(message: "hello")
+    with_runtime(agent: parent) do |harness|
+      run = harness.agent_instance.build_run(message: "hello")
 
-      assert_raises(RuntimeError) { application.build_agent(run:, tools: [tool.new]) }
+      assert_raises(RuntimeError) { harness.build_agent(run:, tools: [tool.new]) }
       assert_equal 2, tool.closes
       run.close
     end
@@ -1179,10 +1150,10 @@ class ConfigurationTest < Minitest::Test
       system_prompt "Parent"
     end
 
-    with_application(agent:) do |application|
-      run = application.build_run(message: "hello")
+    with_runtime(agent:) do |harness|
+      run = harness.agent_instance.build_run(message: "hello")
 
-      assert_raises(RuntimeError) { application.build_agent(run:, tools: [resource_tool]) }
+      assert_raises(RuntimeError) { harness.build_agent(run:, tools: [resource_tool]) }
       assert_equal 1, resource_tool.closes
       run.close
     end
@@ -1209,9 +1180,9 @@ class ConfigurationTest < Minitest::Test
       end
     end
 
-    with_application(agent: parent) do |application|
-      run = application.build_run(message: "hello")
-      agent = application.build_agent(run:)
+    with_runtime(agent: parent) do |harness|
+      run = harness.agent_instance.build_run(message: "hello")
+      agent = harness.build_agent(run:)
       spawn = agent.tool_registry.fetch("spawn_subagent")
 
       assert_equal %w[dynamic static], spawn.class.input_schema.dig("properties", "kind", "enum").sort
@@ -1239,9 +1210,9 @@ class ConfigurationTest < Minitest::Test
       subagent child, kind: "static", tools: [delegated_tool]
     end
 
-    with_application(agent: parent) do |application, provider|
-      run = application.build_run(message: "hello")
-      agent = application.build_agent(run:)
+    with_runtime(agent: parent) do |harness, provider|
+      run = harness.agent_instance.build_run(message: "hello")
+      agent = harness.build_agent(run:)
       result = agent.tool_registry.fetch("spawn_subagent").execute({
         "kind" => "static", "task_name" => "inspect_source", "task" => "inspect", "mode" => "sync"
       })
@@ -1299,8 +1270,8 @@ class ConfigurationTest < Minitest::Test
       [LittleGhost::StreamEvent.build(:message_stop, response:)].each
     end
 
-    with_application(agent: parent, provider:) do |application|
-      run = application.build_run(message: "start")
+    with_runtime(agent: parent, provider:) do |harness|
+      run = harness.agent_instance.build_run(message: "start")
       events = []
       run.each { |event| events << event }
       activity = events.filter_map do |event|
@@ -1390,9 +1361,9 @@ class ConfigurationTest < Minitest::Test
     end
     store = LittleGhost::SessionStores::Memory.new
 
-    with_application(agent: parent, provider:, session_store: store) do |application|
-      first = application.call(message: "start", session_id: "durable-nested")
-      second = application.call(message: "resume", session_id: "durable-nested")
+    with_runtime(agent: parent, provider:, session_store: store) do |harness|
+      first = harness.agent_instance.call(message: "start", session_id: "durable-nested")
+      second = harness.agent_instance.call(message: "resume", session_id: "durable-nested")
 
       assert first.completed?
       assert second.completed?
@@ -1407,10 +1378,10 @@ class ConfigurationTest < Minitest::Test
   def assert_stubborn_producer_fails_run(interruption)
     provider = StubbornProvider.new
 
-    with_application(provider:) do |application|
+    with_runtime(provider:) do |harness|
       payload = {message: "hello"}
       payload[:deadline_at] = Time.now + 0.05 if interruption == :deadline
-      run = application.build_run(payload)
+      run = harness.agent_instance.build_run(payload)
       events = []
       runner = Thread.new do
         run.each { |event| events << event }
@@ -1451,7 +1422,7 @@ class ConfigurationTest < Minitest::Test
     end
   end
 
-  def with_application(
+  def with_runtime(
     agent: nil,
     session_store: nil,
     instrumentation: nil,
@@ -1469,15 +1440,15 @@ class ConfigurationTest < Minitest::Test
       FileUtils.mkdir_p(File.dirname(prompt))
       FileUtils.mkdir_p(File.dirname(config))
       File.write(prompt, "Prompt for <%= invocation.message.text %>")
-      File.write(config, "# application fixture\n")
-      application_class = TestConfiguration.new
-      application_class.agent agent
-      application_class.models models_for(provider, settings:)
-      application_class.session_store session_store if session_store
-      application_class.instrumentation instrumentation if instrumentation
-      configure&.call(application_class)
-      application = application_class.runtime(root:)
-      yield application, provider, root
+      File.write(config, "# harness fixture\n")
+      configuration = TestHarness.new
+      configuration.select_agent agent
+      configuration.models models_for(provider, settings:)
+      configuration.session_store session_store if session_store
+      configuration.instrumentation instrumentation if instrumentation
+      configure&.call(configuration)
+      harness = configuration.runtime(root:)
+      yield harness, provider, root
     end
   end
 

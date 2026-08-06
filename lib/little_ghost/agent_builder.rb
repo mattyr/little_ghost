@@ -17,15 +17,14 @@ module LittleGhost
       end
     end
 
-    def initialize(runtime:, primary_agent:, prompt_paths:, resolve_agent:)
+    def initialize(runtime:, prompt_paths:, resolve_agent:)
       @runtime = runtime
-      @primary_agent = primary_agent
       @prompt_paths = prompt_paths
       @resolve_agent = resolve_agent
     end
 
     def build(
-      agent_class_or_name = @primary_agent,
+      agent_class_or_name,
       run:,
       model: nil,
       tools: [],

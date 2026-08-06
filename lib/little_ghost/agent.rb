@@ -5,7 +5,6 @@ require_relative "support/output_truncation"
 
 module LittleGhost
   class Agent
-    UNSET = Object.new.freeze
     DEFAULT_MAX_TOOL_RESULT_TOKENS = 10_000
     MAX_STRUCTURED_RESULT_BYTES = 1_000_000
     MAX_STRUCTURED_RESULT_DEPTH = 64
@@ -22,17 +21,15 @@ module LittleGhost
     ].freeze
 
     module Definition
+      extend Support::ClassAttributes
+      include Support::ClassAttributes
+
       def run_class = LittleGhost::Run
 
-      def agent_id(value = nil)
-        if value.nil?
-          return @agent_id if instance_variable_defined?(:@agent_id)
-          return inherited_agent.agent_id if inherited_agent
+      def agent_id(*values)
+        return agent_id_value || default_agent_id if values.empty?
 
-          return default_agent_id
-        end
-
-        @agent_id = value.to_s
+        self.agent_id_value = values.fetch(0).to_s
       end
 
       def logical_path
@@ -41,51 +38,34 @@ module LittleGhost
         parts.reject(&:empty?).map { |part| underscore(part) }.join("/")
       end
 
-      def description(value = nil)
-        if value.nil?
-          return @agent_description.to_s if instance_variable_defined?(:@agent_description)
-          return inherited_agent.description if inherited_agent
+      def description(*values)
+        return description_value.to_s if values.empty?
 
-          return ""
-        end
-
-        @agent_description = value.to_s
+        self.description_value = values.fetch(0).to_s
       end
 
-      def model(value = nil, &block)
-        return @model_role if instance_variable_defined?(:@model_role) && value.nil? && !block
-        return inherited_agent.model if inherited_agent && value.nil? && !block
+      def model(*values, &block)
+        return model_value if values.empty? && !block
 
-        @model_role = block || value.to_s unless value.nil? && !block
-        @model_role
+        self.model_value = block || values.fetch(0).to_s
       end
 
       def model_role(invocation)
-        value = @model_role
+        value = model_value
         resolved = value.respond_to?(:call) ? value.call(invocation) : value
         resolved&.to_s
       end
 
       def limits(**values)
-        if values.empty?
-          return @limits if instance_variable_defined?(:@limits)
-          return inherited_agent.limits if inherited_agent
+        return limits_value if values.empty?
 
-          return {}.freeze
-        end
-
-        @limits = limits.merge(values.transform_keys(&:to_sym))
+        self.limits_value = limits.merge(values.transform_keys(&:to_sym))
       end
 
-      def result_schema(schema = UNSET, name: nil, description: nil, strategy: :auto, **schema_keywords)
-        if schema.equal?(UNSET)
-          if schema_keywords.empty?
-            return @result_schema_configuration if instance_variable_defined?(:@result_schema_configuration)
-            return inherited_agent.result_schema if inherited_agent
+      def result_schema(schema = nil, name: nil, description: nil, strategy: :auto, **schema_keywords)
+        return result_schema_value if schema.nil? && schema_keywords.empty? && name.nil? && description.nil? && strategy == :auto
 
-            return nil
-          end
-
+        if schema.nil?
           schema = schema_keywords
         elsif !schema_keywords.empty?
           raise ArgumentError, "Provide result_schema as a hash or keyword schema, not both"
@@ -108,7 +88,7 @@ module LittleGhost
           raise ConfigurationError, "result_schema strategy must be auto, provider, or tool"
         end
 
-        @result_schema_configuration = {
+        self.result_schema_value = {
           schema: normalized_schema,
           name: schema_name,
           description: description&.to_s,
@@ -116,46 +96,28 @@ module LittleGhost
         }
       end
 
-      def capture_diagnostics(value = UNSET)
-        if value.equal?(UNSET)
-          return @capture_diagnostics != false if instance_variable_defined?(:@capture_diagnostics)
-          return inherited_agent.capture_diagnostics if inherited_agent
+      def capture_diagnostics(*values)
+        return capture_diagnostics_value if values.empty?
 
-          return true
-        end
-
-        @capture_diagnostics = value == true
+        self.capture_diagnostics_value = values.fetch(0) == true
       end
 
-      def system_template(value = nil)
-        if value.nil?
-          return @system_template if instance_variable_defined?(:@system_template)
-          return inherited_agent.system_template&.dup if inherited_agent
+      def system_template(*values)
+        return system_template_value if values.empty?
 
-          return nil
-        end
-
-        @system_template = value.to_s
+        self.system_template_value = values.fetch(0).to_s
       end
 
-      def system_prompt(value = nil, &block)
-        if value.nil? && !block
-          if instance_variable_defined?(:@system_prompt_builder) || instance_variable_defined?(:@system_prompt)
-            return @system_prompt_builder || @system_prompt
-          end
-          value = inherited_agent.system_prompt if inherited_agent
-          return value.is_a?(String) ? value.dup : value if inherited_agent
+      def system_prompt(*values, &block)
+        return system_prompt_builder_value || system_prompt_value if values.empty? && !block
 
-          return nil
-        end
-
-        @system_template = nil
+        self.system_template_value = nil
         if block
-          @system_prompt = nil
-          @system_prompt_builder = block
+          self.system_prompt_value = nil
+          self.system_prompt_builder_value = block
         else
-          @system_prompt = value.to_s
-          @system_prompt_builder = nil
+          self.system_prompt_value = values.fetch(0).to_s
+          self.system_prompt_builder_value = nil
         end
       end
 
@@ -166,62 +128,35 @@ module LittleGhost
             "Class-level tools must be LittleGhost::Tool classes; use a block for per-agent tool instances"
         end
 
-        local_tool_declarations.concat(values)
-        local_tool_declarations << resolver if resolver
+        declarations = tool_declarations_value + values
+        declarations << resolver if resolver
+        self.tool_declarations_value = declarations
         tool_declarations
       end
 
-      def tool_declarations
-        inherited = superclass.respond_to?(:tool_declarations) ? superclass.tool_declarations : []
-        inherited + local_tool_declarations
+      def tool_declarations = tool_declarations_value
+
+      def prompt_local(name, *values, &resolver)
+        raise ArgumentError, "Provide a prompt local value or block" if values.empty? && !resolver
+        raise ArgumentError, "Provide a prompt local value or block, not both" unless values.empty? || !resolver
+
+        self.prompt_local_values = prompt_local_values.merge(name.to_sym => resolver || values.fetch(0))
       end
 
-      def prompt_local(name, value = UNSET, &resolver)
-        raise ArgumentError, "Provide a prompt local value or block" if value.equal?(UNSET) && !resolver
-        raise ArgumentError, "Provide a prompt local value or block, not both" unless value.equal?(UNSET) || !resolver
+      def prompt_local_resolvers = prompt_local_values
 
-        local_prompt_locals[name.to_sym] = resolver || value
-      end
-
-      def prompt_local_resolvers
-        inherited = superclass.respond_to?(:prompt_local_resolvers) ? superclass.prompt_local_resolvers : {}
-        inherited.merge(local_prompt_locals).freeze
-      end
-
-      def callbacks
-        inherited = if superclass.respond_to?(:callbacks)
-          superclass.callbacks
-        else
-          Support::Callbacks.new(*CALLBACKS)
-        end
-        inherited.merge(local_callbacks)
-      end
+      def callbacks = callback_values
 
       CALLBACKS.each do |name|
         define_method(name) do |callable = nil, prepend: false, &block|
-          local_callbacks.on(name, callable, prepend:, &block)
+          callbacks = callback_values.dup
+          callbacks.on(name, callable, prepend:, &block)
+          self.callback_values = callbacks
           self
         end
       end
 
       private
-
-      def local_callbacks
-        @callbacks ||= Support::Callbacks.new(*CALLBACKS)
-      end
-
-      def local_prompt_locals
-        @prompt_locals ||= {}
-      end
-
-      def local_tool_declarations
-        @tool_declarations ||= []
-      end
-
-      def inherited_agent
-        parent = superclass
-        parent if parent.respond_to?(:agent_id) && parent <= Agent
-      end
 
       def validate_result_schema_keywords!(schema, path = "$")
         unsupported = schema.keys - RESULT_SCHEMA_KEYWORDS
@@ -323,10 +258,23 @@ module LittleGhost
 
     extend Definition
 
+    class_attribute :agent_id_value
+    class_attribute :description_value
+    class_attribute :model_value
+    class_attribute :limits_value, default: {}
+    class_attribute :result_schema_value
+    class_attribute :capture_diagnostics_value, default: true
+    class_attribute :system_template_value
+    class_attribute :system_prompt_value
+    class_attribute :system_prompt_builder_value
+    class_attribute :tool_declarations_value, default: []
+    class_attribute :prompt_local_values, default: {}
+    class_attribute :callback_values, default: Support::Callbacks.new(*CALLBACKS)
+
     attr_reader :model, :tool_registry, :instrumentation, :run, :delegation_activity, :agent_path
 
     def initialize(
-      model: UNSET,
+      model: nil,
       runtime: nil,
       tools: [],
       instrumentation: nil,
@@ -341,9 +289,9 @@ module LittleGhost
       max_tool_result_tokens: DEFAULT_MAX_TOOL_RESULT_TOKENS,
       model_settings: {}
     )
-      if model.equal?(UNSET) && run.nil?
-        @entrypoint = true
-        @runtime = runtime || Runtime.new(configuration: LittleGhost.configuration, entrypoint: self)
+      if model.nil? && run.nil?
+        @standalone = true
+        @runtime = runtime || Runtime.new(configuration: LittleGhost.configuration)
         @closed = false
         @close_mutex = Mutex.new
         @interruptions_mutex = Mutex.new
@@ -401,15 +349,15 @@ module LittleGhost
     def entrypoint_name = self.class.agent_id
 
     def build_run(payload)
-      run = runtime.build_run(payload)
+      run = runtime.build_run(payload, agent_class: self.class, entrypoint_class: self.class)
       prepare_run(run)
     rescue
       run&.close
       raise
     end
 
-    def call(input = UNSET, **options)
-      return runtime.call(entrypoint_payload(input, options)) if @entrypoint
+    def call(input = nil, **options)
+      return build_run(entrypoint_payload(input, options)).call if @standalone
 
       result = nil
       stream(input, **options).each do |event|
@@ -506,14 +454,14 @@ module LittleGhost
     end
 
     def stream(
-      input = UNSET,
-      history: UNSET,
-      context: UNSET,
+      input = nil,
+      history: nil,
+      context: nil,
       cancellation_token: Support::CancellationToken.new,
       deadline: nil,
-      settings: UNSET,
-      template_locals: UNSET,
-      template_paths: UNSET,
+      settings: nil,
+      template_locals: nil,
+      template_paths: nil,
       parent_operation_id: nil,
       checkpoint: nil,
       conversation_id: nil,
@@ -521,19 +469,19 @@ module LittleGhost
       interruption_ids: [],
       interrupt_ready: nil
     )
-      if @entrypoint
-        raise ArgumentError, "input is required" if input.equal?(UNSET)
+      if @standalone
+        raise ArgumentError, "input is required" if input.nil?
 
-        return runtime.stream(entrypoint_payload(input, {}))
+        return build_run(entrypoint_payload(input, {})).each
       end
 
-      raise ArgumentError, "input is required" if input.equal?(UNSET)
+      raise ArgumentError, "input is required" if input.nil?
 
-      history = [] if history.equal?(UNSET)
-      context = {} if context.equal?(UNSET)
-      settings = {} if settings.equal?(UNSET)
-      template_locals = {} if template_locals.equal?(UNSET)
-      template_paths = [] if template_paths.equal?(UNSET)
+      history ||= []
+      context ||= {}
+      settings ||= {}
+      template_locals ||= {}
+      template_paths ||= []
       invocation_paths = Array(template_paths).map do |path|
         unless path.is_a?(Templates::TrustedPath)
           raise ArgumentError, "invocation template paths must be LittleGhost::Templates::TrustedPath values"
@@ -578,8 +526,6 @@ module LittleGhost
     end
 
     def stream_ask(message, **options)
-      return runtime.stream(message: message, **options) if @entrypoint
-
       stream(message, **options)
     end
 
@@ -656,7 +602,7 @@ module LittleGhost
     private
 
     def entrypoint_payload(input, options)
-      return options if input.equal?(UNSET)
+      return options if input.nil?
       return input.merge(options) if input.is_a?(Hash)
 
       {message: input, **options}

@@ -4,10 +4,9 @@ require_relative "configuration"
 
 module LittleGhost
   class Runtime
-    attr_reader :configuration, :settings, :root, :loader, :components, :instrumentation, :models, :session_store, :agent_class,
-      :entrypoint, :entrypoint_class
+    attr_reader :configuration, :settings, :root, :loader, :components, :instrumentation, :models, :session_store
 
-    def initialize(configuration:, entrypoint: nil, settings: nil)
+    def initialize(configuration:, settings: nil)
       raise ArgumentError, "configuration must be a LittleGhost::Configuration" unless configuration.is_a?(Configuration)
 
       @configuration = configuration
@@ -18,8 +17,6 @@ module LittleGhost
         configuration.load_file!(root: bootstrap_root)
         @settings = configuration.settings(root: bootstrap_root)
       end
-      configured_entrypoint = entrypoint
-
       @root = canonical_application_root(@settings.fetch(:root))
       @loader = @settings[:loader] || Support::Loader.new(root: @root)
       @components = Array(@settings[:components])
@@ -27,24 +24,6 @@ module LittleGhost
       validate_loader_conflicts!(loaders)
       loaders.each(&:setup)
       loaders.each(&:eager_load)
-      configured_entrypoint ||= @settings[:entrypoint] || @settings[:agent] || Agent
-      @entrypoint_class = resolve_entrypoint_class(
-        configured_entrypoint.is_a?(Agent) ? configured_entrypoint.class : configured_entrypoint
-      )
-      @agent_class = if entrypoint
-        @entrypoint_class
-      elsif @settings[:agent]
-        resolve_agent_class(@settings[:agent])
-      elsif @entrypoint_class <= Agent
-        @entrypoint_class
-      else
-        Agent
-      end
-      @entrypoint = if configured_entrypoint.is_a?(Agent)
-        configured_entrypoint
-      elsif @entrypoint_class <= Agent
-        @entrypoint_class.new(runtime: self)
-      end
       @invocation_class = @settings[:invocation] || Invocation
       @models = build_service(@settings[:models], default: -> { ModelRegistry.new })
       @default_model = @settings.fetch(:default_model, "default").to_s
@@ -58,7 +37,6 @@ module LittleGhost
       @prompt_paths = discover_prompt_paths
       @agent_builder = AgentBuilder.new(
         runtime: self,
-        primary_agent: @agent_class,
         prompt_paths: @prompt_paths,
         resolve_agent: method(:resolve_agent_class)
       )
@@ -70,7 +48,6 @@ module LittleGhost
       values[:loader] = loader unless overrides.key?(:loader) || overrides.key?(:root)
       self.class.new(
         configuration:,
-        entrypoint: @entrypoint_class,
         settings: values
       )
     end
@@ -79,42 +56,19 @@ module LittleGhost
       payload.is_a?(@invocation_class) ? payload : @invocation_class.new(payload)
     end
 
-    def build_run(payload)
-      run_class = @agent_class.respond_to?(:run_class) ? @agent_class.run_class : Run
-      run_class.new(invocation: parse(payload), runtime: self, agent_class: @agent_class,
-        entrypoint_class: @entrypoint_class)
-    end
-
-    def call(payload = nil, **options)
-      build_run(payload || options).call
-    end
-
-    def stream(payload = nil, **options)
-      build_run(payload || options).each
+    def build_run(payload, agent_class:, entrypoint_class: agent_class)
+      run_class = agent_class.respond_to?(:run_class) ? agent_class.run_class : Run
+      run_class.new(invocation: parse(payload), runtime: self, agent_class:, entrypoint_class:)
     end
 
     def build_agent(
-      agent_class_or_name = @agent_class,
+      agent_class_or_name,
       run:,
       model: nil,
       tools: [],
       agent_path: Subagents::AgentPath::ROOT
     )
       @agent_builder.build(agent_class_or_name, run:, model:, tools:, agent_path:)
-    end
-
-    def build_entrypoint(run:)
-      return @entrypoint_class.new(run:, runtime: self) if workflow_entrypoint?
-
-      return build_agent(run:) if @entrypoint_class == @agent_class
-
-      build_agent(@entrypoint_class, run:)
-    end
-
-    def workflow_entrypoint? = @entrypoint_class <= Workflow
-
-    def entrypoint_name
-      workflow_entrypoint? ? @entrypoint_class.name.to_s : @entrypoint_class.agent_id
     end
 
     def service_name
@@ -170,7 +124,7 @@ module LittleGhost
         return "The model returned an invalid tool call before completing the response. Please retry with a narrower request."
       end
 
-      "#{@agent_class.agent_id} failed: #{error.class}"
+      "Agent failed: #{error.class}"
     end
 
     def resolve_agent(value)
@@ -241,26 +195,6 @@ module LittleGhost
     rescue NameError
       klass = loader.constant(value)
       raise ConfigurationError, "agent must inherit from LittleGhost::Agent" unless klass.is_a?(Class) && klass <= Agent
-
-      klass
-    end
-
-    def resolve_entrypoint_class(value)
-      klass = if value.is_a?(String) || value.is_a?(Symbol)
-        Object.const_get(value.to_s)
-      else
-        value
-      end
-      unless klass.is_a?(Class) && [Agent, Workflow].any? { |base| klass <= base }
-        raise ConfigurationError, "entrypoint must inherit from LittleGhost::Agent or LittleGhost::Workflow"
-      end
-
-      klass
-    rescue NameError
-      klass = loader.constant(value)
-      unless klass.is_a?(Class) && [Agent, Workflow].any? { |base| klass <= base }
-        raise ConfigurationError, "entrypoint must inherit from LittleGhost::Agent or LittleGhost::Workflow"
-      end
 
       klass
     end

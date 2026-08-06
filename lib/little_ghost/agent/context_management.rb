@@ -25,6 +25,7 @@ module LittleGhost
 
       def self.included(base)
         base.extend(ClassMethods)
+        base.class_attribute :context_management_configuration_value
       end
 
       module ClassMethods
@@ -47,7 +48,7 @@ module LittleGhost
           end
           raise ArgumentError, "preserve_recent_messages must be at least 2" if preserve_recent_messages < 2
 
-          @context_management_configuration = {
+          self.context_management_configuration_value = {
             context_window_tokens:,
             compression_threshold:,
             summary_ratio:,
@@ -57,11 +58,7 @@ module LittleGhost
           after_model_error :compact_context_after_overflow
         end
 
-        def context_management_configuration
-          return @context_management_configuration if instance_variable_defined?(:@context_management_configuration)
-
-          Support.deep_dup(superclass.context_management_configuration) if superclass.respond_to?(:context_management_configuration)
-        end
+        def context_management_configuration = context_management_configuration_value
       end
 
       private

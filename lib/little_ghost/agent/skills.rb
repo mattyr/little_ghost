@@ -3,17 +3,17 @@
 module LittleGhost
   class Agent
     module Skills
-      PATHS_UNSET = Object.new.freeze
-
       def self.included(base)
         base.extend(ClassMethods)
+        base.class_attribute :skills_configuration_value
+        base.class_attribute :skills_tool_resolver_value
       end
 
       module ClassMethods
-        def skills(*values, paths: PATHS_UNSET, **options)
-          configured_paths = paths.equal?(PATHS_UNSET) ? values.flatten : paths
-          @skills_configuration = options.merge(paths: configured_paths)
-          @skills_tool_resolver = lambda do
+        def skills(*values, **options)
+          configured_paths = options.key?(:paths) ? options.delete(:paths) : values.flatten
+          self.skills_configuration_value = options.merge(paths: configured_paths)
+          resolver = lambda do
             configuration = self.class.skills_configuration
             paths = configuration.fetch(:paths)
             if paths.is_a?(Proc)
@@ -24,7 +24,8 @@ module LittleGhost
 
             catalog.tool.tap { |tool| tool.define_method(:catalog) { catalog } }
           end
-          tools(&@skills_tool_resolver)
+          self.skills_tool_resolver_value = resolver
+          tools(&resolver)
           prompt_local(:skills_prompt) do
             tool = tools.fetch("skills") if tools.names.include?("skills")
             tool&.catalog&.discovery_prompt.to_s
@@ -32,19 +33,11 @@ module LittleGhost
           before_invocation :include_skills_prompt
         end
 
-        def skills_configuration
-          return @skills_configuration if instance_variable_defined?(:@skills_configuration)
-
-          Support.deep_dup(superclass.skills_configuration) if superclass.respond_to?(:skills_configuration)
-        end
+        def skills_configuration = skills_configuration_value
 
         private
 
-        def skills_tool_resolver
-          return @skills_tool_resolver if instance_variable_defined?(:@skills_tool_resolver)
-
-          superclass.send(:skills_tool_resolver) if superclass.respond_to?(:skills_tool_resolver, true)
-        end
+        def skills_tool_resolver = skills_tool_resolver_value
       end
 
       private

@@ -5,7 +5,7 @@ require "pathname"
 
 module LittleGhost
   class Configuration
-    CONFIGURATION_KEYS = %i[agent entrypoint invocation models default_model instrumentation service_name].freeze
+    CONFIGURATION_KEYS = %i[invocation models default_model instrumentation service_name].freeze
 
     CONFIGURATION_KEYS.each do |name|
       define_method(name) do |value = :__read__|

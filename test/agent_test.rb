@@ -44,8 +44,13 @@ class AgentTest < Minitest::Test
     agent = Class.new(LittleGhost::Agent)
     calls = []
     runtime = Object.new
-    runtime.define_singleton_method(:call) { |payload| calls << [:call, payload] }
-    runtime.define_singleton_method(:stream) { |payload| calls << [:stream, payload] }
+    runtime.define_singleton_method(:build_run) do |payload, **|
+      calls << [:build_run, payload]
+      Object.new.tap do |run|
+        run.define_singleton_method(:call) { calls << [:call] }
+        run.define_singleton_method(:each) { calls << [:each] }
+      end
+    end
 
     LittleGhost::Runtime.stub(:new, ->(**) { runtime }) do
       entrypoint = agent.new
@@ -53,15 +58,20 @@ class AgentTest < Minitest::Test
       entrypoint.stream_ask("goodbye")
     end
 
-    assert_equal [[:call, {message: "hello"}], [:stream, {message: "goodbye"}]], calls
+    assert_equal [[:build_run, {message: "hello"}], [:call], [:build_run, {message: "goodbye"}], [:each]], calls
   end
 
   def test_an_entrypoint_instance_delegates_manual_calls_to_its_runtime
     agent = Class.new(LittleGhost::Agent)
     calls = []
     runtime = Object.new
-    runtime.define_singleton_method(:call) { |payload| calls << [:call, payload] }
-    runtime.define_singleton_method(:stream) { |payload| calls << [:stream, payload] }
+    runtime.define_singleton_method(:build_run) do |payload, **|
+      calls << [:build_run, payload]
+      Object.new.tap do |run|
+        run.define_singleton_method(:call) { calls << [:call] }
+        run.define_singleton_method(:each) { calls << [:each] }
+      end
+    end
 
     LittleGhost::Runtime.stub(:new, ->(**) { runtime }) do
       entrypoint = agent.new
@@ -72,7 +82,7 @@ class AgentTest < Minitest::Test
       assert_same runtime, entrypoint.runtime
     end
 
-    assert_equal [[:call, {message: "hello"}], [:stream, {message: "goodbye"}]], calls
+    assert_equal [[:build_run, {message: "hello"}], [:call], [:build_run, {message: "goodbye"}], [:each]], calls
   end
 
   def test_runs_model_and_returns_normalized_result
@@ -806,7 +816,6 @@ class AgentTest < Minitest::Test
     assert_includes agent_class.ancestors, LittleGhost::Agent::Delegation
     assert_empty agent.tool_registry.names
     assert_instance_of LittleGhost::Support::Callbacks, agent.class.callbacks
-    assert LittleGhost::Agent.const_defined?(:UNSET, false)
   ensure
     agent&.close
   end
@@ -848,11 +857,11 @@ class AgentTest < Minitest::Test
 
     assert_equal %w[search status], parent.tool_loop_configuration.fetch(:except)
     assert_equal parent.tool_loop_configuration, child.tool_loop_configuration
-    refute_same parent.tool_loop_configuration, child.tool_loop_configuration
+    assert_same parent.tool_loop_configuration, child.tool_loop_configuration
     refute_predicate child.tool_loop_configuration, :frozen?
   end
 
-  def test_inherited_mixin_configuration_is_copied
+  def test_inherited_mixin_configuration_is_shared_until_reassigned
     delegated = Class.new(LittleGhost::Agent)
     parent = Class.new(LittleGhost::Agent) do
       subagent delegated, tools: []
@@ -861,8 +870,8 @@ class AgentTest < Minitest::Test
 
     child.subagent_declarations.first.fetch(:tools) << :unexpected
 
-    assert_empty parent.subagent_declarations.first.fetch(:tools)
-    assert_empty child.subagent_declarations.first.fetch(:tools)
+    assert_equal [:unexpected], parent.subagent_declarations.first.fetch(:tools)
+    assert_same parent.subagent_declarations, child.subagent_declarations
   end
 
   def test_subagent_long_poll_duration_defaults_to_manager_default_and_is_inherited
@@ -913,7 +922,7 @@ class AgentTest < Minitest::Test
     end
   end
 
-  def test_inherited_agent_policy_is_copied
+  def test_inherited_agent_policy_is_shared
     delegated = Class.new(LittleGhost::Agent) do
       agent_id "delegate"
       description "Delegated agent"
@@ -929,12 +938,11 @@ class AgentTest < Minitest::Test
     child = Class.new(parent)
     declaration = child.subagent_declarations.first
 
-    child.system_prompt << " changed"
-    child.skills_configuration.fetch(:paths) << "/other"
-    child.tool_loop_configuration.fetch(:except).first.replace("dangerous")
-    declaration.fetch(:tools).first << tool
-    declaration.fetch(:kind) << "-mutated"
-    declaration.fetch(:description) << " changed"
+    assert_same parent.system_prompt, child.system_prompt
+    assert_same parent.skills_configuration, child.skills_configuration
+    assert_same parent.tool_loop_configuration, child.tool_loop_configuration
+    assert_same parent.subagent_declarations, child.subagent_declarations
+    assert_same parent.subagent_declarations.first, declaration
     assert_equal "Follow policy", parent.system_prompt
     assert_equal "delegate", delegated.agent_id
     assert_equal "Delegated agent", delegated.description

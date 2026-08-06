@@ -5,23 +5,23 @@ module LittleGhost
     module Delegation
       def self.included(base)
         base.extend(ClassMethods)
+        base.class_attribute :subagent_long_poll_duration_value,
+          default: Subagents::Manager::DEFAULT_WAIT_TIMEOUT
+        base.class_attribute :subagent_declarations_value, default: []
+        base.class_attribute :subagent_resolvers_value, default: []
+        base.class_attribute :agent_tool_declarations_value, default: []
       end
 
       module ClassMethods
-        def subagent_long_poll_duration(value = Agent::UNSET)
-          if value.equal?(Agent::UNSET)
-            return @subagent_long_poll_duration if instance_variable_defined?(:@subagent_long_poll_duration)
-            return superclass.subagent_long_poll_duration if superclass.respond_to?(:subagent_long_poll_duration)
+        def subagent_long_poll_duration(*values)
+          return subagent_long_poll_duration_value if values.empty?
 
-            return Subagents::Manager::DEFAULT_WAIT_TIMEOUT
-          end
-
-          timeout = Float(value)
+          timeout = Float(values.fetch(0))
           unless timeout.positive? && timeout.finite?
             raise ConfigurationError, "subagent_long_poll_duration must be a positive finite number"
           end
 
-          @subagent_long_poll_duration = timeout
+          self.subagent_long_poll_duration_value = timeout
         rescue ArgumentError, TypeError
           raise ConfigurationError, "subagent_long_poll_duration must be a positive finite number"
         end
@@ -37,26 +37,18 @@ module LittleGhost
             factory:,
             persist:
           }
-          @subagent_declarations = [*subagent_declarations, declaration].freeze
+          self.subagent_declarations_value = [*subagent_declarations, declaration]
         end
 
         def subagents(*agent_classes, **options, &resolver)
           agent_classes.each { |agent_class| subagent(agent_class, **options) }
-          @subagent_resolvers = [*subagent_resolvers, resolver].freeze if resolver
+          self.subagent_resolvers_value = [*subagent_resolvers, resolver] if resolver
           subagent_declarations
         end
 
-        def subagent_declarations
-          return @subagent_declarations if instance_variable_defined?(:@subagent_declarations)
+        def subagent_declarations = subagent_declarations_value
 
-          superclass.respond_to?(:subagent_declarations) ? Support.deep_dup(superclass.subagent_declarations) : []
-        end
-
-        def subagent_resolvers
-          return @subagent_resolvers if instance_variable_defined?(:@subagent_resolvers)
-
-          superclass.respond_to?(:subagent_resolvers) ? superclass.subagent_resolvers.dup : []
-        end
+        def subagent_resolvers = subagent_resolvers_value
 
         def agent_as_tool(agent_class, name: nil, description: nil, model: nil, tools: nil,
           preserve_context: false)
@@ -69,7 +61,7 @@ module LittleGhost
             tools:,
             preserve_context:
           }
-          @agent_tool_declarations = [*agent_tool_declarations, declaration].freeze
+          self.agent_tool_declarations_value = [*agent_tool_declarations, declaration]
         end
 
         def agents_as_tools(*agent_classes, **options)
@@ -77,11 +69,7 @@ module LittleGhost
           agent_tool_declarations
         end
 
-        def agent_tool_declarations
-          return @agent_tool_declarations if instance_variable_defined?(:@agent_tool_declarations)
-
-          superclass.respond_to?(:agent_tool_declarations) ? Support.deep_dup(superclass.agent_tool_declarations) : []
-        end
+        def agent_tool_declarations = agent_tool_declarations_value
 
         private
 

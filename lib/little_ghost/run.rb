@@ -144,8 +144,8 @@ module LittleGhost
       execution_cleanup_error = nil
       instrument(
         :run_start,
-        entrypoint_kind: workflow_entrypoint? ? :workflow : :agent,
-        workflow_name: workflow_entrypoint? ? entrypoint_name : nil,
+        entrypoint_kind: workflow_run? ? :workflow : :agent,
+        workflow_name: workflow_run? ? entrypoint_name : nil,
         trace_context: invocation[:parent_trace_context],
         trace_links: invocation[:trace_links],
         diagnostic: {input: diagnostic_invocation_message}
@@ -153,16 +153,16 @@ module LittleGhost
       emit(:run_start, run_id: invocation.run_id, thread_id: invocation.session_id) { |event| yield event }
       trace_context = runtime.instrumentation.trace_context(operation_id:) if runtime.instrumentation.respond_to?(:trace_context)
       emit(:trace_context, context: trace_context) { |event| yield event } unless trace_context.nil? || trace_context.empty?
-      session_entrypoint = runtime.entrypoint if entrypoint_class <= Agent
-      @session = if session_entrypoint&.respond_to?(:open_session)
-        session_entrypoint.open_session(self)
+      session_agent = entrypoint_class.new(runtime:) if entrypoint_class <= Agent
+      @session = if session_agent&.respond_to?(:open_session)
+        session_agent.open_session(self)
       else
         runtime.open_session(self)
       end
       agent = if entrypoint_class <= Agent
         runtime.build_agent(entrypoint_class, run: self)
       else
-        runtime.build_entrypoint(run: self)
+        entrypoint_class.new(run: self, runtime:)
       end
       @interruption_mutex.synchronize do
         @entrypoint = agent
@@ -325,8 +325,8 @@ module LittleGhost
         run_id: invocation.run_id,
         invocation_id: invocation.invocation_id,
         session_id: invocation.session_id,
-        agent_id: workflow_entrypoint? ? nil : entrypoint_name,
-        workflow_name: workflow_entrypoint? ? entrypoint_name : nil
+        agent_id: workflow_run? ? nil : entrypoint_name,
+        workflow_name: workflow_run? ? entrypoint_name : nil
       }.merge(
         runtime.respond_to?(:instrumentation_attributes) ?
           runtime.instrumentation_attributes(run: self) : {}
@@ -338,10 +338,10 @@ module LittleGhost
         .compact
     end
 
-    def workflow_entrypoint? = entrypoint_class <= Workflow
+    def workflow_run? = entrypoint_class <= Workflow
 
     def entrypoint_name
-      return entrypoint_class.name.to_s if workflow_entrypoint?
+      return entrypoint_class.name.to_s if workflow_run?
 
       return @entrypoint.entrypoint_name if @entrypoint&.respond_to?(:entrypoint_name)
 
