@@ -13,10 +13,10 @@ module LittleGhost
     end
   end
 
-  class PromptError < Error; end
-  class MissingTemplateError < PromptError; end
-  class InvalidTemplateError < PromptError; end
-  class MissingLocalError < PromptError; end
+  class PromptTemplateError < Error; end
+  class MissingPromptTemplateError < PromptTemplateError; end
+  class InvalidPromptTemplateError < PromptTemplateError; end
+  class MissingPromptLocalError < PromptTemplateError; end
 
   class PromptResolver
     DEFAULT_MAX_DEPTH = 20
@@ -38,17 +38,17 @@ module LittleGhost
     private
 
     def render_template(name, locals, roots, stack)
-      raise InvalidTemplateError, "Template recursion exceeds #{@max_depth} levels" if stack.length >= @max_depth
+      raise InvalidPromptTemplateError, "Prompt template recursion exceeds #{@max_depth} levels" if stack.length >= @max_depth
 
       path = resolve(name, roots)
-      raise InvalidTemplateError, "Template cycle detected: #{(stack + [path]).join(" -> ")}" if stack.include?(path)
+      raise InvalidPromptTemplateError, "Prompt template cycle detected: #{(stack + [path]).join(" -> ")}" if stack.include?(path)
 
       template = compiled_template(path)
       context = RenderContext.new(self, roots, stack + [path], name, locals)
       template.result(context.template_binding)
     rescue NameError => error
       if error.name && local_name?(error.name)
-        raise MissingLocalError, "Missing template local: #{error.name}"
+        raise MissingPromptLocalError, "Missing prompt template local: #{error.name}"
       end
 
       raise
@@ -83,7 +83,7 @@ module LittleGhost
         end
       end
 
-      raise MissingTemplateError, "Template not found: #{name}"
+      raise MissingPromptTemplateError, "Prompt template not found: #{name}"
     end
 
     def template_candidates(name)
@@ -121,11 +121,11 @@ module LittleGhost
 
     def validate_root(root)
       real_root = File.realpath(root.path)
-      raise InvalidTemplateError, "Template root is not a directory" unless File.directory?(real_root)
+      raise InvalidPromptTemplateError, "Prompt template root is not a directory" unless File.directory?(real_root)
       if root.boundary
         boundary = File.realpath(root.boundary)
         unless inside_root?(real_root, boundary)
-          raise InvalidTemplateError, "Template root escapes its trusted boundary"
+          raise InvalidPromptTemplateError, "Prompt template root escapes its trusted boundary"
         end
       end
       [root.path, real_root]
@@ -137,7 +137,7 @@ module LittleGhost
       value = String(name)
       path_parts = value.split(/[\\\/]/)
       if value.empty? || value.include?("\0") || File.absolute_path(value) == value || path_parts.include?("..")
-        raise InvalidTemplateError, "Unsafe template name: #{value.inspect}"
+        raise InvalidPromptTemplateError, "Unsafe prompt template name: #{value.inspect}"
       end
 
       value.sub(%r{\A\./}, "")

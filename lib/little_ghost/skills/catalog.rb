@@ -25,14 +25,14 @@ module LittleGhost
         max_file_bytes: DEFAULT_MAX_FILE_BYTES,
         max_resource_files: DEFAULT_MAX_RESOURCE_FILES,
         only: nil,
-        agent_root: nil
+        resource_root: nil
       )
         @paths = Lookup::PathSet.new(paths)
         @max_skills = positive_integer(max_skills, :max_skills)
         @max_file_bytes = positive_integer(max_file_bytes, :max_file_bytes)
         @max_resource_files = positive_integer(max_resource_files, :max_resource_files)
         @only = Array(only).map(&:to_s).freeze if only
-        @agent_root = canonical_agent_root(agent_root)
+        @resource_root = canonical_resource_root(resource_root)
         @skills = load_skills
       end
 
@@ -195,7 +195,7 @@ module LittleGhost
 
           resource_files(root, prefix: name)
         end.sort
-        files.map! { |path| agent_resource_path(skill, path) } if @agent_root
+        files.map! { |path| resource_path(skill, path) } if @resource_root
         return files if files.length <= @max_resource_files
 
         [*files.first(@max_resource_files), "... (truncated at #{@max_resource_files} files)"]
@@ -229,25 +229,25 @@ module LittleGhost
         integer
       end
 
-      def canonical_agent_root(value)
+      def canonical_resource_root(value)
         return unless value
 
         path = value.to_s
         if path.include?("\0") || !Pathname.new(path).absolute? || path.split(File::SEPARATOR).include?("..")
-          raise ArgumentError, "agent_root must be an absolute path"
+          raise ArgumentError, "resource_root must be an absolute path"
         end
 
         File.expand_path(path).freeze
       end
 
       def agent_path(source_path, source_root)
-        return source_path unless @agent_root
+        return source_path unless @resource_root
 
         relative = source_path.delete_prefix("#{source_root}#{File::SEPARATOR}")
-        File.join(@agent_root, relative)
+        File.join(@resource_root, relative)
       end
 
-      def agent_resource_path(skill, relative)
+      def resource_path(skill, relative)
         File.join(File.dirname(skill.path), relative)
       end
     end

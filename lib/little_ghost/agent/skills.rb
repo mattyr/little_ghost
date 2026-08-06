@@ -26,7 +26,9 @@ module LittleGhost
               paths = paths.parameters.empty? ? instance_exec(&paths) : paths.call(run)
             end
             paths ||= run.runtime.skill_paths
-            catalog = LittleGhost::Skills::Catalog.new(**configuration.merge(paths:))
+            catalog = LittleGhost::Skills::Catalog.new(
+              **configuration.merge(paths:, resource_root: run&.runtime&.skill_resource_root)
+            )
             next [] if catalog.names.empty?
 
             catalog.tool.tap { |tool| tool.define_method(:catalog) { catalog } }

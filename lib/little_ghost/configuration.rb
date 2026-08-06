@@ -25,6 +25,7 @@ module LittleGhost
       @configuration_values = {
         prompt_paths: DEFAULT_PROMPT_PATHS.dup,
         skill_paths: DEFAULT_SKILL_PATHS.dup,
+        skill_resource_root: nil,
         instruments: []
       }.merge(values)
       @configuration_values[:prompt_paths] = Array(@configuration_values[:prompt_paths]).dup
@@ -92,6 +93,12 @@ module LittleGhost
 
     def skill_paths=(value)
       configuration_values[:skill_paths] = Array(value)
+    end
+
+    def skill_resource_root = configuration_values[:skill_resource_root]
+
+    def skill_resource_root=(value)
+      configuration_values[:skill_resource_root] = value
     end
 
     def settings(root: nil)

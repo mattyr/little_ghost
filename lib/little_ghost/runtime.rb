@@ -8,7 +8,7 @@ require_relative "configuration"
 module LittleGhost
   class Runtime
     attr_reader :configuration, :settings, :root, :loader, :prompt_paths, :skill_paths,
-      :instrumentation, :models, :session_store
+      :skill_resource_root, :instrumentation, :models, :session_store
 
     def initialize(configuration:, settings: nil, logger: Logger.new($stderr))
       @logger = logger
@@ -29,6 +29,7 @@ module LittleGhost
           @settings = configuration.settings(root: bootstrap_root)
         end
         @root = canonical_application_root(@settings.fetch(:root))
+        @skill_resource_root = @settings[:skill_resource_root]
 
         @startup_phase = "instrumentation"
         @instrumentation = build_service(

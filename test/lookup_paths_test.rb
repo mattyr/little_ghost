@@ -10,6 +10,7 @@ class LookupPathsTest < Minitest::Test
 
     assert_equal ["app/prompts"], configuration.prompt_paths
     assert_equal ["app/skills"], configuration.skill_paths
+    assert_nil configuration.skill_resource_root
   end
 
   def test_configuration_assignment_replaces_defaults_and_mutation_appends
@@ -60,6 +61,23 @@ class LookupPathsTest < Minitest::Test
         assert_equal "application", resolver.render("example/system")
         assert_equal "shared", catalog.fetch("review").instructions
       end
+    end
+  end
+
+  def test_runtime_resource_root_maps_skill_locations
+    Dir.mktmpdir do |application_root|
+      write(application_root, "app/skills/review/SKILL.md", skill("application"))
+      configuration = LittleGhost::Configuration.new(root: application_root)
+      configuration.skill_resource_root = "/skills"
+      runtime = LittleGhost::Runtime.new(configuration:)
+      catalog = LittleGhost::Skills::Catalog.new(
+        paths: runtime.skill_paths,
+        resource_root: runtime.skill_resource_root
+      )
+
+      assert_equal "/skills/review/SKILL.md", catalog.fetch("review").path
+      assert_equal File.join(File.realpath(application_root), "app/skills/review/SKILL.md"),
+        catalog.fetch("review").source_path
     end
   end
 

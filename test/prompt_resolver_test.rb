@@ -51,7 +51,7 @@ class PromptResolverTest < Minitest::Test
     write(@application, "system.erb", "<%= partial \"detail\" %>")
     write(@application, "_detail.erb", "<%= secret %>")
 
-    error = assert_raises(LittleGhost::MissingLocalError) do
+    error = assert_raises(LittleGhost::MissingPromptLocalError) do
       @resolver.render("system", locals: {secret: "hidden"})
     end
     assert_includes error.message, "secret"
@@ -60,32 +60,32 @@ class PromptResolverTest < Minitest::Test
   def test_reports_a_missing_local
     write(@application, "system.erb", "Hello <%= name %>")
 
-    error = assert_raises(LittleGhost::MissingLocalError) do
+    error = assert_raises(LittleGhost::MissingPromptLocalError) do
       @resolver.render("system")
     end
 
-    assert_equal "Missing template local: name", error.message
+    assert_equal "Missing prompt template local: name", error.message
   end
 
   def test_rejects_traversal_absolute_paths_and_symlink_escapes
     write(@directory, "secret.erb", "secret")
     File.symlink(File.join(@directory, "secret.erb"), File.join(@application, "linked.erb"))
 
-    assert_raises(LittleGhost::InvalidTemplateError) { @resolver.render("../secret") }
-    assert_raises(LittleGhost::InvalidTemplateError) { @resolver.render(File.join(@directory, "secret")) }
-    assert_raises(LittleGhost::MissingTemplateError) { @resolver.render("linked") }
+    assert_raises(LittleGhost::InvalidPromptTemplateError) { @resolver.render("../secret") }
+    assert_raises(LittleGhost::InvalidPromptTemplateError) { @resolver.render(File.join(@directory, "secret")) }
+    assert_raises(LittleGhost::MissingPromptTemplateError) { @resolver.render("linked") }
   end
 
   def test_detects_partial_cycles_and_depth_limits
     write(@application, "loop.erb", "<%= partial \"recursive\" %>")
     write(@application, "_recursive.erb", "<%= partial \"recursive\" %>")
 
-    assert_raises(LittleGhost::InvalidTemplateError) { @resolver.render("loop") }
+    assert_raises(LittleGhost::InvalidPromptTemplateError) { @resolver.render("loop") }
 
     shallow = LittleGhost::PromptResolver.new(paths: [@application], max_depth: 1)
     write(@application, "one.erb", "<%= partial \"two\" %>")
     write(@application, "_two.erb", "done")
-    assert_raises(LittleGhost::InvalidTemplateError) { shallow.render("one") }
+    assert_raises(LittleGhost::InvalidPromptTemplateError) { shallow.render("one") }
   end
 
   def test_invalidates_the_compiled_template_cache_when_file_changes
