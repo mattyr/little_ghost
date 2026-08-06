@@ -34,6 +34,7 @@ module LittleGhost
         agent_turn: "agent_turn",
         model: "chat",
         run: "invoke_agent",
+        runtime: "runtime_startup",
         subagent: "invoke_agent",
         tool: "execute_tool",
         workflow: "invoke_workflow"
