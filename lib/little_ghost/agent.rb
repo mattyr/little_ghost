@@ -21,7 +21,6 @@ module LittleGhost
     ].freeze
 
     module Definition
-      extend Support::ClassAttributes
       include Support::ClassAttributes
 
       def run_class = LittleGhost::Run

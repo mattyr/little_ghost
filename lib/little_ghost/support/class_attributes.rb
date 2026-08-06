@@ -3,6 +3,10 @@
 module LittleGhost
   module Support
     module ClassAttributes
+      def self.included(base)
+        base.extend(self)
+      end
+
       def class_attribute(*names, default: nil)
         names.each do |name|
           unless name.is_a?(String) || name.is_a?(Symbol)
