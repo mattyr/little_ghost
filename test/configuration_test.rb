@@ -450,7 +450,7 @@ class ConfigurationTest < Minitest::Test
       harness.agent_instance.call(message: "Build it")
     end
 
-    names = recorded.map(&:first)
+    names = recorded.map(&:first).reject { |name| name.to_s.start_with?("runtime_") }
     assert_equal %i[
       run_start agent_start agent_turn_start model_start model_stop agent_turn_stop agent_stop run_stop
     ], names

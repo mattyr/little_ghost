@@ -1,45 +1,78 @@
 # frozen_string_literal: true
 
+require "json"
+require "logger"
+require "securerandom"
 require_relative "configuration"
 
 module LittleGhost
   class Runtime
     attr_reader :configuration, :settings, :root, :loader, :components, :instrumentation, :models, :session_store
 
-    def initialize(configuration:, settings: nil)
-      raise ArgumentError, "configuration must be a LittleGhost::Configuration" unless configuration.is_a?(Configuration)
+    def initialize(configuration:, settings: nil, logger: Logger.new($stderr))
+      @logger = logger
+      @startup_operation_id = SecureRandom.uuid
+      @startup_started_at = monotonic_time
+      @startup_phase = "configuration"
+      log_startup(status: "starting")
 
-      @configuration = configuration
-      if settings
-        @settings = settings
-      else
-        bootstrap_root = canonical_application_root(configuration.root)
-        configuration.load_file!(root: bootstrap_root)
-        @settings = configuration.settings(root: bootstrap_root)
+      begin
+        raise ArgumentError, "configuration must be a LittleGhost::Configuration" unless configuration.is_a?(Configuration)
+
+        @configuration = configuration
+        if settings
+          @settings = settings
+        else
+          bootstrap_root = canonical_application_root(configuration.root)
+          configuration.load_file!(root: bootstrap_root)
+          @settings = configuration.settings(root: bootstrap_root)
+        end
+        @root = canonical_application_root(@settings.fetch(:root))
+
+        @startup_phase = "instrumentation"
+        @instrumentation = build_service(
+          @settings[:instrumentation],
+          default: -> { Support::Instrumentation.new }
+        )
+        install_instrumentation(@settings[:instruments])
+        emit_startup(:runtime_start)
+
+        @startup_phase = "loader"
+        @loader = @settings[:loader] || Support::Loader.new(root: @root)
+        @components = Array(@settings[:components])
+        loaders = [loader, *components.map(&:loader)]
+        validate_loader_conflicts!(loaders)
+        loaders.each(&:setup)
+        loaders.each(&:eager_load)
+
+        @startup_phase = "models"
+        @invocation_class = @settings[:invocation] || Invocation
+        @models = build_service(@settings[:models], default: -> { ModelRegistry.new })
+        @default_model = @settings.fetch(:default_model, "default").to_s
+
+        @startup_phase = "session_store"
+        @session_store = build_session_store(@settings[:session_store])
+        @session_actor = @settings[:session_actor]
+
+        @startup_phase = "prompts"
+        @prompt_paths = discover_prompt_paths
+
+        @startup_phase = "agent_builder"
+        @agent_builder = AgentBuilder.new(
+          runtime: self,
+          prompt_paths: @prompt_paths,
+          resolve_agent: method(:resolve_agent_class)
+        )
+
+        @startup_phase = "complete"
+        emit_startup(:runtime_stop, outcome: "ready")
+        log_startup(status: "ready")
+      rescue => error
+        emit_startup(:runtime_stop, outcome: "failed", error:) if @instrumentation
+        @instrumentation&.flush
+        log_startup(status: "failed", error:)
+        raise
       end
-      @root = canonical_application_root(@settings.fetch(:root))
-      @loader = @settings[:loader] || Support::Loader.new(root: @root)
-      @components = Array(@settings[:components])
-      loaders = [loader, *components.map(&:loader)]
-      validate_loader_conflicts!(loaders)
-      loaders.each(&:setup)
-      loaders.each(&:eager_load)
-      @invocation_class = @settings[:invocation] || Invocation
-      @models = build_service(@settings[:models], default: -> { ModelRegistry.new })
-      @default_model = @settings.fetch(:default_model, "default").to_s
-      @instrumentation = build_service(
-        @settings[:instrumentation],
-        default: -> { Support::Instrumentation.new }
-      )
-      install_instrumentation(@settings[:instruments])
-      @session_store = build_session_store(@settings[:session_store])
-      @session_actor = @settings[:session_actor]
-      @prompt_paths = discover_prompt_paths
-      @agent_builder = AgentBuilder.new(
-        runtime: self,
-        prompt_paths: @prompt_paths,
-        resolve_agent: method(:resolve_agent_class)
-      )
     end
 
     def build(**overrides)
@@ -172,6 +205,53 @@ module LittleGhost
       return @settings[:service_name].to_s if @settings[:service_name]
 
       "little-ghost"
+    end
+
+    def emit_startup(name, outcome: nil, error: nil)
+      attributes = {
+        operation_id: @startup_operation_id,
+        service_name: service_name,
+        startup_phase: @startup_phase,
+        duration_ms: startup_duration_ms,
+        outcome:
+      }.compact
+      if error
+        attributes[:error_type] = error.class.name
+        attributes[:diagnostic_exception] = JSON.generate(diagnostic_exception(error))
+      end
+      @instrumentation.emit(name, **attributes)
+    end
+
+    def log_startup(status:, error: nil)
+      values = [
+        "little_ghost_runtime_boot",
+        "status=#{status}",
+        "phase=#{@startup_phase}"
+      ]
+      values << "service_name=#{service_name}" if @settings
+      values << "duration_ms=#{startup_duration_ms}" if status != "starting"
+      if error
+        values << "error=#{error.class}"
+        values << "message=#{error.message.inspect}"
+      end
+      level = error ? :error : :info
+      @logger.public_send(level, values.join(" "))
+    end
+
+    def diagnostic_exception(error)
+      {
+        type: error.class.name,
+        message: error.message,
+        stacktrace: Array(error.backtrace).join("\n")
+      }
+    end
+
+    def startup_duration_ms
+      ((monotonic_time - @startup_started_at) * 1_000).round(3)
+    end
+
+    def monotonic_time
+      Process.clock_gettime(Process::CLOCK_MONOTONIC)
     end
 
     def canonical_application_root(value)
