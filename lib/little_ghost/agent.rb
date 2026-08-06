@@ -22,6 +22,19 @@ module LittleGhost
 
     extend Support::ClassAttributes
 
+    class_attribute :agent_id_value
+    class_attribute :description_value
+    class_attribute :model_value
+    class_attribute :limits_value, default: {}
+    class_attribute :result_schema_value
+    class_attribute :capture_diagnostics_value, default: true
+    class_attribute :system_template_value
+    class_attribute :system_prompt_value
+    class_attribute :system_prompt_builder_value
+    class_attribute :tool_declarations_value, default: []
+    class_attribute :prompt_local_values, default: {}
+    class_attribute :callback_values, default: Support::Callbacks.new(*CALLBACKS)
+
     class << self
       def run_class = LittleGhost::Run
 
@@ -254,19 +267,6 @@ module LittleGhost
         value.gsub(/([a-z\d])([A-Z])/, "\\1_\\2").downcase
       end
     end
-
-    class_attribute :agent_id_value
-    class_attribute :description_value
-    class_attribute :model_value
-    class_attribute :limits_value, default: {}
-    class_attribute :result_schema_value
-    class_attribute :capture_diagnostics_value, default: true
-    class_attribute :system_template_value
-    class_attribute :system_prompt_value
-    class_attribute :system_prompt_builder_value
-    class_attribute :tool_declarations_value, default: []
-    class_attribute :prompt_local_values, default: {}
-    class_attribute :callback_values, default: Support::Callbacks.new(*CALLBACKS)
 
     attr_reader :model, :tool_registry, :instrumentation, :run, :delegation_activity, :agent_path
 
