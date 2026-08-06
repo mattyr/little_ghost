@@ -5,7 +5,7 @@ require "pathname"
 
 module LittleGhost
   class Configuration
-    CONFIGURATION_KEYS = %i[invocation models default_model instrumentation service_name].freeze
+    CONFIGURATION_KEYS = %i[invocation models default_model instrumentation service_name workspace sandbox].freeze
     DEFAULT_PROMPT_PATHS = ["app/prompts"].freeze
     DEFAULT_SKILL_PATHS = ["app/skills"].freeze
 
@@ -26,6 +26,8 @@ module LittleGhost
         prompt_paths: DEFAULT_PROMPT_PATHS.dup,
         skill_paths: DEFAULT_SKILL_PATHS.dup,
         skill_resource_root: nil,
+        workspace: Workspace,
+        sandbox: Sandbox,
         instruments: []
       }.merge(values)
       @configuration_values[:prompt_paths] = Array(@configuration_values[:prompt_paths]).dup

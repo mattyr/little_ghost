@@ -268,7 +268,7 @@ module LittleGhost
       end
     end
 
-    attr_reader :model, :tool_registry, :instrumentation, :run, :delegation_activity, :agent_path
+    attr_reader :model, :tool_registry, :instrumentation, :run, :delegation_activity, :agent_path, :workspace, :sandbox
 
     def initialize(
       model: nil,
@@ -284,11 +284,16 @@ module LittleGhost
       max_turns: 100,
       max_tool_calls: 1_000,
       max_tool_result_tokens: DEFAULT_MAX_TOOL_RESULT_TOKENS,
-      model_settings: {}
+      model_settings: {},
+      workspace: nil,
+      sandbox: nil
     )
       if model.nil? && run.nil?
         @standalone = true
         @runtime = runtime || Runtime.new(configuration: LittleGhost.configuration)
+        @workspace = workspace
+        @sandbox = sandbox
+        @owns_resources = true
         @closed = false
         @close_mutex = Mutex.new
         @interruptions_mutex = Mutex.new
@@ -299,6 +304,13 @@ module LittleGhost
       @model = model
       @runtime = runtime || run&.runtime
       @run = run
+      @workspace = workspace || run&.workspace
+      @sandbox = sandbox || run&.sandbox
+      if @runtime.is_a?(Runtime) && !@workspace
+        @workspace = @runtime.build_workspace
+        @sandbox ||= @runtime.build_sandbox(workspace: @workspace)
+      end
+      @owns_resources = run.nil? && @sandbox
       @tool_registry = ToolRegistry.new(tools, run:)
       self.class.tool_declarations.each do |declaration|
         resolved = if declaration.is_a?(Proc) && declaration.parameters.empty?
@@ -346,7 +358,15 @@ module LittleGhost
     def entrypoint_name = self.class.agent_id
 
     def build_run(payload)
-      run = runtime.build_run(payload, agent_class: self.class, entrypoint_class: self.class)
+      ensure_resources
+      run = runtime.build_run(
+        payload,
+        agent_class: self.class,
+        entrypoint_class: self.class,
+        workspace:,
+        sandbox:,
+        resources_owned: false
+      )
       prepare_run(run)
     rescue
       run&.close
@@ -580,7 +600,7 @@ module LittleGhost
 
         @closed = true
         [
-          [tool_registry],
+          [tool_registry, (@sandbox if @owns_resources)],
           @interruptions_mutex.synchronize { @active_interruptions.dup }
         ]
       end
@@ -597,6 +617,14 @@ module LittleGhost
     end
 
     private
+
+    def ensure_resources
+      return unless @runtime.is_a?(Runtime)
+      return if @workspace && @sandbox
+
+      @workspace ||= @runtime.build_workspace
+      @sandbox ||= @runtime.build_sandbox(workspace: @workspace)
+    end
 
     def entrypoint_payload(input, options)
       return options if input.nil?

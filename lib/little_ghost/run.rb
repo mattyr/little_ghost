@@ -7,15 +7,21 @@ module LittleGhost
     include Enumerable
 
     attr_reader :runtime, :agent_class, :entrypoint_class, :invocation, :cancellation_token, :result, :operation_id,
-      :outcome, :response, :error, :session, :usage
+      :outcome, :response, :error, :session, :usage, :workspace, :sandbox
 
     def initialize(invocation:, agent_class:, runtime:, entrypoint_class: agent_class,
-      cancellation_token: Support::CancellationToken.new)
+      cancellation_token: Support::CancellationToken.new, workspace: nil, sandbox: nil, resources_owned: true)
       @runtime = runtime
       @agent_class = agent_class
       @entrypoint_class = entrypoint_class
       @invocation = invocation
       @cancellation_token = cancellation_token
+      @workspace = workspace
+      @sandbox = sandbox
+      if runtime.is_a?(Runtime) && !@workspace
+        @workspace = runtime.build_workspace
+        @sandbox ||= runtime.build_sandbox(workspace: @workspace)
+      end
       @operation_id = SecureRandom.uuid
       @resources = []
       @closed = false
@@ -28,6 +34,7 @@ module LittleGhost
       @entrypoint = nil
       @subagent_started_at = {}
       @usage = Usage.new
+      register(@sandbox) if resources_owned && @sandbox
     end
 
     def call

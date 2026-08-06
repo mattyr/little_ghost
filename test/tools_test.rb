@@ -7,20 +7,20 @@ require "little_ghost/tools"
 class ToolsTest < Minitest::Test
   def test_workspace_exposes_direct_read_write_and_replace_operations
     Dir.mktmpdir do |directory|
-      workspace = LittleGhost::Tools::Workspace.new(root: directory, writable: true)
+      workspace = LittleGhost::Workspace.new(root: directory, writable: true)
 
       workspace.write("note.txt", "hello world")
       workspace.replace("note.txt", "world", "ghost")
 
       assert_equal "hello ghost", workspace.read("note.txt")
-      assert_includes workspace.tools.map(&:tool_name), "replace_in_file"
+      assert_includes LittleGhost::Tools::Filesystem.new(workspace:).tools.map(&:tool_name), "replace_in_file"
     end
   end
 
   def test_workspace_reads_lists_and_writes_within_root
     Dir.mktmpdir do |directory|
       File.write(File.join(directory, "input.txt"), "hello")
-      tools = LittleGhost::Tools::Workspace.new(root: directory, writable: true).tools
+      tools = LittleGhost::Tools::Filesystem.new(workspace: LittleGhost::Workspace.new(root: directory, writable: true)).tools
       registry = LittleGhost::ToolRegistry.new(tools)
 
       assert_equal "hello", registry.fetch("read_file").execute({"path" => "input.txt"}).content
@@ -33,7 +33,7 @@ class ToolsTest < Minitest::Test
 
   def test_workspace_rejects_paths_outside_root
     Dir.mktmpdir do |directory|
-      tool = LittleGhost::Tools::Workspace.new(root: directory).tools.first.new
+      tool = LittleGhost::Tools::Filesystem.new(workspace: LittleGhost::Workspace.new(root: directory)).tools.first.new
 
       result = tool.execute({"path" => "../secret"})
 
@@ -48,7 +48,7 @@ class ToolsTest < Minitest::Test
         File.write(target, "original")
         File.symlink(target, File.join(directory, "link.txt"))
         registry = LittleGhost::ToolRegistry.new(
-          LittleGhost::Tools::Workspace.new(root: directory, writable: true).tools
+          LittleGhost::Tools::Filesystem.new(workspace: LittleGhost::Workspace.new(root: directory, writable: true)).tools
         )
 
         result = registry.fetch("write_file").execute({"path" => "link.txt", "content" => "changed"})
@@ -65,7 +65,7 @@ class ToolsTest < Minitest::Test
         File.write(File.join(outside, "secret.txt"), "secret")
         File.symlink(outside, File.join(directory, "linked"))
         registry = LittleGhost::ToolRegistry.new(
-          LittleGhost::Tools::Workspace.new(root: directory, writable: true).tools
+          LittleGhost::Tools::Filesystem.new(workspace: LittleGhost::Workspace.new(root: directory, writable: true)).tools
         )
 
         assert registry.fetch("read_file").execute({"path" => "linked/secret.txt"}).error?
@@ -80,7 +80,7 @@ class ToolsTest < Minitest::Test
       path = File.join(directory, "pipe")
       assert system("mkfifo", path)
       registry = LittleGhost::ToolRegistry.new(
-        LittleGhost::Tools::Workspace.new(root: directory, writable: true).tools
+        LittleGhost::Tools::Filesystem.new(workspace: LittleGhost::Workspace.new(root: directory, writable: true)).tools
       )
       started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
@@ -103,7 +103,9 @@ class ToolsTest < Minitest::Test
         Dir.mkdir(root)
         File.write(File.join(root, "value.txt"), "inside")
         File.write(File.join(outside, "value.txt"), "outside")
-        registry = LittleGhost::ToolRegistry.new(LittleGhost::Tools::Workspace.new(root:).tools)
+        registry = LittleGhost::ToolRegistry.new(
+          LittleGhost::Tools::Filesystem.new(workspace: LittleGhost::Workspace.new(root:)).tools
+        )
         File.rename(root, moved)
         File.symlink(outside, root)
 
@@ -114,7 +116,7 @@ class ToolsTest < Minitest::Test
 
   def test_shell_executes_argv_without_shell_expansion
     Dir.mktmpdir do |directory|
-      tool = LittleGhost::Tools::Shell.new(root: directory).tool.new
+      tool = shell(directory).tool.new
 
       result = tool.execute({"command" => [RbConfig.ruby, "-e", "puts ARGV.first", "$(whoami)"]})
       output = JSON.parse(result.content)
@@ -127,7 +129,7 @@ class ToolsTest < Minitest::Test
 
   def test_shell_times_out
     Dir.mktmpdir do |directory|
-      tool = LittleGhost::Tools::Shell.new(root: directory, timeout: 0.05).tool.new
+      tool = shell(directory, timeout: 0.05).tool.new
 
       result = tool.execute({"command" => [RbConfig.ruby, "-e", "sleep 1"]})
 
@@ -137,7 +139,7 @@ class ToolsTest < Minitest::Test
 
   def test_shell_timeout_includes_descendants_holding_output_open
     Dir.mktmpdir do |directory|
-      shell = LittleGhost::Tools::Shell.new(root: directory, timeout: 0.05)
+      shell = shell(directory, timeout: 0.05)
       started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
       assert_raises(LittleGhost::ToolError) do
@@ -153,7 +155,7 @@ class ToolsTest < Minitest::Test
     Dir.mktmpdir do |directory|
       previous = ENV["LITTLE_GHOST_SECRET_TEST"]
       ENV["LITTLE_GHOST_SECRET_TEST"] = "credential"
-      tool = LittleGhost::Tools::Shell.new(root: directory).tool.new
+      tool = shell(directory).tool.new
 
       result = tool.execute({"command" => [RbConfig.ruby, "-e", "print ENV['LITTLE_GHOST_SECRET_TEST'].to_s"]})
 
@@ -168,11 +170,26 @@ class ToolsTest < Minitest::Test
       File.write(File.join(directory, "one"), "1")
       File.write(File.join(directory, "two"), "2")
       registry = LittleGhost::ToolRegistry.new(
-        LittleGhost::Tools::Workspace.new(root: directory, writable: true, max_write_bytes: 2, max_list_entries: 1).tools
+        LittleGhost::Tools::Filesystem.new(
+          workspace: LittleGhost::Workspace.new(
+            root: directory,
+            writable: true,
+            max_write_bytes: 2,
+            max_list_entries: 1
+          )
+        ).tools
       )
 
       assert registry.fetch("write_file").execute({"path" => "out", "content" => "123"}).error?
       assert registry.fetch("list_files").execute({}).error?
     end
+  end
+
+  private
+
+  def shell(directory, **options)
+    workspace = LittleGhost::Workspace.new(root: directory)
+    sandbox = LittleGhost::Sandbox.new(workspace:)
+    LittleGhost::Tools::Shell.new(sandbox:, **options)
   end
 end

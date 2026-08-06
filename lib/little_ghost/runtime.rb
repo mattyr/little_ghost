@@ -8,7 +8,7 @@ require_relative "configuration"
 module LittleGhost
   class Runtime
     attr_reader :configuration, :settings, :root, :loader, :prompt_paths, :skill_paths,
-      :skill_resource_root, :instrumentation, :models, :session_store
+      :skill_resource_root, :instrumentation, :models, :session_store, :workspace_class, :sandbox_class
 
     def initialize(configuration:, settings: nil, logger: Logger.new($stderr))
       @logger = logger
@@ -30,6 +30,9 @@ module LittleGhost
         end
         @root = canonical_application_root(@settings.fetch(:root))
         @skill_resource_root = @settings[:skill_resource_root]
+        @workspace_class = @settings.fetch(:workspace, Workspace)
+        @sandbox_class = @settings.fetch(:sandbox, Sandbox)
+        validate_resource_classes!
 
         @startup_phase = "instrumentation"
         @instrumentation = build_service(
@@ -89,9 +92,32 @@ module LittleGhost
       payload.is_a?(@invocation_class) ? payload : @invocation_class.new(payload)
     end
 
-    def build_run(payload, agent_class:, entrypoint_class: agent_class)
+    def build_run(
+      payload,
+      agent_class:,
+      entrypoint_class: agent_class,
+      workspace: nil,
+      sandbox: nil,
+      resources_owned: true
+    )
       run_class = agent_class.respond_to?(:run_class) ? agent_class.run_class : Run
-      run_class.new(invocation: parse(payload), runtime: self, agent_class:, entrypoint_class:)
+      run_class.new(
+        invocation: parse(payload),
+        runtime: self,
+        agent_class:,
+        entrypoint_class:,
+        workspace:,
+        sandbox:,
+        resources_owned:
+      )
+    end
+
+    def build_workspace
+      workspace_class.new(root:)
+    end
+
+    def build_sandbox(workspace:)
+      sandbox_class.new(workspace:)
     end
 
     def build_agent(
@@ -165,6 +191,15 @@ module LittleGhost
     end
 
     private
+
+    def validate_resource_classes!
+      unless @workspace_class.is_a?(Class) && @workspace_class <= Workspace
+        raise ConfigurationError, "workspace must inherit from LittleGhost::Workspace"
+      end
+      unless @sandbox_class.is_a?(Class) && @sandbox_class <= Sandbox
+        raise ConfigurationError, "sandbox must inherit from LittleGhost::Sandbox"
+      end
+    end
 
     def build_service(value, default:)
       value ||= default.call
