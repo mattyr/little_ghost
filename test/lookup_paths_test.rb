@@ -54,7 +54,7 @@ class LookupPathsTest < Minitest::Test
         configuration.skill_paths << shared_root
         runtime = LittleGhost::Runtime.new(configuration:)
 
-        resolver = LittleGhost::Templates::PromptResolver.new(paths: runtime.prompt_paths)
+        resolver = LittleGhost::PromptResolver.new(paths: runtime.prompt_paths)
         catalog = LittleGhost::Skills::Catalog.new(paths: runtime.skill_paths)
 
         assert_equal "application", resolver.render("example/system")

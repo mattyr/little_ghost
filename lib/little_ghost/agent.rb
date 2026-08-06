@@ -480,8 +480,8 @@ module LittleGhost
       template_locals ||= {}
       template_paths ||= []
       invocation_paths = Array(template_paths).map do |path|
-        unless path.is_a?(Templates::TrustedPath)
-          raise ArgumentError, "invocation template paths must be LittleGhost::Templates::TrustedPath values"
+        unless path.is_a?(LittleGhost::TrustedPath)
+          raise ArgumentError, "invocation template paths must be LittleGhost::TrustedPath values"
         end
         path
       end
@@ -1666,7 +1666,7 @@ module LittleGhost
     end
 
     def default_template_resolver(paths)
-      Templates::PromptResolver.new(paths:)
+      LittleGhost::PromptResolver.new(paths:)
     end
 
     def apply_cancellation_decision!(decision)

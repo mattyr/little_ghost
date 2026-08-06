@@ -3,16 +3,16 @@
 require "test_helper"
 require "fileutils"
 require "tmpdir"
-require "little_ghost/templates/prompt_resolver"
+require "little_ghost/prompt_resolver"
 
-class TemplatesResolverTest < Minitest::Test
+class PromptResolverTest < Minitest::Test
   def setup
     @directory = Dir.mktmpdir("little-ghost-templates")
     @invocation = File.join(@directory, "invocation")
     @application = File.join(@directory, "application")
     @gem = File.join(@directory, "gem")
     [@invocation, @application, @gem].each { |path| FileUtils.mkdir_p(path) }
-    @resolver = LittleGhost::Templates::PromptResolver.new(
+    @resolver = LittleGhost::PromptResolver.new(
       paths: [@application, @gem]
     )
   end
@@ -28,7 +28,7 @@ class TemplatesResolverTest < Minitest::Test
     assert_equal "application", @resolver.render("system")
 
     write(@invocation, "system.erb", "invocation")
-    trusted = LittleGhost::Templates::TrustedPath.new(path: @invocation)
+    trusted = LittleGhost::TrustedPath.new(path: @invocation)
     assert_equal "invocation", @resolver.render("system", invocation_paths: [trusted])
   end
 
@@ -51,7 +51,7 @@ class TemplatesResolverTest < Minitest::Test
     write(@application, "system.erb", "<%= partial \"detail\" %>")
     write(@application, "_detail.erb", "<%= secret %>")
 
-    error = assert_raises(LittleGhost::Templates::MissingLocalError) do
+    error = assert_raises(LittleGhost::MissingLocalError) do
       @resolver.render("system", locals: {secret: "hidden"})
     end
     assert_includes error.message, "secret"
@@ -60,7 +60,7 @@ class TemplatesResolverTest < Minitest::Test
   def test_reports_a_missing_local
     write(@application, "system.erb", "Hello <%= name %>")
 
-    error = assert_raises(LittleGhost::Templates::MissingLocalError) do
+    error = assert_raises(LittleGhost::MissingLocalError) do
       @resolver.render("system")
     end
 
@@ -71,21 +71,21 @@ class TemplatesResolverTest < Minitest::Test
     write(@directory, "secret.erb", "secret")
     File.symlink(File.join(@directory, "secret.erb"), File.join(@application, "linked.erb"))
 
-    assert_raises(LittleGhost::Templates::InvalidTemplateError) { @resolver.render("../secret") }
-    assert_raises(LittleGhost::Templates::InvalidTemplateError) { @resolver.render(File.join(@directory, "secret")) }
-    assert_raises(LittleGhost::Templates::MissingTemplateError) { @resolver.render("linked") }
+    assert_raises(LittleGhost::InvalidTemplateError) { @resolver.render("../secret") }
+    assert_raises(LittleGhost::InvalidTemplateError) { @resolver.render(File.join(@directory, "secret")) }
+    assert_raises(LittleGhost::MissingTemplateError) { @resolver.render("linked") }
   end
 
   def test_detects_partial_cycles_and_depth_limits
     write(@application, "loop.erb", "<%= partial \"recursive\" %>")
     write(@application, "_recursive.erb", "<%= partial \"recursive\" %>")
 
-    assert_raises(LittleGhost::Templates::InvalidTemplateError) { @resolver.render("loop") }
+    assert_raises(LittleGhost::InvalidTemplateError) { @resolver.render("loop") }
 
-    shallow = LittleGhost::Templates::PromptResolver.new(paths: [@application], max_depth: 1)
+    shallow = LittleGhost::PromptResolver.new(paths: [@application], max_depth: 1)
     write(@application, "one.erb", "<%= partial \"two\" %>")
     write(@application, "_two.erb", "done")
-    assert_raises(LittleGhost::Templates::InvalidTemplateError) { shallow.render("one") }
+    assert_raises(LittleGhost::InvalidTemplateError) { shallow.render("one") }
   end
 
   def test_invalidates_the_compiled_template_cache_when_file_changes
