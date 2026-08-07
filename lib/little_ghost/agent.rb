@@ -351,11 +351,13 @@ module LittleGhost
     end
 
     def build_run(payload)
-      runtime.build_run(
-        payload,
+      options = {
         agent_class: self.class,
         entrypoint_class: self.class
-      )
+      }
+      options[:workspace] = workspace if workspace
+      options[:sandbox] = sandbox if sandbox
+      runtime.build_run(payload, **options)
     end
 
     def call(input = nil, **options)

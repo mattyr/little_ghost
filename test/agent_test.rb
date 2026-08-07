@@ -129,6 +129,25 @@ class AgentTest < Minitest::Test
     assert_equal({agent_class: agent, entrypoint_class: agent}, values)
   end
 
+  def test_an_entrypoint_forwards_explicit_resources_to_its_runtime
+    agent = Class.new(LittleGhost::Agent)
+    workspace = Object.new
+    sandbox = Object.new
+    values = nil
+    runtime = Object.new
+    runtime.define_singleton_method(:build_run) do |_payload, **options|
+      values = options
+      Object.new
+    end
+
+    agent.new(runtime:, workspace:, sandbox:).build_run(message: "hello")
+
+    assert_equal(
+      {agent_class: agent, entrypoint_class: agent, workspace:, sandbox:},
+      values
+    )
+  end
+
   def test_runs_model_and_returns_normalized_result
     model = ScriptedModel.new(response("hello", usage: LittleGhost::Usage.new(input_tokens: 2, output_tokens: 1)))
 
