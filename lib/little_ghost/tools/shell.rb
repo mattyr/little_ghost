@@ -4,42 +4,24 @@ require "json"
 
 module LittleGhost
   module Tools
-    class Shell
-      def initialize(sandbox:, timeout: 30, max_output_bytes: 1_000_000, environment: {}, inherit_environment: false)
-        @sandbox = sandbox
-        @timeout = Float(timeout)
-        @max_output_bytes = Integer(max_output_bytes)
-        raise ArgumentError, "timeout must be positive" unless @timeout.positive?
-        raise ArgumentError, "max_output_bytes must be positive" unless @max_output_bytes.positive?
+    class Shell < Tool
+      DEFAULT_TIMEOUT = 30
+      MAX_OUTPUT_BYTES = 1_000_000
 
-        @environment = environment
-        @inherit_environment = inherit_environment
-      end
+      tool_name "shell"
+      description "Run one executable with arguments in the configured workspace. Shell syntax is not interpreted."
+      input_schema type: "object", properties: {
+        command: {type: "array", items: {type: "string"}}
+      }, required: ["command"], additionalProperties: false
 
-      def tool
-        runner = self
-        Tool.define(
-          name: "shell",
-          description: "Run one executable with arguments in the configured workspace. Shell syntax is not interpreted.",
-          input_schema: {
-            type: "object",
-            properties: {
-              command: {type: "array", items: {type: "string"}}
-            },
-            required: ["command"],
-            additionalProperties: false
-          }
-        ) { |input, context:| runner.run(input.fetch("command"), context:) }
-      end
-
-      def run(command, context: nil)
+      def call(input)
         result = sandbox.execute_program(
-          command,
-          timeout:,
+          input.fetch("command"),
+          timeout: DEFAULT_TIMEOUT,
           context:,
-          max_output_bytes:,
-          environment: @environment,
-          inherit_environment: @inherit_environment
+          max_output_bytes: MAX_OUTPUT_BYTES,
+          environment: {},
+          inherit_environment: false
         )
         JSON.generate(
           stdout: result.stdout,
@@ -48,10 +30,6 @@ module LittleGhost
           success: result.success?
         )
       end
-
-      private
-
-      attr_reader :sandbox, :timeout, :max_output_bytes
     end
   end
 end

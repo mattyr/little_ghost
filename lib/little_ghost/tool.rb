@@ -61,7 +61,7 @@ module LittleGhost
           description(description)
           input_schema(input_schema)
 
-          define_method(:call) do |input, context:|
+          define_method(:call) do |input|
             accepts_context = implementation.parameters.any? do |kind, parameter|
               kind == :keyrest || (%i[key keyreq].include?(kind) && parameter == :context)
             end
@@ -109,7 +109,7 @@ module LittleGhost
       end
     end
 
-    attr_reader :run
+    attr_reader :tool_context
 
     def tool_name = self.class.tool_name
     def description = self.class.description
@@ -117,9 +117,17 @@ module LittleGhost
     def specification = self.class.specification
     def exclusive? = self.class.exclusive
 
-    def initialize(run: nil)
-      @run = run
+    def initialize(tool_context: ToolContext.new)
+      @tool_context = tool_context
     end
+
+    def agent = tool_context.agent
+    def run = tool_context.run
+    def runtime = tool_context.runtime
+    def model = tool_context.model
+    def workspace = tool_context.workspace
+    def sandbox = tool_context.sandbox
+    def context = tool_context.context
 
     def execute(input, context: nil)
       errors = SchemaValidator.new(self.class.input_schema).validate(input)
@@ -128,7 +136,7 @@ module LittleGhost
         return failure(message, error: ToolError.new(message))
       end
 
-      success(sanitize(call(input, context: context)))
+      success(sanitize(bound_for(context).call(input)))
     rescue CancelledError, DeadlineExceededError, CleanupError
       raise
     rescue ToolError => error
@@ -137,11 +145,21 @@ module LittleGhost
       failure("Tool failed (#{error.class})", error:)
     end
 
-    def call(_input, context:)
+    def call(_input)
       raise NotImplementedError, "#{self.class} must implement #call"
     end
 
+    protected
+
+    attr_writer :tool_context
+
     private
+
+    def bound_for(context)
+      return self unless context
+
+      dup.tap { |tool| tool.tool_context = tool_context.with(context:) }
+    end
 
     def sanitize(value)
       case value

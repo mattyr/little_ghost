@@ -77,7 +77,7 @@ module LittleGhost
           return unless Array(tools).flatten.any? { |tool| tool.is_a?(Tool) }
 
           raise ConfigurationError,
-            "Delegated tools must be tool classes or a resolver that creates fresh instances"
+            "Delegated tools must be LittleGhost::Tool or LittleGhost::ToolProvider classes"
         end
       end
     end

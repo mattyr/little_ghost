@@ -39,7 +39,7 @@ module LittleGhost
         super(normalize_titles(input), context:)
       end
 
-      def call(input, context:)
+      def call(input)
         todos = input.fetch("todos")
         raise ToolError, "only one todo may be in progress" if todos.count { |todo| todo["status"] == "in_progress" } > 1
 

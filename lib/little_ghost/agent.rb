@@ -133,15 +133,16 @@ module LittleGhost
         end
       end
 
-      def tools(*values, &resolver)
-        invalid = values.flatten.compact.find { |value| !value.is_a?(Class) || !(value <= Tool) }
+      def tools(*values)
+        invalid = values.flatten.compact.find do |value|
+          !value.is_a?(Class) || !(value <= Tool || value <= ToolProvider)
+        end
         if invalid
           raise ConfigurationError,
-            "Class-level tools must be LittleGhost::Tool classes; use a block for per-agent tool instances"
+            "Class-level tools must be LittleGhost::Tool or LittleGhost::ToolProvider classes"
         end
 
         declarations = tool_declarations_value + values
-        declarations << resolver if resolver
         self.tool_declarations_value = declarations
         tool_declarations
       end
@@ -311,14 +312,10 @@ module LittleGhost
         @sandbox ||= @runtime.build_sandbox(workspace: @workspace)
       end
       @owns_resources = run.nil? && (@workspace || @sandbox)
-      @tool_registry = ToolRegistry.new(tools, run:)
+      tool_context = ToolContext.new(agent: self, run:, runtime: @runtime, model:, workspace: @workspace, sandbox: @sandbox)
+      @tool_registry = ToolRegistry.new(tools, tool_context:)
       self.class.tool_declarations.each do |declaration|
-        resolved = if declaration.is_a?(Proc) && declaration.parameters.empty?
-          instance_exec(&declaration)
-        else
-          declaration
-        end
-        @tool_registry.register(resolved, replace: true)
+        @tool_registry.register(declaration, replace: true)
       end
       @structured_output_strategy = StructuredOutput.resolve(
         self.class.result_schema,
@@ -578,7 +575,15 @@ module LittleGhost
         preserve_context ? mutex.synchronize(&invocation) : invocation.call
       end
       tool_class.define_method(:close) { agent.close }
-      tool_class.new(run: run)
+      tool_context = ToolContext.new(
+        agent: self,
+        run:,
+        runtime:,
+        model:,
+        workspace:,
+        sandbox:
+      )
+      tool_class.new(tool_context:)
     end
 
     def prompt_locals

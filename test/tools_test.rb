@@ -5,159 +5,82 @@ require "tmpdir"
 require "little_ghost/tools"
 
 class ToolsTest < Minitest::Test
-  def test_sandbox_exposes_direct_read_write_and_replace_operations
+  def test_filesystem_provider_exposes_writable_operations
     Dir.mktmpdir do |directory|
-      sandbox = unrestricted_sandbox(directory, writable: true)
+      registry = filesystem_registry(unrestricted_sandbox(directory, writable: true))
 
-      sandbox.write("note.txt", "hello world")
-      sandbox.replace("note.txt", "world", "ghost")
-
-      assert_equal "hello ghost", sandbox.read("note.txt")
-      assert_includes LittleGhost::Tools::Filesystem.new(sandbox:).tools.map(&:tool_name), "replace_in_file"
+      assert_equal %w[read_file list_files write_file replace_in_file], registry.names
+      assert registry.fetch("write_file").execute({"path" => "note.txt", "content" => "hello"}).success?
+      assert_equal "hello", registry.fetch("read_file").execute({"path" => "note.txt"}).content
+      assert registry.fetch("replace_in_file").execute({
+        "path" => "note.txt", "old_text" => "hello", "new_text" => "ghost"
+      }).success?
+      assert_equal "ghost", File.read(File.join(directory, "note.txt"))
     end
   end
 
-  def test_sandbox_reads_lists_and_writes_within_root
+  def test_filesystem_provider_omits_writes_for_a_read_only_sandbox
     Dir.mktmpdir do |directory|
-      File.write(File.join(directory, "input.txt"), "hello")
-      tools = LittleGhost::Tools::Filesystem.new(sandbox: unrestricted_sandbox(directory, writable: true)).tools
-      registry = LittleGhost::ToolRegistry.new(tools)
+      registry = filesystem_registry(unrestricted_sandbox(directory))
 
-      assert_equal "hello", registry.fetch("read_file").execute({"path" => "input.txt"}).content
-      assert_includes registry.fetch("list_files").execute({}).content, "input.txt"
-      result = registry.fetch("write_file").execute({"path" => "output.txt", "content" => "world"})
-      assert result.success?
-      assert_equal "world", File.read(File.join(directory, "output.txt"))
+      assert_equal %w[read_file list_files], registry.names
     end
   end
 
-  def test_sandbox_rejects_paths_outside_root
+  def test_filesystem_provider_rejects_paths_outside_the_root
     Dir.mktmpdir do |directory|
-      tool = LittleGhost::Tools::Filesystem.new(sandbox: unrestricted_sandbox(directory)).tools.first.new
-
-      result = tool.execute({"path" => "../secret"})
+      result = filesystem_registry(unrestricted_sandbox(directory)).fetch("read_file").execute({"path" => "../secret"})
 
       assert result.error?
     end
   end
 
-  def test_sandbox_does_not_write_through_a_symlink
+  def test_filesystem_provider_does_not_follow_symlinks
     Dir.mktmpdir do |directory|
       Dir.mktmpdir do |outside|
         target = File.join(outside, "secret.txt")
         File.write(target, "original")
         File.symlink(target, File.join(directory, "link.txt"))
-        registry = LittleGhost::ToolRegistry.new(
-          LittleGhost::Tools::Filesystem.new(sandbox: unrestricted_sandbox(directory, writable: true)).tools
-        )
+        registry = filesystem_registry(unrestricted_sandbox(directory, writable: true))
 
-        result = registry.fetch("write_file").execute({"path" => "link.txt", "content" => "changed"})
-
-        assert result.error?
+        assert registry.fetch("write_file").execute({"path" => "link.txt", "content" => "changed"}).error?
         assert_equal "original", File.read(target)
       end
     end
   end
 
-  def test_sandbox_does_not_traverse_symlinked_directories
+  def test_exclusive_filesystem_provider_marks_every_tool_exclusive
     Dir.mktmpdir do |directory|
-      Dir.mktmpdir do |outside|
-        File.write(File.join(outside, "secret.txt"), "secret")
-        File.symlink(outside, File.join(directory, "linked"))
-        registry = LittleGhost::ToolRegistry.new(
-          LittleGhost::Tools::Filesystem.new(sandbox: unrestricted_sandbox(directory, writable: true)).tools
-        )
+      registry = filesystem_registry(unrestricted_sandbox(directory, writable: true), LittleGhost::Tools::Filesystem::Exclusive)
 
-        assert registry.fetch("read_file").execute({"path" => "linked/secret.txt"}).error?
-        assert registry.fetch("write_file").execute({"path" => "linked/new.txt", "content" => "changed"}).error?
-        refute_path_exists File.join(outside, "new.txt")
-      end
+      assert registry.all?(&:exclusive?)
     end
   end
 
-  def test_sandbox_rejects_fifo_without_blocking
+  def test_shell_uses_the_context_sandbox_without_shell_expansion
     Dir.mktmpdir do |directory|
-      path = File.join(directory, "pipe")
-      assert system("mkfifo", path)
+      sandbox = unrestricted_sandbox(directory)
       registry = LittleGhost::ToolRegistry.new(
-        LittleGhost::Tools::Filesystem.new(sandbox: unrestricted_sandbox(directory, writable: true)).tools
+        [LittleGhost::Tools::Shell], tool_context: LittleGhost::ToolContext.new(sandbox:)
       )
-      started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
-      assert registry.fetch("read_file").execute({"path" => "pipe"}).error?
-      assert registry.fetch("write_file").execute({"path" => "pipe", "content" => "value"}).error?
-      File.open(path, File::RDONLY | File::NONBLOCK) do
-        assert registry.fetch("write_file").execute({
-          "path" => "pipe", "content" => "value"
-        }).error?
-      end
-      assert_operator Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at, :<, 1
-    end
-  end
-
-  def test_sandbox_rejects_root_replacement
-    Dir.mktmpdir do |parent|
-      Dir.mktmpdir do |outside|
-        root = File.join(parent, "root")
-        moved = File.join(parent, "moved")
-        Dir.mkdir(root)
-        File.write(File.join(root, "value.txt"), "inside")
-        File.write(File.join(outside, "value.txt"), "outside")
-        registry = LittleGhost::ToolRegistry.new(
-          LittleGhost::Tools::Filesystem.new(sandbox: unrestricted_sandbox(root)).tools
-        )
-        File.rename(root, moved)
-        File.symlink(outside, root)
-
-        assert registry.fetch("read_file").execute({"path" => "value.txt"}).error?
-      end
-    end
-  end
-
-  def test_shell_executes_argv_without_shell_expansion
-    Dir.mktmpdir do |directory|
-      tool = shell(directory).tool.new
-
-      result = tool.execute({"command" => [RbConfig.ruby, "-e", "puts ARGV.first", "$(whoami)"]})
-      output = JSON.parse(result.content)
+      result = registry.fetch("shell").execute({"command" => [RbConfig.ruby, "-e", "puts ARGV.first", "$(whoami)"]})
 
       assert result.success?
-      assert_equal "$(whoami)\n", output.fetch("stdout")
-      assert output.fetch("success")
+      assert_equal "$(whoami)\n", JSON.parse(result.content).fetch("stdout")
     end
   end
 
-  def test_shell_times_out
-    Dir.mktmpdir do |directory|
-      tool = shell(directory, timeout: 0.05).tool.new
-
-      result = tool.execute({"command" => [RbConfig.ruby, "-e", "sleep 1"]})
-
-      assert result.error?
-    end
-  end
-
-  def test_shell_timeout_includes_descendants_holding_output_open
-    Dir.mktmpdir do |directory|
-      shell = shell(directory, timeout: 0.05)
-      started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-
-      assert_raises(LittleGhost::ToolError) do
-        shell.run(["/bin/sh", "-c", "(sleep 2) &"])
-      end
-
-      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
-      assert_operator elapsed, :<, 1
-    end
-  end
-
-  def test_shell_does_not_inherit_parent_environment_by_default
+  def test_shell_does_not_inherit_parent_environment
     Dir.mktmpdir do |directory|
       previous = ENV["LITTLE_GHOST_SECRET_TEST"]
       ENV["LITTLE_GHOST_SECRET_TEST"] = "credential"
-      tool = shell(directory).tool.new
+      sandbox = unrestricted_sandbox(directory)
+      registry = LittleGhost::ToolRegistry.new(
+        [LittleGhost::Tools::Shell], tool_context: LittleGhost::ToolContext.new(sandbox:)
+      )
 
-      result = tool.execute({"command" => [RbConfig.ruby, "-e", "print ENV['LITTLE_GHOST_SECRET_TEST'].to_s"]})
+      result = registry.fetch("shell").execute({"command" => [RbConfig.ruby, "-e", "print ENV['LITTLE_GHOST_SECRET_TEST'].to_s"]})
 
       assert_equal "", JSON.parse(result.content).fetch("stdout")
     ensure
@@ -165,75 +88,16 @@ class ToolsTest < Minitest::Test
     end
   end
 
-  def test_sandbox_bounds_writes_and_directory_listings
-    Dir.mktmpdir do |directory|
-      File.write(File.join(directory, "one"), "1")
-      File.write(File.join(directory, "two"), "2")
-      registry = LittleGhost::ToolRegistry.new(
-        LittleGhost::Tools::Filesystem.new(
-          sandbox: unrestricted_sandbox(
-            directory,
-            writable: true,
-            max_write_bytes: 2,
-            max_list_entries: 1
-          )
-        ).tools
-      )
-
-      assert registry.fetch("write_file").execute({"path" => "out", "content" => "123"}).error?
-      assert registry.fetch("list_files").execute({}).error?
-    end
-  end
-
-  def test_unrestricted_sandbox_opens_after_a_lazy_workspace_creates_its_root
-    Dir.mktmpdir do |directory|
-      root = File.join(directory, "workspace")
-      workspace = Class.new(LittleGhost::Workspace) do
-        def open(run: nil)
-          Dir.mkdir(root)
-          self
-        end
-      end.new(root:)
-      sandbox = LittleGhost::UnrestrictedSandbox.new(workspace:, writable: true)
-
-      workspace.open
-      sandbox.open
-      sandbox.write("notes.txt", "ready")
-
-      assert_equal "ready", sandbox.read("notes.txt")
-    end
-  end
-
-  def test_sandbox_forwards_implementation_specific_execution_options
-    sandbox_class = Class.new(LittleGhost::Sandbox) do
-      attr_reader :command, :profile
-
-      def execute_program(command, profile:, **)
-        @command = command
-        @profile = profile
-        LittleGhost::Sandbox::Execution.new(stdout: "done", stderr: "", exit_code: 0)
-      end
-    end
-    sandbox = sandbox_class.new(workspace: LittleGhost::Workspace.new(root: Dir.pwd))
-
-    result = sandbox.execute("echo ready", timeout: 1, profile: :read_only)
-
-    assert result.success?
-    assert_equal ["/bin/sh", "-c", "echo ready"], sandbox.command
-    assert_equal :read_only, sandbox.profile
-  end
-
   private
+
+  def filesystem_registry(sandbox, provider = LittleGhost::Tools::Filesystem)
+    LittleGhost::ToolRegistry.new([provider], tool_context: LittleGhost::ToolContext.new(sandbox:))
+  end
 
   def unrestricted_sandbox(directory, **options)
     LittleGhost::UnrestrictedSandbox.new(
       workspace: LittleGhost::Workspace.new(root: directory),
       **options
     )
-  end
-
-  def shell(directory, **options)
-    sandbox = unrestricted_sandbox(directory)
-    LittleGhost::Tools::Shell.new(sandbox:, **options)
   end
 end

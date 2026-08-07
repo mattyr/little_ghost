@@ -7,9 +7,9 @@ module LittleGhost
 
     include Enumerable
 
-    def initialize(tools = [], run: nil)
+    def initialize(tools = [], tool_context: ToolContext.new)
       @tools = {}
-      @run = run
+      @tool_context = tool_context
       @closed = false
       @closed_tool_ids = {}
       supplied_instances = Array(tools).flatten.grep(Tool).uniq(&:object_id)
@@ -33,7 +33,7 @@ module LittleGhost
 
       instances = []
       existing_ids = @tools.each_value.to_h { |instance| [instance.object_id, true] }
-      resolve(tool, instances)
+      resolve(tool, instances, tool_context: @tool_context)
       seen = []
       names = instances.map do |instance|
         raise ConfigurationError, "Tools must inherit from LittleGhost::Tool" unless instance.is_a?(Tool)
@@ -104,15 +104,14 @@ module LittleGhost
       raise first_error if first_error
     end
 
-    def resolve(value, instances)
-      if value.is_a?(Proc)
-        resolved = value.parameters.empty? ? value.call : value.call(@run)
-        return resolve(resolved, instances)
-      end
+    def resolve(value, instances, tool_context:)
       if value.is_a?(Array)
-        value.flatten.compact.each { |child| resolve(child, instances) }
+        value.flatten.compact.each { |child| resolve(child, instances, tool_context:) }
+      elsif value.is_a?(Class) && value <= ToolProvider
+        provider = value.new(tool_context:)
+        resolve(provider.tools, instances, tool_context: provider.tool_context)
       elsif value.is_a?(Class) && value <= Tool
-        instances << value.new(run: @run)
+        instances << value.new(tool_context: tool_context.with(storage: {}))
       else
         instances << value
       end

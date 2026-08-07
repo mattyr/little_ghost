@@ -6,7 +6,23 @@ module LittleGhost
       def self.included(base)
         base.extend(ClassMethods)
         base.class_attribute :skills_configuration_value
-        base.class_attribute :skills_tool_resolver_value
+      end
+
+      class CatalogTools < ToolProvider
+        def tools
+          configuration = agent.class.skills_configuration
+          paths = configuration.fetch(:paths)
+          if paths.is_a?(Proc)
+            paths = paths.parameters.empty? ? agent.instance_exec(&paths) : paths.call(run)
+          end
+          paths ||= run.runtime.skill_paths
+          catalog = LittleGhost::Skills::Catalog.new(
+            **configuration.merge(paths:, resource_root: run&.runtime&.skill_resource_root)
+          )
+          return [] if catalog.names.empty?
+
+          [catalog.tool.tap { |tool| tool.define_method(:catalog) { catalog } }]
+        end
       end
 
       module ClassMethods
@@ -19,22 +35,7 @@ module LittleGhost
             values.flatten
           end
           self.skills_configuration_value = options.merge(paths: configured_paths)
-          resolver = lambda do
-            configuration = self.class.skills_configuration
-            paths = configuration.fetch(:paths)
-            if paths.is_a?(Proc)
-              paths = paths.parameters.empty? ? instance_exec(&paths) : paths.call(run)
-            end
-            paths ||= run.runtime.skill_paths
-            catalog = LittleGhost::Skills::Catalog.new(
-              **configuration.merge(paths:, resource_root: run&.runtime&.skill_resource_root)
-            )
-            next [] if catalog.names.empty?
-
-            catalog.tool.tap { |tool| tool.define_method(:catalog) { catalog } }
-          end
-          self.skills_tool_resolver_value = resolver
-          tools(&resolver)
+          tools CatalogTools
           prompt_local(:skills_prompt) do
             tool = tools.fetch("skills") if tools.names.include?("skills")
             tool&.catalog&.discovery_prompt.to_s
@@ -43,10 +44,6 @@ module LittleGhost
         end
 
         def skills_configuration = skills_configuration_value
-
-        private
-
-        def skills_tool_resolver = skills_tool_resolver_value
       end
 
       private

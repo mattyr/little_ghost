@@ -19,43 +19,36 @@ class ToolRegistryTest < Minitest::Test
     assert_equal %w[first second], registry.specifications.map { |specification| specification[:name] }
   end
 
-  def test_constructs_classes_and_proc_results_for_the_run
+  def test_constructs_classes_with_the_tool_context
     run = Object.new
     tool = Class.new(LittleGhost::Tool) do
       tool_name "dynamic"
       description "Dynamic"
     end
-    registry = LittleGhost::ToolRegistry.new([->(resolved_run) {
-      assert_same run, resolved_run
-      [tool]
-    }], run:)
+    tool_context = LittleGhost::ToolContext.new(run:)
+    registry = LittleGhost::ToolRegistry.new([tool], tool_context:)
 
     assert_same run, registry.fetch("dynamic").run
   end
 
-  def test_calls_zero_arity_tool_resolvers_without_a_run_argument
-    tool = build_tool("static")
-    resolver = -> { [tool] }
+  def test_resolves_provider_classes_with_their_context
+    tool = build_tool("provided")
+    provider = Class.new(LittleGhost::ToolProvider) do
+      def tools = [self.class.tool]
 
-    registry = LittleGhost::ToolRegistry.new([resolver], run: Object.new)
-
-    assert_equal ["static"], registry.names
-  end
-
-  def test_passes_the_run_to_a_resolver_with_an_optional_argument
-    run = Object.new
-    tool = build_tool("optional")
-    resolver = proc do |candidate = nil|
-      assert_same run, candidate
-      [tool]
+      class << self
+        attr_accessor :tool
+      end
     end
+    provider.tool = tool
+    tool_context = LittleGhost::ToolContext.new(run: Object.new)
+    registry = LittleGhost::ToolRegistry.new([provider], tool_context:)
 
-    registry = LittleGhost::ToolRegistry.new([resolver], run:)
-
-    assert_equal ["optional"], registry.names
+    assert_equal ["provided"], registry.names
+    assert_same tool_context.run, registry.fetch("provided").run
   end
 
-  def test_closes_partial_proc_results_when_a_later_constructor_fails
+  def test_closes_partial_provider_results_when_a_later_constructor_fails
     closable = Class.new(LittleGhost::Tool) do
       tool_name "closable"
       description "Closable"
@@ -74,7 +67,16 @@ class ToolRegistryTest < Minitest::Test
     end
 
     assert_raises(RuntimeError) do
-      LittleGhost::ToolRegistry.new([->(_run) { [closable, failing] }])
+      provider = Class.new(LittleGhost::ToolProvider) do
+        def tools = [self.class.closable, self.class.failing]
+
+        class << self
+          attr_accessor :closable, :failing
+        end
+      end
+      provider.closable = closable
+      provider.failing = failing
+      LittleGhost::ToolRegistry.new([provider])
     end
 
     assert_equal 1, closable.closes

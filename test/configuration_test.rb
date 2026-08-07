@@ -681,7 +681,7 @@ class ConfigurationTest < Minitest::Test
     end
   end
 
-  def test_tool_classes_and_dynamic_resolvers_are_instantiated_for_the_run
+  def test_tool_providers_are_instantiated_for_the_run
     static_tool = Class.new(LittleGhost::Tool) do
       tool_name "static"
       description "Static tool"
@@ -690,10 +690,19 @@ class ConfigurationTest < Minitest::Test
       tool_name "dynamic"
       description "Dynamic tool"
     end
+    provider = Class.new(LittleGhost::ToolProvider) do
+      def tools
+        run.invocation[:dynamic] ? [self.class.dynamic_tool] : []
+      end
+
+      class << self
+        attr_accessor :dynamic_tool
+      end
+    end
+    provider.dynamic_tool = dynamic_tool
     agent = Class.new(LittleGhost::Agent) do
       model "main"
-      tools static_tool
-      tools { |run| run.invocation[:dynamic] ? [dynamic_tool] : [] }
+      tools static_tool, provider
     end
 
     with_runtime(agent:) do |harness, provider|
@@ -1197,7 +1206,7 @@ class ConfigurationTest < Minitest::Test
       tool_name "inspect_source"
       description "Inspect source"
 
-      def call(_input, context:) = "source"
+      def call(_input) = "source"
     end
     child = Class.new(LittleGhost::Agent) do
       model "main"
