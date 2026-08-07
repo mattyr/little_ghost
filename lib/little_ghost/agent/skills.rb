@@ -8,16 +8,16 @@ module LittleGhost
         base.class_attribute :skills_configuration_value
       end
 
-      class CatalogTools < ToolProvider
-        def tools
-          configuration = agent.class.skills_configuration
+      class CatalogTools
+        def self.tools(binding)
+          configuration = binding.agent.class.skills_configuration
           paths = configuration.fetch(:paths)
           if paths.is_a?(Proc)
-            paths = paths.parameters.empty? ? agent.instance_exec(&paths) : paths.call(run)
+            paths = paths.parameters.empty? ? binding.agent.instance_exec(&paths) : paths.call(binding.run)
           end
-          paths ||= run.runtime.skill_paths
+          paths ||= binding.run.runtime.skill_paths
           catalog = LittleGhost::Skills::Catalog.new(
-            **configuration.merge(paths:, resource_root: run&.runtime&.skill_resource_root)
+            **configuration.merge(paths:, resource_root: binding.run&.runtime&.skill_resource_root)
           )
           return [] if catalog.names.empty?
 

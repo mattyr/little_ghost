@@ -74,10 +74,9 @@ module LittleGhost
         private
 
         def validate_delegated_tools!(tools)
-          return unless Array(tools).flatten.any? { |tool| tool.is_a?(Tool) }
+          return unless Array(tools).flatten.any? { |tool| !tool.is_a?(Class) }
 
-          raise ConfigurationError,
-            "Delegated tools must be LittleGhost::Tool or LittleGhost::ToolProvider classes"
+          raise ConfigurationError, "Delegated tools must be classes"
         end
       end
     end

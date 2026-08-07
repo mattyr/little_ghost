@@ -781,15 +781,15 @@ class AgentTest < Minitest::Test
       Class.new(LittleGhost::Agent) { tools tool_class.new }
     end
 
-    assert_includes error.message, "ToolProvider"
+    assert_includes error.message, "classes"
   end
 
-  def test_class_tool_providers_receive_the_agent_context
+  def test_grouped_tool_classes_receive_the_framework_binding
     tool_class = LittleGhost::Tool.define(name: "dynamic", description: "Dynamic") { "done" }
-    provider = Class.new(LittleGhost::ToolProvider) do
-      def tools
-        self.class.agent = agent
-        [self.class.tool_class]
+    provider = Class.new do
+      def self.tools(binding)
+        self.agent = binding.agent
+        [tool_class]
       end
 
       class << self
@@ -915,7 +915,7 @@ class AgentTest < Minitest::Test
     error = assert_raises(LittleGhost::ConfigurationError) do
       Class.new(LittleGhost::Agent) { subagent delegated, tools: [tool] }
     end
-    assert_includes error.message, "ToolProvider"
+    assert_includes error.message, "classes"
 
     assert_raises(LittleGhost::ConfigurationError) do
       Class.new(LittleGhost::Agent) { agent_as_tool delegated, tools: [tool] }

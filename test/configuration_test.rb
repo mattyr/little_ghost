@@ -681,7 +681,7 @@ class ConfigurationTest < Minitest::Test
     end
   end
 
-  def test_tool_providers_are_instantiated_for_the_run
+  def test_grouped_tools_are_resolved_for_the_run
     static_tool = Class.new(LittleGhost::Tool) do
       tool_name "static"
       description "Static tool"
@@ -690,9 +690,9 @@ class ConfigurationTest < Minitest::Test
       tool_name "dynamic"
       description "Dynamic tool"
     end
-    provider = Class.new(LittleGhost::ToolProvider) do
-      def tools
-        run.invocation[:dynamic] ? [self.class.dynamic_tool] : []
+    provider = Class.new do
+      def self.tools(binding)
+        binding.run.invocation[:dynamic] ? [dynamic_tool] : []
       end
 
       class << self

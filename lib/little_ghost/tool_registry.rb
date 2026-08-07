@@ -7,9 +7,9 @@ module LittleGhost
 
     include Enumerable
 
-    def initialize(tools = [], tool_context: ToolContext.new)
+    def initialize(tools = [], binding: Tool::Binding.new)
       @tools = {}
-      @tool_context = tool_context
+      @binding = binding
       @closed = false
       @closed_tool_ids = {}
       supplied_instances = Array(tools).flatten.grep(Tool).uniq(&:object_id)
@@ -33,7 +33,7 @@ module LittleGhost
 
       instances = []
       existing_ids = @tools.each_value.to_h { |instance| [instance.object_id, true] }
-      resolve(tool, instances, tool_context: @tool_context)
+      resolve(tool, instances, binding: @binding)
       seen = []
       names = instances.map do |instance|
         raise ConfigurationError, "Tools must inherit from LittleGhost::Tool" unless instance.is_a?(Tool)
@@ -104,14 +104,13 @@ module LittleGhost
       raise first_error if first_error
     end
 
-    def resolve(value, instances, tool_context:)
+    def resolve(value, instances, binding:)
       if value.is_a?(Array)
-        value.flatten.compact.each { |child| resolve(child, instances, tool_context:) }
-      elsif value.is_a?(Class) && value <= ToolProvider
-        provider = value.new(tool_context:)
-        resolve(provider.tools, instances, tool_context: provider.tool_context)
+        value.flatten.compact.each { |child| resolve(child, instances, binding:) }
       elsif value.is_a?(Class) && value <= Tool
-        instances << value.new(tool_context: tool_context.with(storage: {}))
+        instances << value.new(binding:)
+      elsif value.is_a?(Class)
+        resolve(value.tools(binding), instances, binding:)
       else
         instances << value
       end

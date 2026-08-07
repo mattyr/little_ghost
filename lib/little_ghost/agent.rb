@@ -134,12 +134,9 @@ module LittleGhost
       end
 
       def tools(*values)
-        invalid = values.flatten.compact.find do |value|
-          !value.is_a?(Class) || !(value <= Tool || value <= ToolProvider)
-        end
+        invalid = values.flatten.compact.find { |value| !value.is_a?(Class) }
         if invalid
-          raise ConfigurationError,
-            "Class-level tools must be LittleGhost::Tool or LittleGhost::ToolProvider classes"
+          raise ConfigurationError, "Class-level tools must be classes"
         end
 
         declarations = tool_declarations_value + values
@@ -312,8 +309,8 @@ module LittleGhost
         @sandbox ||= @runtime.build_sandbox(workspace: @workspace)
       end
       @owns_resources = run.nil? && (@workspace || @sandbox)
-      tool_context = ToolContext.new(agent: self, run:, runtime: @runtime, model:, workspace: @workspace, sandbox: @sandbox)
-      @tool_registry = ToolRegistry.new(tools, tool_context:)
+      binding = Tool::Binding.new(agent: self, run:, runtime: @runtime, model:, workspace: @workspace, sandbox: @sandbox)
+      @tool_registry = ToolRegistry.new(tools, binding:)
       self.class.tool_declarations.each do |declaration|
         @tool_registry.register(declaration, replace: true)
       end
@@ -575,7 +572,7 @@ module LittleGhost
         preserve_context ? mutex.synchronize(&invocation) : invocation.call
       end
       tool_class.define_method(:close) { agent.close }
-      tool_context = ToolContext.new(
+      binding = Tool::Binding.new(
         agent: self,
         run:,
         runtime:,
@@ -583,7 +580,7 @@ module LittleGhost
         workspace:,
         sandbox:
       )
-      tool_class.new(tool_context:)
+      tool_class.new(binding:)
     end
 
     def prompt_locals

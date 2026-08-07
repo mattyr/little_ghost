@@ -2,7 +2,7 @@
 
 module LittleGhost
   module Tools
-    class Filesystem < ToolProvider
+    class Filesystem
       class ReadFile < Tool
         tool_name "read_file"
         description "Read a UTF-8 text file within the configured workspace."
@@ -63,20 +63,24 @@ module LittleGhost
         exclusive true
       end
 
-      def tools
-        [*read_tools, *(write_tools if sandbox.writable?)]
-      end
+      class << self
+        def tools(binding)
+          [*read_tools, *(write_tools if binding.sandbox.writable?)]
+        end
 
-      private
-
-      def read_tools = [ReadFile, ListFiles]
-      def write_tools = [WriteFile, ReplaceInFile]
-
-      class Exclusive < self
         private
 
-        def read_tools = [ExclusiveReadFile, ExclusiveListFiles]
-        def write_tools = [ExclusiveWriteFile, ExclusiveReplaceInFile]
+        def read_tools = [ReadFile, ListFiles]
+        def write_tools = [WriteFile, ReplaceInFile]
+      end
+
+      class Exclusive < self
+        class << self
+          private
+
+          def read_tools = [ExclusiveReadFile, ExclusiveListFiles]
+          def write_tools = [ExclusiveWriteFile, ExclusiveReplaceInFile]
+        end
       end
     end
   end

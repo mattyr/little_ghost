@@ -19,36 +19,36 @@ class ToolRegistryTest < Minitest::Test
     assert_equal %w[first second], registry.specifications.map { |specification| specification[:name] }
   end
 
-  def test_constructs_classes_with_the_tool_context
+  def test_constructs_classes_with_the_framework_binding
     run = Object.new
     tool = Class.new(LittleGhost::Tool) do
       tool_name "dynamic"
       description "Dynamic"
     end
-    tool_context = LittleGhost::ToolContext.new(run:)
-    registry = LittleGhost::ToolRegistry.new([tool], tool_context:)
+    binding = LittleGhost::Tool::Binding.new(run:)
+    registry = LittleGhost::ToolRegistry.new([tool], binding:)
 
     assert_same run, registry.fetch("dynamic").run
   end
 
-  def test_resolves_provider_classes_with_their_context
+  def test_resolves_grouped_tool_classes_with_their_binding
     tool = build_tool("provided")
-    provider = Class.new(LittleGhost::ToolProvider) do
-      def tools = [self.class.tool]
+    provider = Class.new do
+      def self.tools(_binding) = [tool]
 
       class << self
         attr_accessor :tool
       end
     end
     provider.tool = tool
-    tool_context = LittleGhost::ToolContext.new(run: Object.new)
-    registry = LittleGhost::ToolRegistry.new([provider], tool_context:)
+    binding = LittleGhost::Tool::Binding.new(run: Object.new)
+    registry = LittleGhost::ToolRegistry.new([provider], binding:)
 
     assert_equal ["provided"], registry.names
-    assert_same tool_context.run, registry.fetch("provided").run
+    assert_same binding.run, registry.fetch("provided").run
   end
 
-  def test_closes_partial_provider_results_when_a_later_constructor_fails
+  def test_closes_partial_group_results_when_a_later_constructor_fails
     closable = Class.new(LittleGhost::Tool) do
       tool_name "closable"
       description "Closable"
@@ -67,8 +67,8 @@ class ToolRegistryTest < Minitest::Test
     end
 
     assert_raises(RuntimeError) do
-      provider = Class.new(LittleGhost::ToolProvider) do
-        def tools = [self.class.closable, self.class.failing]
+      provider = Class.new do
+        def self.tools(_binding) = [closable, failing]
 
         class << self
           attr_accessor :closable, :failing

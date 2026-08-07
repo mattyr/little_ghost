@@ -61,7 +61,7 @@ class ToolsTest < Minitest::Test
     Dir.mktmpdir do |directory|
       sandbox = unrestricted_sandbox(directory)
       registry = LittleGhost::ToolRegistry.new(
-        [LittleGhost::Tools::Shell], tool_context: LittleGhost::ToolContext.new(sandbox:)
+        [LittleGhost::Tools::Shell], binding: LittleGhost::Tool::Binding.new(sandbox:)
       )
 
       result = registry.fetch("shell").execute({"command" => [RbConfig.ruby, "-e", "puts ARGV.first", "$(whoami)"]})
@@ -77,7 +77,7 @@ class ToolsTest < Minitest::Test
       ENV["LITTLE_GHOST_SECRET_TEST"] = "credential"
       sandbox = unrestricted_sandbox(directory)
       registry = LittleGhost::ToolRegistry.new(
-        [LittleGhost::Tools::Shell], tool_context: LittleGhost::ToolContext.new(sandbox:)
+        [LittleGhost::Tools::Shell], binding: LittleGhost::Tool::Binding.new(sandbox:)
       )
 
       result = registry.fetch("shell").execute({"command" => [RbConfig.ruby, "-e", "print ENV['LITTLE_GHOST_SECRET_TEST'].to_s"]})
@@ -91,7 +91,7 @@ class ToolsTest < Minitest::Test
   private
 
   def filesystem_registry(sandbox, provider = LittleGhost::Tools::Filesystem)
-    LittleGhost::ToolRegistry.new([provider], tool_context: LittleGhost::ToolContext.new(sandbox:))
+    LittleGhost::ToolRegistry.new([provider], binding: LittleGhost::Tool::Binding.new(sandbox:))
   end
 
   def unrestricted_sandbox(directory, **options)
