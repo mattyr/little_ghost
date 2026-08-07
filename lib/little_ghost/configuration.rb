@@ -26,8 +26,8 @@ module LittleGhost
         prompt_paths: DEFAULT_PROMPT_PATHS.dup,
         skill_paths: DEFAULT_SKILL_PATHS.dup,
         skill_resource_root: nil,
-        workspace: ->(runtime:) { Workspace.new(root: runtime.root) },
-        sandbox: ->(workspace:, runtime:) { UnrestrictedSandbox.new(workspace:) },
+        workspace: nil,
+        sandbox: nil,
         instruments: []
       }.merge(values)
       @configuration_values[:prompt_paths] = Array(@configuration_values[:prompt_paths]).dup
@@ -40,20 +40,25 @@ module LittleGhost
       self
     end
 
-    def workspace(builder = nil, &block)
-      configure_resource(:workspace, builder, block)
+    def workspace = configuration_values[:workspace]
+    def sandbox = configuration_values[:sandbox]
+    def session_store = configuration_values[:session_store]
+
+    def workspace=(value)
+      @configuration_values[:workspace] = component_class(value, Workspace, :workspace)
     end
 
-    def workspace=(builder)
-      workspace(builder)
+    def sandbox=(value)
+      @configuration_values[:sandbox] = component_class(value, Sandbox, :sandbox)
     end
 
-    def sandbox(builder = nil, &block)
-      configure_resource(:sandbox, builder, block)
-    end
+    def session_store=(value)
+      unless value.is_a?(Hash)
+        raise ArgumentError, "session_store must be a hash with a provider"
+      end
 
-    def sandbox=(builder)
-      sandbox(builder)
+      provider = value[:provider]
+      @configuration_values[:session_store] = value.merge(provider: component_class(provider, SessionStore, :session_store))
     end
 
     def [](name)
@@ -71,14 +76,6 @@ module LittleGhost
     def instrument(installer, **options)
       configuration_values[:instruments] << [installer, options]
       installer
-    end
-
-    def session_store(value = :__read__, &factory)
-      return configuration_values[:session_store] if value == :__read__ && !factory
-
-      raise ArgumentError, "Provide a session store or a block, not both" if value != :__read__ && factory
-
-      configuration_values[:session_store] = factory || value
     end
 
     def session_actor(value = :__read__, &resolver)
@@ -150,14 +147,12 @@ module LittleGhost
 
     attr_reader :configuration_values
 
-    def configure_resource(name, builder, block)
-      return configuration_values.fetch(name) unless builder || block
-      raise ArgumentError, "Provide a #{name} builder or a block, not both" if builder && block
+    def component_class(value, base_class, name)
+      unless value.is_a?(Class) && value <= base_class
+        raise ArgumentError, "#{name} must be a #{base_class} class"
+      end
 
-      configured = block || builder
-      raise ArgumentError, "#{name} builder must be callable" unless configured.respond_to?(:call)
-
-      configuration_values[name] = configured
+      value
     end
 
     def inferred_root

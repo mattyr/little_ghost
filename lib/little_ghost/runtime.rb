@@ -8,7 +8,7 @@ require_relative "configuration"
 module LittleGhost
   class Runtime
     attr_reader :configuration, :settings, :root, :loader, :prompt_paths, :skill_paths,
-      :skill_resource_root, :instrumentation, :models, :session_store, :workspace_builder, :sandbox_builder
+      :skill_resource_root, :instrumentation, :models, :session_store, :workspace_class, :sandbox_class
 
     def initialize(configuration:, settings: nil, logger: Logger.new($stderr))
       @logger = logger
@@ -30,9 +30,8 @@ module LittleGhost
         end
         @root = canonical_application_root(@settings.fetch(:root))
         @skill_resource_root = @settings[:skill_resource_root]
-        @workspace_builder = @settings.fetch(:workspace)
-        @sandbox_builder = @settings.fetch(:sandbox)
-        validate_resource_builders!
+        @workspace_class = @settings.fetch(:workspace)
+        @sandbox_class = @settings.fetch(:sandbox)
 
         @startup_phase = "instrumentation"
         @instrumentation = build_service(
@@ -113,11 +112,15 @@ module LittleGhost
     end
 
     def build_workspace
-      workspace_builder.call(runtime: self)
+      return workspace_class.new if workspace_class
+
+      Workspace.new(root: root)
     end
 
     def build_sandbox(workspace:)
-      sandbox_builder.call(workspace:, runtime: self)
+      return sandbox_class.new(workspace:) if sandbox_class
+
+      UnrestrictedSandbox.new(workspace:)
     end
 
     def build_agent(
@@ -192,23 +195,17 @@ module LittleGhost
 
     private
 
-    def validate_resource_builders!
-      raise ConfigurationError, "workspace builder must be callable" unless workspace_builder.respond_to?(:call)
-      raise ConfigurationError, "sandbox builder must be callable" unless sandbox_builder.respond_to?(:call)
-    end
-
     def build_service(value, default:)
       value ||= default.call
       value.is_a?(Class) ? value.new : value
     end
 
-    def build_session_store(value)
-      store = if value.is_a?(Proc)
-        value.arity.zero? ? value.call : value.call(self)
-      else
-        value
-      end
-      store ||= SessionStores::Memory.new
+    def build_session_store(definition)
+      return SessionStores::Memory.new(instrumentation:) unless definition
+
+      provider = definition.fetch(:provider)
+      options = definition.except(:provider)
+      store = provider.new(**options, instrumentation:)
       unless store.is_a?(SessionStore)
         raise ConfigurationError, "session_store must be a LittleGhost::SessionStore"
       end

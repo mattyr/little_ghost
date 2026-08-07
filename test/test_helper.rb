@@ -50,12 +50,6 @@ class TestHarness < LittleGhost::Configuration
     super
   end
 
-  def session_store(value = :__read__)
-    return runtime_instance.session_store if value == :__read__ && @test_runtime
-
-    super
-  end
-
   def build_runtime(**overrides)
     values = runtime_instance.settings.merge(overrides)
     values[:root] = runtime_instance.send(:canonical_application_root, values.fetch(:root))

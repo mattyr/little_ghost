@@ -70,36 +70,38 @@ class RuntimeTest < Minitest::Test
     end
   end
 
-  def test_runtime_builds_workspace_and_sandbox_from_configured_builders
+  def test_runtime_builds_workspace_and_sandbox_from_configured_classes
     Dir.mktmpdir do |root|
-      calls = []
-      workspace = LittleGhost::Workspace.new(root:)
-      sandbox = LittleGhost::UnrestrictedSandbox.new(workspace:)
+      workspace_class = Class.new(LittleGhost::Workspace) do
+        class << self
+          attr_accessor :root
+        end
+
+        def initialize
+          super(root: self.class.root)
+        end
+      end
+      workspace_class.root = root
+      sandbox_class = Class.new(LittleGhost::UnrestrictedSandbox)
       configuration = LittleGhost::Configuration.new(root:)
-      configuration.workspace do |runtime:|
-        calls << [:workspace, runtime]
-        workspace
-      end
-      configuration.sandbox do |workspace:, runtime:|
-        calls << [:sandbox, workspace, runtime]
-        sandbox
-      end
+      configuration.workspace = workspace_class
+      configuration.sandbox = sandbox_class
       runtime = LittleGhost::Runtime.new(configuration:)
 
       built_workspace = runtime.build_workspace
       built_sandbox = runtime.build_sandbox(workspace: built_workspace)
 
-      assert_same workspace, built_workspace
-      assert_same sandbox, built_sandbox
-      assert_equal [[:workspace, runtime], [:sandbox, workspace, runtime]], calls
+      assert_instance_of workspace_class, built_workspace
+      assert_instance_of sandbox_class, built_sandbox
+      assert_same built_workspace, built_sandbox.workspace
     end
   end
 
-  def test_resource_configuration_requires_callable_builders
+  def test_resource_configuration_requires_component_classes
     configuration = LittleGhost::Configuration.new
 
-    assert_raises(ArgumentError) { configuration.workspace LittleGhost::Workspace }
-    assert_raises(ArgumentError) { configuration.sandbox LittleGhost::Sandbox }
+    assert_raises(ArgumentError) { configuration.workspace = Object }
+    assert_raises(ArgumentError) { configuration.sandbox = Object }
   end
 
   private

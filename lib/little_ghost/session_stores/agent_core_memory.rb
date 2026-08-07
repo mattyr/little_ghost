@@ -62,7 +62,7 @@ module LittleGhost
         tracer: nil,
         instrumentation: nil
       )
-        super()
+        super(instrumentation:)
         @memory_id = String(memory_id)
         raise ArgumentError, "memory_id must not be empty" if @memory_id.empty?
 

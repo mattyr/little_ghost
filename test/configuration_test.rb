@@ -623,23 +623,13 @@ class ConfigurationTest < Minitest::Test
 
   def test_application_uses_an_in_memory_session_store_by_default
     with_runtime do |harness|
-      assert_instance_of LittleGhost::SessionStores::Memory, harness.session_store
+      assert_instance_of LittleGhost::SessionStores::Memory, harness.runtime_instance.session_store
     end
   end
 
-  def test_session_store_dsl_accepts_a_store
-    store = LittleGhost::SessionStores::Memory.new
-
-    with_runtime(configure: ->(harness) { harness.session_store store }) do |harness|
-      assert_same store, harness.session_store
-    end
-  end
-
-  def test_session_store_dsl_accepts_a_lazy_factory_block
-    store = LittleGhost::SessionStores::Memory.new
-
-    with_runtime(configure: ->(harness) { harness.session_store { store } }) do |harness|
-      assert_same store, harness.session_store
+  def test_session_store_configuration_builds_the_declared_provider
+    with_runtime(configure: ->(harness) { harness.session_store = {provider: LittleGhost::SessionStores::Memory} }) do |harness|
+      assert_instance_of LittleGhost::SessionStores::Memory, harness.runtime_instance.session_store
     end
   end
 
@@ -1059,18 +1049,21 @@ class ConfigurationTest < Minitest::Test
       configuration.root root
       configuration.select_agent agent
       configuration.instrument installer
-      configuration.session_store { raise "external sessions were initialized" }
-      session_store = LittleGhost::SessionStores::Memory.new
+      configuration.session_store = {
+        provider: Class.new(LittleGhost::SessionStore) do
+          def initialize(**) = raise("external sessions were initialized")
+        end
+      }
 
       harness = configuration.build(
         models: models_for(ScriptedProvider.new),
-        session_store:,
+        session_store: {provider: LittleGhost::SessionStores::Memory},
         instrumentation: LittleGhost::Support::Instrumentation.new,
         instruments: []
       )
 
       assert_instance_of LittleGhost::Support::Instrumentation, harness.instrumentation
-      assert_same session_store, harness.session_store
+      assert_instance_of LittleGhost::SessionStores::Memory, harness.runtime_instance.session_store
       refute configuration.instance_variable_defined?(:@booted_application)
     end
   end
@@ -1453,7 +1446,7 @@ class ConfigurationTest < Minitest::Test
       configuration = TestHarness.new
       configuration.select_agent agent
       configuration.models models_for(provider, settings:)
-      configuration.session_store session_store if session_store
+      configuration.session_store = {provider: session_store_provider(session_store)} if session_store
       configuration.instrumentation instrumentation if instrumentation
       configure&.call(configuration)
       harness = configuration.runtime(root:)
@@ -1465,5 +1458,11 @@ class ConfigurationTest < Minitest::Test
     LittleGhost::ModelRegistry.new
       .provider(:test) { |**| provider }
       .profile("main", provider: :test, model: "test", settings:)
+  end
+
+  def session_store_provider(store)
+    Class.new(store.class) do
+      define_singleton_method(:new) { |**| store }
+    end
   end
 end
