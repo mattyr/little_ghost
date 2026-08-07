@@ -8,7 +8,7 @@ require_relative "configuration"
 module LittleGhost
   class Runtime
     attr_reader :configuration, :settings, :root, :loader, :prompt_paths, :skill_paths,
-      :skill_resource_root, :instrumentation, :models, :session_store, :workspace_class, :sandbox_class
+      :skill_resource_root, :instrumentation, :models, :session_store, :workspace_builder, :sandbox_builder
 
     def initialize(configuration:, settings: nil, logger: Logger.new($stderr))
       @logger = logger
@@ -30,9 +30,9 @@ module LittleGhost
         end
         @root = canonical_application_root(@settings.fetch(:root))
         @skill_resource_root = @settings[:skill_resource_root]
-        @workspace_class = @settings.fetch(:workspace, Workspace)
-        @sandbox_class = @settings.fetch(:sandbox, Sandbox)
-        validate_resource_classes!
+        @workspace_builder = @settings.fetch(:workspace)
+        @sandbox_builder = @settings.fetch(:sandbox)
+        validate_resource_builders!
 
         @startup_phase = "instrumentation"
         @instrumentation = build_service(
@@ -113,11 +113,11 @@ module LittleGhost
     end
 
     def build_workspace
-      workspace_class.new(root:)
+      workspace_builder.call(runtime: self)
     end
 
     def build_sandbox(workspace:)
-      sandbox_class.new(workspace:)
+      sandbox_builder.call(workspace:, runtime: self)
     end
 
     def build_agent(
@@ -192,13 +192,9 @@ module LittleGhost
 
     private
 
-    def validate_resource_classes!
-      unless @workspace_class.is_a?(Class) && @workspace_class <= Workspace
-        raise ConfigurationError, "workspace must inherit from LittleGhost::Workspace"
-      end
-      unless @sandbox_class.is_a?(Class) && @sandbox_class <= Sandbox
-        raise ConfigurationError, "sandbox must inherit from LittleGhost::Sandbox"
-      end
+    def validate_resource_builders!
+      raise ConfigurationError, "workspace builder must be callable" unless workspace_builder.respond_to?(:call)
+      raise ConfigurationError, "sandbox builder must be callable" unless sandbox_builder.respond_to?(:call)
     end
 
     def build_service(value, default:)

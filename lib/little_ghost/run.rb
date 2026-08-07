@@ -34,7 +34,10 @@ module LittleGhost
       @entrypoint = nil
       @subagent_started_at = {}
       @usage = Usage.new
-      register(@sandbox) if resources_owned && @sandbox
+      if resources_owned
+        register(@workspace) if @workspace
+        register(@sandbox) if @sandbox
+      end
     end
 
     def call
@@ -160,6 +163,8 @@ module LittleGhost
       emit(:run_start, run_id: invocation.run_id, thread_id: invocation.session_id) { |event| yield event }
       trace_context = runtime.instrumentation.trace_context(operation_id:) if runtime.instrumentation.respond_to?(:trace_context)
       emit(:trace_context, context: trace_context) { |event| yield event } unless trace_context.nil? || trace_context.empty?
+      workspace&.open(run: self)
+      sandbox&.open(run: self)
       session_agent = entrypoint_class.new(runtime:) if entrypoint_class <= Agent
       @session = if session_agent&.respond_to?(:open_session)
         session_agent.open_session(self)

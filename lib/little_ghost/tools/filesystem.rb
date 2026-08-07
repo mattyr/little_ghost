@@ -3,8 +3,9 @@
 module LittleGhost
   module Tools
     class Filesystem
-      def initialize(workspace:)
-        @workspace = workspace
+      def initialize(sandbox:, exclusive: false)
+        @sandbox = sandbox
+        @exclusive = exclusive
       end
 
       def tools
@@ -15,31 +16,31 @@ module LittleGhost
 
       private
 
-      attr_reader :workspace
+      attr_reader :sandbox
 
-      def writable? = workspace.writable?
+      def writable? = sandbox.writable?
 
       def read_tool
-        workspace = self.workspace
-        Tool.define(
+        sandbox = self.sandbox
+        define_tool(
           name: "read_file",
           description: "Read a UTF-8 text file within the configured workspace.",
           input_schema: path_schema
-        ) { |input| workspace.read(input.fetch("path")) }
+        ) { |input, context:| sandbox.read(input.fetch("path"), context:) }
       end
 
       def list_tool
-        workspace = self.workspace
-        Tool.define(
+        sandbox = self.sandbox
+        define_tool(
           name: "list_files",
           description: "List files and directories within the configured workspace.",
           input_schema: path_schema(required: false)
-        ) { |input| workspace.list(input.fetch("path", ".")) }
+        ) { |input, context:| sandbox.list(input.fetch("path", "."), context:) }
       end
 
       def write_tool
-        workspace = self.workspace
-        Tool.define(
+        sandbox = self.sandbox
+        define_tool(
           name: "write_file",
           description: "Write a UTF-8 text file within the configured writable workspace.",
           input_schema: {
@@ -48,12 +49,12 @@ module LittleGhost
             required: %w[path content],
             additionalProperties: false
           }
-        ) { |input| workspace.write(input.fetch("path"), input.fetch("content")) }
+        ) { |input, context:| sandbox.write(input.fetch("path"), input.fetch("content"), context:) }
       end
 
       def replace_tool
-        workspace = self.workspace
-        Tool.define(
+        sandbox = self.sandbox
+        define_tool(
           name: "replace_in_file",
           description: "Replace one unique occurrence of text in a UTF-8 file within a configured writable workspace.",
           input_schema: {
@@ -64,9 +65,18 @@ module LittleGhost
             required: %w[path old_text new_text],
             additionalProperties: false
           }
-        ) do |input|
-          workspace.replace(input.fetch("path"), input.fetch("old_text"), input.fetch("new_text"))
+        ) do |input, context:|
+          sandbox.replace(
+            input.fetch("path"),
+            input.fetch("old_text"),
+            input.fetch("new_text"),
+            context:
+          )
         end
+      end
+
+      def define_tool(**options, &implementation)
+        Tool.define(**options, &implementation).tap { |tool| tool.exclusive(@exclusive) }
       end
 
       def path_schema(required: true)

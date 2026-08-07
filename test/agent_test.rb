@@ -1016,6 +1016,17 @@ class AgentTest < Minitest::Test
     assert_equal 1, tool.closes
   end
 
+  def test_closes_a_standalone_workspace_without_a_sandbox
+    workspace = Struct.new(:closed) do
+      def close = self.closed = true
+    end.new(false)
+    agent = LittleGhost::Agent.new(model: ScriptedModel.new(response("done")), workspace:)
+
+    agent.close
+
+    assert workspace.closed
+  end
+
   def test_rejects_duplicate_tools_and_closes_both_instances
     tool_class = Class.new(LittleGhost::Tool) do
       tool_name "duplicate"

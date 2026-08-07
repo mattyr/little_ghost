@@ -310,7 +310,7 @@ module LittleGhost
         @workspace = @runtime.build_workspace
         @sandbox ||= @runtime.build_sandbox(workspace: @workspace)
       end
-      @owns_resources = run.nil? && @sandbox
+      @owns_resources = run.nil? && (@workspace || @sandbox)
       @tool_registry = ToolRegistry.new(tools, run:)
       self.class.tool_declarations.each do |declaration|
         resolved = if declaration.is_a?(Proc) && declaration.parameters.empty?
@@ -600,7 +600,7 @@ module LittleGhost
 
         @closed = true
         [
-          [tool_registry, (@sandbox if @owns_resources)],
+          [tool_registry, (@sandbox if @owns_resources), (@workspace if @owns_resources)],
           @interruptions_mutex.synchronize { @active_interruptions.dup }
         ]
       end

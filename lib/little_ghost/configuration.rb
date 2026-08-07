@@ -5,7 +5,7 @@ require "pathname"
 
 module LittleGhost
   class Configuration
-    CONFIGURATION_KEYS = %i[invocation models default_model instrumentation service_name workspace sandbox].freeze
+    CONFIGURATION_KEYS = %i[invocation models default_model instrumentation service_name].freeze
     DEFAULT_PROMPT_PATHS = ["app/prompts"].freeze
     DEFAULT_SKILL_PATHS = ["app/skills"].freeze
 
@@ -26,8 +26,8 @@ module LittleGhost
         prompt_paths: DEFAULT_PROMPT_PATHS.dup,
         skill_paths: DEFAULT_SKILL_PATHS.dup,
         skill_resource_root: nil,
-        workspace: Workspace,
-        sandbox: Sandbox,
+        workspace: ->(runtime:) { Workspace.new(root: runtime.root) },
+        sandbox: ->(workspace:, runtime:) { UnrestrictedSandbox.new(workspace:) },
         instruments: []
       }.merge(values)
       @configuration_values[:prompt_paths] = Array(@configuration_values[:prompt_paths]).dup
@@ -38,6 +38,22 @@ module LittleGhost
     def configure
       yield self if block_given?
       self
+    end
+
+    def workspace(builder = nil, &block)
+      configure_resource(:workspace, builder, block)
+    end
+
+    def workspace=(builder)
+      workspace(builder)
+    end
+
+    def sandbox(builder = nil, &block)
+      configure_resource(:sandbox, builder, block)
+    end
+
+    def sandbox=(builder)
+      sandbox(builder)
     end
 
     def [](name)
@@ -133,6 +149,16 @@ module LittleGhost
     private
 
     attr_reader :configuration_values
+
+    def configure_resource(name, builder, block)
+      return configuration_values.fetch(name) unless builder || block
+      raise ArgumentError, "Provide a #{name} builder or a block, not both" if builder && block
+
+      configured = block || builder
+      raise ArgumentError, "#{name} builder must be callable" unless configured.respond_to?(:call)
+
+      configuration_values[name] = configured
+    end
 
     def inferred_root
       canonical_root(Dir.pwd)
