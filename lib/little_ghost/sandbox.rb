@@ -40,12 +40,13 @@ module LittleGhost
       raise NotImplementedError, "#{self.class} does not support filesystem edits"
     end
 
-    def execute(command, timeout:, context: nil, max_output_bytes: 1_000_000)
+    def execute(command, timeout:, context: nil, max_output_bytes: 1_000_000, **options)
       execute_program(
         ["/bin/sh", "-c", String(command)],
         timeout:,
         context:,
-        max_output_bytes:
+        max_output_bytes:,
+        **options
       )
     end
 

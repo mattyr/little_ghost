@@ -204,6 +204,25 @@ class ToolsTest < Minitest::Test
     end
   end
 
+  def test_sandbox_forwards_implementation_specific_execution_options
+    sandbox_class = Class.new(LittleGhost::Sandbox) do
+      attr_reader :command, :profile
+
+      def execute_program(command, profile:, **)
+        @command = command
+        @profile = profile
+        LittleGhost::Sandbox::Execution.new(stdout: "done", stderr: "", exit_code: 0)
+      end
+    end
+    sandbox = sandbox_class.new(workspace: LittleGhost::Workspace.new(root: Dir.pwd))
+
+    result = sandbox.execute("echo ready", timeout: 1, profile: :read_only)
+
+    assert result.success?
+    assert_equal ["/bin/sh", "-c", "echo ready"], sandbox.command
+    assert_equal :read_only, sandbox.profile
+  end
+
   private
 
   def unrestricted_sandbox(directory, **options)
