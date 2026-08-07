@@ -29,6 +29,8 @@ module LittleGhost
       @mutex = Mutex.new
       @event_mutex = Mutex.new
       @exclusive_tools_mutex = Mutex.new
+      @once_mutex = Mutex.new
+      @once_keys = {}
       @interruption_mutex = Mutex.new
       @interruption_state = :not_started
       @entrypoint = nil
@@ -127,6 +129,20 @@ module LittleGhost
       @exclusive_tools_mutex.synchronize(&block)
     end
 
+    def once(key)
+      @once_mutex.synchronize do
+        return if @once_keys.key?(key)
+
+        value = yield
+        @once_keys[key] = true
+        value
+      end
+    end
+
+    def prepare_interruption(payload)
+      runtime.prepare_interruption(self, payload)
+    end
+
     def close
       callbacks = @mutex.synchronize do
         return if @closed
@@ -165,12 +181,7 @@ module LittleGhost
       emit(:trace_context, context: trace_context) { |event| yield event } unless trace_context.nil? || trace_context.empty?
       workspace&.open(run: self)
       sandbox&.open(run: self)
-      session_agent = entrypoint_class.new(runtime:) if entrypoint_class <= Agent
-      @session = if session_agent&.respond_to?(:open_session)
-        session_agent.open_session(self)
-      else
-        runtime.open_session(self)
-      end
+      @session = runtime.open_session(self)
       agent = if entrypoint_class <= Agent
         runtime.build_agent(entrypoint_class, run: self)
       else
@@ -339,15 +350,7 @@ module LittleGhost
         session_id: invocation.session_id,
         agent_id: workflow_run? ? nil : entrypoint_name,
         workflow_name: workflow_run? ? entrypoint_name : nil
-      }.merge(
-        runtime.respond_to?(:instrumentation_attributes) ?
-          runtime.instrumentation_attributes(run: self) : {}
-      )
-        .merge(
-          @entrypoint&.respond_to?(:instrumentation_attributes) ?
-            @entrypoint.instrumentation_attributes(run: self) : {}
-        )
-        .compact
+      }.merge(runtime.instrumentation_attributes(run: self)).compact
     end
 
     def workflow_run? = entrypoint_class <= Workflow
@@ -460,8 +463,7 @@ module LittleGhost
     end
 
     def error_message(error)
-      entrypoint = @entrypoint || @last_entrypoint
-      entrypoint&.respond_to?(:error_message) ? entrypoint.error_message(error, self) : runtime.error_message(error, self)
+      runtime.error_message(error, self)
     end
 
     def diagnostic_invocation_message

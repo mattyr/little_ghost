@@ -45,6 +45,7 @@ require_relative "little_ghost/agent_interruptions"
 require_relative "little_ghost/agent"
 require_relative "little_ghost/agent_builder"
 require_relative "little_ghost/workflow"
+require_relative "little_ghost/runtime/hook"
 require_relative "little_ghost/runtime"
 
 module LittleGhost

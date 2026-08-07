@@ -760,7 +760,7 @@ class AgentTest < Minitest::Test
   def test_mixed_exclusive_and_agent_tool_batch_does_not_hold_the_run_lock_during_delegation
     run = LittleGhost::Run.new(
       invocation: LittleGhost::Invocation.new(message: "go"),
-      runtime: Struct.new(:instrumentation).new(LittleGhost::Support::Instrumentation.new),
+      runtime: TestRuntime.new,
       agent_class: LittleGhost::Agent
     )
     exclusive_tool = Class.new(LittleGhost::Tool) do
@@ -1176,7 +1176,7 @@ class AgentTest < Minitest::Test
     tool_class.exclusive true
     run = LittleGhost::Run.new(
       invocation: LittleGhost::Invocation.new(message: "go"),
-      runtime: Struct.new(:instrumentation).new(LittleGhost::Support::Instrumentation.new),
+      runtime: TestRuntime.new,
       agent_class: LittleGhost::Agent
     )
     agent_class = Class.new(LittleGhost::Agent) { system_prompt "" }

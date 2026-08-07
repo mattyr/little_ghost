@@ -8,7 +8,8 @@ require_relative "configuration"
 module LittleGhost
   class Runtime
     attr_reader :configuration, :settings, :root, :loader, :prompt_paths, :skill_paths,
-      :skill_resource_root, :instrumentation, :models, :session_store, :workspace_class, :sandbox_class
+      :skill_resource_root, :instrumentation, :models, :session_store, :workspace_class, :sandbox_class,
+      :runtime_hooks
 
     def initialize(configuration:, settings: nil, logger: Logger.new($stderr))
       @logger = logger
@@ -32,6 +33,7 @@ module LittleGhost
         @skill_resource_root = @settings[:skill_resource_root]
         @workspace_class = @settings.fetch(:workspace)
         @sandbox_class = @settings.fetch(:sandbox)
+        @runtime_hooks = build_runtime_hooks(@settings[:runtime_hooks])
 
         @startup_phase = "instrumentation"
         @instrumentation = build_service(
@@ -99,8 +101,7 @@ module LittleGhost
       sandbox: nil,
       resources_owned: true
     )
-      run_class = agent_class.respond_to?(:run_class) ? agent_class.run_class : Run
-      run_class.new(
+      run = Run.new(
         invocation: parse(payload),
         runtime: self,
         agent_class:,
@@ -109,6 +110,10 @@ module LittleGhost
         sandbox:,
         resources_owned:
       )
+      prepare_run(run)
+    rescue
+      run&.close
+      raise
     end
 
     def build_workspace
@@ -151,6 +156,17 @@ module LittleGhost
       )
     end
 
+    def prepare_run(run)
+      runtime_hooks.each { |hook| hook.prepare_run(run) }
+      run
+    end
+
+    def prepare_interruption(run, payload)
+      runtime_hooks.reduce(payload) do |prepared, hook|
+        hook.prepare_interruption(run, prepared)
+      end
+    end
+
     def open_subagent_session(run, conversation_id)
       parent_link = Subagents::Manager.parent_link(run.session)
       Session.new(
@@ -178,7 +194,16 @@ module LittleGhost
       {}
     end
 
-    def error_message(error, _run)
+    def error_message(error, run)
+      runtime_hooks.each do |hook|
+        message = hook.error_message(error, run)
+        return message if message
+      end
+
+      default_error_message(error, run)
+    end
+
+    def default_error_message(error, _run)
       return error.message if error.is_a?(UnsupportedInputError)
       return error.message if error.is_a?(ToolLoopError)
       return "The model reached its output limit before completing a response. Please retry with a narrower request." if error.is_a?(OutputLimitError)
@@ -198,6 +223,10 @@ module LittleGhost
     def build_service(value, default:)
       value ||= default.call
       value.is_a?(Class) ? value.new : value
+    end
+
+    def build_runtime_hooks(hook_classes)
+      Array(hook_classes).map(&:new)
     end
 
     def build_session_store(definition)

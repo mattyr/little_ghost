@@ -28,11 +28,13 @@ module LittleGhost
         skill_resource_root: nil,
         workspace: nil,
         sandbox: nil,
-        instruments: []
+        instruments: [],
+        runtime_hooks: []
       }.merge(values)
       @configuration_values[:prompt_paths] = Array(@configuration_values[:prompt_paths]).dup
       @configuration_values[:skill_paths] = Array(@configuration_values[:skill_paths]).dup
       @configuration_values[:instruments] = Array(@configuration_values[:instruments]).dup
+      @configuration_values[:runtime_hooks] = Array(@configuration_values[:runtime_hooks]).dup
     end
 
     def configure
@@ -76,6 +78,15 @@ module LittleGhost
     def instrument(installer, **options)
       configuration_values[:instruments] << [installer, options]
       installer
+    end
+
+    def runtime_hook(hook_class)
+      unless hook_class.is_a?(Class) && hook_class <= Runtime::Hook
+        raise ArgumentError, "runtime_hook must be a LittleGhost::Runtime::Hook class"
+      end
+
+      configuration_values[:runtime_hooks] << hook_class
+      hook_class
     end
 
     def session_actor(value = :__read__, &resolver)
@@ -122,6 +133,7 @@ module LittleGhost
       values[:prompt_paths] = Array(values[:prompt_paths]).dup
       values[:skill_paths] = Array(values[:skill_paths]).dup
       values[:instruments] = Array(values[:instruments]).dup
+      values[:runtime_hooks] = Array(values[:runtime_hooks]).dup
       values[:root] = requested_root || values[:root] || self.root
       values
     end

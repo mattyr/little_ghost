@@ -633,6 +633,66 @@ class ConfigurationTest < Minitest::Test
     end
   end
 
+  def test_runtime_hooks_prepare_runs_and_interruptions_in_registration_order
+    calls = []
+    first = Class.new(LittleGhost::Runtime::Hook) do
+      define_method(:prepare_run) do |run|
+        calls << [:run, :first, run]
+        run
+      end
+
+      define_method(:prepare_interruption) do |run, payload|
+        calls << [:interruption, :first, run, payload.fetch(:message)]
+        payload.merge(first: true)
+      end
+    end
+    second = Class.new(LittleGhost::Runtime::Hook) do
+      define_method(:prepare_run) do |run|
+        calls << [:run, :second, run]
+        run
+      end
+
+      define_method(:prepare_interruption) do |run, payload|
+        calls << [:interruption, :second, run, payload.fetch(:first)]
+        payload.merge(second: true)
+      end
+    end
+
+    with_runtime(configure: lambda { |harness|
+      harness.runtime_hook first
+      harness.runtime_hook second
+    }) do |harness|
+      run = harness.agent_instance.build_run(message: "hello")
+
+      assert_equal({message: "interrupt", first: true, second: true}, run.prepare_interruption(message: "interrupt"))
+      assert_equal [
+        [:run, :first, run],
+        [:run, :second, run],
+        [:interruption, :first, run, "interrupt"],
+        [:interruption, :second, run, true]
+      ], calls
+    end
+  end
+
+  def test_runtime_error_hooks_take_precedence_over_default_error_messages
+    hook = Class.new(LittleGhost::Runtime::Hook) do
+      define_method(:error_message) do |error, _run|
+        "Handled: #{error.class}" if error.is_a?(RuntimeError)
+      end
+    end
+
+    with_runtime(configure: ->(harness) { harness.runtime_hook hook }) do |harness|
+      assert_equal "Handled: RuntimeError", harness.runtime_instance.error_message(RuntimeError.new, nil)
+      assert_equal "Agent failed: ArgumentError", harness.runtime_instance.error_message(ArgumentError.new, nil)
+    end
+  end
+
+  def test_runtime_hook_configuration_requires_hook_classes
+    error = assert_raises(ArgumentError) { TestHarness.new.runtime_hook Class.new }
+
+    assert_equal "runtime_hook must be a LittleGhost::Runtime::Hook class", error.message
+  end
+
   def test_session_actor_can_be_resolved_from_the_invocation
     store = LittleGhost::SessionStores::Memory.new
 
@@ -796,7 +856,7 @@ class ConfigurationTest < Minitest::Test
   def test_cleanup_failure_cannot_emit_stale_success_when_error_formatting_fails
     events = []
     with_runtime do |harness|
-      harness.agent_class.define_method(:error_message) { |_error, _run| raise "formatter failed" }
+      harness.runtime_instance.define_singleton_method(:error_message) { |_error, _run| raise "formatter failed" }
       run = harness.agent_instance.build_run(message: "hello")
       run.register { raise "cleanup failed" }
 

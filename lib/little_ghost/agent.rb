@@ -37,8 +37,6 @@ module LittleGhost
     class_attribute :callback_values, default: Support::Callbacks.new(*CALLBACKS)
 
     class << self
-      def run_class = LittleGhost::Run
-
       def agent_id(*values)
         return agent_id_value || default_agent_id if values.empty?
 
@@ -346,11 +344,6 @@ module LittleGhost
 
     attr_reader :runtime
 
-    def prepare_run(run) = run
-    def prepare_interruption(_run, interruption) = interruption
-    def open_session(run) = run.runtime.open_session(run)
-    def instrumentation_attributes(run:, agent: nil) = {}
-    def error_message(error, run) = run.runtime.error_message(error, run)
     def entrypoint_name = self.class.agent_id
 
     def dispatch_tools(tool_uses, context:, events:, parent_operation_id:, parent_trace_context: nil)
@@ -359,7 +352,7 @@ module LittleGhost
 
     def build_run(payload)
       ensure_resources
-      run = runtime.build_run(
+      runtime.build_run(
         payload,
         agent_class: self.class,
         entrypoint_class: self.class,
@@ -367,10 +360,6 @@ module LittleGhost
         sandbox:,
         resources_owned: false
       )
-      prepare_run(run)
-    rescue
-      run&.close
-      raise
     end
 
     def call(input = nil, **options)
@@ -1765,7 +1754,7 @@ module LittleGhost
         invocation_id: run.invocation.invocation_id,
         session_id: run.invocation.session_id,
         agent_id: self.class.agent_id
-      }.merge(instrumentation_attributes(run:, agent: self))
+      }.merge(runtime.instrumentation_attributes(run:, agent: self))
     end
 
     def model_attributes

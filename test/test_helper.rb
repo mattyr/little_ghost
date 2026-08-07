@@ -3,6 +3,18 @@
 require "minitest/autorun"
 require "little_ghost"
 
+class TestRuntime
+  attr_reader :instrumentation
+
+  def initialize(instrumentation: LittleGhost::Support::Instrumentation.new)
+    @instrumentation = instrumentation
+  end
+
+  def instrumentation_attributes(run:, agent: nil) = {}
+
+  def error_message(error, _run) = "Agent failed: #{error.class}"
+end
+
 class TestHarness < LittleGhost::Configuration
   def select_agent(value) = @test_agent_class = value
 
