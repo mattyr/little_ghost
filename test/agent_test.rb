@@ -115,6 +115,20 @@ class AgentTest < Minitest::Test
     assert_equal [[:build_run, {message: "hello"}], [:call], [:build_run, {message: "goodbye"}], [:each]], calls
   end
 
+  def test_an_entrypoint_leaves_default_resources_to_its_runtime
+    agent = Class.new(LittleGhost::Agent)
+    values = nil
+    runtime = Object.new
+    runtime.define_singleton_method(:build_run) do |_payload, **options|
+      values = options
+      Object.new
+    end
+
+    agent.new(runtime:).build_run(message: "hello")
+
+    assert_equal({agent_class: agent, entrypoint_class: agent}, values)
+  end
+
   def test_runs_model_and_returns_normalized_result
     model = ScriptedModel.new(response("hello", usage: LittleGhost::Usage.new(input_tokens: 2, output_tokens: 1)))
 

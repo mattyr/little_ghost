@@ -10,7 +10,7 @@ module LittleGhost
       :outcome, :response, :error, :session, :usage, :workspace, :sandbox
 
     def initialize(invocation:, agent_class:, runtime:, entrypoint_class: agent_class,
-      cancellation_token: Support::CancellationToken.new, workspace: nil, sandbox: nil, resources_owned: true)
+      cancellation_token: Support::CancellationToken.new, workspace: nil, sandbox: nil)
       @runtime = runtime
       @agent_class = agent_class
       @entrypoint_class = entrypoint_class
@@ -18,10 +18,6 @@ module LittleGhost
       @cancellation_token = cancellation_token
       @workspace = workspace
       @sandbox = sandbox
-      if runtime.is_a?(Runtime) && !@workspace
-        @workspace = runtime.build_workspace
-        @sandbox ||= runtime.build_sandbox(workspace: @workspace)
-      end
       @operation_id = SecureRandom.uuid
       @resources = []
       @closed = false
@@ -36,10 +32,6 @@ module LittleGhost
       @entrypoint = nil
       @subagent_started_at = {}
       @usage = Usage.new
-      if resources_owned
-        register(@workspace) if @workspace
-        register(@sandbox) if @sandbox
-      end
     end
 
     def call

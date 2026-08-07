@@ -98,21 +98,27 @@ module LittleGhost
       agent_class:,
       entrypoint_class: agent_class,
       workspace: nil,
-      sandbox: nil,
-      resources_owned: true
+      sandbox: nil
     )
+      owned_resources = []
+      workspace ||= build_workspace.tap { |resource| owned_resources << resource }
+      sandbox ||= build_sandbox(workspace:).tap { |resource| owned_resources << resource }
       run = Run.new(
         invocation: parse(payload),
         runtime: self,
         agent_class:,
         entrypoint_class:,
         workspace:,
-        sandbox:,
-        resources_owned:
+        sandbox:
       )
+      owned_resources.each { |resource| run.register(resource) }
       prepare_run(run)
     rescue
-      run&.close
+      if run
+        run.close
+      else
+        close_resources(owned_resources)
+      end
       raise
     end
 
@@ -219,6 +225,14 @@ module LittleGhost
     end
 
     private
+
+    def close_resources(resources)
+      resources.reverse_each do |resource|
+        resource.close if resource.respond_to?(:close)
+      rescue
+        nil
+      end
+    end
 
     def build_service(value, default:)
       value ||= default.call

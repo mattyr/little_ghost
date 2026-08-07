@@ -104,11 +104,92 @@ class RuntimeTest < Minitest::Test
     assert_raises(ArgumentError) { configuration.sandbox = Object }
   end
 
+  def test_runtime_gives_each_run_its_own_default_workspace_and_sandbox
+    Dir.mktmpdir do |root|
+      workspace_class = tracked_workspace_class(root)
+      sandbox_class = tracked_sandbox_class
+      configuration = LittleGhost::Configuration.new(root:, workspace: workspace_class, sandbox: sandbox_class)
+      runtime = LittleGhost::Runtime.new(configuration:)
+
+      first = runtime.build_run({message: "first"}, agent_class: LittleGhost::Agent)
+      second = runtime.build_run({message: "second"}, agent_class: LittleGhost::Agent)
+
+      refute_same first.workspace, second.workspace
+      refute_same first.sandbox, second.sandbox
+      assert_same first.workspace, first.sandbox.workspace
+      assert_same second.workspace, second.sandbox.workspace
+
+      first.close
+
+      assert first.workspace.closed
+      assert first.sandbox.closed
+      refute second.workspace.closed
+      refute second.sandbox.closed
+    end
+  end
+
+  def test_runtime_closes_a_workspace_when_sandbox_creation_fails
+    Dir.mktmpdir do |root|
+      workspace_class = tracked_workspace_class(root)
+      sandbox_class = Class.new(LittleGhost::Sandbox) do
+        def initialize(workspace:)
+          raise "sandbox failed"
+        end
+      end
+      configuration = LittleGhost::Configuration.new(root:, workspace: workspace_class, sandbox: sandbox_class)
+      runtime = LittleGhost::Runtime.new(configuration:)
+
+      error = assert_raises(RuntimeError) do
+        runtime.build_run({message: "hello"}, agent_class: LittleGhost::Agent)
+      end
+
+      assert_equal "sandbox failed", error.message
+      assert workspace_class.instances.first.closed
+    end
+  end
+
   private
 
   def write(root, relative_path, content)
     path = File.join(root, relative_path)
     FileUtils.mkdir_p(File.dirname(path))
     File.write(path, content)
+  end
+
+  def tracked_workspace_class(root)
+    Class.new(LittleGhost::Workspace) do
+      class << self
+        attr_accessor :root, :instances
+      end
+
+      def initialize
+        super(root: self.class.root)
+        self.class.instances << self
+      end
+
+      attr_reader :closed
+
+      def close = @closed = true
+    end.tap do |klass|
+      klass.root = root
+      klass.instances = []
+    end
+  end
+
+  def tracked_sandbox_class
+    Class.new(LittleGhost::Sandbox) do
+      class << self
+        attr_accessor :instances
+      end
+
+      def initialize(workspace:)
+        super
+        self.class.instances << self
+      end
+
+      attr_reader :closed
+
+      def close = @closed = true
+    end.tap { |klass| klass.instances = [] }
   end
 end

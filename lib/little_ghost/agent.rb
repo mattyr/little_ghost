@@ -351,14 +351,10 @@ module LittleGhost
     end
 
     def build_run(payload)
-      ensure_resources
       runtime.build_run(
         payload,
         agent_class: self.class,
-        entrypoint_class: self.class,
-        workspace:,
-        sandbox:,
-        resources_owned: false
+        entrypoint_class: self.class
       )
     end
 
@@ -630,14 +626,6 @@ module LittleGhost
     end
 
     private
-
-    def ensure_resources
-      return unless @runtime.is_a?(Runtime)
-      return if @workspace && @sandbox
-
-      @workspace ||= @runtime.build_workspace
-      @sandbox ||= @runtime.build_sandbox(workspace: @workspace)
-    end
 
     def entrypoint_payload(input, options)
       return options if input.nil?
