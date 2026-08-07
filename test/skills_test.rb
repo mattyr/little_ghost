@@ -140,7 +140,7 @@ class SkillsTest < Minitest::Test
 
         catalog = LittleGhost::Skills::Catalog.new(
           paths: [first_root, second_root],
-          agent_root: "/skills"
+          resource_root: "/skills"
         )
 
         review = catalog.fetch("review")
@@ -155,13 +155,13 @@ class SkillsTest < Minitest::Test
     end
   end
 
-  def test_rejects_relative_agent_roots
+  def test_rejects_relative_resource_roots
     Dir.mktmpdir do |directory|
       error = assert_raises(ArgumentError) do
-        LittleGhost::Skills::Catalog.new(paths: directory, agent_root: "skills")
+        LittleGhost::Skills::Catalog.new(paths: directory, resource_root: "skills")
       end
 
-      assert_equal "agent_root must be an absolute path", error.message
+      assert_equal "resource_root must be an absolute path", error.message
     end
   end
 

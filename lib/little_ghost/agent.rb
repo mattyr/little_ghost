@@ -2,6 +2,7 @@
 
 require "securerandom"
 require_relative "support/output_truncation"
+require_relative "tool_execution"
 
 module LittleGhost
   class Agent
@@ -36,8 +37,6 @@ module LittleGhost
     class_attribute :callback_values, default: Support::Callbacks.new(*CALLBACKS)
 
     class << self
-      def run_class = LittleGhost::Run
-
       def agent_id(*values)
         return agent_id_value || default_agent_id if values.empty?
 
@@ -133,15 +132,13 @@ module LittleGhost
         end
       end
 
-      def tools(*values, &resolver)
-        invalid = values.flatten.compact.find { |value| !value.is_a?(Class) || !(value <= Tool) }
+      def tools(*values)
+        invalid = values.flatten.compact.find { |value| !value.is_a?(Class) }
         if invalid
-          raise ConfigurationError,
-            "Class-level tools must be LittleGhost::Tool classes; use a block for per-agent tool instances"
+          raise ConfigurationError, "Class-level tools must be classes"
         end
 
         declarations = tool_declarations_value + values
-        declarations << resolver if resolver
         self.tool_declarations_value = declarations
         tool_declarations
       end
@@ -268,7 +265,8 @@ module LittleGhost
       end
     end
 
-    attr_reader :model, :tool_registry, :instrumentation, :run, :delegation_activity, :agent_path
+    attr_reader :model, :tool_registry, :instrumentation, :run, :delegation_activity, :agent_path, :workspace, :sandbox,
+      :max_tool_calls
 
     def initialize(
       model: nil,
@@ -284,11 +282,16 @@ module LittleGhost
       max_turns: 100,
       max_tool_calls: 1_000,
       max_tool_result_tokens: DEFAULT_MAX_TOOL_RESULT_TOKENS,
-      model_settings: {}
+      model_settings: {},
+      workspace: nil,
+      sandbox: nil
     )
       if model.nil? && run.nil?
         @standalone = true
         @runtime = runtime || Runtime.new(configuration: LittleGhost.configuration)
+        @workspace = workspace
+        @sandbox = sandbox
+        @owns_resources = true
         @closed = false
         @close_mutex = Mutex.new
         @interruptions_mutex = Mutex.new
@@ -299,14 +302,17 @@ module LittleGhost
       @model = model
       @runtime = runtime || run&.runtime
       @run = run
-      @tool_registry = ToolRegistry.new(tools, run:)
+      @workspace = workspace || run&.workspace
+      @sandbox = sandbox || run&.sandbox
+      if @runtime.is_a?(Runtime) && !@workspace
+        @workspace = @runtime.build_workspace
+        @sandbox ||= @runtime.build_sandbox(workspace: @workspace)
+      end
+      @owns_resources = run.nil? && (@workspace || @sandbox)
+      binding = Tool::Binding.new(agent: self, run:, runtime: @runtime, model:, workspace: @workspace, sandbox: @sandbox)
+      @tool_registry = ToolRegistry.new(tools, binding:)
       self.class.tool_declarations.each do |declaration|
-        resolved = if declaration.is_a?(Proc) && declaration.parameters.empty?
-          instance_exec(&declaration)
-        else
-          declaration
-        end
-        @tool_registry.register(resolved, replace: true)
+        @tool_registry.register(declaration, replace: true)
       end
       @structured_output_strategy = StructuredOutput.resolve(
         self.class.result_schema,
@@ -338,19 +344,20 @@ module LittleGhost
 
     attr_reader :runtime
 
-    def prepare_run(run) = run
-    def prepare_interruption(_run, interruption) = interruption
-    def open_session(run) = run.runtime.open_session(run)
-    def instrumentation_attributes(run:, agent: nil) = {}
-    def error_message(error, run) = run.runtime.error_message(error, run)
     def entrypoint_name = self.class.agent_id
 
+    def dispatch_tools(tool_uses, context:, events:, parent_operation_id:, parent_trace_context: nil)
+      execute_tools(tool_uses, context, events, parent_operation_id:, parent_trace_context:)
+    end
+
     def build_run(payload)
-      run = runtime.build_run(payload, agent_class: self.class, entrypoint_class: self.class)
-      prepare_run(run)
-    rescue
-      run&.close
-      raise
+      options = {
+        agent_class: self.class,
+        entrypoint_class: self.class
+      }
+      options[:workspace] = workspace if workspace
+      options[:sandbox] = sandbox if sandbox
+      runtime.build_run(payload, **options)
     end
 
     def call(input = nil, **options)
@@ -480,8 +487,8 @@ module LittleGhost
       template_locals ||= {}
       template_paths ||= []
       invocation_paths = Array(template_paths).map do |path|
-        unless path.is_a?(Templates::TrustedPath)
-          raise ArgumentError, "invocation template paths must be LittleGhost::Templates::TrustedPath values"
+        unless path.is_a?(LittleGhost::TrustedPath)
+          raise ArgumentError, "invocation template paths must be LittleGhost::TrustedPath values"
         end
         path
       end
@@ -500,18 +507,20 @@ module LittleGhost
           interruption_ids:
         )
         begin
-          execute(
-            input,
-            history: history,
-            context: run_context,
-            settings: settings,
-            template_locals: template_locals,
-            template_paths: invocation_paths,
-            events: events,
-            parent_operation_id:,
-            interruptions:,
-            interrupt_ready:
-          )
+          with_invocation(run_context) do
+            execute(
+              input,
+              history: history,
+              context: run_context,
+              settings: settings,
+              template_locals: template_locals,
+              template_paths: invocation_paths,
+              events: events,
+              parent_operation_id:,
+              interruptions:,
+              interrupt_ready:
+            )
+          end
         rescue => error
           interruptions.close(error)
           raise
@@ -558,7 +567,15 @@ module LittleGhost
         preserve_context ? mutex.synchronize(&invocation) : invocation.call
       end
       tool_class.define_method(:close) { agent.close }
-      tool_class.new(run: run)
+      binding = Tool::Binding.new(
+        agent: self,
+        run:,
+        runtime:,
+        model:,
+        workspace:,
+        sandbox:
+      )
+      tool_class.new(binding:)
     end
 
     def prompt_locals
@@ -580,7 +597,7 @@ module LittleGhost
 
         @closed = true
         [
-          [tool_registry],
+          [tool_registry, (@sandbox if @owns_resources), (@workspace if @owns_resources)],
           @interruptions_mutex.synchronize { @active_interruptions.dup }
         ]
       end
@@ -594,6 +611,20 @@ module LittleGhost
         first_error ||= error
       end
       raise first_error if first_error
+    end
+
+    protected
+
+    def with_invocation(_context)
+      yield
+    end
+
+    def model_tools(tools, context:, turn:)
+      tools
+    end
+
+    def with_tool_execution(_execution)
+      yield
     end
 
     private
@@ -912,10 +943,10 @@ module LittleGhost
           tool_call_count += tool_uses.length
           raise ProtocolError, "The agent reached its maximum tool calls" if tool_call_count > @max_tool_calls
 
-          tool_results = execute_tools(
+          tool_results = dispatch_tools(
             tool_uses,
-            context,
-            events,
+            context:,
+            events:,
             parent_operation_id: turn_operation_id
           )
           messages << Message.new(
@@ -991,7 +1022,7 @@ module LittleGhost
       StructuredOutput.validate_tool_collision!(strategy, ordinary_tools) if strategy
       request = ModelRequest.new(
         messages: messages,
-        tools: strategy ? strategy.tools(ordinary_tools) : ordinary_tools,
+        tools: model_tools(strategy ? strategy.tools(ordinary_tools) : ordinary_tools, context:, turn:),
         settings: settings,
         output_schema: strategy&.output_schema,
         tool_choice: strategy&.tool_choice(repair: structured_result_repair_due),
@@ -1267,11 +1298,22 @@ module LittleGhost
           next result
         end
 
+        execution_context = ToolExecution.new(
+          tool_use:,
+          tool:,
+          context:,
+          events:,
+          operation_id:,
+          parent_operation_id:,
+          parent_trace_context:
+        )
         invoke = lambda do
-          invoke_tool(
-            tool_use, tool, context,
-            operation_id:, parent_operation_id:
-          )
+          with_tool_execution(execution_context) do
+            invoke_tool(
+              tool_use, tool, context,
+              operation_id:, parent_operation_id:
+            )
+          end
         end
         tool_result = tool.exclusive? ? synchronize_exclusive_tools(&invoke) : invoke.call
         after_decision = run_callbacks(
@@ -1666,9 +1708,7 @@ module LittleGhost
     end
 
     def default_template_resolver(paths)
-      return unless defined?(Templates::Resolver)
-
-      Templates::Resolver.new(application_paths: paths)
+      LittleGhost::PromptResolver.new(paths:)
     end
 
     def apply_cancellation_decision!(decision)
@@ -1704,7 +1744,7 @@ module LittleGhost
         invocation_id: run.invocation.invocation_id,
         session_id: run.invocation.session_id,
         agent_id: self.class.agent_id
-      }.merge(instrumentation_attributes(run:, agent: self))
+      }.merge(runtime.instrumentation_attributes(run:, agent: self))
     end
 
     def model_attributes

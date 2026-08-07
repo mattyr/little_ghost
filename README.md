@@ -42,7 +42,10 @@ require "little_ghost"
 
 LittleGhost.configure do |config|
   config.models SupportModels
-  config.entrypoint "SupportAgent"
+  config.workspace { |runtime:| LittleGhost::Workspace.new(root: runtime.root) }
+  config.sandbox do |workspace:, runtime:|
+    LittleGhost::UnrestrictedSandbox.new(workspace:, writable: true)
+  end
 end
 ```
 
@@ -203,7 +206,18 @@ end
 
 Tools are instantiated once per agent run and receive that run through `LittleGhost::Tool#run`. Static tools are declared by class; an explicit resolver proc can select tools from invocation or run state. Related tool classes can be grouped with normal Ruby modules or classes. Duplicate model-visible names are configuration errors. Per-run tools that implement `close` are closed automatically, including tools owned by delegated agents. A mutating tool can declare `exclusive true`; each call to an exclusive tool acquires a lock shared by every agent in the run, while other calls in the batch execute outside that lock.
 
-`require "little_ghost/tools"` adds dependency-free workspace and shell building blocks as `LittleGhost::Tools::Workspace` and `LittleGhost::Tools::Shell`. They are explicit application tools, not an implicit sandbox or delegation policy. `Workspace` provides best-effort Ruby path containment; applications that execute untrusted work should supply their own process or container isolation.
+`Workspace` identifies the root directory and participates in the agent resource lifecycle. `Sandbox` is the common interface for filesystem and process execution. The default `UnrestrictedSandbox` uses only Ruby standard-library facilities: its filesystem operations provide best-effort workspace containment, but cannot defend against concurrent adversarial filesystem mutation, and its commands execute directly on the host with the Ruby process's permissions. It is not a security boundary. Applications that execute untrusted work should configure an isolated implementation:
+
+```ruby
+LittleGhost.configure do |config|
+  config.workspace { |runtime:| ProjectWorkspace.new(root: runtime.root) }
+  config.sandbox { |workspace:, runtime:| ContainerSandbox.new(workspace:) }
+end
+```
+
+Configuration stores these builders as settings; Runtime invokes them for an entering agent. A run opens Workspace before Sandbox and closes owned resources in reverse order. Standalone agent instances retain their resources across repeated `ask` calls and close Sandbox before Workspace.
+
+`require "little_ghost/tools"` adds dependency-free adapters as `LittleGhost::Tools::Filesystem` and `LittleGhost::Tools::Shell`. Both receive `sandbox:` and expose only model-facing schemas and formatting; the configured sandbox remains responsible for enforcing every filesystem and execution operation.
 
 For embedded or runtime-generated tools, `Tool.define` remains available:
 
@@ -302,19 +316,20 @@ Agent entrypoints produce one fused root `invoke_agent` span. Workflow entrypoin
 
 `RunResult#output` returns the validated structured value when the agent has a result schema and otherwise returns its text. Workflows use ordinary Ruby branching; use a graph runtime only when the application needs durable node state, joins, or cycles.
 
-## Prompts and components
+## Prompts and lookup paths
 
-Prompts are ERB. Templates can render partials with `partial "shared/rules"`. Agent prompts override component prompts.
+Prompts are ERB. Templates can render partials with `partial "shared/rules"`. Agent prompts override configured fallback prompts.
 
-Reusable agents, tools, prompts, and skills can be packaged as a component:
+Prompt and skill lookup roots default to the application directories and can be extended or replaced in configuration:
 
 ```ruby
 LittleGhost.configure do |config|
-  config.component LittleGhost::Component.new(root: File.expand_path("../shared_agents", __dir__))
+  config.prompt_paths << File.expand_path("../shared_agents/prompts", __dir__)
+  config.skill_paths << File.expand_path("../shared_agents/skills", __dir__)
 end
 ```
 
-LittleGhost validates component ownership and rejects conflicting constants or prompt paths that escape their trusted roots.
+Use `config.prompt_paths = ["/little_ghost_app/prompts"]` or `config.skill_paths = ["/little_ghost_app/skills"]` to replace the conventional `app/` roots. Lookup paths are ordered: the first matching prompt wins, while later skill roots override duplicate skill names.
 
 ## Sessions
 

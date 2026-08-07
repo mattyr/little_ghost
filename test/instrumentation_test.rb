@@ -260,7 +260,7 @@ class InstrumentationTest < Minitest::Test
     recorded = []
     instrumentation = LittleGhost::Support::Instrumentation.new
     instrumentation.subscribe { |name, attributes| recorded << [name, attributes] }
-    runtime = Struct.new(:instrumentation).new(instrumentation)
+    runtime = TestRuntime.new(instrumentation:)
     invocation = LittleGhost::Invocation.new(message: "Hello")
     run = LittleGhost::Run.new(runtime:, agent_class: LittleGhost::Agent, invocation:)
 

@@ -9,7 +9,7 @@ class OptionalIntegrationsTest < Minitest::Test
       require "little_ghost"
       abort if defined?(LittleGhost::AGUI)
       abort if defined?(LittleGhost::SessionStores::AgentCoreMemory)
-      abort if defined?(LittleGhost::Tools::Workspace)
+      abort if defined?(LittleGhost::Tools::Filesystem)
       abort if defined?(LittleGhost::MCP)
       abort if defined?(LittleGhost::EventSink)
     RUBY
@@ -27,7 +27,7 @@ class OptionalIntegrationsTest < Minitest::Test
 
     assert defined?(LittleGhost::AGUI::Adapter)
     assert defined?(LittleGhost::SessionStores::AgentCoreMemory)
-    assert defined?(LittleGhost::Tools::Workspace)
+    assert defined?(LittleGhost::Tools::Filesystem)
     assert defined?(LittleGhost::Tools::Shell)
     assert defined?(LittleGhost::MCP)
   end

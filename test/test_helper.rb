@@ -3,6 +3,18 @@
 require "minitest/autorun"
 require "little_ghost"
 
+class TestRuntime
+  attr_reader :instrumentation
+
+  def initialize(instrumentation: LittleGhost::Support::Instrumentation.new)
+    @instrumentation = instrumentation
+  end
+
+  def instrumentation_attributes(run:, agent: nil) = {}
+
+  def error_message(error, _run) = "Agent failed: #{error.class}"
+end
+
 class TestHarness < LittleGhost::Configuration
   def select_agent(value) = @test_agent_class = value
 
@@ -46,12 +58,6 @@ class TestHarness < LittleGhost::Configuration
 
   def instrumentation(value = :__read__)
     return runtime_instance.instrumentation if value == :__read__ && @test_runtime
-
-    super
-  end
-
-  def session_store(value = :__read__)
-    return runtime_instance.session_store if value == :__read__ && @test_runtime
 
     super
   end

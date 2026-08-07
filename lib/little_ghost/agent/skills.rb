@@ -6,26 +6,36 @@ module LittleGhost
       def self.included(base)
         base.extend(ClassMethods)
         base.class_attribute :skills_configuration_value
-        base.class_attribute :skills_tool_resolver_value
+      end
+
+      class CatalogTools
+        def self.tools(binding)
+          configuration = binding.agent.class.skills_configuration
+          paths = configuration.fetch(:paths)
+          if paths.is_a?(Proc)
+            paths = paths.parameters.empty? ? binding.agent.instance_exec(&paths) : paths.call(binding.run)
+          end
+          paths ||= binding.run.runtime.skill_paths
+          catalog = LittleGhost::Skills::Catalog.new(
+            **configuration.merge(paths:, resource_root: binding.run&.runtime&.skill_resource_root)
+          )
+          return [] if catalog.names.empty?
+
+          [catalog.tool.tap { |tool| tool.define_method(:catalog) { catalog } }]
+        end
       end
 
       module ClassMethods
         def skills(*values, **options)
-          configured_paths = options.key?(:paths) ? options.delete(:paths) : values.flatten
-          self.skills_configuration_value = options.merge(paths: configured_paths)
-          resolver = lambda do
-            configuration = self.class.skills_configuration
-            paths = configuration.fetch(:paths)
-            if paths.is_a?(Proc)
-              paths = paths.parameters.empty? ? instance_exec(&paths) : paths.call(run)
-            end
-            catalog = LittleGhost::Skills::Catalog.new(**configuration.merge(paths: Array(paths)))
-            next [] if catalog.names.empty?
-
-            catalog.tool.tap { |tool| tool.define_method(:catalog) { catalog } }
+          configured_paths = if options.key?(:paths)
+            options.delete(:paths)
+          elsif values.empty?
+            nil
+          else
+            values.flatten
           end
-          self.skills_tool_resolver_value = resolver
-          tools(&resolver)
+          self.skills_configuration_value = options.merge(paths: configured_paths)
+          tools CatalogTools
           prompt_local(:skills_prompt) do
             tool = tools.fetch("skills") if tools.names.include?("skills")
             tool&.catalog&.discovery_prompt.to_s
@@ -34,10 +44,6 @@ module LittleGhost
         end
 
         def skills_configuration = skills_configuration_value
-
-        private
-
-        def skills_tool_resolver = skills_tool_resolver_value
       end
 
       private

@@ -40,6 +40,36 @@ class AgentTest < Minitest::Test
     end
   end
 
+  class HookAgent < LittleGhost::Agent
+    attr_reader :hook_events
+
+    def initialize(**options)
+      @hook_events = []
+      super
+    end
+
+    protected
+
+    def with_invocation(context)
+      hook_events << :invocation_start
+      super
+    ensure
+      hook_events << :invocation_finish
+    end
+
+    def model_tools(tools, context:, turn:)
+      hook_events << [:model_tools, turn]
+      super
+    end
+
+    def with_tool_execution(execution)
+      hook_events << [:tool_start, execution.tool.tool_name, execution.events]
+      super
+    ensure
+      hook_events << [:tool_finish, execution.tool.tool_name]
+    end
+  end
+
   def test_ask_and_stream_ask_wrap_a_raw_message
     agent = Class.new(LittleGhost::Agent)
     calls = []
@@ -85,6 +115,39 @@ class AgentTest < Minitest::Test
     assert_equal [[:build_run, {message: "hello"}], [:call], [:build_run, {message: "goodbye"}], [:each]], calls
   end
 
+  def test_an_entrypoint_leaves_default_resources_to_its_runtime
+    agent = Class.new(LittleGhost::Agent)
+    values = nil
+    runtime = Object.new
+    runtime.define_singleton_method(:build_run) do |_payload, **options|
+      values = options
+      Object.new
+    end
+
+    agent.new(runtime:).build_run(message: "hello")
+
+    assert_equal({agent_class: agent, entrypoint_class: agent}, values)
+  end
+
+  def test_an_entrypoint_forwards_explicit_resources_to_its_runtime
+    agent = Class.new(LittleGhost::Agent)
+    workspace = Object.new
+    sandbox = Object.new
+    values = nil
+    runtime = Object.new
+    runtime.define_singleton_method(:build_run) do |_payload, **options|
+      values = options
+      Object.new
+    end
+
+    agent.new(runtime:, workspace:, sandbox:).build_run(message: "hello")
+
+    assert_equal(
+      {agent_class: agent, entrypoint_class: agent, workspace:, sandbox:},
+      values
+    )
+  end
+
   def test_runs_model_and_returns_normalized_result
     model = ScriptedModel.new(response("hello", usage: LittleGhost::Usage.new(input_tokens: 2, output_tokens: 1)))
 
@@ -93,6 +156,33 @@ class AgentTest < Minitest::Test
     assert_equal "hello", result.text
     assert_equal 3, result.usage.total_tokens
     assert_equal %i[user assistant], result.messages.map(&:role)
+  end
+
+  def test_agent_hooks_wrap_invocations_model_tools_and_tool_execution
+    tool = LittleGhost::Tool.define(name: "echo", description: "Echo input.") { |input| input.fetch("value") }
+    tool_use = LittleGhost::Content::ToolUse.new(id: "echo-1", name: "echo", input: {"value" => "ready"})
+    model = ScriptedModel.new(response([tool_use], stop_reason: :tool_use), response("finished"))
+    agent = HookAgent.new(model:, tools: [tool])
+
+    result = agent.call("run")
+
+    assert_equal "finished", result.text
+    assert_includes agent.hook_events, [:model_tools, 0]
+    assert_equal "echo", agent.hook_events.find { |event| event.is_a?(Array) && event.first == :tool_start }.fetch(1)
+    assert_equal :invocation_start, agent.hook_events.first
+    assert_equal :invocation_finish, agent.hook_events.last
+  ensure
+    agent&.close
+  end
+
+  def test_invocation_hook_finishes_when_model_execution_raises
+    error = RuntimeError.new("failed")
+    agent = HookAgent.new(model: ScriptedModel.new(error))
+
+    assert_raises(RuntimeError) { agent.call("run") }
+    assert_equal [:invocation_start, [:model_tools, 0], :invocation_finish], agent.hook_events
+  ensure
+    agent&.close
   end
 
   def test_rejects_terminal_model_output_limits
@@ -703,14 +793,14 @@ class AgentTest < Minitest::Test
   def test_mixed_exclusive_and_agent_tool_batch_does_not_hold_the_run_lock_during_delegation
     run = LittleGhost::Run.new(
       invocation: LittleGhost::Invocation.new(message: "go"),
-      runtime: Struct.new(:instrumentation).new(LittleGhost::Support::Instrumentation.new),
+      runtime: TestRuntime.new,
       agent_class: LittleGhost::Agent
     )
     exclusive_tool = Class.new(LittleGhost::Tool) do
       tool_name "mutate"
       description "Mutate"
       exclusive true
-      def call(_input, context:) = "mutated"
+      def call(_input) = "mutated"
     end
     child_use = LittleGhost::Content::ToolUse.new(id: "child-call", name: "mutate", input: {})
     child_class = Class.new(LittleGhost::Agent) { system_prompt "" }
@@ -781,28 +871,28 @@ class AgentTest < Minitest::Test
       Class.new(LittleGhost::Agent) { tools tool_class.new }
     end
 
-    assert_includes error.message, "use a block"
+    assert_includes error.message, "classes"
   end
 
-  def test_class_tool_blocks_run_against_each_agent_without_changing_injected_resolvers
+  def test_grouped_tool_classes_receive_the_framework_binding
     tool_class = LittleGhost::Tool.define(name: "dynamic", description: "Dynamic") { "done" }
-    class_receiver = nil
-    injected_receiver = nil
-    agent_class = Class.new(LittleGhost::Agent) do
-      tools do
-        class_receiver = self
-        tool_class
+    provider = Class.new do
+      def self.tools(binding)
+        self.agent = binding.agent
+        [tool_class]
+      end
+
+      class << self
+        attr_accessor :agent, :tool_class
       end
     end
-    injected = lambda do
-      injected_receiver = self
-      []
-    end
+    provider.tool_class = tool_class
+    agent_class = Class.new(LittleGhost::Agent) { tools provider }
 
-    agent = agent_class.new(model: Object.new, tools: [injected])
+    agent = agent_class.new(model: Object.new)
 
-    assert_same agent, class_receiver
-    assert_same self, injected_receiver
+    assert_same agent, provider.agent
+    assert_equal ["dynamic"], agent.tool_registry.names
   ensure
     agent&.close
   end
@@ -915,7 +1005,7 @@ class AgentTest < Minitest::Test
     error = assert_raises(LittleGhost::ConfigurationError) do
       Class.new(LittleGhost::Agent) { subagent delegated, tools: [tool] }
     end
-    assert_includes error.message, "tool classes or a resolver"
+    assert_includes error.message, "classes"
 
     assert_raises(LittleGhost::ConfigurationError) do
       Class.new(LittleGhost::Agent) { agent_as_tool delegated, tools: [tool] }
@@ -1004,7 +1094,7 @@ class AgentTest < Minitest::Test
         @closes = 0
       end
 
-      def call(_input, context:) = "ok"
+      def call(_input) = "ok"
       def close = @closes += 1
     end
     agent = LittleGhost::Agent.new(model: ScriptedModel.new(response("done")), tools: [tool_class])
@@ -1014,6 +1104,17 @@ class AgentTest < Minitest::Test
     agent.close
 
     assert_equal 1, tool.closes
+  end
+
+  def test_closes_a_standalone_workspace_without_a_sandbox
+    workspace = Struct.new(:closed) do
+      def close = self.closed = true
+    end.new(false)
+    agent = LittleGhost::Agent.new(model: ScriptedModel.new(response("done")), workspace:)
+
+    agent.close
+
+    assert workspace.closed
   end
 
   def test_rejects_duplicate_tools_and_closes_both_instances
@@ -1071,56 +1172,22 @@ class AgentTest < Minitest::Test
     assert_equal 1, closable.closes
   end
 
-  def test_closes_input_tools_when_a_feature_fails_before_registry_creation
-    tool = Class.new(LittleGhost::Tool) do
-      tool_name "feature_failure"
-      description "Close on feature failure"
-      attr_reader :closes
-
-      def initialize(...)
-        super
-        @closes = 0
-      end
-
-      def close = @closes += 1
-    end.new
-    agent_class = Class.new(LittleGhost::Agent) do
-      skills paths: ["/path/that/does/not/exist"]
-    end
-
-    assert_raises(Errno::ENOENT) do
-      agent_class.new(model: ScriptedModel.new(response("done")), tools: [tool])
-    end
-
-    assert_equal 1, tool.closes
-  end
-
   def test_serializes_a_batch_containing_exclusive_tools
     tracker = Struct.new(:active, :maximum, :mutex).new(0, 0, Mutex.new)
-    tool_class = Class.new(LittleGhost::Tool) do
-      tool_name "exclusive"
-      description "Mutate shared state"
-      exclusive true
-
-      define_method(:initialize) do |tracker:, **options|
-        super(**options)
-        @tracker = tracker
+    tool_class = LittleGhost::Tool.define(name: "exclusive", description: "Mutate shared state") do |_input|
+      tracker.mutex.synchronize do
+        tracker.active += 1
+        tracker.maximum = [tracker.maximum, tracker.active].max
       end
-
-      define_method(:call) do |_input, context:|
-        @tracker.mutex.synchronize do
-          @tracker.active += 1
-          @tracker.maximum = [@tracker.maximum, @tracker.active].max
-        end
-        sleep(0.01)
-        "ok"
-      ensure
-        @tracker.mutex.synchronize { @tracker.active -= 1 }
-      end
+      sleep(0.01)
+      "ok"
+    ensure
+      tracker.mutex.synchronize { tracker.active -= 1 }
     end
+    tool_class.exclusive true
     uses = 2.times.map { |index| LittleGhost::Content::ToolUse.new(id: "call-#{index}", name: "exclusive", input: {}) }
     model = ScriptedModel.new(response(uses, stop_reason: :tool_use), response("done"))
-    tools = [tool_class.new(tracker:)]
+    tools = [tool_class]
 
     LittleGhost::Agent.new(model:, tools:).call("go")
 
@@ -1129,37 +1196,27 @@ class AgentTest < Minitest::Test
 
   def test_exclusive_tools_share_the_run_lock_across_agents
     tracker = Struct.new(:active, :maximum, :mutex).new(0, 0, Mutex.new)
-    tool_class = Class.new(LittleGhost::Tool) do
-      tool_name "shared_mutation"
-      description "Mutate shared run state"
-      exclusive true
-
-      define_method(:initialize) do |tracker:, **options|
-        super(**options)
-        @tracker = tracker
+    tool_class = LittleGhost::Tool.define(name: "shared_mutation", description: "Mutate shared run state") do |_input|
+      tracker.mutex.synchronize do
+        tracker.active += 1
+        tracker.maximum = [tracker.maximum, tracker.active].max
       end
-
-      define_method(:call) do |_input, context:|
-        @tracker.mutex.synchronize do
-          @tracker.active += 1
-          @tracker.maximum = [@tracker.maximum, @tracker.active].max
-        end
-        sleep(0.01)
-        "ok"
-      ensure
-        @tracker.mutex.synchronize { @tracker.active -= 1 }
-      end
+      sleep(0.01)
+      "ok"
+    ensure
+      tracker.mutex.synchronize { tracker.active -= 1 }
     end
+    tool_class.exclusive true
     run = LittleGhost::Run.new(
       invocation: LittleGhost::Invocation.new(message: "go"),
-      runtime: Struct.new(:instrumentation).new(LittleGhost::Support::Instrumentation.new),
+      runtime: TestRuntime.new,
       agent_class: LittleGhost::Agent
     )
     agent_class = Class.new(LittleGhost::Agent) { system_prompt "" }
     agents = 2.times.map do |index|
       use = LittleGhost::Content::ToolUse.new(id: "call-#{index}", name: "shared_mutation", input: {})
       model = ScriptedModel.new(response([use], stop_reason: :tool_use), response("done"))
-      agent_class.new(model:, tools: [tool_class.new(tracker:, run:)], run:)
+      agent_class.new(model:, tools: [tool_class], run:)
     end
 
     agents.map { |agent| Thread.new { agent.call("go") } }.each(&:join)

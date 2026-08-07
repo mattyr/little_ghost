@@ -6,6 +6,8 @@ require "pathname"
 module LittleGhost
   class Configuration
     CONFIGURATION_KEYS = %i[invocation models default_model instrumentation service_name].freeze
+    DEFAULT_PROMPT_PATHS = ["app/prompts"].freeze
+    DEFAULT_SKILL_PATHS = ["app/skills"].freeze
 
     CONFIGURATION_KEYS.each do |name|
       define_method(name) do |value = :__read__|
@@ -20,12 +22,45 @@ module LittleGhost
     end
 
     def initialize(values = {})
-      @configuration_values = {components: [], instruments: []}.merge(values)
+      @configuration_values = {
+        prompt_paths: DEFAULT_PROMPT_PATHS.dup,
+        skill_paths: DEFAULT_SKILL_PATHS.dup,
+        skill_resource_root: nil,
+        workspace: nil,
+        sandbox: nil,
+        instruments: [],
+        runtime_hooks: []
+      }.merge(values)
+      @configuration_values[:prompt_paths] = Array(@configuration_values[:prompt_paths]).dup
+      @configuration_values[:skill_paths] = Array(@configuration_values[:skill_paths]).dup
+      @configuration_values[:instruments] = Array(@configuration_values[:instruments]).dup
+      @configuration_values[:runtime_hooks] = Array(@configuration_values[:runtime_hooks]).dup
     end
 
     def configure
       yield self if block_given?
       self
+    end
+
+    def workspace = configuration_values[:workspace]
+    def sandbox = configuration_values[:sandbox]
+    def session_store = configuration_values[:session_store]
+
+    def workspace=(value)
+      @configuration_values[:workspace] = component_class(value, Workspace, :workspace)
+    end
+
+    def sandbox=(value)
+      @configuration_values[:sandbox] = component_class(value, Sandbox, :sandbox)
+    end
+
+    def session_store=(value)
+      unless value.is_a?(Hash)
+        raise ArgumentError, "session_store must be a hash with a provider"
+      end
+
+      provider = value[:provider]
+      @configuration_values[:session_store] = value.merge(provider: component_class(provider, SessionStore, :session_store))
     end
 
     def [](name)
@@ -45,12 +80,13 @@ module LittleGhost
       installer
     end
 
-    def session_store(value = :__read__, &factory)
-      return configuration_values[:session_store] if value == :__read__ && !factory
+    def runtime_hook(hook_class)
+      unless hook_class.is_a?(Class) && hook_class <= Runtime::Hook
+        raise ArgumentError, "runtime_hook must be a LittleGhost::Runtime::Hook class"
+      end
 
-      raise ArgumentError, "Provide a session store or a block, not both" if value != :__read__ && factory
-
-      configuration_values[:session_store] = factory || value
+      configuration_values[:runtime_hooks] << hook_class
+      hook_class
     end
 
     def session_actor(value = :__read__, &resolver)
@@ -73,18 +109,31 @@ module LittleGhost
       configured ? canonical_root(configured) : inferred_root
     end
 
-    def component(value = nil, root: nil)
-      configured = value || Component.new(root: root)
-      raise ArgumentError, "component must be a LittleGhost::Component" unless configured.is_a?(Component)
+    def prompt_paths = configuration_values[:prompt_paths]
 
-      configuration_values[:components] << configured
-      configured
+    def prompt_paths=(value)
+      configuration_values[:prompt_paths] = Array(value)
+    end
+
+    def skill_paths = configuration_values[:skill_paths]
+
+    def skill_paths=(value)
+      configuration_values[:skill_paths] = Array(value)
+    end
+
+    def skill_resource_root = configuration_values[:skill_resource_root]
+
+    def skill_resource_root=(value)
+      configuration_values[:skill_resource_root] = value
     end
 
     def settings(root: nil)
       requested_root = root && canonical_root(root)
       values = configuration_values.dup
-      values[:components] = Array(values[:components]).dup
+      values[:prompt_paths] = Array(values[:prompt_paths]).dup
+      values[:skill_paths] = Array(values[:skill_paths]).dup
+      values[:instruments] = Array(values[:instruments]).dup
+      values[:runtime_hooks] = Array(values[:runtime_hooks]).dup
       values[:root] = requested_root || values[:root] || self.root
       values
     end
@@ -109,6 +158,14 @@ module LittleGhost
     private
 
     attr_reader :configuration_values
+
+    def component_class(value, base_class, name)
+      unless value.is_a?(Class) && value <= base_class
+        raise ArgumentError, "#{name} must be a #{base_class} class"
+      end
+
+      value
+    end
 
     def inferred_root
       canonical_root(Dir.pwd)

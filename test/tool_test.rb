@@ -18,7 +18,7 @@ class ToolTest < Minitest::Test
       additionalProperties: false
     )
 
-    def call(input, context:)
+    def call(input)
       {city: input[:city], request_id: context[:request_id]}
     end
   end

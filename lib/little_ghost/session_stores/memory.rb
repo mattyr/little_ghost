@@ -3,7 +3,7 @@
 module LittleGhost
   module SessionStores
     class Memory < SessionStore
-      def initialize
+      def initialize(instrumentation: nil)
         super
         @records = {}
         @records_mutex = Mutex.new

@@ -4,6 +4,28 @@ require "json"
 
 module LittleGhost
   class Tool
+    class Binding
+      attr_reader :agent, :run, :runtime, :model, :workspace, :sandbox
+
+      def initialize(agent: nil, run: nil, runtime: nil, model: nil, workspace: nil, sandbox: nil)
+        @agent = agent
+        @run = run
+        @runtime = runtime
+        @model = model
+        @workspace = workspace
+        @sandbox = sandbox
+      end
+
+      def with(agent: self.agent, run: self.run, runtime: self.runtime, model: self.model,
+        workspace: self.workspace, sandbox: self.sandbox)
+        self.class.new(agent:, run:, runtime:, model:, workspace:, sandbox:)
+      end
+
+      def build(*tool_classes)
+        tool_classes.flatten.map { |tool_class| tool_class.new(binding: self) }
+      end
+    end
+
     ExecutionResult = Data.define(:content, :status, :error) do
       def initialize(content:, status:, error: nil)
         super
@@ -61,7 +83,7 @@ module LittleGhost
           description(description)
           input_schema(input_schema)
 
-          define_method(:call) do |input, context:|
+          define_method(:call) do |input|
             accepts_context = implementation.parameters.any? do |kind, parameter|
               kind == :keyrest || (%i[key keyreq].include?(kind) && parameter == :context)
             end
@@ -109,7 +131,7 @@ module LittleGhost
       end
     end
 
-    attr_reader :run
+    attr_reader :context
 
     def tool_name = self.class.tool_name
     def description = self.class.description
@@ -117,18 +139,27 @@ module LittleGhost
     def specification = self.class.specification
     def exclusive? = self.class.exclusive
 
-    def initialize(run: nil)
-      @run = run
+    def initialize(binding: Binding.new)
+      @binding = binding
+      @state = {}
     end
 
-    def execute(input, context: nil)
+    def agent = binding.agent
+    def run = binding.run
+    def runtime = binding.runtime
+    def model = binding.model
+    def workspace = binding.workspace
+    def sandbox = binding.sandbox
+
+    def execute(input, context: RunContext.new)
+      context ||= RunContext.new
       errors = SchemaValidator.new(self.class.input_schema).validate(input)
       unless errors.empty?
         message = "Invalid tool input: #{errors.join("; ")}"
         return failure(message, error: ToolError.new(message))
       end
 
-      success(sanitize(call(input, context: context)))
+      success(sanitize(bound_for(context).call(input)))
     rescue CancelledError, DeadlineExceededError, CleanupError
       raise
     rescue ToolError => error
@@ -137,11 +168,22 @@ module LittleGhost
       failure("Tool failed (#{error.class})", error:)
     end
 
-    def call(_input, context:)
+    def call(_input)
       raise NotImplementedError, "#{self.class} must implement #call"
     end
 
+    protected
+
+    attr_reader :binding
+    attr_writer :context
+
     private
+
+    def bound_for(context)
+      dup.tap { |tool| tool.context = context }
+    end
+
+    attr_reader :state
 
     def sanitize(value)
       case value

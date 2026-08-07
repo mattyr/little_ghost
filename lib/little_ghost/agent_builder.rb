@@ -47,6 +47,8 @@ module LittleGhost
         instrumentation: runtime.instrumentation,
         template_paths: prompt_paths,
         run:,
+        workspace: run.workspace,
+        sandbox: run.sandbox,
         delegation_activity:,
         agent_path:,
         **agent_class.limits

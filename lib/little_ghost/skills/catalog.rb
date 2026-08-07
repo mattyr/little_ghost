@@ -25,14 +25,14 @@ module LittleGhost
         max_file_bytes: DEFAULT_MAX_FILE_BYTES,
         max_resource_files: DEFAULT_MAX_RESOURCE_FILES,
         only: nil,
-        agent_root: nil
+        resource_root: nil
       )
-        @paths = Array(paths).map { |path| File.realpath(path) }.freeze
+        @paths = PathSet.new(paths)
         @max_skills = positive_integer(max_skills, :max_skills)
         @max_file_bytes = positive_integer(max_file_bytes, :max_file_bytes)
         @max_resource_files = positive_integer(max_resource_files, :max_resource_files)
         @only = Array(only).map(&:to_s).freeze if only
-        @agent_root = canonical_agent_root(agent_root)
+        @resource_root = canonical_resource_root(resource_root)
         @skills = load_skills
       end
 
@@ -105,7 +105,22 @@ module LittleGhost
       private
 
       def load_skills
-        paths = @paths.flat_map { |path| Dir.glob(File.join(path, "*", "SKILL.md")).sort }
+        missing_root = @paths.find { |root| !Dir.exist?(root.path) && !root.boundary }
+        raise Errno::ENOENT, missing_root.path if missing_root
+        @paths.each do |root|
+          next unless Dir.exist?(root.path)
+
+          real_root = File.realpath(root.path)
+          next if boundary_allows?(real_root, root.boundary)
+
+          raise ConfigurationError, "Skill root escapes its configured boundary: #{root.path}"
+        end
+
+        paths = @paths.flat_map do |root|
+          next [] unless Dir.exist?(root.path)
+
+          Dir.glob(File.join(root.path, "*", "SKILL.md")).sort
+        end
         raise ConfigurationError, "Skill catalog exceeds #{@max_skills} skills" if paths.length > @max_skills
 
         paths.each_with_object({}) do |path, loaded|
@@ -122,8 +137,14 @@ module LittleGhost
 
       def parse(path)
         real_path = File.realpath(path)
-        root = @paths.find { |candidate| inside_root?(real_path, candidate) }
+        root = @paths.find do |candidate|
+          next false unless Dir.exist?(candidate.path)
+
+          real_root = File.realpath(candidate.path)
+          inside_root?(real_path, real_root) && boundary_allows?(real_root, candidate.boundary)
+        end
         raise ConfigurationError, "Skill path escapes its configured root: #{path}" unless root
+        root_path = File.realpath(root.path)
         raise ConfigurationError, "Skill exceeds #{@max_file_bytes} bytes: #{path}" if File.size(real_path) > @max_file_bytes
 
         text = File.read(real_path, encoding: "UTF-8")
@@ -148,7 +169,7 @@ module LittleGhost
         compatibility = metadata["compatibility"]&.to_s
         Skill.new(
           name:, description:, instructions: match[2].strip,
-          path: agent_path(real_path, root), source_path: real_path,
+          path: agent_path(real_path, root_path), source_path: real_path,
           allowed_tools:, compatibility:
         )
       rescue Psych::Exception => error
@@ -159,6 +180,13 @@ module LittleGhost
         path == root || path.start_with?("#{root}#{File::SEPARATOR}")
       end
 
+      def boundary_allows?(path, boundary)
+        return true unless boundary
+
+        boundary = File.realpath(boundary)
+        inside_root?(path, boundary)
+      end
+
       def skill_resources(skill)
         directory = File.dirname(skill.source_path)
         files = RESOURCE_DIRECTORIES.flat_map do |name|
@@ -167,7 +195,7 @@ module LittleGhost
 
           resource_files(root, prefix: name)
         end.sort
-        files.map! { |path| agent_resource_path(skill, path) } if @agent_root
+        files.map! { |path| resource_path(skill, path) } if @resource_root
         return files if files.length <= @max_resource_files
 
         [*files.first(@max_resource_files), "... (truncated at #{@max_resource_files} files)"]
@@ -201,25 +229,25 @@ module LittleGhost
         integer
       end
 
-      def canonical_agent_root(value)
+      def canonical_resource_root(value)
         return unless value
 
         path = value.to_s
         if path.include?("\0") || !Pathname.new(path).absolute? || path.split(File::SEPARATOR).include?("..")
-          raise ArgumentError, "agent_root must be an absolute path"
+          raise ArgumentError, "resource_root must be an absolute path"
         end
 
         File.expand_path(path).freeze
       end
 
       def agent_path(source_path, source_root)
-        return source_path unless @agent_root
+        return source_path unless @resource_root
 
         relative = source_path.delete_prefix("#{source_root}#{File::SEPARATOR}")
-        File.join(@agent_root, relative)
+        File.join(@resource_root, relative)
       end
 
-      def agent_resource_path(skill, relative)
+      def resource_path(skill, relative)
         File.join(File.dirname(skill.path), relative)
       end
     end
