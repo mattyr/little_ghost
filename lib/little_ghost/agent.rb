@@ -2,6 +2,7 @@
 
 require "securerandom"
 require_relative "support/output_truncation"
+require_relative "tool_execution"
 
 module LittleGhost
   class Agent
@@ -266,7 +267,8 @@ module LittleGhost
       end
     end
 
-    attr_reader :model, :tool_registry, :instrumentation, :run, :delegation_activity, :agent_path, :workspace, :sandbox
+    attr_reader :model, :tool_registry, :instrumentation, :run, :delegation_activity, :agent_path, :workspace, :sandbox,
+      :max_tool_calls
 
     def initialize(
       model: nil,
@@ -350,6 +352,10 @@ module LittleGhost
     def instrumentation_attributes(run:, agent: nil) = {}
     def error_message(error, run) = run.runtime.error_message(error, run)
     def entrypoint_name = self.class.agent_id
+
+    def dispatch_tools(tool_uses, context:, events:, parent_operation_id:, parent_trace_context: nil)
+      execute_tools(tool_uses, context, events, parent_operation_id:, parent_trace_context:)
+    end
 
     def build_run(payload)
       ensure_resources
@@ -514,18 +520,20 @@ module LittleGhost
           interruption_ids:
         )
         begin
-          execute(
-            input,
-            history: history,
-            context: run_context,
-            settings: settings,
-            template_locals: template_locals,
-            template_paths: invocation_paths,
-            events: events,
-            parent_operation_id:,
-            interruptions:,
-            interrupt_ready:
-          )
+          with_invocation(run_context) do
+            execute(
+              input,
+              history: history,
+              context: run_context,
+              settings: settings,
+              template_locals: template_locals,
+              template_paths: invocation_paths,
+              events: events,
+              parent_operation_id:,
+              interruptions:,
+              interrupt_ready:
+            )
+          end
         rescue => error
           interruptions.close(error)
           raise
@@ -616,6 +624,20 @@ module LittleGhost
         first_error ||= error
       end
       raise first_error if first_error
+    end
+
+    protected
+
+    def with_invocation(_context)
+      yield
+    end
+
+    def model_tools(tools, context:, turn:)
+      tools
+    end
+
+    def with_tool_execution(_execution)
+      yield
     end
 
     private
@@ -942,10 +964,10 @@ module LittleGhost
           tool_call_count += tool_uses.length
           raise ProtocolError, "The agent reached its maximum tool calls" if tool_call_count > @max_tool_calls
 
-          tool_results = execute_tools(
+          tool_results = dispatch_tools(
             tool_uses,
-            context,
-            events,
+            context:,
+            events:,
             parent_operation_id: turn_operation_id
           )
           messages << Message.new(
@@ -1021,7 +1043,7 @@ module LittleGhost
       StructuredOutput.validate_tool_collision!(strategy, ordinary_tools) if strategy
       request = ModelRequest.new(
         messages: messages,
-        tools: strategy ? strategy.tools(ordinary_tools) : ordinary_tools,
+        tools: model_tools(strategy ? strategy.tools(ordinary_tools) : ordinary_tools, context:, turn:),
         settings: settings,
         output_schema: strategy&.output_schema,
         tool_choice: strategy&.tool_choice(repair: structured_result_repair_due),
@@ -1297,11 +1319,22 @@ module LittleGhost
           next result
         end
 
+        execution_context = ToolExecution.new(
+          tool_use:,
+          tool:,
+          context:,
+          events:,
+          operation_id:,
+          parent_operation_id:,
+          parent_trace_context:
+        )
         invoke = lambda do
-          invoke_tool(
-            tool_use, tool, context,
-            operation_id:, parent_operation_id:
-          )
+          with_tool_execution(execution_context) do
+            invoke_tool(
+              tool_use, tool, context,
+              operation_id:, parent_operation_id:
+            )
+          end
         end
         tool_result = tool.exclusive? ? synchronize_exclusive_tools(&invoke) : invoke.call
         after_decision = run_callbacks(

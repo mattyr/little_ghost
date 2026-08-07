@@ -40,6 +40,36 @@ class AgentTest < Minitest::Test
     end
   end
 
+  class HookAgent < LittleGhost::Agent
+    attr_reader :hook_events
+
+    def initialize(**options)
+      @hook_events = []
+      super
+    end
+
+    protected
+
+    def with_invocation(context)
+      hook_events << :invocation_start
+      super
+    ensure
+      hook_events << :invocation_finish
+    end
+
+    def model_tools(tools, context:, turn:)
+      hook_events << [:model_tools, turn]
+      super
+    end
+
+    def with_tool_execution(execution)
+      hook_events << [:tool_start, execution.tool.tool_name, execution.events]
+      super
+    ensure
+      hook_events << [:tool_finish, execution.tool.tool_name]
+    end
+  end
+
   def test_ask_and_stream_ask_wrap_a_raw_message
     agent = Class.new(LittleGhost::Agent)
     calls = []
@@ -93,6 +123,33 @@ class AgentTest < Minitest::Test
     assert_equal "hello", result.text
     assert_equal 3, result.usage.total_tokens
     assert_equal %i[user assistant], result.messages.map(&:role)
+  end
+
+  def test_agent_hooks_wrap_invocations_model_tools_and_tool_execution
+    tool = LittleGhost::Tool.define(name: "echo", description: "Echo input.") { |input| input.fetch("value") }
+    tool_use = LittleGhost::Content::ToolUse.new(id: "echo-1", name: "echo", input: {"value" => "ready"})
+    model = ScriptedModel.new(response([tool_use], stop_reason: :tool_use), response("finished"))
+    agent = HookAgent.new(model:, tools: [tool])
+
+    result = agent.call("run")
+
+    assert_equal "finished", result.text
+    assert_includes agent.hook_events, [:model_tools, 0]
+    assert_equal "echo", agent.hook_events.find { |event| event.is_a?(Array) && event.first == :tool_start }.fetch(1)
+    assert_equal :invocation_start, agent.hook_events.first
+    assert_equal :invocation_finish, agent.hook_events.last
+  ensure
+    agent&.close
+  end
+
+  def test_invocation_hook_finishes_when_model_execution_raises
+    error = RuntimeError.new("failed")
+    agent = HookAgent.new(model: ScriptedModel.new(error))
+
+    assert_raises(RuntimeError) { agent.call("run") }
+    assert_equal [:invocation_start, [:model_tools, 0], :invocation_finish], agent.hook_events
+  ensure
+    agent&.close
   end
 
   def test_rejects_terminal_model_output_limits
