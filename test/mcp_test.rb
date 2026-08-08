@@ -47,6 +47,31 @@ class MCPTest < Minitest::Test
     assert_equal %w[initialize notifications/initialized tools/list tools/call], transport.payloads.map { |item| item[:method] }
   end
 
+  def test_concurrent_tool_discovery_initializes_the_protocol_once
+    entered = Queue.new
+    release = Queue.new
+    transport = Transport.new
+    original_send = transport.method(:send)
+    transport.define_singleton_method(:send) do |payload, context: nil|
+      if payload[:method] == "initialize"
+        entered << true
+        release.pop
+      end
+      original_send.call(payload, context:)
+    end
+    client = LittleGhost::MCP::Client.new(transport:)
+
+    first = Thread.new { client.tools }
+    entered.pop
+    second = Thread.new { client.tools }
+    release << true
+    [first, second].each(&:value)
+
+    methods = transport.payloads.map { |payload| payload[:method] }
+    assert_equal 1, methods.count("initialize")
+    assert_equal 1, methods.count("notifications/initialized")
+  end
+
   def test_generated_tools_forward_the_run_context
     transport = Transport.new
     tool = LittleGhost::MCP::Client.new(transport:).tools.first.new

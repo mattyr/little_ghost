@@ -101,7 +101,7 @@ module LittleGhost
         end
         if termination
           if newly_terminated
-            context&.instrumentation&.emit(
+            Instrumentation.publish(
               :tool_loop,
               operation_id: payload[:operation_id],
               parent_operation_id: payload[:parent_operation_id],
@@ -135,7 +135,7 @@ module LittleGhost
 
         action = (count == @tool_loop_warning_at) ? :warn : :final_warning
         warning = (action == :warn) ? WARNING : FINAL_WARNING
-        context&.instrumentation&.emit(
+        Instrumentation.publish(
           :tool_loop,
           operation_id: payload[:operation_id],
           parent_operation_id: payload[:parent_operation_id],

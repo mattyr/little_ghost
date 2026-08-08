@@ -339,16 +339,15 @@ Sessions work without application code. The fixed default is an in-memory store;
 require "little_ghost/session_stores/agent_core_memory"
 
 LittleGhost.configure do |config|
-  config.session_store do
-    LittleGhost::SessionStores::AgentCoreMemory.new(
-      memory_id: ENV.fetch("SUPPORT_AGENTCORE_MEMORY_ID"),
-      region: ENV.fetch("AWS_REGION")
-    )
-  end
+  config.session_store = {
+    provider: LittleGhost::SessionStores::AgentCoreMemory,
+    memory_id: ENV.fetch("SUPPORT_AGENTCORE_MEMORY_ID"),
+    region: ENV.fetch("AWS_REGION")
+  }
 end
 ```
 
-Applications can pass any `LittleGhost::SessionStore` to `session_store`, or use a block to create one when the runtime is materialized. Session history and state are loaded before the agent runs and checkpointed as coherent conversation turns complete, including before partial, canceled, or failed runs return. Private model reasoning is retained only while a run needs it for model continuation and is removed from session checkpoints. Stores implement explicit append and replacement operations, receive actor identity explicitly, and surface persistence failures.
+The session-store definition names its provider class and constructor options; the runtime owns construction. Session history and state are loaded before the agent runs and checkpointed as coherent conversation turns complete, including before partial, canceled, or failed runs return. Private model reasoning is retained only while a run needs it for model continuation and is removed from session checkpoints. Stores implement explicit append and replacement operations, receive actor identity explicitly, and surface persistence failures.
 
 `AgentCoreMemory` requires one active writer for each actor/session pair. It serializes writers inside one Ruby process, but AgentCore's immutable event API does not provide compare-and-swap across processes. Horizontally scaled applications must enforce that invariant with an external lock or a unique active-run record. If the invariant is violated, LittleGhost resolves the immutable fork deterministically when reading, so one concurrent commit is not retained.
 
@@ -356,31 +355,52 @@ Applications can pass any `LittleGhost::SessionStore` to `session_store`, or use
 
 Internal events remain interface-neutral. After `require "little_ghost/ag_ui"`, `LittleGhost::AGUI::Adapter` is the translation boundary for AG-UI message, reasoning, tool, usage, trace, subagent, and run events. Provider-supplied plaintext reasoning is translated into AG-UI reasoning lifecycle events; applications decide which interfaces may present it. Encrypted reasoning and provider continuity artifacts remain private to the provider integration.
 
+## Structured operational events
+
+LittleGhost reports runtime facts through `LittleGhost::Events` instead of writing string messages through Ruby's `Logger` interface. Every event has a name, one of the `debug`, `info`, `warn`, or `error` levels, a structured payload, execution-scoped context, and a nanosecond timestamp. Framework and application code can emit or listen from anywhere without adding logger dependencies to object constructors:
+
+```ruby
+class EventCollector
+  def emit(event)
+    EventStore.write(event)
+  end
+end
+
+LittleGhost::Events.subscribe(EventCollector.new) do |event|
+  event[:level] == :warn || event[:level] == :error
+end
+
+LittleGhost::Events.with_context(request_id: "request-123") do
+  LittleGhost::Events.info("support.case.opened", case_id: "case-456")
+end
+```
+
+The default console listener writes newline-delimited JSON to standard error, keeping standard output available for application protocols and results. Sensitive keys and recognizable credential formats are redacted before console output. Applications can replace the process-wide reporter or add listeners for log aggregation, durable event streams, or alerts; custom listeners receive the original structured event and own their destination-specific filtering policy. Listener failures are isolated from the operation that emitted the event.
+
 ## Instrumentation and tracing
 
-LittleGhost automatically creates hierarchical OpenTelemetry spans for agents, workflows, agent turns, model calls, tools, and subagents. An agent entrypoint shares the application run's root agent span; a workflow entrypoint owns a separate workflow root and keeps every invoked agent as a distinct child. Spans use flat, dot-separated OpenTelemetry GenAI attributes for operations, agents, workflows, models, providers, tool definitions, response metadata, timing, and token usage. Prompt, response, message, tool-argument, and exception content is excluded by default. Applications can opt into scrubbed content capture with `LittleGhost::Support::ContentCapture`. Captured content is complete by default; applications can set `max_bytes` explicitly or apply backend-specific limits in their exporter. With no tracer provider configured, OpenTelemetry's no-op provider keeps the same application code dependency-free at runtime; an application can register any OpenTelemetry SDK provider and exporter.
+LittleGhost publishes hierarchical lifecycle instrumentation for agents, workflows, agent turns, model calls, tools, and subagents without selecting a tracing backend. Applications can subscribe `LittleGhost::Tracing::OpenTelemetry` to turn those notifications into spans. An agent entrypoint shares the application run's root agent span; a workflow entrypoint owns a separate workflow root and keeps every invoked agent as a distinct child. Spans use flat, dot-separated OpenTelemetry GenAI attributes for operations, agents, workflows, models, providers, tool definitions, response metadata, timing, and token usage. Prompt, response, message, tool-argument, and exception content is excluded by default. Applications can opt into scrubbed content capture with `LittleGhost::Support::ContentCapture`. Captured content is complete by default; applications can set `max_bytes` explicitly or apply backend-specific limits in their exporter.
 
-Instrumentation is the code that records signals; telemetry is the emitted data; tracing is the span-based signal LittleGhost provides out of the box. `LittleGhost::Support::Instrumentation` supplies the generic instrumentation hooks and emits correlated lifecycle events, model retries, and tool-loop decisions. `LittleGhost::Tracing::OpenTelemetry` turns those events into spans. Environment variables never install an exporter:
+Instrumentation records timed operations for telemetry backends; structured operational events communicate noteworthy runtime facts to listeners. `LittleGhost::Instrumentation` is a process-wide notification facade, similar to Active Support's instrumentation API. Framework and application code can publish or subscribe from anywhere without adding instrumentation to object constructors. `LittleGhost::Tracing::OpenTelemetry` turns lifecycle notifications into spans. Environment variables never install an exporter:
 
 ```ruby
 class MetricsSubscriber
-  def self.install(instrumentation:, **)
-    instrumentation.subscribe(new)
-  end
-
   def call(name, attributes)
     Metrics.record(name, attributes)
   end
 end
 
 LittleGhost.configure do |config|
-  config.instrument MetricsSubscriber
+  config.instrument LittleGhost::Tracing::OpenTelemetry.new
+  config.instrument MetricsSubscriber.new
 end
 ```
 
-`instrument` installs each declared instrumentation setup object and supplies the application's instrumentation plus a conventional service name. This is the natural place to register an OpenTelemetry tracer provider or add custom subscribers. Subscribers receive the event name and its complete structured attributes. Instrumentation failures are isolated from the agent run. The instrumentation object delegates flush, shutdown, and trace-context behavior to subscribers that provide those capabilities.
+`instrument` accepts subscriber instances and adds them directly to the process-wide instrumentation bus. LittleGhost does not install a default subscriber; applications explicitly select OpenTelemetry, metrics, or any other backend they want. Applications configure an OpenTelemetry tracer provider or exporter before constructing the tracing subscriber. Subscribers receive the event name and its complete structured attributes, including the service name for runtime-owned work. Instrumentation is process-wide, so one process is one telemetry and content-capture trust boundary; applications that require separate exporters or data policies should run those services in separate processes. Instrumentation failures are isolated from the agent run. `LittleGhost::Instrumentation` delegates flush, shutdown, and trace-context behavior to subscribers that provide those capabilities.
 
-Generic framework utilities live under `LittleGhost::Support`: callbacks, loading, instrumentation, cancellation, and bounded execution. They are public building blocks, while agent-specific behavior stays under `LittleGhost::Agent` and can be composed through its mixins.
+Request-scoped configuration and telemetry correlation use `LittleGhost::ExecutionState`. State is isolated between both Puma-style request threads and Falcon-style request fibers, inherited by child fibers, and explicitly propagated into worker threads created by LittleGhost.
+
+Generic framework utilities live under `LittleGhost::Support`: callbacks, loading, cancellation, and bounded execution. They are public building blocks, while instrumentation has its own framework-level facade and agent-specific behavior stays under `LittleGhost::Agent`.
 
 ## Direct agents
 

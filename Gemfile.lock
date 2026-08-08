@@ -3,7 +3,6 @@ PATH
   specs:
     little_ghost (0.1.0.pre)
       base64
-      logger
       opentelemetry-api (~> 1.0)
 
 GEM

@@ -4,15 +4,58 @@ require "minitest/autorun"
 require "little_ghost"
 
 class TestRuntime
-  attr_reader :instrumentation
+  def error_message(error, _run) = "Agent failed: #{error.class}"
+  def service_name = "test"
+end
 
-  def initialize(instrumentation: LittleGhost::Support::Instrumentation.new)
-    @instrumentation = instrumentation
+module InstrumentationIsolation
+  def before_setup
+    LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new
+    LittleGhost::Events.reporter = LittleGhost::Events::Reporter.new(listeners: [])
+    super
+  end
+end
+
+Minitest::Test.prepend(InstrumentationIsolation)
+
+class TestInstrumentationSubscriber < LittleGhost::Instrumentation::Subscriber
+  attr_reader :events
+
+  def initialize(events = [], &listener)
+    @events = events
+    @listener = listener
   end
 
-  def instrumentation_attributes(run:, agent: nil) = {}
+  def start(name, attributes) = deliver(:start, name, attributes)
+  def finish(name, attributes) = deliver(:finish, name, attributes)
+  def emit(name, attributes) = deliver(:emit, name, attributes)
 
-  def error_message(error, _run) = "Agent failed: #{error.class}"
+  private
+
+  def deliver(phase, name, attributes)
+    @events << [phase, name, attributes]
+    @listener&.call(phase, name, attributes)
+  end
+end
+
+class TestTelemetryRecorder < LittleGhost::Instrumentation::Subscriber
+  attr_reader :events
+
+  def initialize(events = [])
+    @events = events
+  end
+
+  def start(name, attributes) = record(:start, name, attributes)
+  def finish(name, attributes) = record(:finish, name, attributes)
+  def emit(name, attributes) = record(:emit, name, attributes)
+
+  private
+
+  def record(phase, name, attributes)
+    lifecycle = (phase == :finish) ? :stop : phase
+    event_name = (phase == :emit) ? name : :"#{name}_#{lifecycle}"
+    events << [event_name, attributes]
+  end
 end
 
 class TestHarness < LittleGhost::Configuration
@@ -54,12 +97,6 @@ class TestHarness < LittleGhost::Configuration
 
   def runtime_instance
     @test_runtime || raise("test runtime has not been built")
-  end
-
-  def instrumentation(value = :__read__)
-    return runtime_instance.instrumentation if value == :__read__ && @test_runtime
-
-    super
   end
 
   def build_runtime(**overrides)

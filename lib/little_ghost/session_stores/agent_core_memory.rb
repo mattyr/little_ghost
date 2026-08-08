@@ -2,8 +2,6 @@
 
 require "digest"
 require "json"
-require "logger"
-require "opentelemetry-api"
 require "securerandom"
 require_relative "../session_store"
 
@@ -56,13 +54,9 @@ module LittleGhost
         client: nil,
         client_factory: nil,
         region: nil,
-        clock: -> { Time.now },
-        logger: Logger.new($stderr),
-        on_client_refresh: nil,
-        tracer: nil,
-        instrumentation: nil
+        clock: -> { Time.now }
       )
-        super(instrumentation:)
+        super()
         @memory_id = String(memory_id)
         raise ArgumentError, "memory_id must not be empty" if @memory_id.empty?
 
@@ -70,10 +64,6 @@ module LittleGhost
         @client_factory = client_factory || -> { build_client(@region) }
         @client = client || @client_factory.call
         @clock = clock
-        @logger = logger
-        @on_client_refresh = on_client_refresh
-        @tracer = tracer
-        @instrumentation = instrumentation
         @operation_context_key = :"little_ghost_session_store_operation_#{object_id}"
         @client_mutex = Mutex.new
         @persistence_locks = {}
@@ -181,11 +171,7 @@ module LittleGhost
       end
 
       def with_operation_context(operation_id)
-        previous = Thread.current[@operation_context_key]
-        Thread.current[@operation_context_key] = operation_id
-        yield
-      ensure
-        Thread.current[@operation_context_key] = previous
+        ExecutionState.with(@operation_context_key => operation_id) { yield }
       end
 
       private
@@ -217,14 +203,14 @@ module LittleGhost
         retries = 0
         refreshes = 0
 
-        with_memory_span(operation) do |span|
+        with_memory_span(operation) do |telemetry|
           client = current_client
           result = client.public_send(operation, **parameters)
-          record_memory_outcome(span, retries:, refreshes:, client:)
+          record_memory_outcome(telemetry, retries:, refreshes:, client:)
           result
         rescue => error
           unless expired_token?(error) && retries.zero?
-            record_memory_failure(span, error, retries:, refreshes:)
+            record_memory_failure(telemetry, error, retries:, refreshes:)
             raise
           end
 
@@ -255,48 +241,37 @@ module LittleGhost
       end
 
       def with_memory_span(operation)
-        attributes = {
+        payload = {
+          operation_id: SecureRandom.uuid,
+          parent: ExecutionState[@operation_context_key],
+          span_name: "BedrockAgentCore/#{operation}"
+        }.merge(
           "cloud.provider" => "aws",
           "rpc.method" => operation.to_s,
           "rpc.service" => "BedrockAgentCore",
           "rpc.system" => "aws-api"
-        }
-        attributes["cloud.region"] = @region.to_s if @region
-        if @instrumentation&.respond_to?(:with_span)
-          @instrumentation.with_span(
-            "BedrockAgentCore/#{operation}",
-            attributes:,
-            parent_operation_id: Thread.current[@operation_context_key]
-          ) { |span| yield span }
-        else
-          tracer.in_span("BedrockAgentCore/#{operation}", attributes:) { |span| yield span }
-        end
+        )
+        payload["cloud.region"] = @region.to_s if @region
+        Instrumentation.instrument(:session_store, payload) { |telemetry| yield telemetry }
       end
 
-      def record_memory_outcome(span, retries:, refreshes:, client:)
-        span.set_attribute("little_ghost.session_store.retry_count", retries)
-        span.set_attribute("little_ghost.session_store.client_refresh_count", refreshes)
-        span.set_attribute("little_ghost.session_store.recovered", retries.positive?)
+      def record_memory_outcome(telemetry, retries:, refreshes:, client:)
+        telemetry["little_ghost.session_store.retry_count"] = retries
+        telemetry["little_ghost.session_store.client_refresh_count"] = refreshes
+        telemetry["little_ghost.session_store.recovered"] = retries.positive?
         seconds = credential_seconds_to_expiry(client)
-        span.set_attribute("little_ghost.session_store.credential_seconds_to_expiry", seconds) if seconds
+        telemetry["little_ghost.session_store.credential_seconds_to_expiry"] = seconds if seconds
       end
 
-      def record_memory_failure(span, error, retries:, refreshes:)
-        span.set_attribute("little_ghost.session_store.retry_count", retries)
-        span.set_attribute("little_ghost.session_store.client_refresh_count", refreshes)
-        span.set_attribute("error.type", error.class.name)
-        span.status = OpenTelemetry::Trace::Status.error(error.class.name)
+      def record_memory_failure(telemetry, error, retries:, refreshes:)
+        telemetry["little_ghost.session_store.retry_count"] = retries
+        telemetry["little_ghost.session_store.client_refresh_count"] = refreshes
+        telemetry[:error_type] = error.class.name
       end
 
       def record_client_refresh(operation, error, retry_count:, refreshed:)
-        @logger.warn(JSON.generate(
-          event: "little_ghost_session_store_client_refresh",
-          operation:,
-          error_type: error.class.name,
-          retry_count:,
-          refreshed:
-        ))
-        @on_client_refresh&.call(
+        Events.warn(
+          "little_ghost.session_store.client_refresh",
           operation:,
           error_type: error.class.name,
           retry_count:,
@@ -314,10 +289,6 @@ module LittleGhost
         [(expiration.to_time - @clock.call).round, 0].max
       rescue
         nil
-      end
-
-      def tracer
-        @tracer || OpenTelemetry.tracer_provider.tracer("little_ghost")
       end
 
       def latest_checkpoint(actor_id, session_id)

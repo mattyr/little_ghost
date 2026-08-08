@@ -25,8 +25,11 @@ module LittleGhost
         return enum_for(__method__) unless block_given?
 
         queue = SizedQueue.new(@buffer_size)
+        execution_state = ExecutionState.capture
         worker = Thread.new do
-          @producer.call(->(value) { queue << [:value, value] })
+          ExecutionState.with(execution_state) do
+            @producer.call(->(value) { queue << [:value, value] })
+          end
         rescue => error
           queue << [:error, error]
         end

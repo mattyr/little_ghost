@@ -23,23 +23,26 @@ module LittleGhost
         results = Array.new(items.length)
         errors = Array.new(items.length)
         worker_count = [@max_concurrency, items.length].min
+        execution_state = ExecutionState.capture
 
         workers = worker_count.times.map do
           Thread.new do
-            loop do
-              index = begin
-                queue.pop(true)
-              rescue ThreadError
-                break
-              end
+            ExecutionState.with(execution_state) do
+              loop do
+                index = begin
+                  queue.pop(true)
+                rescue ThreadError
+                  break
+                end
 
-              begin
-                cancellation_token.raise_if_cancelled!
-                results[index] = block.call(items[index])
-              rescue => error
-                errors[index] = error
-              ensure
-                completions << index
+                begin
+                  cancellation_token.raise_if_cancelled!
+                  results[index] = block.call(items[index])
+                rescue => error
+                  errors[index] = error
+                ensure
+                  completions << index
+                end
               end
             end
           end

@@ -1,11 +1,13 @@
 # frozen_string_literal: true
 
 require "pathname"
+require "monitor"
 
 module LittleGhost
   module Support
     class Loader
       DEFAULT_DIRECTORIES = %w[app/agents app/tools].freeze
+      PROCESS_LOCK = Monitor.new
 
       attr_reader :root, :directories
 
@@ -23,31 +25,35 @@ module LittleGhost
       end
 
       def setup
-        return self if @setup
+        PROCESS_LOCK.synchronize do
+          return self if @setup
 
-        registry.each do |constant_name, path|
-          namespace, name = namespace_for(constant_name)
-          if namespace.const_defined?(name, false) || namespace.autoload?(name)
-            existing = namespace.autoload?(name)
-            next if existing && File.expand_path(existing) == path
-            next if !existing && constant_source_location(constant_name)&.then { |location| File.realpath(location.first) == path }
-            raise ConflictError, "#{constant_name} is already defined"
+          registry.each do |constant_name, path|
+            namespace, name = namespace_for(constant_name)
+            if namespace.const_defined?(name, false) || namespace.autoload?(name)
+              existing = namespace.autoload?(name)
+              next if existing && File.expand_path(existing) == path
+              next if !existing && constant_source_location(constant_name)&.then { |location| File.realpath(location.first) == path }
+              raise ConflictError, "#{constant_name} is already defined"
+            end
+            namespace.autoload(name, path)
           end
-          namespace.autoload(name, path)
+          @setup = true
         end
-        @setup = true
         self
       end
 
       def eager_load
-        setup
-        registry.each_key do |constant_name|
-          validate_registered_path!(constant_name)
-          constantize(constant_name)
-          @loaded_constants[constant_name] = registry.fetch(constant_name)
-        rescue NameError => error
-          raise unless expected_constant_missing?(error, constant_name)
-          raise ExpectedConstantError, "#{registry.fetch(constant_name)} must define #{constant_name}"
+        PROCESS_LOCK.synchronize do
+          setup
+          registry.each_key do |constant_name|
+            validate_registered_path!(constant_name)
+            constantize(constant_name)
+            @loaded_constants[constant_name] = registry.fetch(constant_name)
+          rescue NameError => error
+            raise unless expected_constant_missing?(error, constant_name)
+            raise ExpectedConstantError, "#{registry.fetch(constant_name)} must define #{constant_name}"
+          end
         end
         self
       end
@@ -89,8 +95,10 @@ module LittleGhost
       end
 
       def constant(name)
-        setup
-        constantize(name.to_s)
+        PROCESS_LOCK.synchronize do
+          setup
+          constantize(name.to_s)
+        end
       rescue NameError => error
         raise unless expected_constant_missing?(error, name.to_s)
         raise ExpectedConstantError, "Unknown application constant: #{name}"
@@ -101,21 +109,23 @@ module LittleGhost
       end
 
       def loaded_constant?(name)
-        path = registry[name.to_s]
-        return false unless path
+        PROCESS_LOCK.synchronize do
+          path = registry[name.to_s]
+          return false unless path
 
-        names = name.to_s.split("::")
-        leaf = names.pop
-        namespace = names.inject(Object) do |parent, child|
-          break unless parent.const_defined?(child, false)
+          names = name.to_s.split("::")
+          leaf = names.pop
+          namespace = names.inject(Object) do |parent, child|
+            break unless parent.const_defined?(child, false)
 
-          parent.const_get(child, false)
+            parent.const_get(child, false)
+          end
+          autoload_path = namespace&.autoload?(leaf)
+          return File.realpath(autoload_path) == path if autoload_path
+
+          location = constant_source_location(name.to_s)
+          location && File.realpath(location.first) == path
         end
-        autoload_path = namespace&.autoload?(leaf)
-        return File.realpath(autoload_path) == path if autoload_path
-
-        location = constant_source_location(name.to_s)
-        location && File.realpath(location.first) == path
       rescue Errno::ENOENT
         false
       end
@@ -157,11 +167,7 @@ module LittleGhost
       end
 
       def constantize(name)
-        verbose = $VERBOSE
-        $VERBOSE = nil
         name.split("::").inject(Object) { |parent, child| parent.const_get(child, false) }
-      ensure
-        $VERBOSE = verbose
       end
 
       def constant_source_location(name)

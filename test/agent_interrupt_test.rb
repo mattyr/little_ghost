@@ -50,11 +50,11 @@ class AgentInterruptTest < Minitest::Test
       model_response("Done")
     )
     telemetry = []
-    instrumentation = LittleGhost::Support::Instrumentation.new(
-      subscribers: [->(name, attributes) { telemetry << [name, attributes] }],
+    LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new(
+      subscribers: [TestTelemetryRecorder.new(telemetry)],
       content_capture: LittleGhost::Support::ContentCapture.new(enabled: true)
     )
-    agent = LittleGhost::Agent.new(model:, tools: [first, second], instrumentation:)
+    agent = LittleGhost::Agent.new(model:, tools: [first, second])
     stream_events = []
     runner = Thread.new do
       result = nil
@@ -128,8 +128,11 @@ class AgentInterruptTest < Minitest::Test
     assert_equal 2, model.requests.length
   ensure
     release << true if runner&.alive?
-    runner&.kill
+    runner&.join(1)
+    runner&.kill if runner&.alive?
+    runner&.join
     interrupted&.kill
+    interrupted&.join
     agent&.close
   end
 
@@ -199,12 +202,12 @@ class AgentInterruptTest < Minitest::Test
       end
     )
     queued = Queue.new
-    instrumentation = LittleGhost::Support::Instrumentation.new(
-      subscribers: [lambda do |name, _attributes|
-        queued << true if name == :agent_interrupt_queued
+    LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new(
+      subscribers: [TestInstrumentationSubscriber.new do |phase, name, _attributes|
+        queued << true if phase == :emit && name == :agent_interrupt_queued
       end]
     )
-    agent = LittleGhost::Agent.new(model:, tools: [first_tool, second_tool], instrumentation:)
+    agent = LittleGhost::Agent.new(model:, tools: [first_tool, second_tool])
     runner = Thread.new { agent.call("work") }
 
     first_started.pop
@@ -544,8 +547,11 @@ class AgentInterruptTest < Minitest::Test
     assert_instance_of LittleGhost::AgentInterruptError, interrupted.value
   ensure
     release << true if runner&.alive?
-    runner&.kill
+    runner&.join(1)
+    runner&.kill if runner&.alive?
+    runner&.join
     interrupted&.kill
+    interrupted&.join
     agent&.close
   end
 

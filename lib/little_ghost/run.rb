@@ -30,7 +30,6 @@ module LittleGhost
       @interruption_mutex = Mutex.new
       @interruption_state = :not_started
       @entrypoint = nil
-      @subagent_started_at = {}
       @usage = Usage.new
     end
 
@@ -44,7 +43,9 @@ module LittleGhost
 
       begin_execution!
       @emitter = ->(event) { yield_event(event) { |value| yield value } }
-      execute { |event| yield event }
+      Instrumentation.with_context(correlation_attributes.except(:operation_id)) do
+        execute { |event| yield event }
+      end
       self
     ensure
       @emitter = nil
@@ -92,7 +93,6 @@ module LittleGhost
         state:,
         cancellation_token:,
         deadline: invocation.deadline_at,
-        instrumentation: runtime.instrumentation,
         metadata:
       )
     end
@@ -160,8 +160,10 @@ module LittleGhost
       response_before_model_attempt = +""
       terminal = nil
       execution_cleanup_error = nil
-      instrument(
-        :run_start,
+      @instrumentation_handle = Instrumentation.start(
+        :run,
+        parent: nil,
+        **correlation_attributes,
         entrypoint_kind: workflow_run? ? :workflow : :agent,
         workflow_name: workflow_run? ? entrypoint_name : nil,
         trace_context: invocation[:parent_trace_context],
@@ -169,7 +171,7 @@ module LittleGhost
         diagnostic: {input: diagnostic_invocation_message}
       )
       emit(:run_start, run_id: invocation.run_id, thread_id: invocation.session_id) { |event| yield event }
-      trace_context = runtime.instrumentation.trace_context(operation_id:) if runtime.instrumentation.respond_to?(:trace_context)
+      trace_context = Instrumentation.trace_context(operation_id:)
       emit(:trace_context, context: trace_context) { |event| yield event } unless trace_context.nil? || trace_context.empty?
       workspace&.open(run: self)
       sandbox&.open(run: self)
@@ -303,7 +305,7 @@ module LittleGhost
         caught
       end
       instrumentation_error = begin
-        instrument(:run_stop, stop_attributes)
+        @instrumentation_handle&.finish(**correlation_attributes.merge(stop_attributes))
         nil
       rescue => caught
         caught
@@ -331,7 +333,7 @@ module LittleGhost
     end
 
     def instrument(name, attributes = {})
-      runtime.instrumentation.emit(name, **correlation_attributes, **attributes.compact)
+      Instrumentation.publish(name, **correlation_attributes.merge(attributes.compact))
     end
 
     def correlation_attributes
@@ -340,9 +342,10 @@ module LittleGhost
         run_id: invocation.run_id,
         invocation_id: invocation.invocation_id,
         session_id: invocation.session_id,
+        service_name: runtime.service_name,
         agent_id: workflow_run? ? nil : entrypoint_name,
         workflow_name: workflow_run? ? entrypoint_name : nil
-      }.merge(runtime.instrumentation_attributes(run: self)).compact
+      }.compact
     end
 
     def workflow_run? = entrypoint_class <= Workflow
@@ -375,9 +378,8 @@ module LittleGhost
         subagent_operation_id = value[:operation_id] || value["operation_id"]
         return unless subagent_operation_id
 
-        @subagent_started_at[subagent_operation_id] = monotonic_time
         [
-          :subagent_start,
+          :subagent_spawned,
           attributes.merge(
             operation_id: subagent_operation_id,
             parent_operation_id:,
@@ -393,17 +395,15 @@ module LittleGhost
         supplied_operation_id = value[:operation_id] || value["operation_id"]
         return unless supplied_operation_id
 
-        started_at = @subagent_started_at.delete(supplied_operation_id)
         outcome = {"turn_finished" => :completed, "turn_failed" => :error, "cancelled" => :cancelled}.fetch(event)
         [
-          :subagent_stop,
+          :subagent_finished,
           attributes.merge(
             operation_id: supplied_operation_id,
             parent_operation_id:,
             agent_id: attributes[:subagent_id],
             outcome:,
-            error_type: (event == "turn_failed") ? "LittleGhost::SubagentError" : nil,
-            duration_ms: started_at && duration_ms(started_at)
+            error_type: (event == "turn_failed") ? "LittleGhost::SubagentError" : nil
           ).compact
         ]
       end

@@ -2,8 +2,11 @@
 
 require_relative "little_ghost/version"
 require_relative "little_ghost/errors"
-require_relative "little_ghost/tracing/open_telemetry"
+require_relative "little_ghost/execution_state"
 require_relative "little_ghost/support"
+require_relative "little_ghost/events"
+require_relative "little_ghost/instrumentation"
+require_relative "little_ghost/tracing/open_telemetry"
 require_relative "little_ghost/invocation"
 require_relative "little_ghost/lookup"
 require_relative "little_ghost/path_set"
@@ -51,7 +54,7 @@ require_relative "little_ghost/runtime"
 module LittleGhost
   class << self
     def configuration
-      Thread.current[:little_ghost_configuration] || (@configuration ||= Configuration.new)
+      ExecutionState[:configuration] || (@configuration ||= Configuration.new)
     end
 
     alias_method :default_configuration, :configuration
@@ -61,11 +64,7 @@ module LittleGhost
     end
 
     def with_configuration(configuration)
-      previous = Thread.current[:little_ghost_configuration]
-      Thread.current[:little_ghost_configuration] = configuration
-      yield
-    ensure
-      Thread.current[:little_ghost_configuration] = previous
+      ExecutionState.with(configuration:) { yield }
     end
   end
 end

@@ -81,7 +81,7 @@ module LittleGhost
       rescue CancelledError, DeadlineExceededError, CleanupError
         raise
       rescue => error
-        context&.instrumentation&.emit(:context_compaction, outcome: :error, error_class: error.class.name)
+        Instrumentation.publish(:context_compaction, outcome: :error, error_class: error.class.name)
         Support::Callbacks.continue
       end
 
@@ -132,7 +132,7 @@ module LittleGhost
         reason: :threshold
       )
         compacted = summarize_oldest_messages(request, configuration, context, parent_operation_id:)
-        context&.instrumentation&.emit(
+        Instrumentation.publish(
           :context_compaction,
           reason:,
           removed_messages: request.messages.length - compacted.messages.length,

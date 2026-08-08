@@ -6,6 +6,24 @@ require "test_helper"
 require "little_ghost/ag_ui"
 
 class ConfigurationTest < Minitest::Test
+  def test_configuration_overrides_are_isolated_between_fibers
+    configurations = [LittleGhost::Configuration.new, LittleGhost::Configuration.new]
+    observed = []
+    fibers = configurations.map do |configuration|
+      Fiber.new do
+        LittleGhost.with_configuration(configuration) do
+          Fiber.yield
+          observed << LittleGhost.configuration
+        end
+      end
+    end
+
+    fibers.each(&:resume)
+    fibers.each(&:resume)
+
+    assert_equal configurations, observed
+  end
+
   class EntrypointWorkflow < LittleGhost::Workflow
     class << self
       attr_accessor :agent_class
@@ -380,11 +398,11 @@ class ConfigurationTest < Minitest::Test
       LittleGhost::ProviderError.new("offline") => [:failed, :run_error]
     }.each do |error, (expected_outcome, expected_terminal)|
       recorded = []
-      instrumentation = LittleGhost::Support::Instrumentation.new
-      instrumentation.subscribe(->(name, attributes) { recorded << [name, attributes] })
+      instrumentation = LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new
+      instrumentation.subscribe(TestTelemetryRecorder.new(recorded))
       provider = ProgressThenDeadlineProvider.new(error)
 
-      with_runtime(agent: progress_agent, provider:, instrumentation:) do |harness|
+      with_runtime(agent: progress_agent, provider:) do |harness|
         run = harness.agent_instance.build_run(message: "Build it", session_id: "conversation")
         source_events = run.to_a
         translated = LittleGhost::AGUI::Adapter.new
@@ -443,10 +461,10 @@ class ConfigurationTest < Minitest::Test
 
   def test_framework_emits_correlated_semantic_telemetry_without_ui_deltas
     recorded = []
-    instrumentation = LittleGhost::Support::Instrumentation.new
-    instrumentation.subscribe(->(name, attributes) { recorded << [name, attributes] })
+    instrumentation = LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new
+    instrumentation.subscribe(TestTelemetryRecorder.new(recorded))
 
-    with_runtime(instrumentation:) do |harness|
+    with_runtime do |harness|
       harness.agent_instance.call(message: "Build it")
     end
 
@@ -479,12 +497,12 @@ class ConfigurationTest < Minitest::Test
 
   def test_run_telemetry_captures_session_input_and_output
     recorded = []
-    instrumentation = LittleGhost::Support::Instrumentation.new(
+    instrumentation = LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new(
       content_capture: LittleGhost::Support::ContentCapture.new(enabled: true)
     )
-    instrumentation.subscribe(->(name, attributes) { recorded << [name, attributes] })
+    instrumentation.subscribe(TestTelemetryRecorder.new(recorded))
 
-    with_runtime(instrumentation:) do |harness|
+    with_runtime do |harness|
       harness.agent_instance.call(message: "Build it", session_id: "session-1")
     end
 
@@ -497,10 +515,10 @@ class ConfigurationTest < Minitest::Test
 
   def test_run_telemetry_never_captures_provider_reasoning_artifacts
     recorded = []
-    instrumentation = LittleGhost::Support::Instrumentation.new(
+    instrumentation = LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new(
       content_capture: LittleGhost::Support::ContentCapture.new(enabled: true)
     )
-    instrumentation.subscribe(->(name, attributes) { recorded << [name, attributes] })
+    instrumentation.subscribe(TestTelemetryRecorder.new(recorded))
     message = LittleGhost::Message.new(
       role: :assistant,
       content: LittleGhost::Content::Reasoning.new(
@@ -510,7 +528,7 @@ class ConfigurationTest < Minitest::Test
       )
     )
 
-    with_runtime(instrumentation:) do |harness|
+    with_runtime do |harness|
       harness.agent_instance.call(message:)
     end
 
@@ -522,10 +540,10 @@ class ConfigurationTest < Minitest::Test
 
   def test_model_failure_before_output_omits_time_to_first_token
     recorded = []
-    instrumentation = LittleGhost::Support::Instrumentation.new
-    instrumentation.subscribe(->(name, attributes) { recorded << [name, attributes] })
+    instrumentation = LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new
+    instrumentation.subscribe(TestTelemetryRecorder.new(recorded))
 
-    with_runtime(provider: FailingProvider.new(LittleGhost::ProviderError.new("offline")), instrumentation:) do |harness|
+    with_runtime(provider: FailingProvider.new(LittleGhost::ProviderError.new("offline"))) do |harness|
       harness.agent_instance.call(message: "Build it")
     end
 
@@ -534,11 +552,10 @@ class ConfigurationTest < Minitest::Test
     refute model_stop.key?(:time_to_first_token)
   end
 
-  def test_application_is_host_neutral_and_uses_generic_instrumentation_by_default
+  def test_application_is_host_neutral
     with_runtime do |harness|
       refute_respond_to harness, :hosted
       refute_respond_to harness.class, :rack_app
-      assert_instance_of LittleGhost::Support::Instrumentation, harness.instrumentation
     end
   end
 
@@ -550,75 +567,18 @@ class ConfigurationTest < Minitest::Test
     assert_equal "support", harness.default_model
   end
 
-  def test_instrument_dsl_installs_providers_on_application_instrumentation
-    installed = []
-    installer = Module.new do
-      define_singleton_method(:install) do |instrumentation:, service_name:, endpoint:|
-        installed << [instrumentation, service_name, endpoint]
-      end
-    end
-
-    with_runtime(configure: ->(harness) { harness.instrument installer, endpoint: "https://example.test" }) do |harness|
-      assert_same harness.instrumentation, installed.first[0]
-      assert_equal "https://example.test", installed.first[2]
-    end
-  end
-
-  def test_instrument_dsl_instantiates_provider_classes_at_boot
-    installed = []
-    installer = Class.new do
-      define_method(:install) do |instrumentation:, service_name:, label:|
-        installed << [instrumentation, service_name, label]
-      end
-    end
-
-    with_runtime(configure: ->(harness) { harness.instrument installer, label: "runtime" }) do |harness|
-      assert_same harness.instrumentation, installed.first[0]
-      assert_equal "runtime", installed.first[2]
-    end
-  end
-
-  def test_instrument_dsl_accepts_classes_with_an_install_entrypoint
-    installed = []
-    installer = Class.new do
-      define_singleton_method(:install) do |instrumentation:, service_name:|
-        installed << [instrumentation, service_name]
-      end
-
-      def initialize = raise("the installer class should be used directly")
-    end
-
-    with_runtime(configure: ->(harness) { harness.instrument installer }) do |harness|
-      assert_same harness.instrumentation, installed.first[0]
-    end
-  end
-
-  def test_instrumentation_service_name_can_be_configured
-    installed = []
-    installer = Module.new do
-      define_singleton_method(:install) { |service_name:, **| installed << service_name }
-    end
+  def test_instrument_dsl_subscribes_configured_objects
+    events = []
+    subscriber = TestTelemetryRecorder.new(events)
 
     with_runtime(configure: lambda { |harness|
       harness.service_name "support-agent"
-      harness.instrument installer
+      harness.instrument subscriber
     }) { nil }
 
-    assert_equal ["support-agent"], installed
-  end
-
-  def test_instrument_declaration_can_override_the_application_service_name
-    installed = []
-    installer = Module.new do
-      define_singleton_method(:install) { |service_name:, **| installed << service_name }
-    end
-
-    with_runtime(configure: lambda { |harness|
-      harness.service_name "support-agent"
-      harness.instrument installer, service_name: "support-worker"
-    }) { nil }
-
-    assert_equal ["support-worker"], installed
+    runtime_start = events.assoc(:runtime_start)
+    assert_equal "support-agent", runtime_start.last.fetch(:service_name)
+    assert events.assoc(:runtime_stop)
   end
 
   def test_application_uses_an_in_memory_session_store_by_default
@@ -768,11 +728,10 @@ class ConfigurationTest < Minitest::Test
   def test_workflow_entrypoint_marks_run_telemetry_without_changing_child_agent_telemetry
     recorded = []
     expected_agent_id = nil
-    instrumentation = LittleGhost::Support::Instrumentation.new
-    instrumentation.subscribe(->(name, attributes) { recorded << [name, attributes] })
+    instrumentation = LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new
+    instrumentation.subscribe(TestTelemetryRecorder.new(recorded))
 
     with_runtime(
-      instrumentation:,
       configure: lambda do |configuration|
         EntrypointWorkflow.agent_class = configuration.agent_class
         expected_agent_id = configuration.agent_class.agent_id
@@ -891,13 +850,14 @@ class ConfigurationTest < Minitest::Test
 
   def test_execution_cleanup_error_survives_run_stop_instrumentation_failure
     cleanup_error = LittleGhost::CleanupError.new("work is still running")
-    instrumentation = Object.new
-    instrumentation.define_singleton_method(:trace_context) { |**| {} }
-    instrumentation.define_singleton_method(:emit) do |name, **|
-      raise "run stop instrumentation failed" if name == :run_stop
+    subscriber = Class.new(LittleGhost::Instrumentation::Subscriber) do
+      def finish(name, _attributes)
+        raise "run stop instrumentation failed" if name == :run
+      end
     end
+    LittleGhost::Instrumentation.subscribe(subscriber.new)
 
-    with_runtime(provider: FailingProvider.new(cleanup_error), instrumentation:) do |harness|
+    with_runtime(provider: FailingProvider.new(cleanup_error)) do |harness|
       run = harness.agent_instance.build_run(message: "hello")
 
       raised = assert_raises(LittleGhost::CleanupError) { run.call }
@@ -1061,12 +1021,12 @@ class ConfigurationTest < Minitest::Test
       end
     end.new
     recorded = []
-    instrumentation = LittleGhost::Support::Instrumentation.new(
+    instrumentation = LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new(
       content_capture: LittleGhost::Support::ContentCapture.new(enabled: true)
     )
-    instrumentation.subscribe(->(name, attributes) { recorded << [name, attributes] })
+    instrumentation.subscribe(TestTelemetryRecorder.new(recorded))
 
-    with_runtime(session_store: store, instrumentation:) do |harness|
+    with_runtime(session_store: store) do |harness|
       run = harness.agent_instance.call(message: "Continue")
 
       assert run.failed?
@@ -1102,13 +1062,11 @@ class ConfigurationTest < Minitest::Test
         model "main"
         system_prompt "Test"
       end
-      installer = Module.new do
-        def self.install(**) = raise("external instrumentation was installed")
-      end
+      subscriber = TestInstrumentationSubscriber.new { raise "external instrumentation was published" }
       configuration = TestHarness.new
       configuration.root root
       configuration.select_agent agent
-      configuration.instrument installer
+      configuration.instrument subscriber
       configuration.session_store = {
         provider: Class.new(LittleGhost::SessionStore) do
           def initialize(**) = raise("external sessions were initialized")
@@ -1118,11 +1076,9 @@ class ConfigurationTest < Minitest::Test
       harness = configuration.build(
         models: models_for(ScriptedProvider.new),
         session_store: {provider: LittleGhost::SessionStores::Memory},
-        instrumentation: LittleGhost::Support::Instrumentation.new,
-        instruments: []
+        instrumentation_subscribers: []
       )
 
-      assert_instance_of LittleGhost::Support::Instrumentation, harness.instrumentation
       assert_instance_of LittleGhost::SessionStores::Memory, harness.runtime_instance.session_store
       refute configuration.instance_variable_defined?(:@booted_application)
     end
@@ -1487,7 +1443,6 @@ class ConfigurationTest < Minitest::Test
   def with_runtime(
     agent: nil,
     session_store: nil,
-    instrumentation: nil,
     settings: {},
     configure: nil,
     provider: ScriptedProvider.new
@@ -1507,7 +1462,6 @@ class ConfigurationTest < Minitest::Test
       configuration.select_agent agent
       configuration.models models_for(provider, settings:)
       configuration.session_store = {provider: session_store_provider(session_store)} if session_store
-      configuration.instrumentation instrumentation if instrumentation
       configure&.call(configuration)
       harness = configuration.runtime(root:)
       yield harness, provider, root

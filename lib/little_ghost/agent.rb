@@ -265,14 +265,13 @@ module LittleGhost
       end
     end
 
-    attr_reader :model, :tool_registry, :instrumentation, :run, :delegation_activity, :agent_path, :workspace, :sandbox,
+    attr_reader :model, :tool_registry, :run, :delegation_activity, :agent_path, :workspace, :sandbox,
       :max_tool_calls
 
     def initialize(
       model: nil,
       runtime: nil,
       tools: [],
-      instrumentation: nil,
       template_resolver: nil,
       template_paths: [],
       run: nil,
@@ -319,7 +318,6 @@ module LittleGhost
         model:,
         ordinary_tools: @tool_registry.specifications
       )
-      @instrumentation = instrumentation || Support::Instrumentation.new
       @model_settings = model_settings.to_h.freeze
       @template_resolver = template_resolver || default_template_resolver(template_paths)
       @executor = executor
@@ -499,7 +497,6 @@ module LittleGhost
           state: context,
           cancellation_token: cancellation_token,
           deadline: deadline,
-          instrumentation: instrumentation,
           metadata: {agent_id: self.class.agent_id},
           checkpoint:,
           conversation_id:,
@@ -711,10 +708,10 @@ module LittleGhost
       interruptions.bind(operation_id, target_operation_id: parent_operation_id)
       register_interruptions(interruptions)
       interrupt_ready&.call
-      instrument(
-        :agent_start,
+      agent_handle = start_instrumentation(
+        :agent,
+        parent: parent_operation_id || active_instrumentation_parent,
         operation_id:,
-        parent_operation_id:,
         available_tools: tool_registry.names,
         diagnostic: {input: diagnostic_input(input)}
       )
@@ -734,10 +731,9 @@ module LittleGhost
 
       @max_turns.times do |turn|
         turn_operation_id = SecureRandom.uuid
-        instrument(
-          :agent_turn_start,
+        turn_handle = start_instrumentation(
+          :agent_turn,
           operation_id: turn_operation_id,
-          parent_operation_id: operation_id,
           turn: turn + 1
         )
         begin
@@ -766,8 +762,8 @@ module LittleGhost
               messages[-1] = redact_structured_result_message(response.message)
               unless interruptions.finish
                 context.checkpoint(messages)
-                instrument(
-                  :agent_turn_stop,
+                finish_instrumentation(
+                  turn_handle,
                   operation_id: turn_operation_id,
                   outcome: :interrupted,
                   turn: turn + 1
@@ -779,8 +775,8 @@ module LittleGhost
                 messages,
                 context,
                 events,
-                operation_id:,
-                turn_operation_id:,
+                agent_handle:,
+                turn_handle:,
                 turn: turn + 1,
                 started_at:,
                 repaired: structured_result_repair_due
@@ -810,8 +806,8 @@ module LittleGhost
               context,
               validation_status: :invalid
             )
-            instrument(
-              :agent_turn_stop,
+            finish_instrumentation(
+              turn_handle,
               operation_id: turn_operation_id,
               outcome: :repair,
               turn: turn + 1
@@ -827,8 +823,8 @@ module LittleGhost
             if interrupted || !@structured_output_strategy
               unless interruptions.finish
                 context.checkpoint(messages)
-                instrument(
-                  :agent_turn_stop,
+                finish_instrumentation(
+                  turn_handle,
                   operation_id: turn_operation_id,
                   outcome: :interrupted,
                   turn: turn + 1
@@ -847,8 +843,8 @@ module LittleGhost
                 messages[-1] = redact_structured_result_message(response.message)
                 unless interruptions.finish
                   context.checkpoint(messages)
-                  instrument(
-                    :agent_turn_stop,
+                  finish_instrumentation(
+                    turn_handle,
                     operation_id: turn_operation_id,
                     outcome: :interrupted,
                     turn: turn + 1
@@ -860,8 +856,8 @@ module LittleGhost
                   messages,
                   context,
                   events,
-                  operation_id:,
-                  turn_operation_id:,
+                  agent_handle:,
+                  turn_handle:,
                   turn: turn + 1,
                   started_at:,
                   repaired: structured_result_repair_due
@@ -888,8 +884,8 @@ module LittleGhost
                 context,
                 validation_status: :missing
               )
-              instrument(
-                :agent_turn_stop,
+              finish_instrumentation(
+                turn_handle,
                 operation_id: turn_operation_id,
                 outcome: :repair,
                 turn: turn + 1
@@ -910,15 +906,15 @@ module LittleGhost
             apply_cancellation_decision!(decision)
             result = replacement_value(decision, :result, result)
             context.checkpoint(result.messages)
-            instrument(
-              :agent_turn_stop,
+            finish_instrumentation(
+              turn_handle,
               operation_id: turn_operation_id,
               outcome: :completed,
               turn: turn + 1
             )
             metadata = model.respond_to?(:metadata) ? model.metadata : {}
-            instrument(
-              :agent_stop,
+            finish_instrumentation(
+              agent_handle,
               outcome: :completed,
               duration_ms: duration_ms(started_at),
               stop_reason: result.stop_reason,
@@ -954,15 +950,15 @@ module LittleGhost
             content: tool_results
           )
           context.checkpoint(messages)
-          instrument(
-            :agent_turn_stop,
+          finish_instrumentation(
+            turn_handle,
             operation_id: turn_operation_id,
             outcome: :completed,
             turn: turn + 1
           )
         rescue => error
-          instrument(
-            :agent_turn_stop,
+          finish_instrumentation(
+            turn_handle,
             operation_id: turn_operation_id,
             outcome: :error,
             turn: turn + 1,
@@ -989,8 +985,8 @@ module LittleGhost
       end
       raise ProtocolError, "The agent reached its maximum model turns"
     rescue => error
-      instrument(
-        :agent_stop,
+      finish_instrumentation(
+        agent_handle,
         operation_id:,
         outcome: :error,
         duration_ms: duration_ms(started_at),
@@ -1049,10 +1045,9 @@ module LittleGhost
       end
       messages.replace(request.messages)
       context.checkpoint(messages)
-      instrument(
-        :model_start,
+      model_handle = start_instrumentation(
+        :model,
         operation_id:,
-        parent_operation_id:,
         turn:,
         diagnostic: {
           input: request.messages.map { |message| diagnostic_message(message) },
@@ -1151,8 +1146,8 @@ module LittleGhost
       else
         structured_result_diagnostic_message(response.message)
       end
-      instrument(
-        :model_stop,
+      finish_instrumentation(
+        model_handle,
         operation_id:,
         parent_operation_id:,
         turn:,
@@ -1177,8 +1172,8 @@ module LittleGhost
       )
       [response, !interruption.nil?]
     rescue => error
-      instrument(
-        :model_stop,
+      finish_instrumentation(
+        model_handle,
         operation_id:,
         parent_operation_id:,
         turn:,
@@ -1235,10 +1230,10 @@ module LittleGhost
         started_at = monotonic_time
         operation_id = SecureRandom.uuid
         telemetry_tool_name = tool.is_a?(Tool) ? tool.tool_name : "unknown_tool"
-        instrument(
-          :tool_start,
+        tool_handle = start_instrumentation(
+          :tool,
+          parent: parent_operation_id || active_instrumentation_parent,
           operation_id:,
-          parent_operation_id:,
           **parent_trace_attributes(parent_trace_context),
           tool_name: telemetry_tool_name,
           tool_type: "function",
@@ -1250,8 +1245,8 @@ module LittleGhost
         )
         if tool.is_a?(ToolError)
           result = build_tool_result(tool_use_id: tool_use.id, content: tool.message, status: :error)
-          instrument(
-            :tool_stop,
+          finish_instrumentation(
+            tool_handle,
             operation_id:,
             parent_operation_id:,
             tool_name: telemetry_tool_name,
@@ -1282,8 +1277,8 @@ module LittleGhost
             content: decision.reason,
             status: :error
           )
-          instrument(
-            :tool_stop,
+          finish_instrumentation(
+            tool_handle,
             operation_id:,
             parent_operation_id:,
             tool_name: telemetry_tool_name,
@@ -1329,8 +1324,8 @@ module LittleGhost
         )
         tool_error = tool_result.error
         tool_error ||= ToolError.new(result.content) if result.status == :error
-        instrument(
-          :tool_stop,
+        finish_instrumentation(
+          tool_handle,
           operation_id:,
           parent_operation_id:,
           tool_name: telemetry_tool_name,
@@ -1345,8 +1340,8 @@ module LittleGhost
         result
       rescue ToolError => error
         result = build_tool_result(tool_use_id: tool_use.id, content: error.message, status: :error)
-        instrument(
-          :tool_stop,
+        finish_instrumentation(
+          tool_handle,
           operation_id:,
           parent_operation_id:,
           tool_name: telemetry_tool_name,
@@ -1360,8 +1355,8 @@ module LittleGhost
         )
         result
       rescue => error
-        instrument(
-          :tool_stop,
+        finish_instrumentation(
+          tool_handle,
           operation_id:,
           parent_operation_id:,
           tool_name: telemetry_tool_name,
@@ -1609,8 +1604,8 @@ module LittleGhost
       messages,
       context,
       events,
-      operation_id:,
-      turn_operation_id:,
+      agent_handle:,
+      turn_handle:,
       turn:,
       started_at:,
       repaired:
@@ -1632,7 +1627,6 @@ module LittleGhost
       context.checkpoint(result.messages)
       instrument(
         :structured_result,
-        parent_operation_id: operation_id,
         schema_name: structured_result.schema_name,
         strategy: structured_output_strategy_name,
         validation_status: :valid,
@@ -1641,19 +1635,17 @@ module LittleGhost
         result_duration_ms: duration_ms(started_at),
         **usage_attributes(result.usage)
       )
-      instrument(
-        :agent_turn_stop,
-        operation_id: turn_operation_id,
+      finish_instrumentation(
+        turn_handle,
         outcome: :completed,
         turn:
       )
       metadata = model.respond_to?(:metadata) ? model.metadata : {}
-      instrument(
-        :agent_stop,
+      finish_instrumentation(
+        agent_handle,
         outcome: :completed,
         duration_ms: duration_ms(started_at),
         stop_reason: result.stop_reason,
-        operation_id:,
         diagnostic: {output: diagnostic_message(result.message)},
         **usage_attributes(result.usage)
       )
@@ -1732,19 +1724,36 @@ module LittleGhost
 
     def instrument(name, **attributes)
       attributes.delete(:diagnostic) unless self.class.capture_diagnostics
-      instrumentation.emit(name, **correlation_attributes, **attributes.compact)
+      values = correlation_attributes.merge(attributes.compact)
+      Instrumentation.publish(name, **values)
+    end
+
+    def start_instrumentation(name, **attributes)
+      attributes.delete(:diagnostic) unless self.class.capture_diagnostics
+      Instrumentation.start(name, **correlation_attributes.merge(attributes.compact))
+    end
+
+    def active_instrumentation_parent
+      current = Instrumentation.current
+      current if current&.active?
+    end
+
+    def finish_instrumentation(handle, **attributes)
+      return unless handle
+
+      attributes.delete(:diagnostic) unless self.class.capture_diagnostics
+      handle.finish(**correlation_attributes.merge(attributes.compact))
     end
 
     def correlation_attributes
       return {agent_id: self.class.agent_id} unless run
 
       {
-        parent_operation_id: run.operation_id,
         run_id: run.invocation.run_id,
         invocation_id: run.invocation.invocation_id,
         session_id: run.invocation.session_id,
         agent_id: self.class.agent_id
-      }.merge(runtime.instrumentation_attributes(run:, agent: self))
+      }
     end
 
     def model_attributes

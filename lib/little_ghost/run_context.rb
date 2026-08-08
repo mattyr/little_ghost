@@ -2,14 +2,13 @@
 
 module LittleGhost
   class RunContext
-    attr_reader :state, :cancellation_token, :deadline, :instrumentation, :metadata,
+    attr_reader :state, :cancellation_token, :deadline, :metadata,
       :agent_operation_id, :conversation_id
 
     def initialize(
       state: {},
       cancellation_token: Support::CancellationToken.new,
       deadline: nil,
-      instrumentation: nil,
       metadata: {},
       checkpoint: nil,
       conversation_id: nil,
@@ -24,7 +23,6 @@ module LittleGhost
       @state = state
       @cancellation_token = cancellation_token
       @deadline = deadline
-      @instrumentation = instrumentation || Support::Instrumentation.new
       @metadata = metadata.freeze
       @checkpoint = checkpoint
       @conversation_id = conversation_id

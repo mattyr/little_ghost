@@ -1,11 +1,11 @@
 # frozen_string_literal: true
 
-require "logger"
 require "pathname"
 
 module LittleGhost
   class Configuration
-    CONFIGURATION_KEYS = %i[invocation models default_model instrumentation service_name].freeze
+    FILE_LOAD_MUTEX = Mutex.new
+    CONFIGURATION_KEYS = %i[invocation models default_model service_name].freeze
     DEFAULT_PROMPT_PATHS = ["app/prompts"].freeze
     DEFAULT_SKILL_PATHS = ["app/skills"].freeze
 
@@ -28,12 +28,14 @@ module LittleGhost
         skill_resource_root: nil,
         workspace: nil,
         sandbox: nil,
-        instruments: [],
+        instrumentation_subscribers: [],
         runtime_hooks: []
       }.merge(values)
       @configuration_values[:prompt_paths] = Array(@configuration_values[:prompt_paths]).dup
       @configuration_values[:skill_paths] = Array(@configuration_values[:skill_paths]).dup
-      @configuration_values[:instruments] = Array(@configuration_values[:instruments]).dup
+      @configuration_values[:instrumentation_subscribers] = Array(
+        @configuration_values[:instrumentation_subscribers]
+      ).dup
       @configuration_values[:runtime_hooks] = Array(@configuration_values[:runtime_hooks]).dup
     end
 
@@ -75,9 +77,13 @@ module LittleGhost
       root(value)
     end
 
-    def instrument(installer, **options)
-      configuration_values[:instruments] << [installer, options]
-      installer
+    def instrument(subscriber)
+      unless subscriber.is_a?(Instrumentation::Subscriber)
+        raise ArgumentError, "instrumentation subscriber must be a LittleGhost::Instrumentation::Subscriber"
+      end
+
+      configuration_values[:instrumentation_subscribers] << subscriber
+      subscriber
     end
 
     def runtime_hook(hook_class)
@@ -132,7 +138,7 @@ module LittleGhost
       values = configuration_values.dup
       values[:prompt_paths] = Array(values[:prompt_paths]).dup
       values[:skill_paths] = Array(values[:skill_paths]).dup
-      values[:instruments] = Array(values[:instruments]).dup
+      values[:instrumentation_subscribers] = Array(values[:instrumentation_subscribers]).dup
       values[:runtime_hooks] = Array(values[:runtime_hooks]).dup
       values[:root] = requested_root || values[:root] || self.root
       values
@@ -140,16 +146,18 @@ module LittleGhost
 
     def load_file!(root: nil)
       requested_root = canonical_root(root || self.root)
-      (@configuration_file_mutex ||= Mutex.new).synchronize do
-        if @configuration_file_root
-          return self if @configuration_file_root == requested_root
+      FILE_LOAD_MUTEX.synchronize do
+        (@configuration_file_mutex ||= Mutex.new).synchronize do
+          if @configuration_file_root
+            return self if @configuration_file_root == requested_root
 
-          raise ConfigurationError, "configuration file is already loaded for #{@configuration_file_root}"
+            raise ConfigurationError, "configuration file is already loaded for #{@configuration_file_root}"
+          end
+
+          path = File.join(requested_root, "config/little_ghost.rb")
+          LittleGhost.with_configuration(self) { Kernel.load(path) } if File.file?(path)
+          @configuration_file_root = requested_root
         end
-
-        path = File.join(requested_root, "config/little_ghost.rb")
-        LittleGhost.with_configuration(self) { Kernel.load(path) } if File.file?(path)
-        @configuration_file_root = requested_root
       end
 
       self

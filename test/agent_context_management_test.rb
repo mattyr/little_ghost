@@ -49,10 +49,10 @@ class AgentContextManagementTest < Minitest::Test
       LittleGhost::Message.new(role: index.even? ? :user : :assistant, content: "message-#{index}-#{"x" * 50}")
     end
     telemetry = []
-    instrumentation = LittleGhost::Support::Instrumentation.new
-    instrumentation.subscribe(->(name, attributes) { telemetry << [name, attributes] })
+    instrumentation = LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new
+    instrumentation.subscribe(TestTelemetryRecorder.new(telemetry))
 
-    result = agent_class.new(model:, instrumentation:).call("current", history: history)
+    result = agent_class.new(model:).call("current", history: history)
 
     assert_equal 2, model.requests.length
     assert_empty model.requests.first.tools

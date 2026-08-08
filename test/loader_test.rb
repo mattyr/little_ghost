@@ -20,6 +20,21 @@ class LoaderTest < Minitest::Test
     end
   end
 
+  def test_concurrent_loaders_serialize_process_global_constant_setup
+    Dir.mktmpdir do |root|
+      write(root, "app/agents/concurrent_loader_fixture/agent.rb", "module ConcurrentLoaderFixture; class Agent; end; end")
+      loaders = 2.times.map { LittleGhost::Support::Loader.new(root:) }
+
+      loaders.map { |loader| Thread.new { loader.eager_load } }.each(&:value)
+
+      assert_equal ConcurrentLoaderFixture::Agent,
+        loaders.first.constant("ConcurrentLoaderFixture::Agent")
+      assert loaders.all? { |loader| loader.loaded_constant?("ConcurrentLoaderFixture::Agent") }
+    ensure
+      Object.send(:remove_const, :ConcurrentLoaderFixture) if Object.const_defined?(:ConcurrentLoaderFixture, false)
+    end
+  end
+
   def test_rejects_duplicate_mappings_and_missing_expected_constants
     Dir.mktmpdir do |root|
       write(root, "app/agents/conflict.rb", "class Conflict; end")

@@ -2,8 +2,7 @@
 
 module LittleGhost
   class SessionStore
-    def initialize(instrumentation: nil)
-      @instrumentation = instrumentation
+    def initialize
       @session_locks = {}
       @session_locks_mutex = Mutex.new
     end

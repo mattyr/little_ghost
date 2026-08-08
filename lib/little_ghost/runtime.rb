@@ -1,22 +1,18 @@
 # frozen_string_literal: true
 
 require "json"
-require "logger"
-require "securerandom"
 require_relative "configuration"
 
 module LittleGhost
   class Runtime
     attr_reader :configuration, :settings, :root, :loader, :prompt_paths, :skill_paths,
-      :skill_resource_root, :instrumentation, :models, :session_store, :workspace_class, :sandbox_class,
+      :skill_resource_root, :models, :session_store, :workspace_class, :sandbox_class,
       :runtime_hooks
 
-    def initialize(configuration:, settings: nil, logger: Logger.new($stderr))
-      @logger = logger
-      @startup_operation_id = SecureRandom.uuid
+    def initialize(configuration:, settings: nil)
       @startup_started_at = monotonic_time
       @startup_phase = "configuration"
-      log_startup(status: "starting")
+      report_startup(status: "starting")
 
       begin
         raise ArgumentError, "configuration must be a LittleGhost::Configuration" unless configuration.is_a?(Configuration)
@@ -36,11 +32,7 @@ module LittleGhost
         @runtime_hooks = build_runtime_hooks(@settings[:runtime_hooks])
 
         @startup_phase = "instrumentation"
-        @instrumentation = build_service(
-          @settings[:instrumentation],
-          default: -> { Support::Instrumentation.new }
-        )
-        install_instrumentation(@settings[:instruments])
+        subscribe_instrumentation(@settings[:instrumentation_subscribers])
         emit_startup(:runtime_start)
 
         @startup_phase = "loader"
@@ -70,11 +62,11 @@ module LittleGhost
 
         @startup_phase = "complete"
         emit_startup(:runtime_stop, outcome: "ready")
-        log_startup(status: "ready")
+        report_startup(status: "ready")
       rescue => error
-        emit_startup(:runtime_stop, outcome: "failed", error:) if @instrumentation
-        @instrumentation&.flush
-        log_startup(status: "failed", error:)
+        emit_startup(:runtime_stop, outcome: "failed", error:)
+        Instrumentation.flush
+        report_startup(status: "failed", error:)
         raise
       end
     end
@@ -145,7 +137,7 @@ module LittleGhost
     end
 
     def service_name
-      @settings[:service_name] || default_service_name
+      @settings&.[](:service_name) || default_service_name
     end
 
     def model_for(agent_class, run)
@@ -196,10 +188,6 @@ module LittleGhost
       {invocation: run.invocation, run:, agent:}.merge(agent.prompt_locals)
     end
 
-    def instrumentation_attributes(run:, agent: nil)
-      {}
-    end
-
     def error_message(error, run)
       runtime_hooks.each do |hook|
         message = hook.error_message(error, run)
@@ -244,11 +232,11 @@ module LittleGhost
     end
 
     def build_session_store(definition)
-      return SessionStores::Memory.new(instrumentation:) unless definition
+      return SessionStores::Memory.new unless definition
 
       provider = definition.fetch(:provider)
       options = definition.except(:provider)
-      store = provider.new(**options, instrumentation:)
+      store = provider.new(**options)
       unless store.is_a?(SessionStore)
         raise ConfigurationError, "session_store must be a LittleGhost::SessionStore"
       end
@@ -256,31 +244,18 @@ module LittleGhost
       store
     end
 
-    def install_instrumentation(declarations)
-      Array(declarations).each do |installer, options|
-        provider = if installer.is_a?(Class) && !installer.respond_to?(:install)
-          installer.new
-        else
-          installer
-        end
-        unless provider.respond_to?(:install)
-          raise ConfigurationError, "instrument must respond to install"
-        end
-
-        installation_options = {service_name: default_service_name}.merge(options)
-        provider.install(instrumentation:, **installation_options)
-      end
+    def subscribe_instrumentation(subscribers)
+      Array(subscribers).each { |subscriber| Instrumentation.subscribe(subscriber) }
     end
 
     def default_service_name
-      return @settings[:service_name].to_s if @settings[:service_name]
+      return @settings[:service_name].to_s if @settings&.[](:service_name)
 
       "little-ghost"
     end
 
     def emit_startup(name, outcome: nil, error: nil)
       attributes = {
-        operation_id: @startup_operation_id,
         service_name: service_name,
         startup_phase: @startup_phase,
         duration_ms: startup_duration_ms,
@@ -290,23 +265,24 @@ module LittleGhost
         attributes[:error_type] = error.class.name
         attributes[:diagnostic_exception] = JSON.generate(diagnostic_exception(error))
       end
-      @instrumentation.emit(name, **attributes)
+      if name == :runtime_start
+        @startup_handle = Instrumentation.start(:runtime, parent: nil, **attributes)
+      else
+        @startup_handle&.finish(**attributes)
+      end
     end
 
-    def log_startup(status:, error: nil)
-      values = [
-        "little_ghost_runtime_boot",
-        "status=#{status}",
-        "phase=#{@startup_phase}"
-      ]
-      values << "service_name=#{service_name}" if @settings
-      values << "duration_ms=#{startup_duration_ms}" if status != "starting"
-      if error
-        values << "error=#{error.class}"
-        values << "message=#{error.message.inspect}"
-      end
-      level = error ? :error : :info
-      @logger.public_send(level, values.join(" "))
+    def report_startup(status:, error: nil)
+      payload = {
+        status:,
+        phase: @startup_phase,
+        service_name:
+      }
+      payload[:duration_ms] = startup_duration_ms unless status == "starting"
+      payload[:error_type] = error.class.name if error
+      return Events.error("little_ghost.runtime.startup", payload) if error
+
+      Events.info("little_ghost.runtime.startup", payload)
     end
 
     def diagnostic_exception(error)

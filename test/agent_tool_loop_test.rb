@@ -134,13 +134,13 @@ class AgentToolLoopTest < Minitest::Test
 
   def test_emits_only_one_termination_decision_for_parallel_calls
     events = []
-    instrumentation = LittleGhost::Support::Instrumentation.new
-    instrumentation.subscribe(->(name, attributes) { events << [name, attributes] })
+    instrumentation = LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new
+    instrumentation.subscribe(TestTelemetryRecorder.new(events))
     agent_class = Class.new(LittleGhost::Agent) do
       detect_tool_loops warning_at: 2, terminate_at: 4
     end
-    agent = agent_class.new(model: Object.new, instrumentation: instrumentation)
-    context = LittleGhost::RunContext.new(instrumentation: instrumentation)
+    agent = agent_class.new(model: Object.new)
+    context = LittleGhost::RunContext.new
     run_callback(agent, :before_invocation, {}, context)
     tool = LittleGhost::Tool.define(name: "search", description: "Search") { "result" }.new
     use = LittleGhost::Content::ToolUse.new(id: "1", name: "search", input: {})
@@ -157,10 +157,10 @@ class AgentToolLoopTest < Minitest::Test
 
   def test_emits_tool_operation_ids_with_loop_events
     events = []
-    instrumentation = LittleGhost::Support::Instrumentation.new
-    instrumentation.subscribe(->(name, attributes) { events << [name, attributes] })
-    agent = build_agent(instrumentation:)
-    context = LittleGhost::RunContext.new(instrumentation: instrumentation)
+    instrumentation = LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new
+    instrumentation.subscribe(TestTelemetryRecorder.new(events))
+    agent = build_agent
+    context = LittleGhost::RunContext.new
     run_callback(agent, :before_invocation, {}, context)
     tool = LittleGhost::Tool.define(name: "search", description: "Search") { "result" }.new
     use = LittleGhost::Content::ToolUse.new(id: "1", name: "search", input: {})
@@ -176,11 +176,11 @@ class AgentToolLoopTest < Minitest::Test
 
   private
 
-  def build_agent(instrumentation: nil)
+  def build_agent
     agent_class = Class.new(LittleGhost::Agent) do
       detect_tool_loops warning_at: 2, terminate_at: 4
     end
-    agent_class.new(model: Object.new, instrumentation:)
+    agent_class.new(model: Object.new)
   end
 
   def call_tool(agent, tool_use, tool, result, context, **telemetry)
