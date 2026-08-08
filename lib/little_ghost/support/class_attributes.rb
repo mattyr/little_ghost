@@ -14,9 +14,19 @@ module LittleGhost
           end
 
           name = name.to_sym
-          define_singleton_method(name) { default }
-          define_singleton_method("#{name}=") do |value|
-            singleton_class.define_method(name) { value }
+          singleton_class.remove_method(name) if singleton_class.method_defined?(name, false)
+          writer = :"#{name}="
+          singleton_class.remove_method(writer) if singleton_class.method_defined?(writer, false)
+          values = {self => default}
+          mutex = Mutex.new
+          define_singleton_method(name) do
+            found, value = mutex.synchronize { [values.key?(self), values[self]] }
+            return value if found
+
+            superclass.public_send(name)
+          end
+          define_singleton_method(writer) do |value|
+            mutex.synchronize { values[self] = value }
             value
           end
         end

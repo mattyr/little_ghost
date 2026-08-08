@@ -7,21 +7,13 @@ module LittleGhost
     class ContentCapture
       CaptureLimitExceeded = Class.new(StandardError)
 
-      SENSITIVE_KEY = /(authorization|api[_-]?key|credential|password|secret|(?:^|[_-])token(?:$|[_-])|cookie|private[_-]?key)/i
-      SECRET_PATTERNS = [
-        /\bBearer\s+[A-Za-z0-9._~+\/-]+=*/i,
-        /\b(?:gh[opusr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/,
-        /\bAKIA[A-Z0-9]{16}\b/,
-        /\b(?:sk|pk)-[A-Za-z0-9_-]{20,}\b/
-      ].freeze
-
       def self.disabled = new(enabled: false)
 
       def initialize(enabled: false, max_bytes: nil, scrubber: nil, redactions: [])
         @enabled = enabled == true
         @max_bytes = Integer(max_bytes) if max_bytes
         @scrubber = scrubber
-        @redactions = Array(redactions).map(&:to_s).reject { |value| value.length < 8 }.uniq.freeze
+        @redactor = Redactor.new(redactions:, stringify_keys: true)
         raise ArgumentError, "max_bytes must be at least 64" if @max_bytes && @max_bytes < 64
         raise ArgumentError, "scrubber must be callable" if @scrubber && !@scrubber.respond_to?(:call)
       end
@@ -66,8 +58,7 @@ module LittleGhost
       end
 
       def bounded_scrub(value, remaining:, key: nil)
-        normalized_key = key.to_s.gsub(/([a-z\d])([A-Z])/, "\\1_\\2").downcase
-        return consume("[REDACTED]", remaining:) if key && SENSITIVE_KEY.match?(normalized_key)
+        return consume("[REDACTED]", remaining:) if key && @redactor.sensitive_key?(key)
 
         case value
         when Hash
@@ -90,7 +81,7 @@ module LittleGhost
         when String
           raise CaptureLimitExceeded if value.bytesize + 2 > remaining
 
-          consume(scrub_string(value), remaining:)
+          consume(@redactor.scrub_string(value), remaining:)
         when Symbol
           consume(value.to_s, remaining:)
         when Numeric, true, false, nil
@@ -107,29 +98,7 @@ module LittleGhost
       end
 
       def scrub(value, key = nil)
-        normalized_key = key.to_s.gsub(/([a-z\d])([A-Z])/, "\\1_\\2").downcase
-        return "[REDACTED]" if key && SENSITIVE_KEY.match?(normalized_key)
-
-        case value
-        when Hash
-          value.to_h { |child_key, child| [child_key.to_s, scrub(child, child_key)] }
-        when Array
-          value.map { |child| scrub(child) }
-        when String
-          scrub_string(value)
-        when Symbol
-          value.to_s
-        when Numeric, true, false, nil
-          value
-        else
-          value.to_s
-        end
-      end
-
-      def scrub_string(value)
-        normalized = value.encode(Encoding::UTF_8, invalid: :replace, undef: :replace, replace: "\uFFFD")
-        text = @redactions.reduce(normalized) { |current, secret| current.gsub(secret, "[REDACTED]") }
-        SECRET_PATTERNS.reduce(text) { |current, pattern| current.gsub(pattern, "[REDACTED]") }
+        @redactor.call(value, key:)
       end
 
       def structured_output(value)

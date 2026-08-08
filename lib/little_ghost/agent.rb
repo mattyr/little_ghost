@@ -265,14 +265,13 @@ module LittleGhost
       end
     end
 
-    attr_reader :model, :tool_registry, :instrumentation, :run, :delegation_activity, :agent_path, :workspace, :sandbox,
+    attr_reader :model, :tool_registry, :run, :delegation_activity, :agent_path, :workspace, :sandbox,
       :max_tool_calls
 
     def initialize(
       model: nil,
       runtime: nil,
       tools: [],
-      instrumentation: nil,
       template_resolver: nil,
       template_paths: [],
       run: nil,
@@ -319,7 +318,6 @@ module LittleGhost
         model:,
         ordinary_tools: @tool_registry.specifications
       )
-      @instrumentation = instrumentation || Support::Instrumentation.new
       @model_settings = model_settings.to_h.freeze
       @template_resolver = template_resolver || default_template_resolver(template_paths)
       @executor = executor
@@ -499,7 +497,6 @@ module LittleGhost
           state: context,
           cancellation_token: cancellation_token,
           deadline: deadline,
-          instrumentation: instrumentation,
           metadata: {agent_id: self.class.agent_id},
           checkpoint:,
           conversation_id:,
@@ -1732,7 +1729,8 @@ module LittleGhost
 
     def instrument(name, **attributes)
       attributes.delete(:diagnostic) unless self.class.capture_diagnostics
-      instrumentation.emit(name, **correlation_attributes, **attributes.compact)
+      values = correlation_attributes.merge(attributes.compact)
+      Instrumentation.record(name, **values)
     end
 
     def correlation_attributes
@@ -1744,7 +1742,7 @@ module LittleGhost
         invocation_id: run.invocation.invocation_id,
         session_id: run.invocation.session_id,
         agent_id: self.class.agent_id
-      }.merge(runtime.instrumentation_attributes(run:, agent: self))
+      }
     end
 
     def model_attributes

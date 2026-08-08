@@ -44,7 +44,9 @@ module LittleGhost
 
       begin_execution!
       @emitter = ->(event) { yield_event(event) { |value| yield value } }
-      execute { |event| yield event }
+      Instrumentation.with_context(correlation_attributes.except(:operation_id)) do
+        execute { |event| yield event }
+      end
       self
     ensure
       @emitter = nil
@@ -92,7 +94,6 @@ module LittleGhost
         state:,
         cancellation_token:,
         deadline: invocation.deadline_at,
-        instrumentation: runtime.instrumentation,
         metadata:
       )
     end
@@ -169,7 +170,7 @@ module LittleGhost
         diagnostic: {input: diagnostic_invocation_message}
       )
       emit(:run_start, run_id: invocation.run_id, thread_id: invocation.session_id) { |event| yield event }
-      trace_context = runtime.instrumentation.trace_context(operation_id:) if runtime.instrumentation.respond_to?(:trace_context)
+      trace_context = Instrumentation.trace_context(operation_id:)
       emit(:trace_context, context: trace_context) { |event| yield event } unless trace_context.nil? || trace_context.empty?
       workspace&.open(run: self)
       sandbox&.open(run: self)
@@ -331,7 +332,7 @@ module LittleGhost
     end
 
     def instrument(name, attributes = {})
-      runtime.instrumentation.emit(name, **correlation_attributes, **attributes.compact)
+      Instrumentation.record(name, **correlation_attributes.merge(attributes.compact))
     end
 
     def correlation_attributes
@@ -340,9 +341,10 @@ module LittleGhost
         run_id: invocation.run_id,
         invocation_id: invocation.invocation_id,
         session_id: invocation.session_id,
+        service_name: runtime.service_name,
         agent_id: workflow_run? ? nil : entrypoint_name,
         workflow_name: workflow_run? ? entrypoint_name : nil
-      }.merge(runtime.instrumentation_attributes(run: self)).compact
+      }.compact
     end
 
     def workflow_run? = entrypoint_class <= Workflow

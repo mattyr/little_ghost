@@ -3,6 +3,17 @@
 require "test_helper"
 
 class InterruptibleStreamTest < Minitest::Test
+  def test_producer_threads_receive_the_calling_execution_state
+    token = LittleGhost::Support::CancellationToken.new
+    stream = LittleGhost::Support::InterruptibleStream.new(cancellation_token: token) do |emit|
+      emit.call(LittleGhost::ExecutionState[:request_id])
+    end
+
+    result = LittleGhost::ExecutionState.with(request_id: "request-1") { stream.to_a }
+
+    assert_equal ["request-1"], result
+  end
+
   def test_cancellation_fails_when_the_producer_does_not_quiesce
     token = LittleGhost::Support::CancellationToken.new
     runner, worker, cleanup_started, release = stubborn_stream(cancellation_token: token)

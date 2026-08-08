@@ -44,7 +44,6 @@ module LittleGhost
         model:,
         runtime:,
         tools:,
-        instrumentation: runtime.instrumentation,
         template_paths: prompt_paths,
         run:,
         workspace: run.workspace,

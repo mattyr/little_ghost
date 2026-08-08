@@ -35,6 +35,7 @@ module LittleGhost
         model: "chat",
         run: "invoke_agent",
         runtime: "runtime_startup",
+        session_store: "session_store",
         subagent: "invoke_agent",
         tool: "execute_tool",
         workflow: "invoke_workflow"
@@ -104,7 +105,7 @@ module LittleGhost
         provider.force_flush if provider.respond_to?(:force_flush)
       end
 
-      def shutdown
+      def shutdown(timeout: nil)
         spans = @mutex.synchronize do
           current = @entries.values.map { |entry| entry.fetch(:span) }.uniq
           @entries = {}
@@ -222,6 +223,8 @@ module LittleGhost
       end
 
       def span_name(kind, attributes)
+        return attribute_value(:span_name, attributes[:span_name]) if attributes[:span_name]
+
         detail = case kind
         when :agent, :run then attributes[:agent_name] || attributes[:agent_id]
         when :workflow then attributes[:workflow_name]
@@ -275,7 +278,7 @@ module LittleGhost
       end
 
       def internal_attribute?(key)
-        %i[event_kind operation_id parent_operation_id trace_context trace_links entrypoint_kind].include?(key.to_sym)
+        %i[event_kind operation_id parent_operation_id trace_context trace_links entrypoint_kind span_name].include?(key.to_sym)
       end
 
       def add_model_settings(attributes, settings)
@@ -404,7 +407,7 @@ module LittleGhost
       end
 
       def span_kind(kind)
-        (kind == :model) ? :client : :internal
+        %i[model session_store].include?(kind) ? :client : :internal
       end
 
       def gen_ai_usage_value(key, attributes, value)

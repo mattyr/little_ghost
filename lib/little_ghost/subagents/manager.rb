@@ -1047,7 +1047,10 @@ module LittleGhost
           emit(event, identity, turn:)
           queued_snapshot = snapshot(identity)
           unless identity.worker&.alive?
-            identity.worker = Thread.new { run_identity(identity) }
+            execution_state = ExecutionState.capture
+            identity.worker = Thread.new do
+              ExecutionState.with(execution_state) { run_identity(identity) }
+            end
           end
           @condition.broadcast
         end
@@ -1545,7 +1548,12 @@ module LittleGhost
       end
 
       def warn_failure(stage, subagent_id, error)
-        warn("little_ghost_subagent_#{stage}_failed subagent_id=#{subagent_id} error=#{error.class}")
+        Events.warn(
+          "little_ghost.subagent.operation_failed",
+          stage:,
+          subagent_id:,
+          error_type: error.class.name
+        )
       rescue
         nil
       end

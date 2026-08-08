@@ -2,7 +2,6 @@
 
 require "fileutils"
 require "json"
-require "stringio"
 require "tmpdir"
 require "test_helper"
 
@@ -15,7 +14,7 @@ class RuntimeTest < Minitest::Test
       @flush_count = 0
     end
 
-    def emit(name, **attributes)
+    def call(name, attributes)
       @events << [name, attributes]
     end
 
@@ -24,23 +23,40 @@ class RuntimeTest < Minitest::Test
     end
   end
 
+  class RecordingEvents
+    attr_reader :events
+
+    def initialize
+      @events = []
+    end
+
+    def emit(event)
+      @events << event
+    end
+  end
+
   def test_runtime_emits_a_ready_startup_lifecycle
     Dir.mktmpdir do |root|
       instrumentation = RecordingInstrumentation.new
-      log = StringIO.new
+      LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new(subscribers: [instrumentation])
+      events = RecordingEvents.new
+      LittleGhost::Events.subscribe(events)
       configuration = LittleGhost::Configuration.new(
         root:,
-        service_name: "runtime-test",
-        instrumentation:
+        service_name: "runtime-test"
       )
 
-      runtime = LittleGhost::Runtime.new(configuration:, logger: Logger.new(log))
+      runtime = LittleGhost::Runtime.new(configuration:)
 
       assert_equal File.realpath(root), runtime.root.to_s
       assert_equal [:runtime_start, :runtime_stop], instrumentation.events.map(&:first)
       assert_equal "ready", instrumentation.events.last.last.fetch(:outcome)
       assert_equal 0, instrumentation.flush_count
-      assert_includes log.string, "little_ghost_runtime_boot status=ready"
+      startup = events.events.last
+      assert_equal "little_ghost.runtime.startup", startup.fetch(:name)
+      assert_equal :info, startup.fetch(:level)
+      assert_equal "ready", startup.dig(:payload, :status)
+      assert_equal "runtime-test", startup.dig(:payload, :service_name)
     end
   end
 
@@ -49,14 +65,15 @@ class RuntimeTest < Minitest::Test
       write(root, "app/agents/conflict_agent.rb", "class ConflictAgent; end")
       write(root, "app/tools/conflict_agent.rb", "class ConflictAgent; end")
       instrumentation = RecordingInstrumentation.new
-      log = StringIO.new
+      LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new(subscribers: [instrumentation])
+      events = RecordingEvents.new
+      LittleGhost::Events.subscribe(events)
       configuration = LittleGhost::Configuration.new(
         root:,
-        service_name: "runtime-test",
-        instrumentation:
+        service_name: "runtime-test"
       )
       error = assert_raises(LittleGhost::Support::Loader::ConflictError) do
-        LittleGhost::Runtime.new(configuration:, logger: Logger.new(log))
+        LittleGhost::Runtime.new(configuration:)
       end
 
       assert_equal [:runtime_start, :runtime_stop], instrumentation.events.map(&:first)
@@ -65,8 +82,11 @@ class RuntimeTest < Minitest::Test
       assert_equal error.class.name, failure.fetch(:error_type)
       assert_equal error.class.name, JSON.parse(failure.fetch(:diagnostic_exception)).fetch("type")
       assert_equal 1, instrumentation.flush_count
-      assert_includes log.string, "phase=loader"
-      assert_includes log.string, "status=failed"
+      startup = events.events.last
+      assert_equal :error, startup.fetch(:level)
+      assert_equal "loader", startup.dig(:payload, :phase)
+      assert_equal "failed", startup.dig(:payload, :status)
+      assert_equal error.class.name, startup.dig(:payload, :error_type)
     end
   end
 

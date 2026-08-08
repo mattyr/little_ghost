@@ -274,7 +274,7 @@ class AgentTest < Minitest::Test
   def test_truncates_tool_results_after_callbacks_using_the_configured_token_budget
     raw_content = nil
     telemetry = []
-    instrumentation = LittleGhost::Support::Instrumentation.new(
+    instrumentation = LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new(
       content_capture: LittleGhost::Support::ContentCapture.new(enabled: true)
     )
     instrumentation.subscribe(->(name, attributes) { telemetry << [name, attributes] })
@@ -288,7 +288,7 @@ class AgentTest < Minitest::Test
       end
     end
     model = ScriptedModel.new(response([tool_use], stop_reason: :tool_use), response("done"))
-    agent = agent_class.new(model:, tools: [tool], instrumentation:, **agent_class.limits)
+    agent = agent_class.new(model:, tools: [tool], **agent_class.limits)
 
     events = agent.stream("go").to_a
     result = events.last.data.fetch(:result)
@@ -364,12 +364,12 @@ class AgentTest < Minitest::Test
 
   def test_instruments_agent_model_and_tool_operations_without_content
     telemetry = []
-    instrumentation = LittleGhost::Support::Instrumentation.new
+    instrumentation = LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new
     instrumentation.subscribe(->(name, attributes) { telemetry << [name, attributes] })
     tool = LittleGhost::Tool.define(name: "echo", description: "Echo") { |input| input.fetch("value") }
     tool_use = LittleGhost::Content::ToolUse.new(id: "call-1", name: "echo", input: {"value" => "secret"})
     model = ScriptedModel.new(response([tool_use], stop_reason: :tool_use), response("done"))
-    agent = LittleGhost::Agent.new(model:, tools: [tool], instrumentation:)
+    agent = LittleGhost::Agent.new(model:, tools: [tool])
 
     agent.call("private prompt", parent_operation_id: "subagent-turn")
 
@@ -454,12 +454,12 @@ class AgentTest < Minitest::Test
 
   def test_nested_tool_execution_propagates_an_explicit_parent_trace_context
     telemetry = []
-    instrumentation = LittleGhost::Support::Instrumentation.new
+    instrumentation = LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new
     instrumentation.subscribe(->(name, attributes) { telemetry << [name, attributes] })
     tool = LittleGhost::Tool.define(name: "echo", description: "Echo") { "done" }
     tool_use = LittleGhost::Content::ToolUse.new(id: "call-1", name: "echo", input: {})
-    agent = LittleGhost::Agent.new(model: Object.new, tools: [tool], instrumentation:)
-    context = LittleGhost::RunContext.new(instrumentation:)
+    agent = LittleGhost::Agent.new(model: Object.new, tools: [tool])
+    context = LittleGhost::RunContext.new
     trace_context = {"traceparent" => "00-#{"1" * 32}-#{"2" * 16}-01"}
 
     agent.send(
@@ -478,7 +478,7 @@ class AgentTest < Minitest::Test
 
   def test_explicit_capture_records_model_tool_and_reasoning_content_without_binary_data
     telemetry = []
-    instrumentation = LittleGhost::Support::Instrumentation.new(
+    instrumentation = LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new(
       content_capture: LittleGhost::Support::ContentCapture.new(enabled: true)
     )
     instrumentation.subscribe(->(name, attributes) { telemetry << [name, attributes] })
@@ -489,7 +489,7 @@ class AgentTest < Minitest::Test
       LittleGhost::Content::Text.new(text: "done")
     ]
     model = ScriptedModel.new(response([tool_use], stop_reason: :tool_use), response(final_content))
-    agent = LittleGhost::Agent.new(model:, tools: [tool], instrumentation:)
+    agent = LittleGhost::Agent.new(model:, tools: [tool])
 
     agent.call("private prompt")
 
@@ -516,7 +516,7 @@ class AgentTest < Minitest::Test
     checkpoints = []
     store = LittleGhost::SessionStores::Memory.new
     session = LittleGhost::Session.new(id: "sensitive-tool", store:)
-    instrumentation = LittleGhost::Support::Instrumentation.new(
+    instrumentation = LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new(
       content_capture: LittleGhost::Support::ContentCapture.new(enabled: true)
     )
     instrumentation.subscribe(->(name, attributes) { telemetry << [name, attributes] })
@@ -526,7 +526,7 @@ class AgentTest < Minitest::Test
     ) { "customer-secret" }
     tool_use = LittleGhost::Content::ToolUse.new(id: "call-1", name: "sensitive", input: {})
     model = ScriptedModel.new(response([tool_use], stop_reason: :tool_use), response("done"))
-    agent = LittleGhost::Agent.new(model:, tools: [tool], instrumentation:)
+    agent = LittleGhost::Agent.new(model:, tools: [tool])
 
     result = agent.call(
       "private prompt",
@@ -562,7 +562,7 @@ class AgentTest < Minitest::Test
     telemetry = []
     store = LittleGhost::SessionStores::Memory.new
     session = LittleGhost::Session.new(id: "ordinary-subagent-result", store:)
-    instrumentation = LittleGhost::Support::Instrumentation.new(
+    instrumentation = LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new(
       content_capture: LittleGhost::Support::ContentCapture.new(enabled: true)
     )
     instrumentation.subscribe(->(name, attributes) { telemetry << [name, attributes] })
@@ -583,7 +583,7 @@ class AgentTest < Minitest::Test
       input: {"kind" => "evidence", "task_name" => "inspect", "task" => "inspect", "mode" => "sync"}
     )
     model = ScriptedModel.new(response([tool_use], stop_reason: :tool_use), response("done"))
-    agent = LittleGhost::Agent.new(model:, tools: manager.tools, instrumentation:)
+    agent = LittleGhost::Agent.new(model:, tools: manager.tools)
 
     agent.call("investigate", checkpoint: ->(**value) { session.checkpoint(**value) })
 
@@ -602,7 +602,7 @@ class AgentTest < Minitest::Test
 
   def test_parallel_tool_results_all_remain_visible
     telemetry = []
-    instrumentation = LittleGhost::Support::Instrumentation.new(
+    instrumentation = LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new(
       content_capture: LittleGhost::Support::ContentCapture.new(enabled: true)
     )
     instrumentation.subscribe(->(name, attributes) { telemetry << [name, attributes] })
@@ -616,7 +616,7 @@ class AgentTest < Minitest::Test
       LittleGhost::Content::ToolUse.new(id: "ordinary-1", name: "ordinary", input: {})
     ]
     model = ScriptedModel.new(response(uses, stop_reason: :tool_use), response("done"))
-    agent = LittleGhost::Agent.new(model:, tools: [sensitive, ordinary], instrumentation:)
+    agent = LittleGhost::Agent.new(model:, tools: [sensitive, ordinary])
 
     result = agent.call("go")
 
@@ -656,7 +656,7 @@ class AgentTest < Minitest::Test
 
   def test_tool_failures_include_exception_details_when_diagnostics_are_enabled
     telemetry = []
-    instrumentation = LittleGhost::Support::Instrumentation.new(
+    instrumentation = LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new(
       content_capture: LittleGhost::Support::ContentCapture.new(enabled: true)
     )
     instrumentation.subscribe(->(name, attributes) { telemetry << [name, attributes] })
@@ -666,7 +666,7 @@ class AgentTest < Minitest::Test
     ) { raise LittleGhost::ToolError, "customer-secret" }
     tool_use = LittleGhost::Content::ToolUse.new(id: "sensitive-1", name: "sensitive", input: {})
     model = ScriptedModel.new(response([tool_use], stop_reason: :tool_use), response("done"))
-    agent = LittleGhost::Agent.new(model:, tools: [sensitive], instrumentation:)
+    agent = LittleGhost::Agent.new(model:, tools: [sensitive])
 
     agent.call("go")
 
@@ -681,7 +681,7 @@ class AgentTest < Minitest::Test
 
   def test_tool_failure_diagnostics_bound_the_exception_message
     telemetry = []
-    instrumentation = LittleGhost::Support::Instrumentation.new(
+    instrumentation = LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new(
       content_capture: LittleGhost::Support::ContentCapture.new(enabled: true)
     )
     instrumentation.subscribe(->(name, attributes) { telemetry << [name, attributes] })
@@ -690,7 +690,7 @@ class AgentTest < Minitest::Test
     end
     tool_use = LittleGhost::Content::ToolUse.new(id: "call-1", name: "fail", input: {})
     model = ScriptedModel.new(response([tool_use], stop_reason: :tool_use), response("done"))
-    agent = LittleGhost::Agent.new(model:, tools: [tool], instrumentation:, max_tool_result_tokens: 1)
+    agent = LittleGhost::Agent.new(model:, tools: [tool], max_tool_result_tokens: 1)
 
     agent.call("go")
 
@@ -704,13 +704,13 @@ class AgentTest < Minitest::Test
 
   def test_unknown_tool_diagnostics_bound_the_exception_message
     telemetry = []
-    instrumentation = LittleGhost::Support::Instrumentation.new(
+    instrumentation = LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new(
       content_capture: LittleGhost::Support::ContentCapture.new(enabled: true)
     )
     instrumentation.subscribe(->(name, attributes) { telemetry << [name, attributes] })
     tool_use = LittleGhost::Content::ToolUse.new(id: "call-1", name: "abcdefghij", input: {})
     model = ScriptedModel.new(response([tool_use], stop_reason: :tool_use), response("done"))
-    agent = LittleGhost::Agent.new(model:, instrumentation:, max_tool_result_tokens: 1)
+    agent = LittleGhost::Agent.new(model:, max_tool_result_tokens: 1)
 
     agent.call("go")
 
@@ -725,7 +725,7 @@ class AgentTest < Minitest::Test
 
   def test_tool_failure_telemetry_retains_the_original_exception
     telemetry = []
-    instrumentation = LittleGhost::Support::Instrumentation.new(
+    instrumentation = LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new(
       content_capture: LittleGhost::Support::ContentCapture.new(enabled: true)
     )
     instrumentation.subscribe(->(name, attributes) { telemetry << [name, attributes] })
@@ -734,7 +734,7 @@ class AgentTest < Minitest::Test
     end
     tool_use = LittleGhost::Content::ToolUse.new(id: "call-1", name: "broken", input: {})
     model = ScriptedModel.new(response([tool_use], stop_reason: :tool_use), response("recovered"))
-    agent = LittleGhost::Agent.new(model:, tools: [tool], instrumentation:)
+    agent = LittleGhost::Agent.new(model:, tools: [tool])
 
     agent.call("try the tool")
 
@@ -750,12 +750,12 @@ class AgentTest < Minitest::Test
 
   def test_returns_unknown_tools_to_the_model_as_errors
     telemetry = []
-    instrumentation = LittleGhost::Support::Instrumentation.new
+    instrumentation = LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new
     instrumentation.subscribe(->(name, attributes) { telemetry << [name, attributes] })
     tool_use = LittleGhost::Content::ToolUse.new(id: "call-1", name: "missing", input: {})
     model = ScriptedModel.new(response([tool_use], stop_reason: :tool_use), response("recovered"))
 
-    result = LittleGhost::Agent.new(model: model, instrumentation:).call("go")
+    result = LittleGhost::Agent.new(model: model).call("go")
 
     assert_equal "recovered", result.text
     assert_equal :error, model.requests.last.messages.last.content.first.status

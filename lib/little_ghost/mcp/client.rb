@@ -147,12 +147,16 @@ module LittleGhost
         @max_pages = positive_integer(max_pages, :max_pages)
         @request_id = 0
         @mutex = Mutex.new
+        @initialization_mutex = Mutex.new
+        @source_names_mutex = Mutex.new
         @source_names = {}
         @initialized = false
       end
 
       def tools(context: nil)
-        initialize_protocol(context:) unless @initialized
+        @initialization_mutex.synchronize do
+          initialize_protocol(context:) unless @initialized
+        end
         definitions = list_tool_definitions(context:)
         definitions.filter_map do |definition|
           source_name = definition_name(definition)
@@ -164,7 +168,7 @@ module LittleGhost
       end
 
       def call(name, arguments, context: nil)
-        source_name = @source_names.fetch(name.to_s, name.to_s)
+        source_name = @source_names_mutex.synchronize { @source_names.fetch(name.to_s, name.to_s) }
         result = request("tools/call", {name: source_name, arguments: arguments}, context:)
         content = serialize_result(result)
         raise ToolError, content if result["isError"]
@@ -246,11 +250,13 @@ module LittleGhost
         client = self
         source_name = definition_name(definition)
         exposed_name = safe_name([@prefix, source_name].compact.join("___"))
-        existing = @source_names[exposed_name]
-        if existing && existing != source_name
-          raise ConfigurationError, "MCP tools #{existing.inspect} and #{source_name.inspect} map to #{exposed_name.inspect}"
+        @source_names_mutex.synchronize do
+          existing = @source_names[exposed_name]
+          if existing && existing != source_name
+            raise ConfigurationError, "MCP tools #{existing.inspect} and #{source_name.inspect} map to #{exposed_name.inspect}"
+          end
+          @source_names[exposed_name] = source_name
         end
-        @source_names[exposed_name] = source_name
 
         Tool.define(
           name: exposed_name,

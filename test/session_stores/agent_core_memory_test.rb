@@ -102,53 +102,36 @@ class AgentCoreMemoryTest < Minitest::Test
     end
   end
 
-  class Span
-    attr_reader :attributes
-    attr_accessor :status
-
-    def initialize
-      @attributes = {}
-    end
-
-    def set_attribute(name, value)
-      @attributes[name] = value
-    end
-  end
-
-  class Tracer
-    attr_reader :spans
-
-    def initialize
-      @spans = []
-    end
-
-    def in_span(name, attributes:)
-      span = Span.new
-      @spans << {name:, attributes:, span:}
-      yield span
-    end
-  end
-
   class Instrumentation
-    attr_reader :spans
+    attr_reader :events
 
     def initialize
-      @spans = []
+      @events = []
     end
 
-    def with_span(name, attributes:, parent_operation_id:)
-      span = Span.new
-      @spans << {name:, attributes:, parent_operation_id:, span:}
-      yield span
+    def call(name, attributes)
+      @events << [name, attributes]
+    end
+  end
+
+  class EventListener
+    attr_reader :events
+
+    def initialize
+      @events = []
+    end
+
+    def emit(event)
+      @events << event
     end
   end
 
   def test_uses_the_active_operation_as_the_memory_span_parent
     instrumentation = Instrumentation.new
+    LittleGhost::Instrumentation.subscribe(instrumentation)
     store = LittleGhost::SessionStores::AgentCoreMemory.new(
       memory_id: "memory",
-      client: Client.new,
-      instrumentation:
+      client: Client.new
     )
 
     store.with_operation_context("agent-operation") do
@@ -160,9 +143,9 @@ class AgentCoreMemoryTest < Minitest::Test
       )
     end
 
-    span = instrumentation.spans.fetch(0)
-    assert_equal "BedrockAgentCore/create_event", span.fetch(:name)
-    assert_equal "agent-operation", span.fetch(:parent_operation_id)
+    attributes = instrumentation.events.assoc(:session_store_start).last
+    assert_equal "BedrockAgentCore/create_event", attributes.fetch(:span_name)
+    assert_equal "agent-operation", attributes.fetch(:parent_operation_id)
   end
 
   def test_requires_memory_and_actor_ids
@@ -180,8 +163,10 @@ class AgentCoreMemoryTest < Minitest::Test
 
   def test_refreshes_the_client_after_an_expired_token_during_load
     replacement = Client.new
-    tracer = Tracer.new
-    refreshes = []
+    instrumentation = Instrumentation.new
+    LittleGhost::Instrumentation.subscribe(instrumentation)
+    events = EventListener.new
+    LittleGhost::Events.subscribe(events)
     factory_calls = 0
     store = LittleGhost::SessionStores::AgentCoreMemory.new(
       memory_id: "memory",
@@ -189,41 +174,35 @@ class AgentCoreMemoryTest < Minitest::Test
       client_factory: -> {
         factory_calls += 1
         replacement
-      },
-      logger: Logger.new(IO::NULL),
-      on_client_refresh: ->(**details) { refreshes << details },
-      tracer:
+      }
     )
 
     assert_nil store.load("session", actor_id: "actor")
 
     assert_equal 1, factory_calls
-    assert_equal(
-      {
-        operation: :list_events,
-        error_type: "Aws::BedrockAgentCore::Errors::ExpiredTokenException",
-        retry_count: 1,
-        refreshed: true
-      },
-      refreshes.fetch(0)
-    )
-    span = tracer.spans.fetch(0)
-    assert_equal "list_events", span.fetch(:attributes).fetch("rpc.method")
-    assert_equal "BedrockAgentCore/list_events", span.fetch(:name)
-    assert_equal 1, span.fetch(:span).attributes.fetch("little_ghost.session_store.retry_count")
-    assert_equal 1, span.fetch(:span).attributes.fetch("little_ghost.session_store.client_refresh_count")
-    assert_equal true, span.fetch(:span).attributes.fetch("little_ghost.session_store.recovered")
+    refresh = events.events.fetch(0)
+    assert_equal "little_ghost.session_store.client_refresh", refresh.fetch(:name)
+    assert_equal :warn, refresh.fetch(:level)
+    assert_equal :list_events, refresh.dig(:payload, :operation)
+    assert_equal "Aws::BedrockAgentCore::Errors::ExpiredTokenException", refresh.dig(:payload, :error_type)
+    assert_equal 1, refresh.dig(:payload, :retry_count)
+    assert_equal true, refresh.dig(:payload, :refreshed)
+    attributes = instrumentation.events.assoc(:session_store_stop).last
+    assert_equal "list_events", attributes.fetch("rpc.method")
+    assert_equal "BedrockAgentCore/list_events", attributes.fetch(:span_name)
+    assert_equal 1, attributes.fetch("little_ghost.session_store.retry_count")
+    assert_equal 1, attributes.fetch("little_ghost.session_store.client_refresh_count")
+    assert_equal true, attributes.fetch("little_ghost.session_store.recovered")
   end
 
   def test_refreshes_the_client_after_an_expired_token_during_create
     replacement = Client.new
-    tracer = Tracer.new
+    instrumentation = Instrumentation.new
+    LittleGhost::Instrumentation.subscribe(instrumentation)
     store = LittleGhost::SessionStores::AgentCoreMemory.new(
       memory_id: "memory",
       client: ExpiredTokenClient.new(create_failures: 1),
-      client_factory: -> { replacement },
-      logger: Logger.new(IO::NULL),
-      tracer:
+      client_factory: -> { replacement }
     )
 
     store.project_conversation(
@@ -234,12 +213,14 @@ class AgentCoreMemoryTest < Minitest::Test
     )
 
     assert_equal 1, replacement.created.length
-    assert_equal 1, tracer.spans.fetch(0).fetch(:span).attributes.fetch("little_ghost.session_store.retry_count")
+    attributes = instrumentation.events.assoc(:session_store_stop).last
+    assert_equal 1, attributes.fetch("little_ghost.session_store.retry_count")
   end
 
   def test_does_not_retry_after_a_second_expired_token
     replacement = ExpiredTokenClient.new(list_failures: 1)
-    tracer = Tracer.new
+    instrumentation = Instrumentation.new
+    LittleGhost::Instrumentation.subscribe(instrumentation)
     factory_calls = 0
     store = LittleGhost::SessionStores::AgentCoreMemory.new(
       memory_id: "memory",
@@ -247,9 +228,7 @@ class AgentCoreMemoryTest < Minitest::Test
       client_factory: -> {
         factory_calls += 1
         replacement
-      },
-      logger: Logger.new(IO::NULL),
-      tracer:
+      }
     )
 
     error = assert_raises(Aws::BedrockAgentCore::Errors::ExpiredTokenException) do
@@ -258,9 +237,9 @@ class AgentCoreMemoryTest < Minitest::Test
 
     assert_equal "expired", error.message
     assert_equal 1, factory_calls
-    span = tracer.spans.fetch(0)
-    assert_equal "Aws::BedrockAgentCore::Errors::ExpiredTokenException", span.fetch(:span).attributes.fetch("error.type")
-    assert_equal 1, span.fetch(:span).attributes.fetch("little_ghost.session_store.retry_count")
+    attributes = instrumentation.events.assoc(:session_store_stop).last
+    assert_equal "Aws::BedrockAgentCore::Errors::ExpiredTokenException", attributes.fetch(:error_type)
+    assert_equal 1, attributes.fetch("little_ghost.session_store.retry_count")
   end
 
   def test_loads_canonical_events_and_appends_only_new_messages

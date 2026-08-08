@@ -4,16 +4,19 @@ require "minitest/autorun"
 require "little_ghost"
 
 class TestRuntime
-  attr_reader :instrumentation
-
-  def initialize(instrumentation: LittleGhost::Support::Instrumentation.new)
-    @instrumentation = instrumentation
-  end
-
-  def instrumentation_attributes(run:, agent: nil) = {}
-
   def error_message(error, _run) = "Agent failed: #{error.class}"
+  def service_name = "test"
 end
+
+module InstrumentationIsolation
+  def before_setup
+    LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new
+    LittleGhost::Events.reporter = LittleGhost::Events::Reporter.new(listeners: [])
+    super
+  end
+end
+
+Minitest::Test.prepend(InstrumentationIsolation)
 
 class TestHarness < LittleGhost::Configuration
   def select_agent(value) = @test_agent_class = value
@@ -54,12 +57,6 @@ class TestHarness < LittleGhost::Configuration
 
   def runtime_instance
     @test_runtime || raise("test runtime has not been built")
-  end
-
-  def instrumentation(value = :__read__)
-    return runtime_instance.instrumentation if value == :__read__ && @test_runtime
-
-    super
   end
 
   def build_runtime(**overrides)
