@@ -135,7 +135,7 @@ class AgentToolLoopTest < Minitest::Test
   def test_emits_only_one_termination_decision_for_parallel_calls
     events = []
     instrumentation = LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new
-    instrumentation.subscribe(->(name, attributes) { events << [name, attributes] })
+    instrumentation.subscribe(TestTelemetryRecorder.new(events))
     agent_class = Class.new(LittleGhost::Agent) do
       detect_tool_loops warning_at: 2, terminate_at: 4
     end
@@ -158,7 +158,7 @@ class AgentToolLoopTest < Minitest::Test
   def test_emits_tool_operation_ids_with_loop_events
     events = []
     instrumentation = LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new
-    instrumentation.subscribe(->(name, attributes) { events << [name, attributes] })
+    instrumentation.subscribe(TestTelemetryRecorder.new(events))
     agent = build_agent
     context = LittleGhost::RunContext.new
     run_callback(agent, :before_invocation, {}, context)

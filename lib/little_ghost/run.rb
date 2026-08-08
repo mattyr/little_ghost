@@ -30,7 +30,6 @@ module LittleGhost
       @interruption_mutex = Mutex.new
       @interruption_state = :not_started
       @entrypoint = nil
-      @subagent_started_at = {}
       @usage = Usage.new
     end
 
@@ -161,8 +160,10 @@ module LittleGhost
       response_before_model_attempt = +""
       terminal = nil
       execution_cleanup_error = nil
-      instrument(
-        :run_start,
+      @instrumentation_handle = Instrumentation.start(
+        :run,
+        parent: nil,
+        **correlation_attributes,
         entrypoint_kind: workflow_run? ? :workflow : :agent,
         workflow_name: workflow_run? ? entrypoint_name : nil,
         trace_context: invocation[:parent_trace_context],
@@ -304,7 +305,7 @@ module LittleGhost
         caught
       end
       instrumentation_error = begin
-        instrument(:run_stop, stop_attributes)
+        @instrumentation_handle&.finish(**correlation_attributes.merge(stop_attributes))
         nil
       rescue => caught
         caught
@@ -332,7 +333,7 @@ module LittleGhost
     end
 
     def instrument(name, attributes = {})
-      Instrumentation.record(name, **correlation_attributes.merge(attributes.compact))
+      Instrumentation.publish(name, **correlation_attributes.merge(attributes.compact))
     end
 
     def correlation_attributes
@@ -377,9 +378,8 @@ module LittleGhost
         subagent_operation_id = value[:operation_id] || value["operation_id"]
         return unless subagent_operation_id
 
-        @subagent_started_at[subagent_operation_id] = monotonic_time
         [
-          :subagent_start,
+          :subagent_spawned,
           attributes.merge(
             operation_id: subagent_operation_id,
             parent_operation_id:,
@@ -395,17 +395,15 @@ module LittleGhost
         supplied_operation_id = value[:operation_id] || value["operation_id"]
         return unless supplied_operation_id
 
-        started_at = @subagent_started_at.delete(supplied_operation_id)
         outcome = {"turn_finished" => :completed, "turn_failed" => :error, "cancelled" => :cancelled}.fetch(event)
         [
-          :subagent_stop,
+          :subagent_finished,
           attributes.merge(
             operation_id: supplied_operation_id,
             parent_operation_id:,
             agent_id: attributes[:subagent_id],
             outcome:,
-            error_type: (event == "turn_failed") ? "LittleGhost::SubagentError" : nil,
-            duration_ms: started_at && duration_ms(started_at)
+            error_type: (event == "turn_failed") ? "LittleGhost::SubagentError" : nil
           ).compact
         ]
       end

@@ -4,38 +4,64 @@ require "securerandom"
 
 module LittleGhost
   module Instrumentation
-    class Handle
-      attr_reader :name, :operation_id, :payload, :started_at
+    class Subscriber
+      def start(_name, _attributes) = nil
+      def finish(_name, _attributes) = nil
+      def emit(_name, _attributes) = nil
+      def flush = nil
+      def shutdown(timeout: nil) = nil
+      def trace_context(**) = {}
+    end
 
-      def initialize(name, operation_id:, payload:, started_at:)
+    class Handle
+      attr_reader :name, :operation_id, :parent_operation_id, :payload, :previous, :started_at
+
+      def initialize(bus, name, operation_id:, parent_operation_id:, local_parent:, previous:, payload:, started_at:, detached:)
+        @bus = bus
         @name = name.to_sym
         @operation_id = operation_id
+        @parent_operation_id = parent_operation_id
+        @local_parent = local_parent
+        @previous = previous
         @payload = payload
         @started_at = started_at
+        @detached = detached
+        @owner = Fiber.current
       end
+
+      def finish(**attributes)
+        @bus.finish(self, **attributes)
+      end
+
+      def owner? = @owner.equal?(Fiber.current)
+      def detached? = @detached
+      def local_parent? = @local_parent
+      def active? = @bus.active?(self)
     end
 
     class Bus
-      def initialize(subscribers: [], content_capture: Support::ContentCapture.disabled, enrichers: [])
-        @subscribers = Array(subscribers)
+      def initialize(subscribers: [], content_capture: Support::ContentCapture.disabled)
+        @subscribers = []
         @content_capture = content_capture
-        @enrichers = Array(enrichers)
         @handles = {}
-        @mutex = Mutex.new
+        @children = Hash.new(0)
         @finishing = {}
+        @mutex = Mutex.new
         @reported_failures = {}
         @shutdown = false
+        Array(subscribers).each { |subscriber| subscribe(subscriber) }
       end
 
-      def subscribe(subscriber = nil, prepend: false, &block)
-        listener = subscriber || block
-        raise ArgumentError, "A subscriber or block is required" unless listener
+      def subscribe(subscriber, prepend: false)
+        unless subscriber.is_a?(Subscriber)
+          raise ArgumentError, "instrumentation subscriber must be a LittleGhost::Instrumentation::Subscriber"
+        end
 
         @mutex.synchronize do
-          @subscribers.reject! { |subscriber| subscriber.equal?(listener) }
-          prepend ? @subscribers.unshift(listener) : @subscribers << listener
+          @subscribers.reject! { |listener| listener.equal?(subscriber) }
+          prepend ? @subscribers.unshift(subscriber) : @subscribers << subscriber
         end
-        listener
+        subscriber
       end
 
       def unsubscribe(subscriber)
@@ -50,133 +76,74 @@ module LittleGhost
         policy
       end
 
-      def enrich(enricher = nil, &block)
-        listener = enricher || block
-        raise ArgumentError, "An enricher or block is required" unless listener
-
-        @mutex.synchronize { @enrichers << listener }
-        listener
-      end
-
       def publish(name, diagnostic: nil, **attributes)
-        attributes = context.merge(attributes)
-        policy, enrichers = @mutex.synchronize { [@content_capture, @enrichers.dup] }
-        if diagnostic
-          begin
-            attributes = attributes.merge(policy.capture(diagnostic))
-          rescue => error
-            warn_failure(error, component: :content_capture)
-          end
-        end
-        enrichers.each do |enricher|
-          additions = enricher.call(name.to_sym, deep_copy(attributes))
-          attributes = attributes.merge(additions) if additions.is_a?(Hash)
-        rescue => error
-          warn_failure(error, component: :enricher)
-        end
-        event_subscribers.each do |subscriber|
-          subscriber.call(name.to_sym, deep_copy(attributes))
-        rescue => error
-          warn_failure(error, component: :subscriber)
-        end
-        attributes
+        current_handle = current
+        values = context.merge(attributes)
+        values[:operation_id] ||= current_handle&.operation_id
+        values = prepare_attributes(values.compact, diagnostic:)
+        notify(:emit, name.to_sym, values)
+        values
       end
 
-      def record(name, **attributes)
-        event_name = name.to_s
-        if event_name.end_with?("_start")
-          start(event_name.delete_suffix("_start"), **attributes)
-        elsif event_name.end_with?("_stop")
-          finish(
-            operation_id: attributes.fetch(:operation_id),
-            **attributes.except(:operation_id)
-          )
-        else
-          publish(name, **attributes)
-        end
-      end
-
-      def start(name, operation_id: SecureRandom.uuid, **payload)
-        handle = prepare_start(name, operation_id:, **payload)
-        published = false
-        publish_start(handle)
-        published = true
-        handle
-      ensure
-        abandon(handle.operation_id) if handle && !published
-      end
-
-      def prepare_start(name, operation_id: SecureRandom.uuid, **payload)
+      def start(name, parent: current, operation_id: SecureRandom.uuid, detached: false, diagnostic: nil, **attributes)
+        previous = current unless detached
+        validate_parent!(parent)
+        parent_operation_id = parent.is_a?(Handle) ? parent.operation_id : parent
+        payload = context.merge(attributes).merge(operation_id:, parent_operation_id:).compact
+        payload = prepare_attributes(payload, diagnostic:)
         handle = Handle.new(
+          self,
           name,
           operation_id:,
-          payload: context.merge(payload).merge(operation_id:),
-          started_at: monotonic_time
+          parent_operation_id:,
+          local_parent: parent.is_a?(Handle),
+          previous:,
+          payload:,
+          started_at: monotonic_time,
+          detached:
         )
         @mutex.synchronize do
           raise Error, "instrumentation is shut down" if @shutdown
           raise ArgumentError, "instrumentation operation is already active" if @handles.key?(operation_id)
+          if parent.is_a?(Handle)
+            raise Error, "instrumentation parent is not active" unless @handles[parent.operation_id].equal?(parent)
+            raise Error, "instrumentation parent is finishing" if @finishing.key?(parent.operation_id)
+          end
 
           @handles[operation_id] = handle
+          @children[parent_operation_id] += 1 if parent.is_a?(Handle)
         end
+        set_current(handle) unless detached
+        notify(:start, handle.name, handle.payload)
         handle
+      rescue
+        abandon(handle) if handle
+        raise
       end
 
-      def publish_start(handle)
-        publish(:"#{handle.name}_start", **handle.payload)
-      end
-
-      def abandon(operation_id)
-        @mutex.synchronize do
-          @handles.delete(operation_id)
-          @finishing.delete(operation_id)
-        end
-      end
-
-      def finish(operation_id:, **payload)
-        completion = prepare_finish(operation_id:, **payload)
-        publish_finish(completion) if completion
-      end
-
-      def prepare_finish(operation_id:, **payload)
-        handle = @mutex.synchronize do
-          next if @finishing[operation_id]
-
-          current = @handles[operation_id]
-          @finishing[operation_id] = true if current
-          current
-        end
-        return unless handle
-
-        attributes = handle.payload.merge(payload).merge(
-          operation_id:,
-          duration_ms: elapsed_ms(handle.started_at)
-        )
-        [handle, attributes]
-      end
-
-      def publish_finish(completion)
-        handle, attributes = completion
-        publish(:"#{handle.name}_stop", **attributes)
+      def finish(handle, diagnostic: nil, **attributes)
+        validate_finish!(handle)
+        validated = true
+        values = handle.payload.merge(attributes).merge(duration_ms: elapsed_ms(handle.started_at))
+        values = prepare_attributes(values.compact, diagnostic:)
+        notify(:finish, handle.name, values)
+        values
       ensure
-        @mutex.synchronize do
-          @handles.delete(handle.operation_id)
-          @finishing.delete(handle.operation_id)
-        end
+        complete(handle) if validated && active_handle?(handle)
       end
 
       def instrument(name, payload = {})
         values = payload.dup
         handle = start(name, **values)
         result = yield values if block_given?
-        finish(operation_id: handle.operation_id, **values)
+        handle.finish(**values)
         result
       rescue => error
         values ||= payload.dup
         values[:outcome] ||= :error
         values[:error_type] ||= error.class.name
         values[:diagnostic] ||= {exception: diagnostic_exception(error)}
-        finish(operation_id: handle.operation_id, **values) if handle
+        handle.finish(**values) if handle && active_handle?(handle)
         raise
       end
 
@@ -189,16 +156,18 @@ module LittleGhost
         deep_copy(ExecutionState[context_key] || {})
       end
 
-      def active?
-        @mutex.synchronize { !@handles.empty? }
+      def current
+        ExecutionState[current_key]
+      end
+
+      def active?(handle = nil)
+        @mutex.synchronize do
+          handle ? @handles[handle.operation_id].equal?(handle) : !@handles.empty?
+        end
       end
 
       def flush
-        subscribers.each do |subscriber|
-          subscriber.flush if subscriber.respond_to?(:flush)
-        rescue => error
-          warn_failure(error, component: :subscriber)
-        end
+        subscribers.each { |subscriber| notify_subscriber(subscriber, :flush) }
       end
 
       def shutdown(timeout: nil)
@@ -212,19 +181,13 @@ module LittleGhost
 
         deadline = monotonic_time + Float(timeout) if timeout
         subscribers.reverse_each do |subscriber|
-          next unless subscriber.respond_to?(:shutdown)
-
           remaining = deadline && [deadline - monotonic_time, 0].max
-          subscriber.shutdown(timeout: remaining)
-        rescue => error
-          warn_failure(error, component: :subscriber)
+          notify_subscriber(subscriber, :shutdown, timeout: remaining)
         end
       end
 
       def trace_context(**attributes)
         subscribers.each do |subscriber|
-          next unless subscriber.respond_to?(:trace_context)
-
           value = subscriber.trace_context(**attributes)
           return value unless value.nil? || value.empty?
         rescue => error
@@ -234,6 +197,79 @@ module LittleGhost
       end
 
       private
+
+      def validate_parent!(parent)
+        return unless parent
+        unless parent.is_a?(Handle) || parent.is_a?(String)
+          raise ArgumentError, "instrumentation parent must be a handle or remote operation ID"
+        end
+      end
+
+      def validate_finish!(handle)
+        raise ArgumentError, "instrumentation handle is required" unless handle.is_a?(Handle)
+        unless handle.detached?
+          raise Error, "instrumentation handle belongs to another fiber" unless handle.owner?
+          raise Error, "instrumentation operations must finish in nesting order" unless current.equal?(handle)
+        end
+
+        @mutex.synchronize do
+          raise Error, "instrumentation operation is not active" unless @handles[handle.operation_id].equal?(handle)
+          raise Error, "instrumentation operation is already finishing" if @finishing.key?(handle.operation_id)
+          raise Error, "instrumentation operation has active children" unless @children[handle.operation_id].zero?
+
+          @finishing[handle.operation_id] = true
+        end
+      end
+
+      def active_handle?(handle)
+        active?(handle)
+      end
+
+      def complete(handle)
+        @mutex.synchronize do
+          @handles.delete(handle.operation_id)
+          @children.delete(handle.operation_id)
+          @finishing.delete(handle.operation_id)
+          if handle.local_parent?
+            @children[handle.parent_operation_id] -= 1
+          end
+        end
+        set_current(handle.previous) if current.equal?(handle)
+      end
+
+      def abandon(handle)
+        complete(handle) if active_handle?(handle)
+      end
+
+      def set_current(handle)
+        if handle
+          ExecutionState[current_key] = handle
+        else
+          ExecutionState.delete(current_key)
+        end
+      end
+
+      def prepare_attributes(attributes, diagnostic:)
+        return attributes unless diagnostic
+
+        policy = @mutex.synchronize { @content_capture }
+        attributes.merge(policy.capture(diagnostic))
+      rescue => error
+        warn_failure(error, component: :content_capture)
+        attributes
+      end
+
+      def notify(method, name, attributes)
+        event_subscribers.each do |subscriber|
+          notify_subscriber(subscriber, method, name, deep_copy(attributes))
+        end
+      end
+
+      def notify_subscriber(subscriber, method, ...)
+        subscriber.public_send(method, ...)
+      rescue => error
+        warn_failure(error, component: :subscriber)
+      end
 
       def subscribers
         @mutex.synchronize { @subscribers.dup }
@@ -260,6 +296,7 @@ module LittleGhost
       end
 
       def context_key = :little_ghost_instrumentation_context
+      def current_key = :little_ghost_instrumentation_current
 
       def monotonic_time
         Process.clock_gettime(Process::CLOCK_MONOTONIC)
@@ -318,56 +355,10 @@ module LittleGhost
       def subscribe(...) = bus.subscribe(...)
       def unsubscribe(...) = bus.unsubscribe(...)
       def capture_content(...) = bus.capture_content(...)
-      def enrich(...) = bus.enrich(...)
       def publish(...) = bus.publish(...)
-
-      def record(name, **attributes)
-        event_name = name.to_s
-        if event_name.end_with?("_start")
-          start(event_name.delete_suffix("_start"), **attributes)
-        elsif event_name.end_with?("_stop")
-          finish(
-            operation_id: attributes.fetch(:operation_id),
-            **attributes.except(:operation_id)
-          )
-        else
-          publish(name, **attributes)
-        end
-      end
-
-      def start(...)
-        target, handle = prepare_start(...)
-        publish_start(target, handle)
-        handle
-      end
-
-      def finish(...)
-        target = notifier_mutex.synchronize { bus }
-        target.finish(...)
-      end
-
-      def instrument(name, payload = {})
-        values = payload.dup
-        target, handle = prepare_start(name, **values)
-        publish_start(target, handle)
-        result = yield values if block_given?
-        target.finish(operation_id: handle.operation_id, **values)
-        result
-      rescue => error
-        values ||= payload.dup
-        values[:outcome] ||= :error
-        values[:error_type] ||= error.class.name
-        values[:diagnostic] ||= {
-          exception: {
-            type: error.class.name,
-            message: error.message,
-            stacktrace: Array(error.backtrace).join("\n")
-          }
-        }
-        target&.finish(operation_id: handle.operation_id, **values) if handle
-        raise
-      end
-
+      def start(...) = bus.start(...)
+      def instrument(...) = bus.instrument(...)
+      def current = bus.current
       def with_context(attributes, &block) = bus.with_context(attributes, &block)
       def context = bus.context
       def flush = bus.flush
@@ -375,6 +366,10 @@ module LittleGhost
       def trace_context(...) = bus.trace_context(...)
 
       def subscribed(subscriber, prepend: false)
+        unless subscriber.is_a?(Subscriber)
+          raise ArgumentError, "instrumentation subscriber must be a LittleGhost::Instrumentation::Subscriber"
+        end
+
         subscribers = ExecutionState[:instrumentation_subscribers] || []
         entry = {subscriber:, prepend:}
         ExecutionState.with(instrumentation_subscribers: subscribers + [entry]) { yield }
@@ -388,21 +383,6 @@ module LittleGhost
 
       def notifier_mutex
         @notifier_mutex ||= Mutex.new
-      end
-
-      def prepare_start(...)
-        notifier_mutex.synchronize do
-          target = bus
-          [target, target.prepare_start(...)]
-        end
-      end
-
-      def publish_start(target, handle)
-        published = false
-        target.publish_start(handle)
-        published = true
-      ensure
-        target.abandon(handle.operation_id) unless published
       end
     end
   end

@@ -6,16 +6,12 @@ require "tmpdir"
 require "test_helper"
 
 class RuntimeTest < Minitest::Test
-  class RecordingInstrumentation
+  class RecordingInstrumentation < TestTelemetryRecorder
     attr_reader :events, :flush_count
 
     def initialize
-      @events = []
+      super
       @flush_count = 0
-    end
-
-    def call(name, attributes)
-      @events << [name, attributes]
     end
 
     def flush

@@ -18,6 +18,46 @@ end
 
 Minitest::Test.prepend(InstrumentationIsolation)
 
+class TestInstrumentationSubscriber < LittleGhost::Instrumentation::Subscriber
+  attr_reader :events
+
+  def initialize(events = [], &listener)
+    @events = events
+    @listener = listener
+  end
+
+  def start(name, attributes) = deliver(:start, name, attributes)
+  def finish(name, attributes) = deliver(:finish, name, attributes)
+  def emit(name, attributes) = deliver(:emit, name, attributes)
+
+  private
+
+  def deliver(phase, name, attributes)
+    @events << [phase, name, attributes]
+    @listener&.call(phase, name, attributes)
+  end
+end
+
+class TestTelemetryRecorder < LittleGhost::Instrumentation::Subscriber
+  attr_reader :events
+
+  def initialize(events = [])
+    @events = events
+  end
+
+  def start(name, attributes) = record(:start, name, attributes)
+  def finish(name, attributes) = record(:finish, name, attributes)
+  def emit(name, attributes) = record(:emit, name, attributes)
+
+  private
+
+  def record(phase, name, attributes)
+    lifecycle = (phase == :finish) ? :stop : phase
+    event_name = (phase == :emit) ? name : :"#{name}_#{lifecycle}"
+    events << [event_name, attributes]
+  end
+end
+
 class TestHarness < LittleGhost::Configuration
   def select_agent(value) = @test_agent_class = value
 

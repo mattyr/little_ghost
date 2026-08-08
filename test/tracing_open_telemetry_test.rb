@@ -53,8 +53,8 @@ class TracingOpenTelemetryTest < Minitest::Test
     tracer = Tracer.new
     tracing = LittleGhost::Tracing::OpenTelemetry.new(tracer:)
 
-    tracing.call(
-      :run_start,
+    tracing.start(
+      :run,
       {
         operation_id: "run",
         run_id: "run-1",
@@ -64,8 +64,8 @@ class TracingOpenTelemetryTest < Minitest::Test
         diagnostic_input: JSON.generate("hello")
       }
     )
-    tracing.call(
-      :agent_start,
+    tracing.start(
+      :agent,
       {
         operation_id: "agent",
         parent_operation_id: "run",
@@ -75,9 +75,9 @@ class TracingOpenTelemetryTest < Minitest::Test
         diagnostic_input: JSON.generate("hello")
       }
     )
-    tracing.call(:agent_turn_start, {operation_id: "turn", parent_operation_id: "agent", turn: 1})
-    tracing.call(
-      :model_start,
+    tracing.start(:agent_turn, {operation_id: "turn", parent_operation_id: "agent", turn: 1})
+    tracing.start(
+      :model,
       {
         operation_id: "model",
         parent_operation_id: "turn",
@@ -96,8 +96,8 @@ class TracingOpenTelemetryTest < Minitest::Test
         }])
       }
     )
-    tracing.call(
-      :model_stop,
+    tracing.finish(
+      :model,
       {
         operation_id: "model",
         outcome: :completed,
@@ -117,14 +117,14 @@ class TracingOpenTelemetryTest < Minitest::Test
         )
       }
     )
-    tracing.call(:agent_turn_stop, {operation_id: "turn", outcome: :completed})
-    tracing.call(
-      :agent_stop,
+    tracing.finish(:agent_turn, {operation_id: "turn", outcome: :completed})
+    tracing.finish(
+      :agent,
       {operation_id: "agent", outcome: :completed, diagnostic_output: JSON.generate("done")}
     )
     trace_context = tracing.trace_context(operation_id: "run")
-    tracing.call(
-      :run_stop,
+    tracing.finish(
+      :run,
       {
         operation_id: "run",
         outcome: :completed,
@@ -206,8 +206,8 @@ class TracingOpenTelemetryTest < Minitest::Test
     tracer = Tracer.new
     tracing = LittleGhost::Tracing::OpenTelemetry.new(tracer:)
 
-    tracing.call(
-      :run_start,
+    tracing.start(
+      :run,
       {
         operation_id: "run",
         entrypoint_kind: :workflow,
@@ -215,8 +215,8 @@ class TracingOpenTelemetryTest < Minitest::Test
         session_id: "session-1"
       }
     )
-    tracing.call(
-      :agent_start,
+    tracing.start(
+      :agent,
       {
         operation_id: "agent",
         parent_operation_id: "run",
@@ -224,8 +224,8 @@ class TracingOpenTelemetryTest < Minitest::Test
         agent_name: "Atlas Main"
       }
     )
-    tracing.call(:agent_stop, {operation_id: "agent", outcome: :completed})
-    tracing.call(:run_stop, {operation_id: "run", outcome: :completed})
+    tracing.finish(:agent, {operation_id: "agent", outcome: :completed})
+    tracing.finish(:run, {operation_id: "run", outcome: :completed})
 
     workflow_name, workflow_context, workflow_span = tracer.started.fetch(0)
     agent_name, agent_context, agent_span = tracer.started.fetch(1)
@@ -248,9 +248,9 @@ class TracingOpenTelemetryTest < Minitest::Test
     tracer = Tracer.new
     tracing = LittleGhost::Tracing::OpenTelemetry.new(tracer:)
 
-    tracing.call(:model_start, {operation_id: "model", model_id: "model"})
-    tracing.call(
-      :model_stop,
+    tracing.start(:model, {operation_id: "model", model_id: "model"})
+    tracing.finish(
+      :model,
       {
         operation_id: "model",
         outcome: :error,
@@ -280,15 +280,15 @@ class TracingOpenTelemetryTest < Minitest::Test
     tracer = Tracer.new
     tracing = LittleGhost::Tracing::OpenTelemetry.new(tracer:)
 
-    tracing.call(
-      :model_start,
+    tracing.start(
+      :model,
       {
         operation_id: "model",
         model_id: "model",
         diagnostic_input: JSON.generate(truncated: true, preview: "[{\"role\":\"system\"")
       }
     )
-    tracing.call(:model_stop, {operation_id: "model"})
+    tracing.finish(:model, {operation_id: "model"})
 
     span = tracer.started.first.last
     refute span.attributes.key?("gen_ai.input.messages")
@@ -301,8 +301,8 @@ class TracingOpenTelemetryTest < Minitest::Test
     tracing = LittleGhost::Tracing::OpenTelemetry.new(tracer:)
     content = "context " * 20_000
 
-    tracing.call(
-      :model_start,
+    tracing.start(
+      :model,
       {
         operation_id: "model",
         model_id: "model",
@@ -312,7 +312,7 @@ class TracingOpenTelemetryTest < Minitest::Test
         ])
       }
     )
-    tracing.call(:model_stop, {operation_id: "model"})
+    tracing.finish(:model, {operation_id: "model"})
 
     messages = JSON.parse(tracer.started.first.last.attributes.fetch("gen_ai.input.messages"))
     assert_equal %w[system user], messages.map { |message| message.fetch("role") }
@@ -325,8 +325,8 @@ class TracingOpenTelemetryTest < Minitest::Test
     tracer = Tracer.new
     tracing = LittleGhost::Tracing::OpenTelemetry.new(tracer:)
 
-    tracing.call(
-      :tool_start,
+    tracing.start(
+      :tool,
       {
         operation_id: "tool",
         tool_name: "lookup",
@@ -338,7 +338,7 @@ class TracingOpenTelemetryTest < Minitest::Test
         "tag.tags": ["atlas", "main-agent"]
       }
     )
-    tracing.call(:tool_stop, {operation_id: "tool", diagnostic_output: JSON.generate(result: "found")})
+    tracing.finish(:tool, {operation_id: "tool", diagnostic_output: JSON.generate(result: "found")})
 
     span = tracer.started.first.last
     refute span.attributes.key?("openinference.span.kind")
@@ -362,9 +362,9 @@ class TracingOpenTelemetryTest < Minitest::Test
     tracer = Tracer.new
     tracing = LittleGhost::Tracing::OpenTelemetry.new(tracer:)
 
-    tracing.call(:tool_start, {operation_id: "tool", tool_name: "lookup"})
-    tracing.call(
-      :tool_stop,
+    tracing.start(:tool, {operation_id: "tool", tool_name: "lookup"})
+    tracing.finish(
+      :tool,
       {
         operation_id: "tool",
         outcome: :error,
@@ -415,16 +415,16 @@ class TracingOpenTelemetryTest < Minitest::Test
       content: [{type: "text", text: "The investigation is complete."}]
     )
 
-    tracing.call(:model_start, operation_id: "model-1", model_id: "model", diagnostic_input: first_input)
-    tracing.call(
-      :model_stop,
+    tracing.start(:model, operation_id: "model-1", model_id: "model", diagnostic_input: first_input)
+    tracing.finish(
+      :model,
       operation_id: "model-1",
       stop_reason: :tool_use,
       diagnostic_output: tool_output
     )
-    tracing.call(:model_start, operation_id: "model-2", model_id: "model", diagnostic_input: second_input)
-    tracing.call(
-      :model_stop,
+    tracing.start(:model, operation_id: "model-2", model_id: "model", diagnostic_input: second_input)
+    tracing.finish(
+      :model,
       operation_id: "model-2",
       stop_reason: :end_turn,
       diagnostic_output: final_output
@@ -452,7 +452,7 @@ class TracingOpenTelemetryTest < Minitest::Test
     tracer = Tracer.new
     tracing = LittleGhost::Tracing::OpenTelemetry.new(tracer:)
 
-    tracing.call(
+    tracing.emit(
       :custom,
       {
         api_key: "secret",
@@ -473,8 +473,8 @@ class TracingOpenTelemetryTest < Minitest::Test
     tracer = Tracer.new
     tracing = LittleGhost::Tracing::OpenTelemetry.new(tracer:)
 
-    tracing.call(:tool_start, {operation_id: "tool", tool_name: "lookup"})
-    tracing.call(:tool_loop, {operation_id: "tool", action: :warn, tool_name: "lookup", count: 3})
+    tracing.start(:tool, {operation_id: "tool", tool_name: "lookup"})
+    tracing.emit(:tool_loop, {operation_id: "tool", action: :warn, tool_name: "lookup", count: 3})
 
     span = tracer.started.first.last
     name, attributes = span.events.one? ? span.events.first : flunk("expected one tool-loop event")
@@ -489,13 +489,13 @@ class TracingOpenTelemetryTest < Minitest::Test
     tracer = Tracer.new
     tracing = LittleGhost::Tracing::OpenTelemetry.new(tracer:)
 
-    tracing.call(:model_start, {operation_id: "model", model_id: "model"})
-    tracing.call(
-      :tool_start,
+    tracing.start(:model, {operation_id: "model", model_id: "model"})
+    tracing.start(
+      :tool,
       {operation_id: "tool", parent_operation_id: "model", tool_name: "lookup"}
     )
-    tracing.call(:model_stop, {operation_id: "model"})
-    tracing.call(
+    tracing.finish(:model, {operation_id: "model"})
+    tracing.emit(
       :tool_loop,
       {
         operation_id: "tool",
@@ -519,12 +519,12 @@ class TracingOpenTelemetryTest < Minitest::Test
     tracer = Tracer.new
     tracing = LittleGhost::Tracing::OpenTelemetry.new(tracer:)
 
-    tracing.call(:model_start, {operation_id: "model", model_id: "model"})
-    tracing.call(
-      :tool_start,
+    tracing.start(:model, {operation_id: "model", model_id: "model"})
+    tracing.start(
+      :tool,
       {operation_id: "tool", parent_operation_id: "model", tool_name: "lookup"}
     )
-    tracing.call(
+    tracing.emit(
       :tool_loop,
       {
         operation_id: "tool",
@@ -550,8 +550,8 @@ class TracingOpenTelemetryTest < Minitest::Test
     tracer = Tracer.new
     tracing = LittleGhost::Tracing::OpenTelemetry.new(tracer:)
 
-    tracing.call(:model_start, {operation_id: "model", model_id: "model"})
-    tracing.call(
+    tracing.start(:model, {operation_id: "model", model_id: "model"})
+    tracing.emit(
       :model_retry,
       {
         parent_operation_id: "model",
@@ -579,8 +579,8 @@ class TracingOpenTelemetryTest < Minitest::Test
     tracer = Tracer.new
     tracing = LittleGhost::Tracing::OpenTelemetry.new(tracer:)
 
-    tracing.call(:model_start, {operation_id: "model", model_id: "model"})
-    tracing.call(
+    tracing.start(:model, {operation_id: "model", model_id: "model"})
+    tracing.emit(
       :agent_interrupt_delivered,
       {
         parent_operation_id: "model",
@@ -603,32 +603,32 @@ class TracingOpenTelemetryTest < Minitest::Test
     tracer = Tracer.new
     tracing = LittleGhost::Tracing::OpenTelemetry.new(tracer:)
 
-    tracing.call(:agent_start, {
+    tracing.start(:agent, {
       operation_id: "caller",
       agent_id: "InvestigatorAgent",
       diagnostic_input: JSON.generate("investigate")
     })
-    tracing.call(:subagent_start, {
+    tracing.start(:subagent, {
       operation_id: "turn",
       parent_operation_id: "caller",
       subagent_id: "evidence-1",
       kind: "explore"
     })
-    tracing.call(:agent_stop, {
+    tracing.finish(:agent, {
       operation_id: "caller",
       diagnostic_output: JSON.generate("delegation queued")
     })
-    tracing.call(:agent_start, {
+    tracing.start(:agent, {
       operation_id: "agent",
       parent_operation_id: "turn",
       agent_id: "ExploreAgent",
       diagnostic_input: JSON.generate("check evidence")
     })
-    tracing.call(:agent_stop, {
+    tracing.finish(:agent, {
       operation_id: "agent",
       diagnostic_output: JSON.generate("evidence found")
     })
-    tracing.call(:subagent_stop, {operation_id: "turn", outcome: :cancelled})
+    tracing.finish(:subagent, {operation_id: "turn", outcome: :cancelled})
 
     caller_name, _caller_context, caller_span = tracer.started.fetch(0)
     subagent_name, subagent_context, subagent_span = tracer.started.fetch(1)
@@ -659,7 +659,7 @@ class TracingOpenTelemetryTest < Minitest::Test
       "traceparent" => "00-#{parent.hex_trace_id}-#{parent.hex_span_id}-01"
     }
 
-    tracing.call(:run_start, operation_id: "run", agent_id: "engineering", trace_links: [carrier])
+    tracing.start(:run, operation_id: "run", agent_id: "engineering", trace_links: [carrier])
 
     _name, parent_context, span = tracer.started.fetch(0)
     assert_equal :root, parent_context
@@ -674,7 +674,7 @@ class TracingOpenTelemetryTest < Minitest::Test
   def test_with_span_uses_an_active_operation_as_parent
     tracer = Tracer.new
     tracing = LittleGhost::Tracing::OpenTelemetry.new(tracer:)
-    tracing.call(:run_start, operation_id: "run", agent_id: "main")
+    tracing.start(:run, operation_id: "run", agent_id: "main")
 
     tracing.with_span(
       "BedrockAgentCore/list_events",
@@ -704,8 +704,8 @@ class TracingOpenTelemetryTest < Minitest::Test
       "traceparent" => "00-#{parent.hex_trace_id}-#{parent.hex_span_id}-01"
     }
 
-    tracing.call(
-      :tool_start,
+    tracing.start(
+      :tool,
       operation_id: "nested-tool",
       parent_operation_id: "finished-parent",
       trace_context: carrier,

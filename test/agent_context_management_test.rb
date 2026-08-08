@@ -50,7 +50,7 @@ class AgentContextManagementTest < Minitest::Test
     end
     telemetry = []
     instrumentation = LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new
-    instrumentation.subscribe(->(name, attributes) { telemetry << [name, attributes] })
+    instrumentation.subscribe(TestTelemetryRecorder.new(telemetry))
 
     result = agent_class.new(model:).call("current", history: history)
 

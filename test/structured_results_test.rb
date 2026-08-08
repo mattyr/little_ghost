@@ -152,7 +152,7 @@ class StructuredResultsTest < Minitest::Test
     telemetry = []
     LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new(
       content_capture: LittleGhost::Support::ContentCapture.new(enabled: true),
-      subscribers: [->(name, attributes) { telemetry << [name, attributes] }]
+      subscribers: [TestTelemetryRecorder.new(telemetry)]
     )
     mutation = LittleGhost::Tool.define(name: "mutation", description: "Mutate") do
       side_effects << true
@@ -188,7 +188,7 @@ class StructuredResultsTest < Minitest::Test
     telemetry = []
     LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new(
       content_capture: LittleGhost::Support::ContentCapture.new(enabled: true),
-      subscribers: [->(name, attributes) { telemetry << [name, attributes] }]
+      subscribers: [TestTelemetryRecorder.new(telemetry)]
     )
     model = ScriptedModel.new(
       response(%({"answer":"#{secret})),
@@ -437,7 +437,7 @@ class StructuredResultsTest < Minitest::Test
   def test_turn_limit_telemetry_does_not_claim_an_unattempted_repair
     telemetry = []
     LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new(
-      subscribers: [->(name, attributes) { telemetry << [name, attributes] }]
+      subscribers: [TestTelemetryRecorder.new(telemetry)]
     )
     lookup = LittleGhost::Tool.define(name: "lookup", description: "Lookup") { "found" }
     model = ScriptedModel.new(
@@ -567,7 +567,7 @@ class StructuredResultsTest < Minitest::Test
     LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new(
       content_capture: LittleGhost::Support::ContentCapture.new(enabled: true)
     )
-    LittleGhost::Instrumentation.subscribe(->(name, attributes) { telemetry << [name, attributes] })
+    LittleGhost::Instrumentation.subscribe(TestTelemetryRecorder.new(telemetry))
     model = ScriptedModel.new(response(JSON.generate("answer" => "private")))
     agent = structured_agent.new(model:)
 
@@ -589,7 +589,7 @@ class StructuredResultsTest < Minitest::Test
   def test_http_status_is_traced_when_diagnostic_capture_is_disabled
     telemetry = []
     LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new(
-      subscribers: [->(name, attributes) { telemetry << [name, attributes] }]
+      subscribers: [TestTelemetryRecorder.new(telemetry)]
     )
     model = Class.new do
       def capabilities = LittleGhost::ModelCapabilities.legacy
@@ -619,7 +619,7 @@ class StructuredResultsTest < Minitest::Test
     telemetry = []
     LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new(
       content_capture: LittleGhost::Support::ContentCapture.new(enabled: true),
-      subscribers: [->(name, attributes) { telemetry << [name, attributes] }]
+      subscribers: [TestTelemetryRecorder.new(telemetry)]
     )
     agent_class = Class.new(structured_agent) { capture_diagnostics false }
     model = ScriptedModel.new(response(JSON.generate("answer" => "private")))

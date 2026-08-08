@@ -399,7 +399,7 @@ class ConfigurationTest < Minitest::Test
     }.each do |error, (expected_outcome, expected_terminal)|
       recorded = []
       instrumentation = LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new
-      instrumentation.subscribe(->(name, attributes) { recorded << [name, attributes] })
+      instrumentation.subscribe(TestTelemetryRecorder.new(recorded))
       provider = ProgressThenDeadlineProvider.new(error)
 
       with_runtime(agent: progress_agent, provider:) do |harness|
@@ -462,7 +462,7 @@ class ConfigurationTest < Minitest::Test
   def test_framework_emits_correlated_semantic_telemetry_without_ui_deltas
     recorded = []
     instrumentation = LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new
-    instrumentation.subscribe(->(name, attributes) { recorded << [name, attributes] })
+    instrumentation.subscribe(TestTelemetryRecorder.new(recorded))
 
     with_runtime do |harness|
       harness.agent_instance.call(message: "Build it")
@@ -500,7 +500,7 @@ class ConfigurationTest < Minitest::Test
     instrumentation = LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new(
       content_capture: LittleGhost::Support::ContentCapture.new(enabled: true)
     )
-    instrumentation.subscribe(->(name, attributes) { recorded << [name, attributes] })
+    instrumentation.subscribe(TestTelemetryRecorder.new(recorded))
 
     with_runtime do |harness|
       harness.agent_instance.call(message: "Build it", session_id: "session-1")
@@ -518,7 +518,7 @@ class ConfigurationTest < Minitest::Test
     instrumentation = LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new(
       content_capture: LittleGhost::Support::ContentCapture.new(enabled: true)
     )
-    instrumentation.subscribe(->(name, attributes) { recorded << [name, attributes] })
+    instrumentation.subscribe(TestTelemetryRecorder.new(recorded))
     message = LittleGhost::Message.new(
       role: :assistant,
       content: LittleGhost::Content::Reasoning.new(
@@ -541,7 +541,7 @@ class ConfigurationTest < Minitest::Test
   def test_model_failure_before_output_omits_time_to_first_token
     recorded = []
     instrumentation = LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new
-    instrumentation.subscribe(->(name, attributes) { recorded << [name, attributes] })
+    instrumentation.subscribe(TestTelemetryRecorder.new(recorded))
 
     with_runtime(provider: FailingProvider.new(LittleGhost::ProviderError.new("offline"))) do |harness|
       harness.agent_instance.call(message: "Build it")
@@ -569,7 +569,7 @@ class ConfigurationTest < Minitest::Test
 
   def test_instrument_dsl_subscribes_configured_objects
     events = []
-    subscriber = ->(name, attributes) { events << [name, attributes] }
+    subscriber = TestTelemetryRecorder.new(events)
 
     with_runtime(configure: lambda { |harness|
       harness.service_name "support-agent"
@@ -729,7 +729,7 @@ class ConfigurationTest < Minitest::Test
     recorded = []
     expected_agent_id = nil
     instrumentation = LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new
-    instrumentation.subscribe(->(name, attributes) { recorded << [name, attributes] })
+    instrumentation.subscribe(TestTelemetryRecorder.new(recorded))
 
     with_runtime(
       configure: lambda do |configuration|
@@ -850,10 +850,12 @@ class ConfigurationTest < Minitest::Test
 
   def test_execution_cleanup_error_survives_run_stop_instrumentation_failure
     cleanup_error = LittleGhost::CleanupError.new("work is still running")
-    subscriber = lambda do |name, _attributes|
-      raise "run stop instrumentation failed" if name == :run_stop
+    subscriber = Class.new(LittleGhost::Instrumentation::Subscriber) do
+      def finish(name, _attributes)
+        raise "run stop instrumentation failed" if name == :run
+      end
     end
-    LittleGhost::Instrumentation.subscribe(subscriber)
+    LittleGhost::Instrumentation.subscribe(subscriber.new)
 
     with_runtime(provider: FailingProvider.new(cleanup_error)) do |harness|
       run = harness.agent_instance.build_run(message: "hello")
@@ -1022,7 +1024,7 @@ class ConfigurationTest < Minitest::Test
     instrumentation = LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new(
       content_capture: LittleGhost::Support::ContentCapture.new(enabled: true)
     )
-    instrumentation.subscribe(->(name, attributes) { recorded << [name, attributes] })
+    instrumentation.subscribe(TestTelemetryRecorder.new(recorded))
 
     with_runtime(session_store: store) do |harness|
       run = harness.agent_instance.call(message: "Continue")
@@ -1060,7 +1062,7 @@ class ConfigurationTest < Minitest::Test
         model "main"
         system_prompt "Test"
       end
-      subscriber = ->(*) { raise("external instrumentation was published") }
+      subscriber = TestInstrumentationSubscriber.new { raise "external instrumentation was published" }
       configuration = TestHarness.new
       configuration.root root
       configuration.select_agent agent

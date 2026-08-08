@@ -243,7 +243,7 @@ module LittleGhost
       def with_memory_span(operation)
         payload = {
           operation_id: SecureRandom.uuid,
-          parent_operation_id: ExecutionState[@operation_context_key],
+          parent: ExecutionState[@operation_context_key],
           span_name: "BedrockAgentCore/#{operation}"
         }.merge(
           "cloud.provider" => "aws",

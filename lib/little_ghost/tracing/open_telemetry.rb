@@ -5,7 +5,7 @@ require "opentelemetry-api"
 
 module LittleGhost
   module Tracing
-    class OpenTelemetry
+    class OpenTelemetry < Instrumentation::Subscriber
       ATTRIBUTE_NAMES = {
         agent_id: "gen_ai.agent.id",
         agent_name: "gen_ai.agent.name",
@@ -60,15 +60,16 @@ module LittleGhost
         @mutex = Mutex.new
       end
 
-      def call(name, attributes)
-        operation_id = attributes[:operation_id]
-        if name.to_s.end_with?("_start") && operation_id
-          start_span(name, attributes)
-        elsif name.to_s.end_with?("_stop") && operation_id
-          finish_span(attributes)
-        else
-          add_event(name, attributes)
-        end
+      def start(name, attributes)
+        start_span(name.to_sym, prepare_attributes(:start, name.to_sym, attributes))
+      end
+
+      def finish(name, attributes)
+        finish_span(name.to_sym, prepare_attributes(:finish, name.to_sym, attributes))
+      end
+
+      def emit(name, attributes)
+        add_event(name.to_sym, prepare_attributes(:emit, name.to_sym, attributes))
       end
 
       def trace_context(operation_id: nil, **)
@@ -116,12 +117,14 @@ module LittleGhost
 
       private
 
+      def prepare_attributes(_phase, _name, attributes) = attributes
+
       def tracer
         @tracer || ::OpenTelemetry.tracer_provider.tracer("little_ghost", LittleGhost::VERSION)
       end
 
       def start_span(name, attributes)
-        kind = name.to_s.delete_suffix("_start").to_sym
+        kind = name.to_sym
         kind = :workflow if kind == :run && attributes[:entrypoint_kind]&.to_sym == :workflow
         parent = @mutex.synchronize { @entries[attributes[:parent_operation_id]] }
         if kind == :agent && parent&.fetch(:kind) == :run &&
@@ -175,12 +178,13 @@ module LittleGhost
         end
       end
 
-      def finish_span(attributes)
+      def finish_span(name, attributes)
         entry = @mutex.synchronize { @entries.delete(attributes[:operation_id]) }
-        return add_event(:orphan_stop, attributes) unless entry
+        return add_event(:orphan_finish, attributes.merge(instrumentation_name: name)) unless entry
 
         span = entry.fetch(:span)
-        span_attributes(attributes, kind: entry.fetch(:kind)).each do |key, value|
+        finish_attributes = attributes.except(:diagnostic_input, :diagnostic_tool_definitions)
+        span_attributes(finish_attributes, kind: entry.fetch(:kind)).each do |key, value|
           span.set_attribute(key, value)
         end
         return if entry.fetch(:alias)

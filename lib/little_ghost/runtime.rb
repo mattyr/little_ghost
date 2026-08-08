@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require "json"
-require "securerandom"
 require_relative "configuration"
 
 module LittleGhost
@@ -11,7 +10,6 @@ module LittleGhost
       :runtime_hooks
 
     def initialize(configuration:, settings: nil)
-      @startup_operation_id = SecureRandom.uuid
       @startup_started_at = monotonic_time
       @startup_phase = "configuration"
       report_startup(status: "starting")
@@ -258,7 +256,6 @@ module LittleGhost
 
     def emit_startup(name, outcome: nil, error: nil)
       attributes = {
-        operation_id: @startup_operation_id,
         service_name: service_name,
         startup_phase: @startup_phase,
         duration_ms: startup_duration_ms,
@@ -269,9 +266,9 @@ module LittleGhost
         attributes[:diagnostic_exception] = JSON.generate(diagnostic_exception(error))
       end
       if name == :runtime_start
-        Instrumentation.start(:runtime, **attributes)
+        @startup_handle = Instrumentation.start(:runtime, parent: nil, **attributes)
       else
-        Instrumentation.finish(operation_id: @startup_operation_id, **attributes.except(:operation_id))
+        @startup_handle&.finish(**attributes)
       end
     end
 

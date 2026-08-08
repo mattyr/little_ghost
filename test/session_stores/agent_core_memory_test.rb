@@ -102,16 +102,7 @@ class AgentCoreMemoryTest < Minitest::Test
     end
   end
 
-  class Instrumentation
-    attr_reader :events
-
-    def initialize
-      @events = []
-    end
-
-    def call(name, attributes)
-      @events << [name, attributes]
-    end
+  class Instrumentation < TestTelemetryRecorder
   end
 
   class EventListener

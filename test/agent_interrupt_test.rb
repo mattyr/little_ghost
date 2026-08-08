@@ -51,7 +51,7 @@ class AgentInterruptTest < Minitest::Test
     )
     telemetry = []
     LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new(
-      subscribers: [->(name, attributes) { telemetry << [name, attributes] }],
+      subscribers: [TestTelemetryRecorder.new(telemetry)],
       content_capture: LittleGhost::Support::ContentCapture.new(enabled: true)
     )
     agent = LittleGhost::Agent.new(model:, tools: [first, second])
@@ -203,8 +203,8 @@ class AgentInterruptTest < Minitest::Test
     )
     queued = Queue.new
     LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new(
-      subscribers: [lambda do |name, _attributes|
-        queued << true if name == :agent_interrupt_queued
+      subscribers: [TestInstrumentationSubscriber.new do |phase, name, _attributes|
+        queued << true if phase == :emit && name == :agent_interrupt_queued
       end]
     )
     agent = LittleGhost::Agent.new(model:, tools: [first_tool, second_tool])

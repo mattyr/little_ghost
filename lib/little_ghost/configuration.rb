@@ -78,7 +78,9 @@ module LittleGhost
     end
 
     def instrument(subscriber)
-      raise ArgumentError, "instrumentation subscriber must respond to call" unless subscriber.respond_to?(:call)
+      unless subscriber.is_a?(Instrumentation::Subscriber)
+        raise ArgumentError, "instrumentation subscriber must be a LittleGhost::Instrumentation::Subscriber"
+      end
 
       configuration_values[:instrumentation_subscribers] << subscriber
       subscriber
