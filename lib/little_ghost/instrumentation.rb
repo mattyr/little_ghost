@@ -8,7 +8,7 @@ module LittleGhost
       def start(_name, _attributes) = nil
       def finish(_name, _attributes) = nil
       def emit(_name, _attributes) = nil
-      def flush = nil
+      def flush(timeout: nil) = nil
       def shutdown(timeout: nil) = nil
       def trace_context(**) = {}
     end
@@ -166,8 +166,12 @@ module LittleGhost
         end
       end
 
-      def flush
-        subscribers.each { |subscriber| notify_subscriber(subscriber, :flush) }
+      def flush(timeout: nil)
+        deadline = monotonic_time + Float(timeout) if timeout
+        subscribers.each do |subscriber|
+          remaining = deadline && [deadline - monotonic_time, 0].max
+          notify_subscriber(subscriber, :flush, timeout: remaining)
+        end
       end
 
       def shutdown(timeout: nil)
@@ -361,7 +365,7 @@ module LittleGhost
       def current = bus.current
       def with_context(attributes, &block) = bus.with_context(attributes, &block)
       def context = bus.context
-      def flush = bus.flush
+      def flush(...) = bus.flush(...)
       def shutdown(...) = bus.shutdown(...)
       def trace_context(...) = bus.trace_context(...)
 

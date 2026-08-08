@@ -14,7 +14,7 @@ class RuntimeTest < Minitest::Test
       @flush_count = 0
     end
 
-    def flush
+    def flush(timeout: nil)
       @flush_count += 1
     end
   end

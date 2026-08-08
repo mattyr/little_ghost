@@ -300,7 +300,7 @@ class InstrumentationTest < Minitest::Test
     flushed = false
     shutdown = false
     trace_attributes = nil
-    subscriber.define_singleton_method(:flush) { flushed = true }
+    subscriber.define_singleton_method(:flush) { |timeout:| flushed = timeout }
     subscriber.define_singleton_method(:shutdown) { |timeout:| shutdown = timeout }
     subscriber.define_singleton_method(:trace_context) do |**attributes|
       trace_attributes = attributes
@@ -308,10 +308,10 @@ class InstrumentationTest < Minitest::Test
     end
 
     instrumentation = LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new(subscribers: [subscriber])
-    instrumentation.flush
+    instrumentation.flush(timeout: 2)
     instrumentation.shutdown(timeout: 2)
 
-    assert flushed
+    assert_operator flushed, :<=, 2
     assert_operator shutdown, :<=, 2
     assert_equal({trace_id: "trace"}, instrumentation.trace_context(operation_id: "run-1"))
     assert_equal({operation_id: "run-1"}, trace_attributes)
@@ -353,7 +353,7 @@ class InstrumentationTest < Minitest::Test
 
   def test_lifecycle_failures_are_isolated
     subscriber = LittleGhost::Instrumentation::Subscriber.new
-    subscriber.define_singleton_method(:flush) { raise "unavailable" }
+    subscriber.define_singleton_method(:flush) { |timeout:| raise "unavailable" }
     subscriber.define_singleton_method(:shutdown) { |timeout:| raise "unavailable" }
     subscriber.define_singleton_method(:trace_context) { |**| raise "unavailable" }
     instrumentation = LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new(subscribers: [subscriber])

@@ -101,9 +101,9 @@ module LittleGhost
         span&.finish
       end
 
-      def flush
+      def flush(timeout: nil)
         provider = ::OpenTelemetry.tracer_provider
-        provider.force_flush if provider.respond_to?(:force_flush)
+        provider.force_flush(timeout:) if provider.respond_to?(:force_flush)
       end
 
       def shutdown(timeout: nil)
