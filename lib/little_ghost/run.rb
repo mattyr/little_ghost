@@ -24,6 +24,8 @@ module LittleGhost
       @started = false
       @mutex = Mutex.new
       @event_mutex = Mutex.new
+      @subagent_instrumentation_mutex = Mutex.new
+      @subagent_instrumentation = {}
       @exclusive_tools_mutex = Mutex.new
       @once_mutex = Mutex.new
       @once_keys = {}
@@ -99,12 +101,8 @@ module LittleGhost
 
     def publish(type, **data)
       event = StreamEvent.build(type, **data)
-      telemetry = @event_mutex.synchronize do
-        value = event_telemetry(type, data)
-        @emitter&.call(event)
-        value
-      end
-      instrument(*telemetry) if telemetry
+      @event_mutex.synchronize { @emitter&.call(event) }
+      instrument_event(type, data)
       event
     end
 
@@ -144,6 +142,15 @@ module LittleGhost
       errors = []
       callbacks.each do |callback|
         callback.call
+      rescue => error
+        errors << error
+      end
+      cleanup_error = errors.find { |caught| caught.is_a?(CleanupError) } || errors.first
+      begin
+        finish_remaining_subagent_instrumentation(
+          outcome: cleanup_error ? :error : :cancelled,
+          error_type: cleanup_error&.class&.name
+        )
       rescue => error
         errors << error
       end
@@ -358,7 +365,7 @@ module LittleGhost
       entrypoint_class.agent_id
     end
 
-    def subagent_telemetry(data)
+    def instrument_subagent(data)
       value = data.fetch(:event)
       event = value[:event] || value["event"]
       attributes = {
@@ -373,53 +380,92 @@ module LittleGhost
       parent_operation_id = value[:parent_operation_id] || value["parent_operation_id"] || operation_id
       case event
       when "factory_failed"
-        [:subagent_factory_failed, attributes.merge(parent_operation_id:)]
+        instrument(:subagent_factory_failed, attributes.merge(parent_operation_id:))
       when "spawned", "message_queued"
         subagent_operation_id = value[:operation_id] || value["operation_id"]
         return unless subagent_operation_id
 
-        [
-          :subagent_spawned,
-          attributes.merge(
-            operation_id: subagent_operation_id,
-            parent_operation_id:,
-            agent_id: attributes[:subagent_id]
-          )
-        ]
+        values = attributes.merge(
+          operation_id: subagent_operation_id,
+          parent_operation_id:,
+          agent_id: attributes[:subagent_id]
+        )
+        start_subagent_instrumentation(values)
+        instrument(:subagent_spawned, values)
       when "turn_started"
         supplied_operation_id = value[:operation_id] || value["operation_id"]
         return unless supplied_operation_id
 
-        [:subagent_turn_started, attributes.merge(operation_id: supplied_operation_id)]
+        instrument(
+          :subagent_turn_started,
+          attributes.merge(operation_id: supplied_operation_id, parent_operation_id:)
+        )
       when "turn_finished", "turn_failed", "cancelled"
         supplied_operation_id = value[:operation_id] || value["operation_id"]
         return unless supplied_operation_id
 
         outcome = {"turn_finished" => :completed, "turn_failed" => :error, "cancelled" => :cancelled}.fetch(event)
-        [
-          :subagent_finished,
-          attributes.merge(
-            operation_id: supplied_operation_id,
-            parent_operation_id:,
-            agent_id: attributes[:subagent_id],
-            outcome:,
-            error_type: (event == "turn_failed") ? "LittleGhost::SubagentError" : nil
-          ).compact
-        ]
+        values = attributes.merge(
+          operation_id: supplied_operation_id,
+          parent_operation_id:,
+          agent_id: attributes[:subagent_id],
+          outcome:,
+          error_type: (event == "turn_failed") ? attributes[:error_type] || "LittleGhost::SubagentError" : nil
+        ).compact
+        instrument(:subagent_finished, values)
+        finish_subagent_instrumentation(supplied_operation_id, values)
       end
     end
 
-    def event_telemetry(type, data)
+    def instrument_event(type, data)
       case type.to_sym
       when :subagent
-        subagent_telemetry(data)
+        instrument_subagent(data)
       when :model_retry
         error = data[:error]
         error_class = error.class.name if error.is_a?(Exception)
         error_class ||= error if error.is_a?(String) && error.match?(/\A[A-Z]\w*(?:::[A-Z]\w*)*\z/)
         attributes = data.slice(:attempt, :delay, :error_code, :http_status, :partial_text)
-        [:model_retry, attributes.merge(error_class:).compact]
+        instrument(:model_retry, attributes.merge(error_class:).compact)
       end
+    end
+
+    def start_subagent_instrumentation(attributes)
+      operation_id = attributes.fetch(:operation_id)
+      @subagent_instrumentation_mutex.synchronize do
+        return if @subagent_instrumentation.key?(operation_id)
+
+        values = correlation_attributes.merge(attributes).except(:operation_id, :parent_operation_id)
+        @subagent_instrumentation[operation_id] = Instrumentation.start(
+          :subagent,
+          parent: attributes.fetch(:parent_operation_id),
+          operation_id:,
+          detached: true,
+          **values
+        )
+      end
+    end
+
+    def finish_subagent_instrumentation(operation_id, attributes)
+      handle = @subagent_instrumentation_mutex.synchronize do
+        @subagent_instrumentation.delete(operation_id)
+      end
+      return unless handle
+
+      handle.finish(**attributes.except(:operation_id, :parent_operation_id))
+    end
+
+    def finish_remaining_subagent_instrumentation(outcome:, error_type: nil)
+      handles = @subagent_instrumentation_mutex.synchronize do
+        @subagent_instrumentation.values.tap { @subagent_instrumentation.clear }
+      end
+      errors = handles.filter_map do |handle|
+        handle.finish(outcome:, error_type:)
+        nil
+      rescue => error
+        error
+      end
+      raise errors.first if errors.any?
     end
 
     def usage_attributes(usage)
