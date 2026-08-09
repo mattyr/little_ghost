@@ -1328,7 +1328,7 @@ module LittleGhost
               error: identity.latest_error
             )
           end
-          emit("turn_failed", identity, turn:)
+          emit("turn_failed", identity, turn:, error_type: error.class.name)
           fail_queued_turns(identity)
           @condition.broadcast
         end

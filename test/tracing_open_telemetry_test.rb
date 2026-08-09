@@ -647,6 +647,72 @@ class TracingOpenTelemetryTest < Minitest::Test
     tracing&.shutdown
   end
 
+  def test_run_nests_async_subagent_work_under_the_caller_across_threads
+    tracer = Tracer.new
+    tracing = LittleGhost::Tracing::OpenTelemetry.new(tracer:)
+    instrumentation = LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new(
+      subscribers: [tracing]
+    )
+    agent_class = Class.new(LittleGhost::Agent) { agent_id "main" }
+    run = LittleGhost::Run.new(
+      invocation: LittleGhost::Invocation.new(message: "hello"),
+      agent_class:,
+      runtime: TestRuntime.new
+    )
+    caller = LittleGhost::Instrumentation.start(
+      :agent,
+      operation_id: "caller",
+      agent_id: "main",
+      agent_name: "Atlas Main"
+    )
+    event = {
+      subagent_id: "/root/research",
+      conversation_id: "conversation",
+      kind: "deep_research",
+      turn: 1,
+      operation_id: "turn",
+      parent_operation_id: "caller"
+    }
+
+    run.publish(:subagent, event: event.merge(event: "spawned"))
+    assert_same caller, LittleGhost::Instrumentation.current
+    caller.finish(outcome: :completed)
+
+    Thread.new do
+      run.publish(:subagent, event: event.merge(event: "turn_started"))
+      delegated = LittleGhost::Instrumentation.start(
+        :agent,
+        parent: "turn",
+        operation_id: "delegated",
+        agent_id: "deep-research",
+        agent_name: "Atlas Deep Research"
+      )
+      delegated.finish(outcome: :completed)
+      run.publish(:subagent, event: event.merge(event: "turn_finished"))
+    end.join
+
+    caller_name, _caller_parent, caller_span = tracer.started.fetch(0)
+    subagent_name, subagent_parent, subagent_span = tracer.started.fetch(1)
+    delegated_name, delegated_parent, delegated_span = tracer.started.fetch(2)
+    assert_equal "invoke_agent Atlas Main", caller_name
+    assert_equal "invoke_agent /root/research", subagent_name
+    assert_equal "invoke_agent Atlas Deep Research", delegated_name
+    assert_equal caller_span.context, OpenTelemetry::Trace.current_span(subagent_parent).context
+    assert_equal subagent_span.context, OpenTelemetry::Trace.current_span(delegated_parent).context
+    assert_equal %w[
+      little_ghost.subagent_spawned
+      little_ghost.subagent_turn_started
+      little_ghost.subagent_finished
+    ], subagent_span.events.map(&:first)
+    assert caller_span.finished?
+    assert subagent_span.finished?
+    assert delegated_span.finished?
+    assert_empty tracer.instant
+    refute instrumentation.active?
+  ensure
+    tracing&.shutdown
+  end
+
   def test_trace_links_start_a_new_root_trace
     tracer = Tracer.new
     tracing = LittleGhost::Tracing::OpenTelemetry.new(tracer:)
