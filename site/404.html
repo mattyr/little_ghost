@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#090a12">
+    <meta name="robots" content="noindex">
+    <title>LittleGhost wandered off</title>
+    <style>
+      :root { color-scheme: dark; font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      * { box-sizing: border-box; }
+      body { display: grid; min-height: 100svh; margin: 0; place-items: center; color: #f7f4ed; background: radial-gradient(circle at 50% 35%, #272044, #090a12 52%, #05060b); }
+      main { width: min(90vw, 650px); padding: 50px 24px; text-align: center; }
+      svg { width: 150px; margin: 0 auto 30px; filter: drop-shadow(0 24px 30px rgba(148, 112, 237, .3)); animation: float 5s ease-in-out infinite; }
+      .eyebrow { color: #76f7d2; font: 700 .72rem ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .14em; text-transform: uppercase; }
+      h1 { margin: 16px 0; font-size: clamp(3rem, 9vw, 5.8rem); letter-spacing: -.065em; line-height: .95; }
+      h1 em { color: #d6c9ff; font-family: Georgia, serif; font-weight: 400; }
+      p { max-width: 500px; margin: 0 auto; color: #a6a4b1; font-size: 1.05rem; line-height: 1.6; }
+      nav { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; margin-top: 32px; }
+      a { padding: 14px 21px; border: 1px solid rgba(247,244,237,.15); border-radius: 999px; color: #f7f4ed; text-decoration: none; font-size: .82rem; font-weight: 700; }
+      a:first-child { color: #11121b; background: linear-gradient(120deg, #fffdf7, #d8ceff, #9ff8df); }
+      a:hover { border-color: rgba(247,244,237,.35); }
+      a:focus-visible { outline: 2px solid #76f7d2; outline-offset: 5px; }
+      @keyframes float { 0%, 100% { transform: translateY(0) rotate(-2deg); } 50% { transform: translateY(-13px) rotate(2deg); } }
+      @media (prefers-reduced-motion: reduce) { svg { animation: none; } }
+    </style>
+  </head>
+  <body>
+    <main>
+      <svg viewBox="0 0 120 140" role="img" aria-label="A friendly ghost looking around">
+        <defs><linearGradient id="body" x1="18" y1="12" x2="104" y2="128"><stop stop-color="#fffefb"></stop><stop offset="1" stop-color="#baa5ff"></stop></linearGradient></defs>
+        <path d="M60 8C31 8 13 31 13 62v60c0 6.6 7.8 9.9 13.2 4.9L38.3 116l10.1 10.1c5.5 5.5 17.7 5.5 23.2 0L81.7 116l12.1 10.9c5.4 5 13.2 1.7 13.2-4.9V62C107 31 89 8 60 8Z" fill="url(#body)"></path>
+        <ellipse cx="44" cy="67" rx="7" ry="9" fill="#171827"></ellipse>
+        <ellipse cx="76" cy="67" rx="7" ry="9" fill="#171827"></ellipse>
+        <circle cx="41" cy="64" r="2" fill="#fff"></circle>
+        <circle cx="73" cy="64" r="2" fill="#fff"></circle>
+        <path d="M52 85c5-3 11-3 16 0" fill="none" stroke="#5a4b80" stroke-linecap="round" stroke-width="3"></path>
+      </svg>
+      <div class="eyebrow">404 · a small detour</div>
+      <h1>This page has<br><em>ghosted us.</em></h1>
+      <p>The good news: LittleGhost itself is still right where you left it.</p>
+      <nav aria-label="Recovery links">
+        <a href="https://mattyr.github.io/little_ghost/">Return home</a>
+        <a href="https://mattyr.github.io/little_ghost/docs/">Browse the docs</a>
+      </nav>
+    </main>
+  </body>
+</html>

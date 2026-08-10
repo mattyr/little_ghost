@@ -17,6 +17,7 @@ Gem::Specification.new do |spec|
   spec.metadata = {
     "bug_tracker_uri" => "#{spec.homepage}/issues",
     "changelog_uri" => "#{spec.homepage}/releases",
+    "documentation_uri" => "https://mattyr.github.io/little_ghost/docs/",
     "source_code_uri" => spec.homepage
   }
 

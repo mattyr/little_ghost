@@ -94,6 +94,7 @@ Prompts can stay inline while an agent is small, then move into conventional ERB
 
 ## Documentation
 
+- [LittleGhost website](https://mattyr.github.io/little_ghost/) is the quickest way to meet the framework and find your next step.
 - [Getting Started](docs/guides/Getting%20Started.md) builds the customer support example from an empty application and runs it.
 - [Core Concepts](docs/guides/Core%20Concepts.md) explains models, agents, tools, delegation, workflows, sessions, and streaming through the same example.
 - [API reference](rdoc-ref:LittleGhost) covers exact signatures, options, and lifecycle details.
