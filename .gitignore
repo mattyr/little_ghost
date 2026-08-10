@@ -1,5 +1,6 @@
 /.bundle/
 /pkg/
 /coverage/
+/doc/
 /.ruby-lsp/
 /*.gem

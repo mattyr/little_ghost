@@ -5,14 +5,37 @@ require "securerandom"
 
 module LittleGhost
   class Agent
+    # Keep long conversations within the model's available context window.
+    # The capability summarizes older turns while preserving trusted instructions
+    # and recent messages.
+    #
+    #   class CustomerSupportAgent < LittleGhost::Agent
+    #     manage_context compression_threshold: 0.75,
+    #       preserve_recent_messages: 12
+    #   end
+    #
+    # As a support thread reaches the threshold, the next model request contains
+    # a generated summary and targets retaining its 12 most recent conversation
+    # messages. System and developer messages remain intact, and tool-use/result
+    # pairs are never split merely to hit the requested count.
+    #
+    # Context management is inactive until +manage_context+ is declared. The
+    # configured window is a fallback: provider metadata takes precedence when
+    # it advertises a positive context-window size. Compaction uses the current
+    # model with the request's settings, cancellation token, and deadline.
+    #
+    # Proactive compaction failures leave the original request unchanged and emit
+    # diagnostic instrumentation. A provider context-overflow error triggers one
+    # compaction replacement through the model-error callback; cancellation,
+    # deadlines, and cleanup failures still escape as control flow.
     module ContextManagement
-      DEFAULT_CONTEXT_WINDOW_TOKENS = 200_000
-      DEFAULT_COMPRESSION_THRESHOLD = 0.85
-      DEFAULT_SUMMARY_RATIO = 0.3
-      DEFAULT_PRESERVE_RECENT_MESSAGES = 10
-      ESTIMATED_CHARS_PER_TOKEN = 4
-      OUTPUT_LIMIT_STOP_REASONS = %i[max_tokens limit_output_tokens limit_total_tokens limit_turns].freeze
-      SUMMARIZATION_PROMPT = <<~PROMPT
+      DEFAULT_CONTEXT_WINDOW_TOKENS = 200_000 # :nodoc:
+      DEFAULT_COMPRESSION_THRESHOLD = 0.85 # :nodoc:
+      DEFAULT_SUMMARY_RATIO = 0.3 # :nodoc:
+      DEFAULT_PRESERVE_RECENT_MESSAGES = 10 # :nodoc:
+      ESTIMATED_CHARS_PER_TOKEN = 4 # :nodoc:
+      OUTPUT_LIMIT_STOP_REASONS = %i[max_tokens limit_output_tokens limit_total_tokens limit_turns].freeze # :nodoc:
+      SUMMARIZATION_PROMPT = <<~PROMPT # :nodoc:
         You are a conversation summarizer. Provide a concise summary of the conversation history.
 
         Format requirements:
@@ -23,12 +46,22 @@ module LittleGhost
         - Write the summary in the third person.
       PROMPT
 
-      def self.included(base)
+      def self.included(base) # :nodoc:
         base.extend(ClassMethods)
         base.class_attribute :context_management_configuration_value
       end
 
+      # Exposes context-management declarations on agent classes.
+      # These methods become inheritable DSL entries when the capability is included.
       module ClassMethods
+        # Enables automatic context compaction for the agent class.
+        #
+        # The defaults assume a 200,000-token window, compact at 85% usage,
+        # summarize about 30% of conversation messages, and preserve the 10 most
+        # recent messages. The model's declared context window takes precedence
+        # over +context_window_tokens+ when available.
+        #
+        # Invalid ranges raise ArgumentError when the agent class is defined.
         def manage_context(
           context_window_tokens: DEFAULT_CONTEXT_WINDOW_TOKENS,
           compression_threshold: DEFAULT_COMPRESSION_THRESHOLD,
@@ -58,7 +91,7 @@ module LittleGhost
           after_model_error :compact_context_after_overflow
         end
 
-        def context_management_configuration = context_management_configuration_value
+        def context_management_configuration = context_management_configuration_value # :nodoc:
       end
 
       private

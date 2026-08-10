@@ -3,31 +3,60 @@
 require "json"
 
 module LittleGhost
+  # Provider adapters translate model APIs into LittleGhost's shared streaming
+  # request and response types. Agents select them through a ModelRegistry rather
+  # than depending on a provider class directly.
   module Providers
+    # Bedrock lets LittleGhost agents use models available through Amazon Bedrock
+    # Converse. Its output follows the same streaming events as every other
+    # LittleGhost provider.
+    #
+    #   provider = LittleGhost::Providers::Bedrock.new(
+    #     model: ENV.fetch("BEDROCK_MODEL_ID"),
+    #     region: ENV.fetch("AWS_REGION")
+    #   )
+    #
+    # The default client requires the optional +aws-sdk-bedrockruntime+ gem and
+    # uses the AWS SDK credential chain. Applications may inject +client+
+    # instead.
+    #
+    # Transient service and stream failures retry with exponential backoff. Each
+    # retry emits +:model_retry+ and reports whether partial text was already
+    # emitted, allowing stream consumers to handle repeated output deliberately.
     class Bedrock
-      INITIAL_RETRY_DELAY = 1
-      MAX_RETRY_DELAY = 16
+      INITIAL_RETRY_DELAY = 1 # :nodoc:
+      MAX_RETRY_DELAY = 16 # :nodoc:
       TRANSIENT_STREAM_ERRORS = %w[
         internal_server_exception model_stream_error_exception service_unavailable_exception throttling_exception
-      ].freeze
+      ].freeze # :nodoc:
       CONTEXT_OVERFLOW_MARKERS = [
         "context window", "maximum context length", "max context length",
         "input is too long", "too many input tokens"
-      ].freeze
+      ].freeze # :nodoc:
 
+      # Represents an error event returned inside a Bedrock stream.
       class StreamError < ProviderError
+        # Normalized Bedrock event type used to decide whether a retry is safe.
         attr_reader :event_type
 
+        # Creates a stream error for +event_type+.
         def initialize(message, event_type:)
           @event_type = event_type.to_s
           super(message)
         end
 
+        # Indicates whether LittleGhost may retry this Bedrock event.
         def retryable? = TRANSIENT_STREAM_ERRORS.include?(event_type)
       end
 
+      # Bedrock model identifier used for requests.
       attr_reader :model
 
+      # Configures Bedrock for +model+.
+      #
+      # +region+ and remaining +client_options+ configure the default AWS client.
+      # +max_retries+, +sleeper+, and +on_retry+ control retry behavior. Injecting
+      # +client+ bypasses creation of the optional SDK client.
       def initialize(model:, region: nil, client: nil, max_retries: 2, sleeper: nil,
         on_retry: ->(*) {}, **client_options)
         @model = model
@@ -37,6 +66,11 @@ module LittleGhost
         @on_retry = on_retry
       end
 
+      # Streams LittleGhost StreamEvent objects for +request+.
+      #
+      # Without a block, returns an Enumerator. Context-window failures normalize
+      # to ContextWindowOverflowError and malformed tool calls normalize to
+      # MalformedToolCallError.
       def stream(request)
         return enum_for(__method__, request) unless block_given?
 
@@ -90,6 +124,8 @@ module LittleGhost
         end
       end
 
+      # Reads capabilities from Bedrock +supported_parameters+ metadata. Missing
+      # metadata produces ModelCapabilities.unknown.
       def capabilities(metadata: {})
         parameters = metadata[:supported_parameters] || metadata["supported_parameters"]
         return ModelCapabilities.unknown unless parameters.is_a?(Array)
@@ -316,7 +352,7 @@ module LittleGhost
         ProviderError.new("Bedrock request failed: #{error.message}")
       end
 
-      class StreamNormalizer
+      class StreamNormalizer # :nodoc:
         def initialize(model:)
           @model = model
           @message_id = nil

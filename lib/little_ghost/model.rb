@@ -1,11 +1,20 @@
 # frozen_string_literal: true
 
 module LittleGhost
+  # Model is the configured connection between an agent role and a provider. It
+  # keeps provider choice and defaults out of the agent class that uses them.
+  #
+  # It merges profile settings into every ModelRequest, validates attachment
+  # modalities declared in metadata, lets providers prepare capability-sensitive
+  # requests, and delegates the normalized stream to the provider.
   class Model
-    IDENTITY_METADATA_KEYS = %w[provider model_id model_role].freeze
+    IDENTITY_METADATA_KEYS = %w[provider model_id model_role].freeze # :nodoc:
 
+    # Provider object and name, provider model ID, default settings, normalized
+    # metadata, and logical application role.
     attr_reader :provider, :provider_name, :id, :settings, :metadata, :role
 
+    # Wraps an object that responds to +stream+.
     def initialize(provider:, provider_name:, id: nil, model: nil, settings: {}, metadata: {}, role: nil)
       raise ArgumentError, "provider must respond to stream" unless provider.respond_to?(:stream)
       raise ArgumentError, "provider_name is required" if provider_name.nil? || provider_name.to_s.empty?
@@ -24,6 +33,9 @@ module LittleGhost
       ).freeze
     end
 
+    # Streams +request+ through the configured provider.
+    #
+    # Profile settings are defaults; settings on +request+ take precedence.
     def stream(request, &block)
       validate_input_modalities!(request)
       configured_request = ModelRequest.new(
@@ -42,6 +54,8 @@ module LittleGhost
       provider.stream(configured_request, &block)
     end
 
+    # Uses advertised provider capabilities, falling back to the permissive legacy
+    # contract for providers that do not advertise them.
     def capabilities
       @capabilities ||= if provider.respond_to?(:capabilities)
         provider.capabilities(metadata:)

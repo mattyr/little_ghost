@@ -6,23 +6,37 @@ require "uri"
 
 module LittleGhost
   module Providers
+    # Reports an HTTP or network failure from a provider transport.
     class HTTPError < ProviderError
+      # HTTP status and bounded response body, when the server supplied them.
       attr_reader :status, :body
 
+      # Creates an error with optional response details.
       def initialize(message, status: nil, body: nil)
         @status = status
         @body = body
         super(message)
       end
 
+      # Indicates whether a provider client may retry the request.
       def retryable?
         status.nil? || status == 408 || status == 409 || status == 429 || status >= 500
       end
     end
 
+    # HTTPTransport gives provider clients a shared, bounded streaming HTTP layer.
+    # It applies cancellation, deadlines, timeouts, and response-size limits while
+    # yielding response chunks as they arrive.
+    #
+    # === Security and trust
+    #
+    # HTTPS is required by default. Enabling +allow_insecure_http+ can expose API
+    # keys and model content in transit; use it only with a trusted local
+    # development endpoint.
     class HTTPTransport
+      # Default upper bound for a complete provider response (50 MiB).
       DEFAULT_MAX_RESPONSE_BYTES = 50 * 1024 * 1024
-      DEFAULT_MAX_ERROR_BODY_BYTES = 4 * 1024
+      DEFAULT_MAX_ERROR_BODY_BYTES = 4 * 1024 # :nodoc:
       TRANSIENT_NETWORK_ERRORS = [
         Net::OpenTimeout,
         Net::ReadTimeout,
@@ -35,8 +49,10 @@ module LittleGhost
         Net::ProtocolError,
         Net::HTTPBadResponse,
         Net::HTTPHeaderSyntaxError
-      ].freeze
+      ].freeze # :nodoc:
 
+      # Configures +base_url+ with connection, read, and response
+      # size limits.
       def initialize(
         base_url:,
         open_timeout:,
@@ -59,6 +75,10 @@ module LittleGhost
         @max_error_body_bytes = positive_integer(max_error_body_bytes, :max_error_body_bytes)
       end
 
+      # Posts +body+ and yields response chunks until completion.
+      #
+      # Cancellation and +deadline+ interrupt the request. Without a block, this
+      # method returns an Enumerator.
       def stream(path:, headers:, body:, cancellation_token:, deadline: nil)
         return enum_for(__method__, path:, headers:, body:, cancellation_token:, deadline:) unless block_given?
 

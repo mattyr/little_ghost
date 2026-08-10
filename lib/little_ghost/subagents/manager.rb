@@ -8,29 +8,58 @@ require_relative "definition"
 
 module LittleGhost
   module Subagents
+    # Manager coordinates delegated conversations without making an application
+    # build its own worker pool or message protocol. It runs bounded concurrent
+    # tasks, queues follow-ups, reports progress, and can restore durable children.
+    #
+    # Applications normally enable it through the agent DSL:
+    #
+    #   class CustomerSupportAgent < LittleGhost::Agent
+    #     subagent ResearchAgent,
+    #       kind: "research",
+    #       description: "Investigates policies and account history"
+    #   end
+    #
+    # LittleGhost then gives +CustomerSupportAgent+ tools to spawn, message, wait for,
+    # interrupt, and list research agents. The manager keeps each child identity
+    # stable across follow-up turns.
+    #
+    # Follow-up messages are FIFO turns and never interrupt active work.
+    # #interrupt is the separate synchronous path for delivery at the next model
+    # boundary; delivery does not stop the child, and tool calls from that model
+    # response continue in the child run.
+    #
+    # === Durability and cleanup
+    #
+    # With a parent session, durable definitions retain only committed compact
+    # transcripts and limited state snapshots. Failed or cancelled turns never
+    # become committed conversation history. Call #close to cancel and join
+    # workers owned by a directly constructed manager.
     class Manager
+      # Raised when one or more managed workers cannot stop within the cleanup
+      # deadline.
       class CleanupError < LittleGhost::CleanupError; end
 
-      DEFAULT_MAX_CONCURRENT = 8
-      DEFAULT_MAX_IDENTITIES = 20
-      DEFAULT_MAX_TURNS = 100
-      DEFAULT_MAX_QUEUED_TURNS_PER_IDENTITY = 8
-      DEFAULT_MAX_MESSAGE_CHARS = 50_000
-      DEFAULT_MAX_RESPONSE_CHARS = 100_000
-      DEFAULT_WAIT_TIMEOUT = 20.0
-      DEFAULT_CLOSE_TIMEOUT = 5.0
-      DEFAULT_LIST_LIMIT = 20
-      MAX_LIST_LIMIT = 100
-      MAX_PROGRESS_CHARS = 160
-      MAX_PROGRESS_SOURCE_CHARS = 4_096
-      PROGRESS_SEPARATOR = /[\p{Z}\p{Cc}\p{Cf}]/
-      CANCELLATION_POLL_INTERVAL = 0.05
-      REGISTRY_VERSION = 2
-      CURSOR_MAX_BYTES = 512
-      UUID_PATTERN = /\A[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\z/
+      DEFAULT_MAX_CONCURRENT = 8 # :nodoc:
+      DEFAULT_MAX_IDENTITIES = 20 # :nodoc:
+      DEFAULT_MAX_TURNS = 100 # :nodoc:
+      DEFAULT_MAX_QUEUED_TURNS_PER_IDENTITY = 8 # :nodoc:
+      DEFAULT_MAX_MESSAGE_CHARS = 50_000 # :nodoc:
+      DEFAULT_MAX_RESPONSE_CHARS = 100_000 # :nodoc:
+      DEFAULT_WAIT_TIMEOUT = 20.0 # :nodoc:
+      DEFAULT_CLOSE_TIMEOUT = 5.0 # :nodoc:
+      DEFAULT_LIST_LIMIT = 20 # :nodoc:
+      MAX_LIST_LIMIT = 100 # :nodoc:
+      MAX_PROGRESS_CHARS = 160 # :nodoc:
+      MAX_PROGRESS_SOURCE_CHARS = 4_096 # :nodoc:
+      PROGRESS_SEPARATOR = /[\p{Z}\p{Cc}\p{Cf}]/ # :nodoc:
+      CANCELLATION_POLL_INTERVAL = 0.05 # :nodoc:
+      REGISTRY_VERSION = 2 # :nodoc:
+      CURSOR_MAX_BYTES = 512 # :nodoc:
+      UUID_PATTERN = /\A[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\z/ # :nodoc:
 
-      InterruptExchange = Struct.new(:message, :response, :complete)
-      Turn = Struct.new(
+      InterruptExchange = Struct.new(:message, :response, :complete) # :nodoc:
+      Turn = Struct.new( # :nodoc:
         :number,
         :message,
         :completion,
@@ -40,7 +69,7 @@ module LittleGhost
         :interruption_metadata,
         :interruption_ids
       )
-      Identity = Struct.new(
+      Identity = Struct.new( # :nodoc:
         :subagent_id,
         :conversation_id,
         :definition,
@@ -69,7 +98,7 @@ module LittleGhost
         :progress_sequence
       )
 
-      class Completion
+      class Completion # :nodoc:
         def initialize
           @mutex = Mutex.new
           @condition = ConditionVariable.new
@@ -114,7 +143,7 @@ module LittleGhost
         end
       end
 
-      class Capacity
+      class Capacity # :nodoc:
         def initialize(limit)
           @available = limit
           @mutex = Mutex.new
@@ -147,26 +176,33 @@ module LittleGhost
         end
       end
 
+      # Available definitions, indexed by kind.
       attr_reader :definitions
 
       class << self
+        # Produces a pseudonymous parent-session link for durable metadata.
         def parent_link(session)
           Digest::SHA256.hexdigest("#{session.actor_id}\0#{session.id}")
         end
 
+        # Derives the framework-owned registry session ID.
         def registry_session_id(session)
           "lg_subagent_registry_#{parent_link(session)}"
         end
 
+        # Derives the framework-owned transcript session ID.
         def conversation_session_id(conversation_id)
           "lg_subagent_conversation_#{conversation_id}"
         end
 
+        # Derives one of the rotating committed-state session IDs.
         def commit_session_id(conversation_id, slot)
           "lg_subagent_commit_#{conversation_id}_#{slot}"
         end
       end
 
+      # Configures a bounded manager. Durable restoration is enabled only when
+      # +parent_session+ is supplied.
       def initialize(
         definitions,
         runtime: nil,
@@ -226,6 +262,10 @@ module LittleGhost
         restore_identities
       end
 
+      # Creates a unique child identity and queues its first task.
+      #
+      # +mode+ is <tt>"sync"</tt> or <tt>"async"</tt>. Synchronous mode waits for the turn;
+      # asynchronous mode returns a working snapshot for later #wait calls.
       def spawn(kind:, task_name:, task:, mode:, parent_operation_id: nil, context: nil)
         validate_mode(mode)
         definition, subagent_id = reserve_identity(kind, task, task_name:)
@@ -300,6 +340,7 @@ module LittleGhost
         turn.completion.value(cancellation_token: @cancellation_token, deadline: @deadline)
       end
 
+      # Queues a FIFO follow-up for an active or durable identity.
       def send_message(subagent_id:, message:, mode:, parent_operation_id: nil, context: nil)
         validate_mode(mode)
         identity = @mutex.synchronize do
@@ -323,6 +364,10 @@ module LittleGhost
         turn.completion.value(cancellation_token: @cancellation_token, deadline: @deadline)
       end
 
+      # Delivers +message+ to one currently running turn and waits for the next
+      # model response. The returned +response_disposition+ says whether that
+      # response also initiated tool calls; it does not imply the subagent has
+      # stopped.
       def interrupt(subagent_id:, message:, cancellation_token: @cancellation_token, deadline: @deadline)
         unless message.is_a?(String)
           raise ToolError, "Subagent messages must be strings."
@@ -397,6 +442,8 @@ module LittleGhost
         raise ToolError, error.message
       end
 
+      # Long-polls selected identities, or all identities when omitted.
+      # +still_working+ is an ordinary timeout result and does not cancel work.
       def wait(subagent_ids: nil)
         identities = @mutex.synchronize do
           ensure_open!
@@ -426,6 +473,8 @@ module LittleGhost
         end
       end
 
+      # Lists active and persisted identities newest-first without restoring
+      # inactive agents. Cursors are opaque and must be passed back unchanged.
       def list(kind: nil, limit: DEFAULT_LIST_LIMIT, cursor: nil)
         cursor = nil if cursor == ""
         unless limit.is_a?(Integer) && limit.between?(1, MAX_LIST_LIMIT)
@@ -455,6 +504,8 @@ module LittleGhost
         end
       end
 
+      # Builds spawn, follow-up, interrupt, wait, and list tools bound to this
+      # manager. Closing the first tool closes the shared manager.
       def tools
         manager = self
         kind_descriptions = definitions.values.map do |definition|
@@ -610,6 +661,8 @@ module LittleGhost
         tools
       end
 
+      # Cancels queued work, cooperatively stops workers, and closes child
+      # agents. Raises CleanupError if workers do not stop within the bound.
       def close
         workers = @mutex.synchronize do
           return if @closed

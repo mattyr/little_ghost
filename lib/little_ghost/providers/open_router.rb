@@ -4,9 +4,24 @@ require_relative "openai_compatible"
 
 module LittleGhost
   module Providers
+    # OpenRouter gives one LittleGhost provider access to models routed through
+    # OpenRouter. Agents keep their model roles while the registry selects an
+    # OpenRouter model for each role.
+    #
+    #   provider = LittleGhost::Providers::OpenRouter.new(
+    #     api_key: ENV.fetch("OPENROUTER_API_KEY"),
+    #     model: ENV.fetch("OPENROUTER_MODEL"),
+    #     app_name: "Support Console"
+    #   )
+    #
+    # +site_url+ and +app_name+ populate attribution headers. Capability metadata
+    # controls structured output, tools, tool choice, and parameter filtering.
+    # Requests that need a capability ask OpenRouter to route only to providers
+    # that advertise it.
     class OpenRouter < OpenAICompatible
+      # The OpenRouter API endpoint used when +base_url+ is omitted.
       DEFAULT_BASE_URL = "https://openrouter.ai/api/v1/"
-      TOP_LEVEL_CACHE_MODELS = ["anthropic/", "~anthropic/"].freeze
+      TOP_LEVEL_CACHE_MODELS = ["anthropic/", "~anthropic/"].freeze # :nodoc:
       MESSAGE_CACHE_MODELS = [
         "google/gemini",
         "qwen/qwen3-max",
@@ -15,14 +30,18 @@ module LittleGhost
         "qwen/qwen3-coder-plus",
         "qwen/qwen3-coder-flash",
         "deepseek/deepseek-v3.2"
-      ].freeze
+      ].freeze # :nodoc:
 
+      # Configures an OpenRouter client. All OpenAICompatible options, including
+      # +api_key+, +model+, retry limits, timeouts, and custom transport, apply.
       def initialize(site_url: nil, app_name: nil, base_url: DEFAULT_BASE_URL, **arguments)
         @site_url = site_url
         @app_name = app_name
         super(base_url:, api: :chat_completions, **arguments)
       end
 
+      # Reads model capabilities from OpenRouter +supported_parameters+ metadata.
+      # Missing metadata produces ModelCapabilities.unknown.
       def capabilities(metadata: {})
         parameters = metadata[:supported_parameters] || metadata["supported_parameters"]
         return ModelCapabilities.unknown unless parameters.is_a?(Array)
@@ -36,6 +55,8 @@ module LittleGhost
         )
       end
 
+      # Filters unsupported model settings when the request requires advertised
+      # capabilities.
       def prepare_request(request, capabilities:)
         return request if request.required_capabilities.empty?
         return request unless capabilities.supported_parameters
@@ -55,7 +76,7 @@ module LittleGhost
 
       private
 
-      MODEL_SETTING_PARAMETERS = {
+      MODEL_SETTING_PARAMETERS = { # :nodoc:
         temperature: %w[temperature],
         top_p: %w[top_p],
         max_tokens: %w[max_tokens max_completion_tokens],

@@ -4,7 +4,24 @@ require "json"
 require "opentelemetry-api"
 
 module LittleGhost
+  # Optional adapters for sending LittleGhost instrumentation to tracing tools.
   module Tracing
+    # OpenTelemetry turns LittleGhost lifecycle notifications into GenAI spans and
+    # events. It brings agents, model calls, tools, workflows, and token usage into
+    # the same traces as the rest of an application.
+    #
+    #   LittleGhost.configure do |config|
+    #     config.instrument LittleGhost::Tracing::OpenTelemetry.new
+    #   end
+    #
+    # LittleGhost depends only on +opentelemetry-api+. Install and configure the
+    # desired SDK, processors, and exporters before registering this subscriber.
+    #
+    # === Content and trust
+    #
+    # Prompts, responses, messages, tool arguments, and exception content are
+    # omitted by default. They appear only when Instrumentation has an explicit,
+    # scrubbed Support::ContentCapture policy.
     class OpenTelemetry < Instrumentation::Subscriber
       ATTRIBUTE_NAMES = {
         agent_id: "gen_ai.agent.id",
@@ -28,7 +45,7 @@ module LittleGhost
         http_response_status_code: "http.response.status_code",
         error_class: "error.type",
         error_type: "error.type"
-      }.freeze
+      }.freeze # :nodoc:
       OPERATIONS = {
         agent: "invoke_agent",
         agent_turn: "agent_turn",
@@ -39,7 +56,7 @@ module LittleGhost
         subagent: "invoke_agent",
         tool: "execute_tool",
         workflow: "invoke_workflow"
-      }.freeze
+      }.freeze # :nodoc:
       REQUEST_SETTING_ATTRIBUTES = {
         frequency_penalty: "gen_ai.request.frequency_penalty",
         max_tokens: "gen_ai.request.max_tokens",
@@ -49,29 +66,34 @@ module LittleGhost
         temperature: "gen_ai.request.temperature",
         top_k: "gen_ai.request.top_k",
         top_p: "gen_ai.request.top_p"
-      }.freeze
-      CONTENT_KEYS = %w[arguments content input input_text message output output_text prompt response text].freeze
-      SENSITIVE_KEY = /(authorization|api[_-]?key|credential|password|secret|(?:^|[_-])token(?:$|[_-])|cookie|private[_-]?key)/i
-      MAX_ATTRIBUTE_LENGTH = 1_024
+      }.freeze # :nodoc:
+      CONTENT_KEYS = %w[arguments content input input_text message output output_text prompt response text].freeze # :nodoc:
+      SENSITIVE_KEY = /(authorization|api[_-]?key|credential|password|secret|(?:^|[_-])token(?:$|[_-])|cookie|private[_-]?key)/i # :nodoc:
+      MAX_ATTRIBUTE_LENGTH = 1_024 # :nodoc:
 
+      # Uses +tracer+ or the global tracer provider.
       def initialize(tracer: nil)
         @tracer = tracer
         @entries = {}
         @mutex = Mutex.new
       end
 
+      # Starts a span for a lifecycle operation.
       def start(name, attributes)
         start_span(name.to_sym, prepare_attributes(:start, name.to_sym, attributes))
       end
 
+      # Finishes the span correlated by operation ID.
       def finish(name, attributes)
         finish_span(name.to_sym, prepare_attributes(:finish, name.to_sym, attributes))
       end
 
+      # Adds a structured event to the correlated active span.
       def emit(name, attributes)
         add_event(name.to_sym, prepare_attributes(:emit, name.to_sym, attributes))
       end
 
+      # Supplies W3C propagation fields for an active operation when known.
       def trace_context(operation_id: nil, **)
         span = @mutex.synchronize { @entries.dig(operation_id, :span) }
         context = span&.context
@@ -87,6 +109,8 @@ module LittleGhost
         context&.valid? ? {trace_id: context.hex_trace_id} : {}
       end
 
+      # Wraps a block in a standalone internal span. Prefer lifecycle
+      # Instrumentation methods for normal framework operations.
       def with_span(name, attributes:, parent_operation_id: nil)
         parent = @mutex.synchronize { @entries[parent_operation_id] }
         parent_context = parent && ::OpenTelemetry::Trace.context_with_span(parent.fetch(:span))
@@ -101,11 +125,13 @@ module LittleGhost
         span&.finish
       end
 
+      # Flushes through the configured tracer provider when supported.
       def flush(timeout: nil)
         provider = ::OpenTelemetry.tracer_provider
         provider.force_flush(timeout:) if provider.respond_to?(:force_flush)
       end
 
+      # Finishes spans still owned by this subscriber.
       def shutdown(timeout: nil)
         spans = @mutex.synchronize do
           current = @entries.values.map { |entry| entry.fetch(:span) }.uniq

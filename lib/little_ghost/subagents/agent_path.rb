@@ -2,13 +2,23 @@
 
 module LittleGhost
   module Subagents
+    # AgentPath gives every delegated conversation a stable place beneath its
+    # parent. Paths begin at +/root+, keeping nested delegation visible in logs
+    # and metadata.
+    #
+    # Child task names contain only lowercase letters,
+    # digits, and underscores, are limited to 40 characters, and must be unique
+    # among siblings when reserved by a manager.
+    #
+    #   AgentPath.join("/root", "review_api") # => "/root/review_api"
     class AgentPath
-      ROOT = "/root"
-      MAX_NAME_LENGTH = 40
-      MAX_PATH_LENGTH = 1024
-      NAME_PATTERN = /\A[a-z0-9_]+\z/
+      ROOT = "/root" # :nodoc:
+      MAX_NAME_LENGTH = 40 # :nodoc:
+      MAX_PATH_LENGTH = 1024 # :nodoc:
+      NAME_PATTERN = /\A[a-z0-9_]+\z/ # :nodoc:
 
       class << self
+        # Validates an absolute agent path and returns it unchanged.
         def validate!(path)
           value = String(path)
           raise ArgumentError, "agent path must start with /root" unless value == ROOT || value.start_with?("#{ROOT}/")
@@ -22,10 +32,12 @@ module LittleGhost
           value
         end
 
+        # Validates both parts and returns a direct child path.
         def join(parent, name)
           validate!("#{validate!(parent)}/#{validate_name!(name)}")
         end
 
+        # Validates and returns one model-chosen task name.
         def validate_name!(name)
           value = String(name)
           if value.length > MAX_NAME_LENGTH
@@ -38,6 +50,7 @@ module LittleGhost
           value
         end
 
+        # Checks whether +path+ is exactly one level beneath +parent+.
         def immediate_child?(path, parent)
           value = validate!(path)
           ancestor = validate!(parent)

@@ -3,7 +3,12 @@
 require "erb"
 
 module LittleGhost
-  TrustedPath = Data.define(:path) do
+  # TrustedPath marks a caller-supplied prompt directory as trusted application
+  # code. Invocation-specific prompt roots must use this wrapper.
+  #
+  # Invocation paths must use this wrapper. Construction resolves symbolic
+  # links immediately and rejects missing or non-directory paths.
+  TrustedPath = Data.define(:path) do # :nodoc:
     def initialize(path:)
       expanded = File.realpath(path)
       raise ArgumentError, "trusted template path must be a directory" unless File.directory?(expanded)
@@ -13,14 +18,64 @@ module LittleGhost
     end
   end
 
+  # Marks a caller-supplied prompt directory as trusted application code.
+  # Construction resolves symbolic links immediately and rejects paths that are
+  # missing or are not directories.
+  #
+  # === Security and trust
+  #
+  # Construction is a trust assertion, not a sanitizer. It does not inspect
+  # ownership, permissions, or who can modify the directory. ERB templates run
+  # as Ruby inside the current process, so create TrustedPath values only from
+  # allowlisted, application-controlled, non-user-writable roots. Never wrap a
+  # path taken from unchecked request or model input.
+  class TrustedPath < Data # :doc:
+    ##
+    # :singleton-method: new
+    # :call-seq:
+    #   new(path:) -> TrustedPath
+    #
+    # Resolves +path+ to an existing directory the caller asserts is trusted
+    # prompt code. This checks existence and type, not ownership or permissions.
+
+    ##
+    # :attr_reader: path
+    # The resolved, existing directory asserted as trusted by the caller.
+  end
+
+  # Base error raised while locating or rendering a prompt template.
   class PromptTemplateError < Error; end
+  # Raised when no configured root contains the requested template.
   class MissingPromptTemplateError < PromptTemplateError; end
+  # Raised for unsafe names, escaped roots, cycles, or excessive recursion.
   class InvalidPromptTemplateError < PromptTemplateError; end
+  # Raised when an ERB template references a missing local variable.
   class MissingPromptLocalError < PromptTemplateError; end
 
+  # PromptResolver turns conventional ERB files into an agent's system prompt. It
+  # supports ordered application roots and partials without allowing a template
+  # name to escape those roots.
+  #
+  #   resolver = LittleGhost::PromptResolver.new(paths: ["app/prompts"])
+  #   prompt = resolver.render("support/system", locals: {product: "Acme"})
+  #   prompt.include?("Acme") # => true
+  #
+  # In +support/system.erb+:
+  #
+  #   <%= partial "shared/rules", locals: {product: product} %>
+  #
+  # Earlier invocation roots override configured roots. Template names must be
+  # relative, and both lexical traversal and symbolic-link escapes are rejected.
+  # Partials use an underscore-prefixed filename and receive only their
+  # explicitly supplied locals.
+  #
+  # Every configured root is trusted Ruby code because ERB executes inside the
+  # current process. Keep roots application-controlled and non-user-writable.
   class PromptResolver
-    DEFAULT_MAX_DEPTH = 20
+    DEFAULT_MAX_DEPTH = 20 # :nodoc:
 
+    # Configures ordered application roots and a partial recursion bound, which
+    # defaults to 20 nested templates.
     def initialize(paths: [], max_depth: DEFAULT_MAX_DEPTH)
       @paths = normalize_roots(paths)
       @max_depth = Integer(max_depth)
@@ -30,6 +85,11 @@ module LittleGhost
       @cache_mutex = Mutex.new
     end
 
+    # Renders +name+ with validated local variables.
+    #
+    # +invocation_paths+ accepts only TrustedPath values because those roots
+    # take precedence over application configuration. The wrapper records the
+    # caller's trust decision; it does not make an untrusted directory safe.
     def render(name, locals: {}, invocation_paths: [])
       roots = normalize_invocation_roots(invocation_paths) + @paths
       render_template(normalize_name(name), locals, roots, [])
@@ -151,7 +211,7 @@ module LittleGhost
       name.to_s.match?(/\A[a-z_]\w*\z/)
     end
 
-    class RenderContext
+    class RenderContext # :nodoc:
       def initialize(resolver, roots, stack, name, locals)
         @resolver = resolver
         @roots = roots

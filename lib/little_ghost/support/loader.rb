@@ -5,12 +5,24 @@ require "monitor"
 
 module LittleGhost
   module Support
+    # Loader finds agents and tools from a conventional application layout. Ruby
+    # files map to constants by path, so applications can add extension classes
+    # without maintaining a manual require list.
+    #
+    #   loader = LittleGhost::Support::Loader.new(root: Dir.pwd)
+    #   loader.setup.eager_load
+    #
+    # Setup is process-serialized, collisions are rejected, and real paths are
+    # checked for symbolic-link escapes. Application load roots are trusted code,
+    # not a sandbox for untrusted files.
     class Loader
-      DEFAULT_DIRECTORIES = %w[app/agents app/tools].freeze
-      PROCESS_LOCK = Monitor.new
+      DEFAULT_DIRECTORIES = %w[app/agents app/tools].freeze # :nodoc:
+      PROCESS_LOCK = Monitor.new # :nodoc:
 
+      # Application root and configured relative load directories.
       attr_reader :root, :directories
 
+      # Uses explicit +paths+ or conventional directories beneath +root+.
       def initialize(paths: nil, root: nil, directories: DEFAULT_DIRECTORIES)
         @root = root && File.expand_path(root)
         @directories = Array(directories).map(&:to_s).freeze
@@ -24,6 +36,7 @@ module LittleGhost
         @setup = false
       end
 
+      # Installs autoloads for the current registry and returns self.
       def setup
         PROCESS_LOCK.synchronize do
           return self if @setup
@@ -43,6 +56,7 @@ module LittleGhost
         self
       end
 
+      # Loads every registered constant and verifies its defining file.
       def eager_load
         PROCESS_LOCK.synchronize do
           setup
@@ -58,6 +72,8 @@ module LittleGhost
         self
       end
 
+      # Finds a relative file beneath configured paths, returning its resolved
+      # path or nil.
       def find(relative_path)
         clean = clean_path(relative_path)
         @paths.each do |path_root|
@@ -70,14 +86,17 @@ module LittleGhost
         nil
       end
 
+      # Finds a relative file or raises LoadError.
       def fetch(relative_path)
         find(relative_path) || raise(LoadError, "Could not find #{relative_path} in configured paths")
       end
 
+      # Reads a relative file using +encoding+.
       def read(relative_path, encoding: "UTF-8")
         File.read(fetch(relative_path), encoding:)
       end
 
+      # Finds resolved paths matching a relative glob without root escapes.
       def glob(pattern)
         clean = clean_path(pattern)
         @paths.flat_map do |path_root|
@@ -94,6 +113,7 @@ module LittleGhost
         end.uniq.sort
       end
 
+      # Loads an application constant after installing autoloads.
       def constant(name)
         PROCESS_LOCK.synchronize do
           setup
@@ -104,10 +124,12 @@ module LittleGhost
         raise ExpectedConstantError, "Unknown application constant: #{name}"
       end
 
+      # Copies registered constant names and resolved paths.
       def registered_constants
         registry.dup.freeze
       end
 
+      # Checks whether +name+ was loaded from its registered source path.
       def loaded_constant?(name)
         PROCESS_LOCK.synchronize do
           path = registry[name.to_s]
@@ -229,7 +251,12 @@ module LittleGhost
         raise ConflictError, "Autoload path disappeared after registration: #{path}"
       end
 
+      # Raised when a conventional path collides with an existing constant or
+      # autoload.
       class ConflictError < Error; end
+
+      # Raised when a loaded file does not define the constant implied by its
+      # path.
       class ExpectedConstantError < Error; end
     end
   end

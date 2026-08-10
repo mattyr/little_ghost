@@ -2,7 +2,7 @@
 
 module LittleGhost
   module Providers
-    class SSEParser
+    class SSEParser # :nodoc:
       def initialize
         @buffer = +""
       end

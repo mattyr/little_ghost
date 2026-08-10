@@ -1,11 +1,61 @@
 # frozen_string_literal: true
 
 module LittleGhost
+  # Build agentic workflows with ordinary Ruby branching and local variables.
+  # A workflow composes several agents, consumes intermediate answers, and
+  # streams one final agent response.
+  #
+  # A support workflow can route a difficult request through research before the
+  # responder writes the caller-visible answer:
+  #
+  #   class ResponseWorkflow < LittleGhost::Workflow
+  #     private
+  #
+  #     def perform
+  #       route = invoke(RouterAgent).output
+  #       return invoke(CustomerSupportAgent) unless route["research"]
+  #
+  #       evidence = invoke(ResearchAgent).output
+  #       invoke CustomerSupportAgent, input: <<~PROMPT
+  #         #{input.text}
+  #
+  #         Research:
+  #         #{evidence}
+  #       PROMPT
+  #     end
+  #   end
+  #
+  #   run = runtime.build_run(
+  #     {message: "Why is transfer 481 pending?"},
+  #     agent_class: CustomerSupportAgent,
+  #     entrypoint_class: ResponseWorkflow
+  #   ).call
+  #   run.response # => "Transfer 481 is waiting for the receiving bank."
+  #
+  # +invoke+ returns a lazy Workflow::Invocation. Reading +output+ consumes an
+  # intermediate invocation and returns RunResult#output; +perform+ must return
+  # its final invocation without consuming it so those events reach the caller.
+  # Intermediate usage is added to the final result.
+  #
+  # Every child inherits input, history, settings, cancellation, deadline,
+  # template paths, and trace parentage unless +invoke+ overrides its input.
+  # JSON-like context is copied for each child, preventing one intermediate agent
+  # from mutating a sibling's state. Non-JSON-like workflow context raises
+  # ArgumentError.
+  #
+  # A workflow instance streams once. Returning the wrong value, returning an
+  # already consumed invocation, or consuming an invocation twice raises
+  # ProtocolError. Built agents close in reverse order, and the first cleanup
+  # failure is re-raised after every invocation has been given a chance to close.
+  # Composition errors emit an +invocation_error+ event and then re-raise.
   class Workflow
+    # Hold one lazy agent call inside a workflow composition.
+    # Workflow implementations normally use only its output method or return the
+    # object as the final invocation.
     class Invocation
-      attr_reader :result
+      attr_reader :result # :nodoc:
 
-      def initialize(input:, history:, context:, build:, on_usage:)
+      def initialize(input:, history:, context:, build:, on_usage:) # :nodoc:
         @input = input
         @history = history
         @context = context
@@ -16,7 +66,7 @@ module LittleGhost
         @closed = false
       end
 
-      def each(checkpoint: nil)
+      def each(checkpoint: nil) # :nodoc:
         return enum_for(__method__, checkpoint:) unless block_given?
 
         agent, options = @mutex.synchronize do
@@ -45,17 +95,21 @@ module LittleGhost
         end
       end
 
+      # Consumes this invocation when necessary and returns RunResult#output.
+      #
+      # A structured agent returns its validated value; an ordinary agent returns
+      # response text. Intermediate usage is recorded for the workflow total.
       def output
         @intermediate = true
         each {} unless consumed?
         result&.output
       end
 
-      def consumed?
+      def consumed? # :nodoc:
         @mutex.synchronize { @consumed }
       end
 
-      def close
+      def close # :nodoc:
         agent = @mutex.synchronize do
           return if @closed
 
@@ -73,9 +127,10 @@ module LittleGhost
       end
     end
 
+    # Owning run and the runtime used to resolve workflow agents.
     attr_reader :run, :runtime
 
-    def initialize(run:, runtime: run.runtime)
+    def initialize(run:, runtime: run.runtime) # :nodoc:
       @run = run
       @runtime = runtime
       @mutex = Mutex.new
@@ -84,8 +139,15 @@ module LittleGhost
       @invocations = []
     end
 
+    # Additional prompt locals shared by agents invoked from the workflow.
+    # Subclasses may override this hook.
     def prompt_locals = {}
 
+    # Streams the workflow once as StreamEvent objects.
+    #
+    # +perform+ must return a final, unconsumed Workflow::Invocation. The returned
+    # Enumerator is lazy, but calling +stream+ reserves the single-use workflow
+    # instance even when enumeration has not started yet.
     def stream(
       input = nil,
       history: nil,
@@ -153,6 +215,10 @@ module LittleGhost
       end
     end
 
+    # Closes all built agent invocations in reverse order.
+    #
+    # The operation is idempotent, attempts every close, and raises the first
+    # cleanup failure.
     def close
       invocations = @mutex.synchronize do
         return if @closed
@@ -171,12 +237,23 @@ module LittleGhost
 
     private
 
+    # The current normalized input, frozen history, and JSON-like context exposed
+    # to workflow implementations.
+    # :doc:
     attr_reader :input, :history, :context
 
+    # :doc:
+    # Implements the composition and returns its final unconsumed invocation.
+    # Subclasses must override this hook.
     def perform
       raise NotImplementedError, "#{self.class} must implement #perform"
     end
 
+    # :doc:
+    # Creates a lazy invocation for +agent_class_or_name+.
+    #
+    # Intermediate calls may use +output+; the final call must be returned from
+    # +perform+ without being consumed.
     def invoke(agent_class_or_name, input: self.input, history: self.history, context: self.context)
       invocation = Invocation.new(
         input:,

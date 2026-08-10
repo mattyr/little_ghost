@@ -51,18 +51,67 @@ require_relative "little_ghost/workflow"
 require_relative "little_ghost/runtime/hook"
 require_relative "little_ghost/runtime"
 
+# Build AI features with reusable agents and agentic workflows. LittleGhost can
+# sit inside an existing Ruby system or support a dedicated AI service, keeping
+# models, prompts, tools, sessions, streaming, and instrumentation behind a
+# cohesive set of Ruby conventions.
+#
+# A customer support agent can answer directly, use an application tool, or ask a
+# specialist for research while the caller observes one run:
+#
+#   LittleGhost.configure do |config|
+#     config.models CustomerSupportModels
+#     config.default_model :customer_support
+#   end
+#
+#   class ResearchAgent < LittleGhost::Agent
+#     description "Researches difficult support questions"
+#     model "customer_support.research"
+#   end
+#
+#   class CustomerSupportAgent < LittleGhost::Agent
+#     description "Handles support requests"
+#     model :customer_support
+#     tools AccountTool
+#     subagent ResearchAgent, kind: "research"
+#   end
+#
+#   run = CustomerSupportAgent.new.ask("Why is transfer 481 still pending?")
+#   run.completed? # => true
+#   run.response   # => "Transfer 481 is waiting for the receiving bank."
+#
+# Agent subclasses hold reusable behavior; Invocation objects carry one request,
+# and Run objects own execution and cleanup. Workflow subclasses can compose
+# several agents when ordinary Ruby branching is clearer than one agent loop.
+#
+# LittleGhost.configuration is process-wide unless LittleGhost.with_configuration
+# supplies an execution-scoped replacement. Configuration is loaded lazily and
+# snapshotted into a Runtime, so make application changes before the first agent
+# runtime is built.
 module LittleGhost
   class << self
+    # The configuration active in the current execution context, falling back to
+    # the process-wide default.
     def configuration
       ExecutionState[:configuration] || (@configuration ||= Configuration.new)
     end
 
+    # Alias for .configuration. Without an execution-scoped override, this is the
+    # process-wide default Configuration.
     alias_method :default_configuration, :configuration
 
+    # Opens the active Configuration for application setup and returns it.
+    #
+    # Configuration files are loaded lazily when a runtime is first built, so
+    # make application-level changes before invoking an agent.
     def configure(&block)
       configuration.configure(&block)
     end
 
+    # Makes +configuration+ current only while the block runs.
+    #
+    # Execution state restores the previous configuration even when the block
+    # raises. Other execution contexts continue to see their own configuration.
     def with_configuration(configuration)
       ExecutionState.with(configuration:) { yield }
     end

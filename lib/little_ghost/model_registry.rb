@@ -1,17 +1,63 @@
 # frozen_string_literal: true
 
 module LittleGhost
+  # Give application roles stable model choices without coupling agents to vendors.
+  # A registry joins provider factories with named, inheritable profiles.
+  #
+  # A support application can keep its general and research agents on related
+  # profiles while selecting one provider in one place:
+  #
+  #   class CustomerSupportModels < LittleGhost::ModelRegistry
+  #     def initialize
+  #       super
+  #       provider(:openai) do |model:, **|
+  #         LittleGhost::Providers::OpenAI.new(
+  #           api_key: ENV.fetch("OPENAI_API_KEY"), model: model
+  #         )
+  #       end
+  #       profile "customer_support", provider: :openai, model: "gpt-5"
+  #       profile "customer_support.research", inherit: "customer_support",
+  #         settings: {temperature: 0.1}
+  #     end
+  #   end
+  #
+  #   model = CustomerSupportModels.new.resolve("customer_support.research")
+  #   model.id       # => "gpt-5"
+  #   model.settings # => {temperature: 0.1}
+  #
+  # Dotted roles resolve from the exact role toward shorter registered parents.
+  # Explicit profile inheritance supplies provider, model, settings, and metadata;
+  # per-invocation overrides then layer from inherited parents through the exact
+  # requested role. A final +override+ passed to +resolve+ wins over both.
+  # Settings and overrides are control-plane input: construct or allowlist them
+  # in application code rather than copying unchecked request fields. An
+  # override can select a different registered provider or model and change the
+  # destination, capability, and cost of a request.
+  #
+  # Provider factories receive the resolved identity, settings, metadata,
+  # invocation, run context, and forwarding options. Resolution raises
+  # ConfigurationError for missing roles, providers, models, factories, or
+  # circular inheritance; exceptions raised inside a factory are not masked.
   class ModelRegistry
+    # Starts an empty registry ready for provider factories and model profiles.
     def initialize
       @providers = {}
       @profiles = {}
     end
 
+    # Associates +name+ with a provider factory and returns +self+.
+    #
+    # The factory receives the resolved +model+, logical +role+, profile
+    # +settings+ and +metadata+, invocation, run context, and resolution options.
     def provider(name, callable = nil, &factory)
       @providers[name.to_sym] = factory || callable || raise(ArgumentError, "provider factory is required")
       self
     end
 
+    # Adds an inheritable model profile named +name+ and returns +self+.
+    #
+    # Parent settings and metadata merge into the child. A child may inherit its
+    # provider and model or replace either one.
     def profile(name, provider: nil, model: nil, settings: {}, metadata: {}, inherit: nil)
       @profiles[name.to_s] = {
         provider: provider&.to_sym,
@@ -23,6 +69,11 @@ module LittleGhost
       self
     end
 
+    # Materializes +name+ as a configured Model for the current invocation.
+    #
+    # +override+ applies after registered profiles and invocation profile
+    # overrides. +context+ takes precedence over the legacy +run+ argument when
+    # passed to the provider factory.
     def resolve(name, invocation: nil, override: nil, run: nil, context: nil, **options)
       role = name.to_s
       profile_name = profile_for(role)

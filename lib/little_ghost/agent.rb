@@ -5,21 +5,61 @@ require_relative "support/output_truncation"
 require_relative "tool_execution"
 
 module LittleGhost
+  # Define reusable agents that can answer, stream, call tools, and delegate work.
+  # Each subclass describes one application role with an inheritable Ruby DSL.
+  #
+  # A customer support agent can look up an account itself and give longer investigations
+  # to a research specialist:
+  #
+  #   class ResearchAgent < LittleGhost::Agent
+  #     description "Researches transfer failures"
+  #     model "customer_support.research"
+  #     tools LedgerSearchTool
+  #   end
+  #
+  #   class CustomerSupportAgent < LittleGhost::Agent
+  #     description "Handles support requests"
+  #     model :customer_support
+  #     limits max_turns: 40
+  #     tools AccountLookupTool
+  #     subagent ResearchAgent, kind: "research"
+  #   end
+  #
+  #   run = CustomerSupportAgent.new.ask("Why is transfer 481 pending?")
+  #   run.completed? # => true
+  #   run.response   # => "Transfer 481 is waiting for the receiving bank."
+  #
+  # Class declarations are inherited. Prompts resolve by the agent's logical
+  # path unless +system_prompt+ or +system_template+ supplies one explicitly;
+  # tools and prompt locals may also be selected dynamically for each run.
+  # Capabilities such as skills, context management, loop detection, and
+  # delegation remain inactive until their DSL methods are called.
+  #
+  # A standalone instance is the console-friendly entrypoint: +ask+ returns a
+  # completed Run, while +stream_ask+ yields StreamEvent objects. Runtimes build
+  # bound instances internally; their +call+ method returns a RunResult and
+  # their +stream+ method follows the owning run's single-execution lifecycle.
+  # Closing an agent closes owned tools and any standalone workspace and sandbox.
+  #
+  # Models can return ordinary text or a locally validated structured result.
+  # Tool failures are sanitized before returning to the model, diagnostic
+  # capture can be disabled for sensitive agents, and cancellation, deadlines,
+  # and cleanup failures remain framework control flow.
   class Agent
-    DEFAULT_MAX_TOOL_RESULT_TOKENS = 10_000
-    MAX_STRUCTURED_RESULT_BYTES = 1_000_000
-    MAX_STRUCTURED_RESULT_DEPTH = 64
-    MAX_STRUCTURED_RESULT_NODES = 100_000
+    DEFAULT_MAX_TOOL_RESULT_TOKENS = 10_000 # :nodoc:
+    MAX_STRUCTURED_RESULT_BYTES = 1_000_000 # :nodoc:
+    MAX_STRUCTURED_RESULT_DEPTH = 64 # :nodoc:
+    MAX_STRUCTURED_RESULT_NODES = 100_000 # :nodoc:
     RESULT_SCHEMA_KEYWORDS = %w[
       $schema title description type enum minimum maximum minLength maxLength
       properties required additionalProperties minItems maxItems items
-    ].freeze
+    ].freeze # :nodoc:
     CALLBACKS = %i[
       after_initialize
       before_invocation after_invocation
       before_model after_model after_model_error
       before_tool after_tool
-    ].freeze
+    ].freeze # :nodoc:
 
     extend Support::ClassAttributes
 
@@ -37,42 +77,84 @@ module LittleGhost
     class_attribute :callback_values, default: Support::Callbacks.new(*CALLBACKS)
 
     class << self
+      # :call-seq:
+      #   agent_id() -> String
+      #   agent_id(value) -> String
+      #
+      # The stable identifier used in telemetry, delegation, and default tool names.
+      # Named subclasses derive it from their underscored class name without an
+      # +Agent+ suffix; passing +value+ replaces that default.
       def agent_id(*values)
         return agent_id_value || default_agent_id if values.empty?
 
         self.agent_id_value = values.fetch(0).to_s
       end
 
+      # The underscored, namespace-aware path used for conventional prompt lookup.
       def logical_path
         parts = name.to_s.split("::")
         parts[-1] = parts.last.sub(/Agent\z/, "") if parts.any?
         parts.reject(&:empty?).map { |part| underscore(part) }.join("/")
       end
 
+      # :call-seq:
+      #   description() -> String
+      #   description(value) -> String
+      #
+      # The human-readable description shown when this agent is delegated.
       def description(*values)
         return description_value.to_s if values.empty?
 
         self.description_value = values.fetch(0).to_s
       end
 
+      # :call-seq:
+      #   model() -> String, Proc, nil
+      #   model(role) -> String
+      #   model { |invocation| ... } -> Proc
+      #
+      # The logical model role for this agent.
+      #
+      # Pass a block to choose a role from each Invocation at run time.
       def model(*values, &block)
         return model_value if values.empty? && !block
 
         self.model_value = block || values.fetch(0).to_s
       end
 
-      def model_role(invocation)
+      def model_role(invocation) # :nodoc:
         value = model_value
         resolved = value.respond_to?(:call) ? value.call(invocation) : value
         resolved&.to_s
       end
 
+      # :call-seq:
+      #   limits() -> Hash
+      #   limits(**values) -> Hash
+      #
+      # Inherited execution limits for model turns, tool calls, and tool output.
+      #
+      # Keyword arguments merge into the current limits and the zero-argument
+      # form returns them.
       def limits(**values)
         return limits_value if values.empty?
 
         self.limits_value = limits.merge(values.transform_keys(&:to_sym))
       end
 
+      # :call-seq:
+      #   result_schema() -> Hash, nil
+      #   result_schema(schema, name: nil, description: nil, strategy: :auto) -> Hash
+      #   result_schema(name: nil, description: nil, strategy: :auto, **schema) -> Hash
+      #
+      # Declares a strict JSON-object result contract. Every object must set
+      # <tt>additionalProperties: false</tt> and require each property. Automatic
+      # strategy selection prefers provider-native structured output and falls
+      # back to a terminal tool when supported.
+      #
+      # A missing or invalid result receives one repair attempt before
+      # LittleGhost::StructuredResultError is raised. Invalid schemas and
+      # strategies raise LittleGhost::ConfigurationError immediately.
       def result_schema(schema = nil, name: nil, description: nil, strategy: :auto, **schema_keywords)
         return result_schema_value if schema.nil? && schema_keywords.empty? && name.nil? && description.nil? && strategy == :auto
 
@@ -107,18 +189,43 @@ module LittleGhost
         }
       end
 
+      # :call-seq:
+      #   capture_diagnostics() -> true or false
+      #   capture_diagnostics(value) -> true or false
+      #
+      # Whether agent-layer diagnostics may include model and tool content.
+      #
+      # Capture defaults to +true+, and only a literal +true+ enables it. This
+      # setting does not disable run-level input and output capture from an
+      # enabled process-wide Support::ContentCapture policy. For sensitive work,
+      # also install Support::ContentCapture.disabled or an appropriate scrubber
+      # through Instrumentation.capture_content.
       def capture_diagnostics(*values)
         return capture_diagnostics_value if values.empty?
 
         self.capture_diagnostics_value = values.fetch(0) == true
       end
 
+      # :call-seq:
+      #   system_template() -> String, nil
+      #   system_template(path) -> String
+      #
+      # The explicit system prompt template path, when conventional lookup is not used.
       def system_template(*values)
         return system_template_value if values.empty?
 
         self.system_template_value = values.fetch(0).to_s
       end
 
+      # :call-seq:
+      #   system_prompt() -> String, Proc, nil
+      #   system_prompt(value) -> String
+      #   system_prompt { |locals| ... } -> Proc
+      #
+      # The inline system prompt or prompt-building block.
+      #
+      # Setting an inline prompt clears +system_template+ so one source remains
+      # authoritative.
       def system_prompt(*values, &block)
         return system_prompt_builder_value || system_prompt_value if values.empty? && !block
 
@@ -132,6 +239,10 @@ module LittleGhost
         end
       end
 
+      # Adds tool or provider classes to the agent.
+      #
+      # Every declaration must be a class. A provider class can supply tools
+      # dynamically by implementing <tt>tools(binding)</tt>.
       def tools(*values)
         invalid = values.flatten.compact.find { |value| !value.is_a?(Class) }
         if invalid
@@ -143,8 +254,9 @@ module LittleGhost
         tool_declarations
       end
 
-      def tool_declarations = tool_declarations_value
+      def tool_declarations = tool_declarations_value # :nodoc:
 
+      # Adds a named value or resolver to every prompt rendered for the agent.
       def prompt_local(name, *values, &resolver)
         raise ArgumentError, "Provide a prompt local value or block" if values.empty? && !resolver
         raise ArgumentError, "Provide a prompt local value or block, not both" unless values.empty? || !resolver
@@ -152,9 +264,9 @@ module LittleGhost
         self.prompt_local_values = prompt_local_values.merge(name.to_sym => resolver || values.fetch(0))
       end
 
-      def prompt_local_resolvers = prompt_local_values
+      def prompt_local_resolvers = prompt_local_values # :nodoc:
 
-      def callbacks = callback_values
+      def callbacks = callback_values # :nodoc:
 
       CALLBACKS.each do |name|
         define_method(name) do |callable = nil, prepend: false, &block|
@@ -164,6 +276,65 @@ module LittleGhost
           self
         end
       end
+
+      ##
+      # Prepares per-agent state after a run-scoped instance is initialized.
+      #
+      # :singleton-method: after_initialize
+      # :call-seq:
+      #   after_initialize(callable = nil, prepend: false) { |agent| ... } -> self
+
+      ##
+      # Runs before one invocation begins.
+      #
+      # The payload may be continued, replaced, or cancelled with a decision
+      # from Support::Callbacks.
+      #
+      # :singleton-method: before_invocation
+      # :call-seq:
+      #   before_invocation(callable = nil, prepend: false) { |payload| ... } -> self
+
+      ##
+      # Observes or transforms the terminal invocation payload.
+      #
+      # :singleton-method: after_invocation
+      # :call-seq:
+      #   after_invocation(callable = nil, prepend: false) { |payload| ... } -> self
+
+      ##
+      # Runs before a model request is sent.
+      #
+      # :singleton-method: before_model
+      # :call-seq:
+      #   before_model(callable = nil, prepend: false) { |payload| ... } -> self
+
+      ##
+      # Observes or transforms a successful model response.
+      #
+      # :singleton-method: after_model
+      # :call-seq:
+      #   after_model(callable = nil, prepend: false) { |payload| ... } -> self
+
+      ##
+      # Handles a model error before it leaves the agent loop.
+      #
+      # :singleton-method: after_model_error
+      # :call-seq:
+      #   after_model_error(callable = nil, prepend: false) { |payload| ... } -> self
+
+      ##
+      # Runs after validation but before a tool call starts.
+      #
+      # :singleton-method: before_tool
+      # :call-seq:
+      #   before_tool(callable = nil, prepend: false) { |payload| ... } -> self
+
+      ##
+      # Observes or transforms a completed tool result.
+      #
+      # :singleton-method: after_tool
+      # :call-seq:
+      #   after_tool(callable = nil, prepend: false) { |payload| ... } -> self
 
       private
 
@@ -265,9 +436,16 @@ module LittleGhost
       end
     end
 
+    # Run-scoped model, tools, lifecycle, delegation, and execution resources
+    # available to agent extensions.
     attr_reader :model, :tool_registry, :run, :delegation_activity, :agent_path, :workspace, :sandbox,
       :max_tool_calls
 
+    # Creates either a standalone entrypoint or a run-scoped agent.
+    #
+    # Calling <tt>new</tt> without +model+ and +run+ creates the console-friendly
+    # standalone form. Runtime builders supply the remaining dependencies and
+    # apply class-level limits and declarations.
     def initialize(
       model: nil,
       runtime: nil,
@@ -340,15 +518,16 @@ module LittleGhost
       raise
     end
 
+    # Runtime used to build this agent's model, tools, workspace, and sandbox.
     attr_reader :runtime
 
-    def entrypoint_name = self.class.agent_id
+    def entrypoint_name = self.class.agent_id # :nodoc:
 
-    def dispatch_tools(tool_uses, context:, events:, parent_operation_id:, parent_trace_context: nil)
+    def dispatch_tools(tool_uses, context:, events:, parent_operation_id:, parent_trace_context: nil) # :nodoc:
       execute_tools(tool_uses, context, events, parent_operation_id:, parent_trace_context:)
     end
 
-    def build_run(payload)
+    def build_run(payload) # :nodoc:
       options = {
         agent_class: self.class,
         entrypoint_class: self.class
@@ -358,6 +537,10 @@ module LittleGhost
       runtime.build_run(payload, **options)
     end
 
+    # Runs +input+ to completion.
+    #
+    # A standalone agent returns a LittleGhost::Run. An agent built inside a run
+    # returns its LittleGhost::RunResult.
     def call(input = nil, **options)
       return build_run(entrypoint_payload(input, options)).call if @standalone
 
@@ -368,10 +551,16 @@ module LittleGhost
       result
     end
 
+    # Console-friendly name for +#call+.
     def ask(message, **options)
       call(message, **options)
     end
 
+    # Adds +message+ to one active invocation and waits for its ordinary text reply.
+    #
+    # The response may continue into tool calls; delivery does not stop the
+    # original invocation. Raises LittleGhost::AgentInterruptError when there is
+    # no unambiguous active target.
     def interrupt(
       message,
       cancellation_token: Support::CancellationToken.new,
@@ -392,6 +581,13 @@ module LittleGhost
       ).text
     end
 
+    # Adds an interruption and returns the model's immediate response details.
+    #
+    # Use +target_operation_id+ when an agent has multiple active invocations.
+    # Messages may contain only text, image, or document content. The returned
+    # response value exposes +text+, +tool_calls?+, +interruption_ids+, and
+    # +batch_key+; tool calls may continue after this response. Depend on these
+    # methods rather than the response's concrete class.
     def interrupt_response(
       message,
       cancellation_token: Support::CancellationToken.new,
@@ -455,6 +651,14 @@ module LittleGhost
       end
     end
 
+    # Streams one invocation as StreamEvent objects.
+    #
+    # Agents built inside a run accept history, JSON-like context, cancellation,
+    # deadlines, settings, and trusted invocation template paths. An agent
+    # instance may be streamed only according to the lifecycle managed by its
+    # owning run. Every template path must be an application-created TrustedPath;
+    # the wrapper records a trust decision and must never contain unchecked
+    # request or model input.
     def stream(
       input = nil,
       history: nil,
@@ -528,10 +732,15 @@ module LittleGhost
       end
     end
 
+    # Console-friendly name for +#stream+.
     def stream_ask(message, **options)
       stream(message, **options)
     end
 
+    # Exposes this agent as a Tool instance.
+    #
+    # By default, each call starts with empty conversational history. Set
+    # <tt>preserve_context: true</tt> to retain history serially between calls.
     def as_tool(name: self.class.agent_id, description: self.class.description, preserve_context: false)
       agent = self
       description = "Delegate a task to #{name}." if description.to_s.empty?
@@ -575,6 +784,7 @@ module LittleGhost
       tool_class.new(binding:)
     end
 
+    # Materializes and freezes the prompt locals declared on the agent class.
     def prompt_locals
       self.class.prompt_local_resolvers.to_h do |name, resolver|
         value = if resolver.respond_to?(:call)
@@ -586,8 +796,11 @@ module LittleGhost
       end.freeze
     end
 
+    # The materialized tools available during this agent run.
     def tools = tool_registry
 
+    # Closes owned tools, interruptions, sandbox, and workspace resources.
+    # The operation is idempotent and re-raises the first cleanup failure.
     def close
       resources, interruptions = @close_mutex.synchronize do
         return if @closed
@@ -612,14 +825,23 @@ module LittleGhost
 
     protected
 
+    # :doc:
+    # Yields around one invocation. Subclasses may override this hook to install
+    # invocation-scoped state and must yield exactly once.
     def with_invocation(_context)
       yield
     end
 
+    # :doc:
+    # Returns the tools exposed to the model for +turn+. Subclasses may override
+    # this hook to filter the already-authorized tool list.
     def model_tools(tools, context:, turn:)
       tools
     end
 
+    # :doc:
+    # Yields around one tool execution. Subclasses may override this hook for
+    # execution-scoped behavior and must yield exactly once.
     def with_tool_execution(_execution)
       yield
     end

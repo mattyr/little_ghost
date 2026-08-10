@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 module LittleGhost
-  class AgentBuilder
+  class AgentBuilder # :nodoc: all
     class ActivityRelay
       def initialize
         @mutex = Mutex.new

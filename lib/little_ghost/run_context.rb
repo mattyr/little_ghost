@@ -1,10 +1,20 @@
 # frozen_string_literal: true
 
 module LittleGhost
+  # RunContext gives tools and workflows one place for shared state, cancellation,
+  # deadlines, checkpoints, and accumulated usage. It travels with work inside a
+  # run without becoming global process state.
+  #
+  # Tools and workflows use it to share JSON-like state, check
+  # cancellation and deadlines, checkpoint messages, and accumulate usage.
+  # Access to framework-managed fields is thread-safe.
   class RunContext
+    # Shared state, cancellation, deadline, metadata, operation identity, and
+    # durable conversation identity for the current work.
     attr_reader :state, :cancellation_token, :deadline, :metadata,
       :agent_operation_id, :conversation_id
 
+    # Creates a context with optional checkpoint and interruption state.
     def initialize(
       state: {},
       cancellation_token: Support::CancellationToken.new,
@@ -37,11 +47,15 @@ module LittleGhost
       @interruption_ids = Array(interruption_ids).map { |id| String(id).dup.freeze }.freeze
     end
 
+    # Raises LittleGhost::CancelledError or LittleGhost::DeadlineExceededError
+    # when execution should stop.
     def check!
       cancellation_token.raise_if_cancelled!
       raise DeadlineExceededError, "The run deadline was reached" if deadline && Time.now >= deadline
     end
 
+    # Sends +messages+ and current state to the configured checkpoint callback.
+    # With no checkpoint callback, this method does nothing and returns +nil+.
     def checkpoint(messages)
       return unless @checkpoint
 
@@ -52,14 +66,20 @@ module LittleGhost
       end
     end
 
+    # Adds +value+ to accumulated model usage.
     def record_usage(value)
       @usage_mutex.synchronize { @usage += value }
     end
 
+    # Takes a snapshot of accumulated usage.
     def usage
       @usage_mutex.synchronize { @usage }
     end
 
+    # Calculates seconds remaining before the deadline.
+    #
+    # When +maximum+ is provided, the result is capped at that value. With no
+    # deadline, returns +maximum+.
     def remaining_time(maximum = nil)
       check!
       return maximum unless deadline
@@ -68,24 +88,26 @@ module LittleGhost
       maximum ? [remaining, maximum].min : remaining
     end
 
+    # Stores a validated LittleGhost::StructuredResult and returns it.
     def submit_structured_result(result)
       @structured_result_mutex.synchronize { @structured_result = result }
       result
     end
 
+    # Finds the latest validated structured result, if any.
     def structured_result
       @structured_result_mutex.synchronize { @structured_result }
     end
 
-    def interruption_metadata
+    def interruption_metadata # :nodoc:
       @interruption_mutex.synchronize { @interruption_metadata }
     end
 
-    def interruption_ids
+    def interruption_ids # :nodoc:
       @interruption_mutex.synchronize { @interruption_ids }
     end
 
-    def activate_interruption(metadata:, ids:)
+    def activate_interruption(metadata:, ids:) # :nodoc:
       value = metadata&.to_h
       values = Array(ids).map { |id| String(id).dup.freeze }.freeze
       @interruption_mutex.synchronize do
@@ -94,7 +116,7 @@ module LittleGhost
       end
     end
 
-    def bind_agent_operation_id(operation_id)
+    def bind_agent_operation_id(operation_id) # :nodoc:
       @agent_operation_id_mutex.synchronize do
         if @agent_operation_id && @agent_operation_id != operation_id
           raise Error, "run context is already bound to an agent operation"

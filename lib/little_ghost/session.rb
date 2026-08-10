@@ -1,9 +1,43 @@
 # frozen_string_literal: true
 
 module LittleGhost
+  # Sessions let an agent continue a conversation without tying it to one Ruby
+  # process. Each session keeps messages, application state, and metadata
+  # together behind a SessionStore.
+  #
+  #   session = LittleGhost::Session.new(
+  #     id: "conversation-42",
+  #     actor_id: "user-7",
+  #     store: LittleGhost::SessionStores::Memory.new
+  #   )
+  #   session.append(
+  #     messages: [LittleGhost::Message.new(role: :user, content: "Hello")],
+  #     state: {language: "en"}
+  #   )
+  #
+  #   reopened = LittleGhost::Session.new(
+  #     id: "conversation-42",
+  #     actor_id: "user-7",
+  #     store: session.store
+  #   )
+  #   reopened.history.last.text # => "Hello"
+  #   reopened.state              # => {language: "en"}
+  #
+  # === Persistence and trust
+  #
+  # System messages, transient messages, and private model reasoning are removed
+  # before persistence. Store failures reach the caller; a successful write is
+  # the checkpoint boundary.
+  #
+  # Multi-tenant applications must derive +actor_id+ from stable, authenticated
+  # identity. A nil actor provides no tenant isolation and is appropriate only
+  # for a store that serves one actor.
   class Session
+    # The store key, explicit actor identity, backing store, and telemetry
+    # operation used by this session.
     attr_reader :id, :actor_id, :store, :operation_id
 
+    # No store access occurs until the session is read or written.
     def initialize(id:, store:, actor_id: nil, metadata: {}, operation_id: nil)
       @id = String(id)
       @actor_id = actor_id&.to_s
@@ -13,6 +47,7 @@ module LittleGhost
       @loaded = false
     end
 
+    # Loads and normalizes the snapshot once. A new session has no snapshot.
     def load
       return @snapshot if @loaded
 
@@ -22,19 +57,27 @@ module LittleGhost
       @snapshot
     end
 
+    # Uses persisted conversation messages when present and +fallback+ for a new
+    # session.
     def history(fallback: [])
       load&.fetch(:messages) || fallback
     end
 
+    # Exposes a mutable copy of the persisted application state.
     def state
       snapshot = load
       snapshot ? mutable_copy(snapshot.fetch(:state)) : {}
     end
 
+    # Uses persisted metadata when present and otherwise keeps the metadata from
+    # construction.
     def metadata
       load&.fetch(:metadata) || @metadata
     end
 
+    # Atomically appends +messages+ when the store still has the expected
+    # history length. Prefer #checkpoint when replacing earlier messages is
+    # also valid.
     def append(messages:, state: self.state, metadata: self.metadata)
       current = current_snapshot
       added = persistable_messages(messages)
@@ -56,12 +99,15 @@ module LittleGhost
       remember(snapshot)
     end
 
+    # Replaces the complete persisted snapshot.
     def replace(messages:, state: self.state, metadata: self.metadata)
       snapshot = build_snapshot(messages:, state:, metadata:)
       with_store_operation_context { store.replace(id, actor_id:, **snapshot) }
       remember(snapshot)
     end
 
+    # Persists one conversation checkpoint. History is appended when the stored
+    # messages are an unchanged prefix and replaced otherwise.
     def checkpoint(messages:, state: self.state, metadata: self.metadata, parent_operation_id: @operation_id)
       with_store_operation_context(parent_operation_id) do
         snapshot = build_snapshot(messages:, state:, metadata:)
@@ -85,14 +131,21 @@ module LittleGhost
       end
     end
 
+    # Checkpoints the messages and state from a completed run result.
     def checkpoint_result(result)
       checkpoint(messages: result.messages, state: result.state)
     end
 
+    # Serializes work for this session and actor through the backing store.
     def synchronize(&block)
       store.synchronize(id, actor_id:, &block)
     end
 
+    # Publishes a conversational view without changing the session's stored
+    # transcript. Unlike session persistence, projection does not automatically
+    # remove system or transient messages; callers must omit any message whose
+    # visible text should stay local. Stores that do not support projections
+    # return nil.
     def project_conversation(messages:, metadata: self.metadata)
       with_store_operation_context do
         store.project_conversation(id, messages:, metadata:, actor_id:)
