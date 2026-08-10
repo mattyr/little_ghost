@@ -3,10 +3,55 @@
 require "json"
 
 module LittleGhost
+  # Give an agent a validated way to call application code. Every tool declares a
+  # model-visible name, description, and input shape before implementing its
+  # operation.
+  #
+  #   class TicketStatusTool < LittleGhost::Tool
+  #     tool_name "ticket_status"
+  #     description "Look up a support ticket's status."
+  #     input_schema type: "object", properties: {
+  #       ticket_id: {type: "string"}
+  #     }, required: ["ticket_id"], additionalProperties: false
+  #
+  #     def call(input)
+  #       {ticket_id: input.fetch("ticket_id"), status: "waiting_on_customer"}
+  #     end
+  #   end
+  #
+  #   result = TicketStatusTool.new.execute("ticket_id" => "SUP-481")
+  #   result.success?            # => true
+  #   JSON.parse(result.content) # => {"ticket_id"=>"SUP-481", "status"=>"waiting_on_customer"}
+  #
+  # The class DSL produces the frozen specification sent to models. +execute+
+  # validates incoming arguments, invokes +call+, and normalizes strings,
+  # JSON-compatible collections, and other return values to model-facing text.
+  # Tool.define offers the same contract for an embedded implementation.
+  #
+  # A tool registry creates one instance per agent run and supplies a Binding for
+  # access to the agent, run, runtime, model, workspace, and sandbox. Mutable
+  # per-instance state therefore belongs to that run. Registries close tools that
+  # implement +close+; <tt>exclusive true</tt> serializes calls against every
+  # other exclusive tool in the same run.
+  #
+  # Validation and application ToolError failures become error results. A
+  # ToolError message is visible to the model and must be safe to disclose;
+  # unexpected exception messages are replaced with their class name.
+  # Cancellation, deadlines, and cleanup errors propagate instead of becoming
+  # ordinary tool output. The configured sandbox, not Tool itself, enforces
+  # filesystem and process isolation.
   class Tool
+    # Supply run-scoped collaborators when tools are instantiated outside an agent.
+    # A binding can be copied with selected collaborators replaced.
+    #
+    # Tool instances expose the bound agent, run, runtime, model, workspace, and
+    # sandbox through matching accessors. ToolRegistry and Agent normally create
+    # bindings on behalf of application code.
     class Binding
+      # Agent, run, runtime, model, workspace, and sandbox available to a tool.
       attr_reader :agent, :run, :runtime, :model, :workspace, :sandbox
 
+      # Creates a binding from any available run-scoped collaborators.
       def initialize(agent: nil, run: nil, runtime: nil, model: nil, workspace: nil, sandbox: nil)
         @agent = agent
         @run = run
@@ -16,17 +61,22 @@ module LittleGhost
         @sandbox = sandbox
       end
 
+      # Copies the binding, replacing only the supplied collaborators.
       def with(agent: self.agent, run: self.run, runtime: self.runtime, model: self.model,
         workspace: self.workspace, sandbox: self.sandbox)
         self.class.new(agent:, run:, runtime:, model:, workspace:, sandbox:)
       end
 
+      # Instantiates each supplied tool class against this binding.
       def build(*tool_classes)
         tool_classes.flatten.map { |tool_class| tool_class.new(binding: self) }
       end
     end
 
-    ExecutionResult = Data.define(:content, :status, :error) do
+    # Report the caller-safe outcome of one tool execution.
+    # The result retains model-facing content, status, and the original exception
+    # for application-side inspection.
+    ExecutionResult = Data.define(:content, :status, :error) do # :nodoc:
       def initialize(content:, status:, error: nil)
         super
       end
@@ -40,6 +90,38 @@ module LittleGhost
       end
     end
 
+    # Reports the caller-safe outcome of one tool execution. It keeps
+    # model-facing content and status beside the original exception retained for
+    # application-side inspection.
+    class ExecutionResult < Data # :doc:
+      ##
+      # :singleton-method: new
+      # :call-seq:
+      #   new(content:, status:, error: nil) -> ExecutionResult
+      #
+      # Collects the model-facing and application-facing parts of one result.
+
+      ##
+      # :attr_reader: content
+      # The normalized, caller-safe text returned to the model.
+
+      ##
+      # :attr_reader: status
+      # Either +:success+ or +:error+.
+
+      ##
+      # :attr_reader: error
+      # The original exception for application-side inspection, when present.
+
+      ##
+      # :method: success?
+      # Indicates that +status+ is +:success+.
+
+      ##
+      # :method: error?
+      # Indicates that +status+ is +:error+.
+    end
+
     extend Support::ClassAttributes
 
     class_attribute :tool_name_value
@@ -48,18 +130,38 @@ module LittleGhost
     class_attribute :exclusive_value, default: false
 
     class << self
+      # :call-seq:
+      #   tool_name()       -> String
+      #   tool_name(value)  -> value
+      #
+      # The model-visible tool name.
+      #
+      # Named classes derive a snake-cased default; passing +value+ replaces it.
       def tool_name(*values)
         return configured_name if values.empty?
 
         self.tool_name_value = String(values.fetch(0)).freeze
       end
 
+      # :call-seq:
+      #   description()       -> String
+      #   description(value)  -> value
+      #
+      # The model-visible description used to decide when the tool applies.
       def description(*values)
         return description_value if values.empty?
 
         self.description_value = String(values.fetch(0)).freeze
       end
 
+      # :call-seq:
+      #   input_schema()        -> Hash
+      #   input_schema(schema)  -> schema
+      #
+      # The frozen JSON Schema subset used to validate model input.
+      #
+      # Setting a non-Hash schema raises ArgumentError. Keys are normalized to
+      # strings and the entire value is deeply frozen.
       def input_schema(*values)
         return input_schema_value || {}.freeze if values.empty?
 
@@ -69,12 +171,24 @@ module LittleGhost
         self.input_schema_value = deep_freeze(value)
       end
 
+      # :call-seq:
+      #   exclusive()       -> true or false
+      #   exclusive(value)  -> value
+      #
+      # Whether calls acquire the run-wide exclusive tool lock.
       def exclusive(*values)
         return !!exclusive_value if values.empty?
 
         self.exclusive_value = !!values.fetch(0)
       end
 
+      # Creates an anonymous Tool subclass backed by +implementation+.
+      # The block receives +input+ and may also accept the +context:+ keyword.
+      #
+      #   tool = LittleGhost::Tool.define(
+      #     name: "echo", description: "Echo text.",
+      #     input_schema: {type: "object"}
+      #   ) { |input| input.fetch("text") }
       def define(name:, description:, input_schema: {}, &implementation)
         raise ArgumentError, "A tool implementation block is required" unless implementation
 
@@ -96,6 +210,7 @@ module LittleGhost
         end
       end
 
+      # The frozen model-facing name, description, and input schema.
       def specification
         {
           name: tool_name,
@@ -131,26 +246,44 @@ module LittleGhost
       end
     end
 
+    # RunContext supplied to the current #execute call, or nil outside execution.
     attr_reader :context
 
+    # Model-visible name declared by the tool class.
     def tool_name = self.class.tool_name
+    # Model-visible description declared by the tool class.
     def description = self.class.description
+    # Normalized JSON input schema declared by the tool class.
     def input_schema = self.class.input_schema
+    # Frozen provider-facing tool specification.
     def specification = self.class.specification
+    # Indicates whether calls use the run-wide exclusive-tool lock.
     def exclusive? = self.class.exclusive
 
+    # Creates a tool with the run-scoped collaborators in +binding+.
     def initialize(binding: Binding.new)
       @binding = binding
       @state = {}
     end
 
+    # Bound agent, when the tool belongs to an agent run.
     def agent = binding.agent
+    # Bound run, when available.
     def run = binding.run
+    # Bound runtime, when available.
     def runtime = binding.runtime
+    # Bound model, when available.
     def model = binding.model
+    # Bound workspace, when available.
     def workspace = binding.workspace
+    # Bound sandbox, when available.
     def sandbox = binding.sandbox
 
+    # Validates +input+ and invokes the tool, returning an ExecutionResult.
+    #
+    # Cancellation, deadline, and cleanup exceptions remain control-flow
+    # exceptions. ToolError and unexpected failures become sanitized error
+    # results; unexpected exception messages are not exposed to the model.
     def execute(input, context: RunContext.new)
       context ||= RunContext.new
       errors = SchemaValidator.new(self.class.input_schema).validate(input)
@@ -168,6 +301,10 @@ module LittleGhost
       failure("Tool failed (#{error.class})", error:)
     end
 
+    # Implements the model-requested operation.
+    #
+    # Subclasses must override this method. The current RunContext is available
+    # through +context+ while the call executes.
     def call(_input)
       raise NotImplementedError, "#{self.class} must implement #call"
     end
@@ -204,7 +341,7 @@ module LittleGhost
       ExecutionResult.new(content: content.freeze, status: :error, error:)
     end
 
-    class SchemaValidator
+    class SchemaValidator # :nodoc:
       def initialize(schema)
         @schema = schema
       end

@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 module LittleGhost
-  module StructuredOutput
+  module StructuredOutput # :nodoc: all
     STRATEGIES = %i[auto provider tool].freeze
 
     class Strategy

@@ -1,12 +1,25 @@
 # frozen_string_literal: true
 
 module LittleGhost
+  # ToolRegistry turns an agent's tool declarations into the exact set a model
+  # can call during one run. It validates names, binds run collaborators, and
+  # closes owned tool instances with the run.
+  #
+  #   binding = LittleGhost::Tool::Binding.new
+  #   registry = LittleGhost::ToolRegistry.new([HelpCenterLookupTool], binding:)
+  #   registry.names # => ["policy_lookup"]
+  #
+  # Entries may be Tool instances, Tool subclasses, nested arrays, or provider
+  # classes that implement <tt>tools(binding)</tt>. Names must be unique, contain only
+  # letters, numbers, underscores, or hyphens, and be at most 64 characters.
+  # Owned tools that implement +close+ are closed once in reverse order.
   class ToolRegistry
-    MAX_NAME_LENGTH = 64
-    NAME_PATTERN = /\A[a-zA-Z0-9_-]+\z/
+    MAX_NAME_LENGTH = 64 # :nodoc:
+    NAME_PATTERN = /\A[a-zA-Z0-9_-]+\z/ # :nodoc:
 
     include Enumerable
 
+    # Binds newly instantiated tools to +binding+.
     def initialize(tools = [], binding: Tool::Binding.new)
       @tools = {}
       @binding = binding
@@ -28,6 +41,8 @@ module LittleGhost
       raise error
     end
 
+    # Registers +tool+ and returns +self+. When +replace+ is true, replaced owned tools
+    # are closed after the new entries have been validated.
     def register(tool, replace: false)
       raise Error, "Tool registry is closed" if @closed
 
@@ -61,6 +76,7 @@ module LittleGhost
       raise error
     end
 
+    # Closes every owned tool that responds to +close+.
     def close
       return if @closed
 
@@ -68,18 +84,22 @@ module LittleGhost
       close_instances(@tools.each_value.to_a)
     end
 
+    # Finds the named tool or raises ToolError when it is unavailable.
     def fetch(name)
       @tools.fetch(name.to_s) { raise ToolError, "Unknown tool: #{name}" }
     end
 
+    # Yields each registered tool instance.
     def each(&block)
       @tools.each_value(&block)
     end
 
+    # Collects the frozen model-facing tool specifications.
     def specifications
       map { |tool| tool.class.specification }.freeze
     end
 
+    # Lists the frozen model-visible tool names.
     def names
       @tools.keys.freeze
     end

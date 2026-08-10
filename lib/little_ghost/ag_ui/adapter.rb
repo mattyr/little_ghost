@@ -3,10 +3,33 @@
 require "securerandom"
 
 module LittleGhost
+  # AG-UI connects LittleGhost streams to user interfaces that speak the AG-UI
+  # protocol. Require +little_ghost/ag_ui+ to load this optional integration.
   module AGUI
+    # Adapter turns a LittleGhost stream into AG-UI event hashes. It lets a Ruby
+    # agent drive compatible chat interfaces without changing the agent itself.
+    #
+    #   events = CustomerSupportAgent.new.stream_ask("Where is my order?")
+    #   adapter = LittleGhost::AGUI::Adapter.new
+    #   adapter.stream(events, thread_id: "thread-1", run_id: "run-1").each do |event|
+    #     websocket.write(JSON.generate(event))
+    #   end
+    #
+    # The adapter has no state between #stream calls, so one instance can
+    # translate independent runs.
+    #
+    # === Security and trust
+    #
+    # Provider plaintext reasoning becomes AG-UI reasoning events. Tool
+    # arguments and results, invocation metadata, subagent events, trace context,
+    # and selected error text also pass through without redaction. Authorize and
+    # filter the complete stream before transport, and send it only to an
+    # interface trusted to display that data. Encrypted reasoning and provider
+    # continuity artifacts are never exposed here.
     class Adapter
-      TERMINAL_EVENTS = %i[run_partial run_cancel run_stop run_error].freeze
+      TERMINAL_EVENTS = %i[run_partial run_cancel run_stop run_error].freeze # :nodoc:
 
+      # Lazily translates +events+ for one AG-UI run.
       def stream(events, thread_id:, run_id:)
         Enumerator.new do |output|
           message_id = nil

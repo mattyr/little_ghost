@@ -1,14 +1,23 @@
 # frozen_string_literal: true
 
 module LittleGhost
+  # Ready-to-use persistence implementations for LittleGhost conversations.
   module SessionStores
+    # Memory keeps conversations available for the life of one Ruby process. It
+    # is the default store and needs no application setup.
+    #
+    # Data disappears when the process exits. Supplying an actor ID binds the
+    # session key to that actor; a later mismatch raises an error.
     class Memory < SessionStore
+      # Starts with no saved conversations.
       def initialize
         super
         @records = {}
         @records_mutex = Mutex.new
       end
 
+      # Loads the snapshot for +id+, returning +nil+ before the first checkpoint.
+      # A supplied +actor_id+ claims a new ID and must match on later access.
       def load(id, actor_id: nil)
         @records_mutex.synchronize do
           key = id.to_s
@@ -19,6 +28,8 @@ module LittleGhost
         end
       end
 
+      # Appends sanitized +messages+ when +expected_count+ still matches the
+      # stored conversation, then returns the updated snapshot.
       def append(id, messages:, state:, metadata:, expected_count:, actor_id: nil)
         messages = persistable_messages(messages)
         @records_mutex.synchronize do
@@ -42,6 +53,7 @@ module LittleGhost
         end
       end
 
+      # Replaces the complete in-memory snapshot with sanitized +messages+.
       def replace(id, messages:, state:, metadata:, actor_id: nil)
         messages = persistable_messages(messages)
         @records_mutex.synchronize do

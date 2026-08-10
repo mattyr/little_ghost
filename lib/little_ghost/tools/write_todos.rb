@@ -2,6 +2,17 @@
 
 module LittleGhost
   module Tools
+    # WriteTodos lets an agent share a live plan with the application and the
+    # person following its work. Add it like any other tool:
+    #
+    #   class ResearchAgent < LittleGhost::Agent
+    #     tools LittleGhost::Tools::WriteTodos
+    #   end
+    #
+    # Each execution replaces the full plan in RunContext state. Todo IDs remain stable across
+    # updates, statuses are +pending+, +in_progress+, or +completed+, and no more
+    # than one todo may be in progress. When no context is available, the tool
+    # retains fallback state on its instance.
     class WriteTodos < Tool
       tool_name "write_todos"
       description <<~DESCRIPTION.strip
@@ -35,10 +46,12 @@ module LittleGhost
         additionalProperties: false
       )
 
+      # Trims user-facing titles before normal tool validation and execution.
       def execute(input, context: nil)
         super(normalize_titles(input), context:)
       end
 
+      # Replaces the stored plan after enforcing progress and ID invariants.
       def call(input)
         todos = input.fetch("todos")
         raise ToolError, "only one todo may be in progress" if todos.count { |todo| todo["status"] == "in_progress" } > 1

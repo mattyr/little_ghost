@@ -3,7 +3,7 @@
 require "securerandom"
 
 module LittleGhost
-  class AgentInterruptions
+  class AgentInterruptions # :nodoc: all
     MAX_BATCH_SIZE = 100
     MAX_INTERRUPTION_COUNT = 1_000
 

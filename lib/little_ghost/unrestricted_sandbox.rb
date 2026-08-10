@@ -3,7 +3,27 @@
 require "open3"
 
 module LittleGhost
+  # UnrestrictedSandbox is a convenient host-backed sandbox for trusted local
+  # work. It offers bounded text-file operations and command execution using only
+  # Ruby's standard library.
+  #
+  #   workspace = LittleGhost::Workspace.new(root: Dir.pwd)
+  #   sandbox = LittleGhost::UnrestrictedSandbox.new(workspace:)
+  #   sandbox.read("README.md").lines.first # => "# LittleGhost\n"
+  #
+  # Reads return valid UTF-8 text. Writes preserve the supplied String bytes.
+  # Paths must be relative, may not contain +..+, and are checked against the
+  # configured workspace root.
+  #
+  # === Security and trust
+  #
+  # This sandbox is not a security boundary. Commands run directly on the host
+  # with the Ruby process's permissions, and filesystem containment cannot defend
+  # against concurrent adversarial mutation. Use an isolated Sandbox
+  # implementation for untrusted work.
   class UnrestrictedSandbox < Sandbox
+    # Configures a host sandbox with explicit read, write, and listing limits.
+    # Filesystem writes remain disabled unless +writable+ is true.
     def initialize(workspace:, writable: false, max_read_bytes: 1_000_000, max_write_bytes: 1_000_000, max_list_entries: 10_000)
       super(workspace:)
       @writable = writable
@@ -18,6 +38,7 @@ module LittleGhost
       capture_root_identity if File.exist?(@root)
     end
 
+    # Opens the sandbox and verifies that the workspace root has not changed.
     def open(run: nil)
       if @root_identity
         validate_root!
@@ -28,8 +49,10 @@ module LittleGhost
       self
     end
 
+    # Indicates whether this sandbox accepts filesystem mutations.
     def writable? = @writable
 
+    # Reads a bounded UTF-8 file within the workspace.
     def read(path, context: nil)
       context&.check!
       File.open(existing_path(path), read_flags) do |file|
@@ -46,6 +69,8 @@ module LittleGhost
       raise ToolError, "File is not valid UTF-8 text"
     end
 
+    # Produces a newline-delimited, sorted directory listing. Directories end in
+    # +/+.
     def list(path = ".", context: nil)
       context&.check!
       directory = existing_path(path, allow_root: true)
@@ -59,6 +84,7 @@ module LittleGhost
       end.join("\n")
     end
 
+    # Writes a bounded String without following a symbolic-link target.
     def write(path, content, context: nil)
       context&.check!
       raise ToolError, "Sandbox is read-only" unless writable?
@@ -77,6 +103,7 @@ module LittleGhost
       raise ToolError, "Write target cannot be a symbolic link"
     end
 
+    # Replaces exactly one occurrence of +old_text+ in a writable file.
     def replace(path, old_text, new_text, context: nil)
       context&.check!
       raise ToolError, "Text to replace cannot be empty" if old_text.empty?
@@ -89,6 +116,12 @@ module LittleGhost
       write(path, content.sub(old_text, new_text), context:)
     end
 
+    # Executes an argument vector on the host from the workspace root.
+    #
+    # Shell syntax is not interpreted. The child starts with an empty environment
+    # unless +inherit_environment+ is true, is terminated when the context is
+    # cancelled or the timeout expires, and has each output stream truncated to
+    # +max_output_bytes+.
     def execute_program(
       command,
       timeout:,

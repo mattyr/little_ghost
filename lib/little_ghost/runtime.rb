@@ -4,11 +4,44 @@ require "json"
 require_relative "configuration"
 
 module LittleGhost
+  # Prepare the shared services that agents and workflows use across many runs.
+  # A runtime owns model resolution, loading, persistence, lookup paths, hooks,
+  # and resource factories for one Ruby setup.
+  #
+  #   configuration = LittleGhost::Configuration.new(
+  #     root: Dir.pwd,
+  #     models: CustomerSupportModels,
+  #     default_model: "customer_support",
+  #     service_name: "support-api"
+  #   )
+  #   runtime = LittleGhost::Runtime.new(configuration: configuration)
+  #
+  #   runtime.service_name # => "support-api"
+  #   runtime.root == Pathname.new(File.realpath(Dir.pwd)) # => true
+  #
+  # Without explicit +settings+, construction canonicalizes the root, loads
+  # +config/little_ghost.rb+ once through the Configuration, snapshots settings,
+  # configures instrumentation, eager-loads application constants, and builds the
+  # selected model registry and session store. Supplying +settings+ is the
+  # lower-level path used to create a sibling runtime from an existing snapshot.
+  #
+  # Reuse a runtime across runs. +build_run+ creates any missing workspace and
+  # sandbox, transfers ownership only after both are built, and closes partial
+  # resources if construction fails. +build+ creates a sibling with explicit
+  # overrides and reuses the loader only when the application root is unchanged.
+  #
+  # Startup emits structured lifecycle instrumentation; a failed phase emits a
+  # failure event, flushes instrumentation, and re-raises the original exception.
+  # Session actor resolution must use trusted authenticated identity for tenant
+  # isolation. The default UnrestrictedSandbox is convenient application plumbing,
+  # not a security boundary for untrusted work.
   class Runtime
+    # The snapshotted setup and materialized services used by new runs.
     attr_reader :configuration, :settings, :root, :loader, :prompt_paths, :skill_paths,
       :skill_resource_root, :models, :session_store, :workspace_class, :sandbox_class,
       :runtime_hooks
 
+    # Starts a runtime from +configuration+ or an existing settings snapshot.
     def initialize(configuration:, settings: nil)
       @startup_started_at = monotonic_time
       @startup_phase = "configuration"
@@ -71,6 +104,7 @@ module LittleGhost
       end
     end
 
+    # Creates a sibling runtime with explicit setting overrides.
     def build(**overrides)
       values = @settings.merge(overrides)
       values[:root] = canonical_application_root(values.fetch(:root))
@@ -81,10 +115,13 @@ module LittleGhost
       )
     end
 
+    # Coerces an application payload into the configured Invocation class.
     def parse(payload)
       payload.is_a?(@invocation_class) ? payload : @invocation_class.new(payload)
     end
 
+    # Creates a Run and transfers ownership of newly created workspace and
+    # sandbox resources to it.
     def build_run(
       payload,
       agent_class:,
@@ -114,18 +151,22 @@ module LittleGhost
       raise
     end
 
+    # Instantiates the configured workspace, or a root-scoped Workspace by default.
     def build_workspace
       return workspace_class.new if workspace_class
 
       Workspace.new(root: root)
     end
 
+    # Instantiates the configured sandbox around +workspace+, or an unrestricted
+    # sandbox by default.
     def build_sandbox(workspace:)
       return sandbox_class.new(workspace:) if sandbox_class
 
       UnrestrictedSandbox.new(workspace:)
     end
 
+    # :nodoc:
     def build_agent(
       agent_class_or_name,
       run:,
@@ -136,16 +177,17 @@ module LittleGhost
       @agent_builder.build(agent_class_or_name, run:, model:, tools:, agent_path:)
     end
 
+    # The low-cardinality service name attached to runtime telemetry.
     def service_name
       @settings&.[](:service_name) || default_service_name
     end
 
-    def model_for(agent_class, run)
+    def model_for(agent_class, run) # :nodoc:
       role = agent_class.model_role(run.invocation) || @default_model
       models.resolve(role, invocation: run.invocation, run:)
     end
 
-    def open_session(run)
+    def open_session(run) # :nodoc:
       Session.new(
         id: run.invocation.session_id,
         actor_id: session_actor_for(run.invocation),
@@ -154,18 +196,18 @@ module LittleGhost
       )
     end
 
-    def prepare_run(run)
+    def prepare_run(run) # :nodoc:
       runtime_hooks.each { |hook| hook.prepare_run(run) }
       run
     end
 
-    def prepare_interruption(run, payload)
+    def prepare_interruption(run, payload) # :nodoc:
       runtime_hooks.reduce(payload) do |prepared, hook|
         hook.prepare_interruption(run, prepared)
       end
     end
 
-    def open_subagent_session(run, conversation_id)
+    def open_subagent_session(run, conversation_id) # :nodoc:
       parent_link = Subagents::Manager.parent_link(run.session)
       Session.new(
         id: Subagents::Manager.conversation_session_id(conversation_id),
@@ -180,15 +222,15 @@ module LittleGhost
       )
     end
 
-    def session_actor_for(invocation)
+    def session_actor_for(invocation) # :nodoc:
       @session_actor ? @session_actor.call(invocation) : invocation.actor_id
     end
 
-    def template_locals(run:, agent:)
+    def template_locals(run:, agent:) # :nodoc:
       {invocation: run.invocation, run:, agent:}.merge(agent.prompt_locals)
     end
 
-    def error_message(error, run)
+    def error_message(error, run) # :nodoc:
       runtime_hooks.each do |hook|
         message = hook.error_message(error, run)
         return message if message
@@ -197,7 +239,7 @@ module LittleGhost
       default_error_message(error, run)
     end
 
-    def default_error_message(error, _run)
+    def default_error_message(error, _run) # :nodoc:
       return error.message if error.is_a?(UnsupportedInputError)
       return error.message if error.is_a?(ToolLoopError)
       return "The model reached its output limit before completing a response. Please retry with a narrower request." if error.is_a?(OutputLimitError)
@@ -208,7 +250,7 @@ module LittleGhost
       "Agent failed: #{error.class}"
     end
 
-    def resolve_agent(value)
+    def resolve_agent(value) # :nodoc:
       resolve_agent_class(value)
     end
 

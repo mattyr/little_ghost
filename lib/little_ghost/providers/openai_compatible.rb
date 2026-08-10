@@ -6,27 +6,52 @@ require_relative "http_transport"
 
 module LittleGhost
   module Providers
+    # OpenAICompatible brings OpenAI-style Responses or Chat Completions endpoints
+    # into LittleGhost. Agents receive the same streaming events whether the
+    # endpoint is OpenAI, a hosted model service, or an application gateway.
+    #
+    #   provider = LittleGhost::Providers::OpenAICompatible.new(
+    #     api_key: ENV.fetch("MODEL_API_KEY"),
+    #     model: "example-model",
+    #     base_url: "https://models.example.test/v1/"
+    #   )
+    #
+    # The client translates ModelRequest values to the selected wire API and
+    # translates responses back to StreamEvent objects.
+    #
+    # === Retries and streaming output
+    #
+    # Transient HTTP and stream failures retry with limited exponential backoff.
+    # A +:model_retry+ event reports each retry and whether text had already been
+    # emitted. Partial text may repeat after a retry, so consumers that assemble
+    # streams must use that event to discard or replace superseded output.
     class OpenAICompatible
+      # The OpenAI API endpoint used when +base_url+ is omitted.
       DEFAULT_BASE_URL = "https://api.openai.com/v1/"
-      INITIAL_RETRY_DELAY = 1
-      MAX_RETRY_DELAY = 16
+      INITIAL_RETRY_DELAY = 1 # :nodoc:
+      MAX_RETRY_DELAY = 16 # :nodoc:
       TRANSIENT_STREAM_ERROR_TYPES = %w[
         provider_overloaded provider_unavailable rate_limit_exceeded server timeout
-      ].freeze
+      ].freeze # :nodoc:
       CONTEXT_OVERFLOW_MARKERS = [
         "context_length_exceeded", "context window", "maximum context length",
         "max context length", "input is too long", "too many input tokens"
-      ].freeze
+      ].freeze # :nodoc:
 
+      # Represents a structured error received inside an otherwise successful
+      # provider stream.
       class StreamError < ProviderError
+        # Normalized provider error type and optional provider code.
         attr_reader :error_type, :code
 
+        # Creates a structured stream error.
         def initialize(message, error_type: nil, code: nil)
           @error_type = error_type.to_s.strip.downcase
           @code = code
           super(message)
         end
 
+        # Indicates whether LittleGhost may retry this provider error.
         def retryable?
           return true if TRANSIENT_STREAM_ERROR_TYPES.include?(error_type)
           return true if code.to_s.strip.downcase == "server_error"
@@ -35,7 +60,7 @@ module LittleGhost
           status == 408 || status == 429 || (status && status >= 500)
         end
 
-        def self.from(error, prefix:)
+        def self.from(error, prefix:) # :nodoc:
           value = error.is_a?(Hash) ? error : {}
           metadata = value["metadata"].is_a?(Hash) ? value["metadata"] : {}
           error_type = metadata["error_type"] || value["type"]
@@ -46,8 +71,15 @@ module LittleGhost
         end
       end
 
+      # Provider model identifier and selected OpenAI-compatible wire API.
       attr_reader :model, :api
 
+      # Configures an OpenAI-compatible client.
+      #
+      # +api+ is +:responses+ or +:chat_completions+. +headers+ adds trusted
+      # endpoint-specific headers. +max_retries+ controls retries before the
+      # original error is raised, and +on_retry+ receives the attempt, error, and
+      # delay. Pass a custom +transport+ for alternate HTTP execution.
       def initialize(
         api_key:,
         model:,
@@ -83,6 +115,11 @@ module LittleGhost
         @on_retry = on_retry
       end
 
+      # Streams LittleGhost StreamEvent objects for +request+.
+      #
+      # Without a block, returns an Enumerator. Context-window errors normalize
+      # to ContextWindowOverflowError, and malformed tool calls normalize to
+      # MalformedToolCallError.
       def stream(request)
         return enum_for(__method__, request) unless block_given?
 
@@ -118,6 +155,8 @@ module LittleGhost
         end
       end
 
+      # Returns the legacy capability contract expected from compatible APIs.
+      # Subclasses can override this when the endpoint advertises precise support.
       def capabilities(metadata: {})
         ModelCapabilities.legacy
       end
@@ -400,7 +439,7 @@ module LittleGhost
         hash.reject { |_key, value| value.nil? }
       end
 
-      class Normalizer
+      class Normalizer # :nodoc:
         def initialize(model:)
           @model = model
           @message_id = nil
@@ -528,7 +567,7 @@ module LittleGhost
         end
       end
 
-      class ResponsesNormalizer < Normalizer
+      class ResponsesNormalizer < Normalizer # :nodoc:
         def stream_done
           nil
         end
@@ -589,7 +628,7 @@ module LittleGhost
         end
       end
 
-      class ChatNormalizer < Normalizer
+      class ChatNormalizer < Normalizer # :nodoc:
         def initialize(...)
           super
           @reasoning_details = []

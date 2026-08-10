@@ -4,16 +4,30 @@ require "base64"
 require "json"
 
 module LittleGhost
+  # Content gives messages a shared vocabulary for text, attachments, tool calls,
+  # tool results, and model reasoning. The same blocks move between agents,
+  # providers, tools, and sessions without leaking a provider's wire format.
+  #
+  #   block = LittleGhost::Content::Text.new(text: "Hello")
+  #   LittleGhost::Content.normalize("Hello") == block # => true
+  #
+  # Every block serializes through
+  # {Content.serialize}[rdoc-ref:LittleGhost::Content.serialize]. Binary data uses
+  # strict base64 encoding in the serialized form.
   module Content
-    Serializable = Module.new do
+    Serializable = Module.new do # :nodoc:
       def to_h = Content.serialize(self)
       def to_json(*arguments) = JSON.generate(to_h, *arguments)
     end
 
-    Text = Data.define(:text) { include Serializable }
-    Image = Data.define(:data, :media_type) { include Serializable }
-    Document = Data.define(:data, :media_type, :name) { include Serializable }
-    ToolUse = Data.define(:id, :name, :input) do
+    # Contains model-visible text.
+    Text = Data.define(:text) { include Serializable } # :nodoc:
+    # Contains binary image +data+ and its MIME +media_type+.
+    Image = Data.define(:data, :media_type) { include Serializable } # :nodoc:
+    # Contains binary document +data+, MIME +media_type+, and display +name+.
+    Document = Data.define(:data, :media_type, :name) { include Serializable } # :nodoc:
+    # Describes a provider-requested tool call.
+    ToolUse = Data.define(:id, :name, :input) do # :nodoc:
       include Serializable
 
       def initialize(id:, name:, input:)
@@ -28,7 +42,8 @@ module LittleGhost
         raise ArgumentError, "tool use id and name must be strings"
       end
     end
-    ToolResult = Data.define(:tool_use_id, :content, :status) do
+    # Contains the result for one ToolUse. +status+ is +:success+ or +:error+.
+    ToolResult = Data.define(:tool_use_id, :content, :status) do # :nodoc:
       include Serializable
 
       def initialize(tool_use_id:, content:, status:)
@@ -42,7 +57,12 @@ module LittleGhost
         raise ArgumentError, "tool result id and status are invalid"
       end
     end
-    Reasoning = Data.define(:text, :signature, :redacted_content, :details) do
+    # Contains provider reasoning text, a provider signature, encrypted redacted
+    # bytes, or provider-specific detail objects.
+    #
+    # Redacted bytes are mutually exclusive with text and signatures so they can
+    # round-trip without exposing or changing provider-managed content.
+    Reasoning = Data.define(:text, :signature, :redacted_content, :details) do # :nodoc:
       include Serializable
 
       def initialize(text: "", signature: nil, redacted_content: nil, details: nil)
@@ -69,8 +89,144 @@ module LittleGhost
       end
     end
 
+    # Contains model-visible text.
+    class Text < Data # :doc:
+      ##
+      # :singleton-method: new
+      # :call-seq:
+      #   new(text:) -> Text
+      #
+      # Wraps +text+ without copying it.
+
+      ##
+      # :attr_reader: text
+      # The text shown to the model or application.
+    end
+
+    # Contains binary image data and its MIME media type. Content.serialize
+    # base64-encodes +data+ when the block crosses a JSON boundary.
+    class Image < Data # :doc:
+      ##
+      # :singleton-method: new
+      # :call-seq:
+      #   new(data:, media_type:) -> Image
+      #
+      # Wraps the supplied values without copying them.
+
+      ##
+      # :attr_reader: data
+      # The original binary image bytes.
+
+      ##
+      # :attr_reader: media_type
+      # The image MIME type, such as +image/png+.
+    end
+
+    # Contains binary document data, its MIME media type, and a display name.
+    # Content.serialize base64-encodes +data+ when the block crosses a JSON
+    # boundary.
+    class Document < Data # :doc:
+      ##
+      # :singleton-method: new
+      # :call-seq:
+      #   new(data:, media_type:, name:) -> Document
+      #
+      # Wraps the supplied values without copying them.
+
+      ##
+      # :attr_reader: data
+      # The original binary document bytes.
+
+      ##
+      # :attr_reader: media_type
+      # The document MIME type, such as +application/pdf+.
+
+      ##
+      # :attr_reader: name
+      # The filename or label presented to the model.
+    end
+
+    # Describes one tool call requested by a provider-backed model.
+    class ToolUse < Data # :doc:
+      ##
+      # :singleton-method: new
+      # :call-seq:
+      #   new(id:, name:, input:) -> ToolUse
+      #
+      # Requires non-empty String-compatible +id+ and +name+ values and an
+      # object-shaped +input+.
+
+      ##
+      # :attr_reader: id
+      # The non-empty provider call identifier used to match a ToolResult.
+
+      ##
+      # :attr_reader: name
+      # The non-empty model-visible tool name.
+
+      ##
+      # :attr_reader: input
+      # The object-shaped arguments supplied by the model.
+    end
+
+    # Carries the model-facing result for one ToolUse. A successful result uses
+    # +:success+; a caller-safe failure uses +:error+.
+    class ToolResult < Data # :doc:
+      ##
+      # :singleton-method: new
+      # :call-seq:
+      #   new(tool_use_id:, content:, status:) -> ToolResult
+      #
+      # Requires a non-empty String-compatible +tool_use_id+ and a +status+ of
+      # +:success+ or +:error+.
+
+      ##
+      # :attr_reader: tool_use_id
+      # The ToolUse identifier this result answers.
+
+      ##
+      # :attr_reader: content
+      # The content returned to the model.
+
+      ##
+      # :attr_reader: status
+      # Either +:success+ or +:error+.
+    end
+
+    # Preserves provider reasoning without forcing every provider into one
+    # representation. A value may carry visible text, a provider signature,
+    # opaque redacted bytes, or provider-specific detail objects.
+    #
+    # Redacted bytes are mutually exclusive with text and signatures so they can
+    # round-trip without exposing or changing provider-managed content.
+    class Reasoning < Data # :doc:
+      ##
+      # :singleton-method: new
+      # :call-seq:
+      #   new(text: "", signature: nil, redacted_content: nil, details: nil) -> Reasoning
+      #
+      # +details+, when present, must be an array of Hash objects.
+
+      ##
+      # :attr_reader: text
+      # Visible reasoning text, or an empty string when none is available.
+
+      ##
+      # :attr_reader: signature
+      # An optional provider signature associated with +text+.
+
+      ##
+      # :attr_reader: redacted_content
+      # Optional opaque bytes that only the provider should interpret.
+
+      ##
+      # :attr_reader: details
+      # Optional provider-specific reasoning objects.
+    end
+
     module_function
 
+    # Accepts an existing block, a String, or a serialized Hash.
     def normalize(value)
       case value
       when Text, Image, Document, ToolUse, ToolResult, Reasoning
@@ -84,6 +240,7 @@ module LittleGhost
       end
     end
 
+    # Reconstructs a content block from its serialized hash.
     def from_hash(value)
       hash = value.transform_keys(&:to_sym)
       type = hash.delete(:type)&.to_sym
@@ -124,6 +281,7 @@ module LittleGhost
       raise ArgumentError, "Invalid #{type || "content"} block: #{error.message}"
     end
 
+    # Produces the JSON-safe representation of +block+.
     def serialize(block)
       case block
       when Text then {"type" => "text", "text" => block.text}
@@ -152,12 +310,12 @@ module LittleGhost
       end
     end
 
-    def binary(type, data, **attributes)
+    def binary(type, data, **attributes) # :nodoc:
       {"type" => type, "data" => Base64.strict_encode64(data), "encoding" => "base64"}
         .merge(attributes.transform_keys(&:to_s))
     end
 
-    def serialize_tool_result_content(content)
+    def serialize_tool_result_content(content) # :nodoc:
       return content unless content.is_a?(Array)
 
       content.map { |block| block.respond_to?(:to_h) ? block.to_h : block }

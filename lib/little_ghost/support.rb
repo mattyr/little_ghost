@@ -1,9 +1,14 @@
 # frozen_string_literal: true
 
 module LittleGhost
+  # Support collects small building blocks for LittleGhost extensions. They are
+  # available to applications that need the same cancellation, loading,
+  # callback, execution, and diagnostic behavior as the framework.
   module Support
     module_function
 
+    # Recursively duplicates hashes, arrays, and strings while preserving other
+    # values. Cyclic containers are not supported.
     def deep_dup(value)
       case value
       when Hash

@@ -3,20 +3,63 @@
 require "securerandom"
 
 module LittleGhost
+  # Instrumentation turns agent work into structured lifecycle notifications.
+  # Applications can measure agents, models, tools, workflows, and sessions with
+  # the telemetry backend they already use.
+  #
+  #   class TimingSubscriber < LittleGhost::Instrumentation::Subscriber
+  #     def finish(name, attributes)
+  #       puts "#{name}: #{attributes.fetch(:duration_ms)}ms"
+  #     end
+  #   end
+  #
+  #   LittleGhost.configure do |config|
+  #     config.instrument TimingSubscriber.new
+  #   end
+  #
+  # A subscriber receives structured attributes when an operation starts,
+  # finishes, or emits a point-in-time event. Subscriber failures are reported
+  # once and kept separate from agent execution.
+  #
+  # === Content and trust
+  #
+  # Diagnostic content is excluded unless the application installs an explicit
+  # Support::ContentCapture policy. One process is one telemetry and content
+  # policy boundary; applications that need different exporters or data policies
+  # should use separate processes.
   module Instrumentation
+    # Subclass Subscriber to connect a telemetry backend.
+    #
+    # Override the callbacks a backend supports. +start+ and +finish+ receive the
+    # same operation name and correlated attributes. +emit+ receives point
+    # events. Implementations may return a propagation carrier from
+    # #trace_context. Callbacks should be thread-safe.
     class Subscriber
+      # Called when a lifecycle operation starts.
       def start(_name, _attributes) = nil
+      # Called when a lifecycle operation finishes.
       def finish(_name, _attributes) = nil
+      # Called for a point-in-time instrumentation event.
       def emit(_name, _attributes) = nil
+      # Flushes buffered telemetry within an optional timeout budget.
       def flush(timeout: nil) = nil
+      # Releases subscriber resources within an optional timeout budget.
       def shutdown(timeout: nil) = nil
+      # Supplies trace fields that should travel with downstream work.
       def trace_context(**) = {}
     end
 
+    # A Handle represents work between Instrumentation.start and #finish.
+    #
+    # Non-detached handles are fiber-owned and must finish in LIFO order after
+    # their children. Detached handles may finish outside the creating fiber but
+    # still cannot finish while local children remain active.
     class Handle
+      # Operation identity, inherited attributes, previous local handle, and
+      # monotonic start time.
       attr_reader :name, :operation_id, :parent_operation_id, :payload, :previous, :started_at
 
-      def initialize(bus, name, operation_id:, parent_operation_id:, local_parent:, previous:, payload:, started_at:, detached:)
+      def initialize(bus, name, operation_id:, parent_operation_id:, local_parent:, previous:, payload:, started_at:, detached:) # :nodoc:
         @bus = bus
         @name = name.to_sym
         @operation_id = operation_id
@@ -29,17 +72,24 @@ module LittleGhost
         @owner = Fiber.current
       end
 
+      # Completes this operation with additional attributes.
       def finish(**attributes)
         @bus.finish(self, **attributes)
       end
 
+      # Indicates whether this handle belongs to the current fiber.
       def owner? = @owner.equal?(Fiber.current)
+      # Indicates whether this handle is outside the fiber-local operation stack.
       def detached? = @detached
+      # Indicates whether the parent is another active handle on this bus.
       def local_parent? = @local_parent
+      # Indicates whether this handle is still active.
       def active? = @bus.active?(self)
     end
 
+    # Thread-safe notification bus used by the process-wide Instrumentation API.
     class Bus
+      # Starts an independent bus with ordered subscribers and a content policy.
       def initialize(subscribers: [], content_capture: Support::ContentCapture.disabled)
         @subscribers = []
         @content_capture = content_capture
@@ -52,6 +102,7 @@ module LittleGhost
         Array(subscribers).each { |subscriber| subscribe(subscriber) }
       end
 
+      # Subscribes a backend once. +prepend+ controls notification order.
       def subscribe(subscriber, prepend: false)
         unless subscriber.is_a?(Subscriber)
           raise ArgumentError, "instrumentation subscriber must be a LittleGhost::Instrumentation::Subscriber"
@@ -64,11 +115,13 @@ module LittleGhost
         subscriber
       end
 
+      # Unsubscribes a backend by identity.
       def unsubscribe(subscriber)
         @mutex.synchronize { @subscribers.reject! { |listener| listener.equal?(subscriber) } }
         subscriber
       end
 
+      # Selects the diagnostic content policy used for future notifications.
       def capture_content(policy)
         raise ArgumentError, "content capture policy must respond to capture" unless policy.respond_to?(:capture)
 
@@ -76,6 +129,7 @@ module LittleGhost
         policy
       end
 
+      # Publishes a point event with the current context and operation ID.
       def publish(name, diagnostic: nil, **attributes)
         current_handle = current
         values = context.merge(attributes)
@@ -85,6 +139,8 @@ module LittleGhost
         values
       end
 
+      # Starts an operation. +parent+ may be a local Handle, a remote operation
+      # ID, or nil. Set +detached+ for work that will not finish in stack order.
       def start(name, parent: current, operation_id: SecureRandom.uuid, detached: false, diagnostic: nil, **attributes)
         previous = current unless detached
         validate_parent!(parent)
@@ -121,6 +177,7 @@ module LittleGhost
         raise
       end
 
+      # Finishes an active handle and returns the final attribute hash.
       def finish(handle, diagnostic: nil, **attributes)
         validate_finish!(handle)
         validated = true
@@ -132,6 +189,7 @@ module LittleGhost
         complete(handle) if validated && active_handle?(handle)
       end
 
+      # Measures a block and records raised errors before re-raising them.
       def instrument(name, payload = {})
         values = payload.dup
         handle = start(name, **values)
@@ -147,25 +205,32 @@ module LittleGhost
         raise
       end
 
+      # Adds copied attributes to notifications emitted while the block runs.
       def with_context(attributes)
         values = deep_copy(context).merge(deep_copy(attributes.compact))
         ExecutionState.with(context_key => values) { yield }
       end
 
+      # Copies the attributes active in the current execution.
       def context
         deep_copy(ExecutionState[context_key] || {})
       end
 
+      # Finds the current non-detached Handle for this fiber, if any.
       def current
         ExecutionState[current_key]
       end
 
+      # With a handle, tests whether that exact handle is active. Without one,
+      # reports whether the bus owns any active operations.
       def active?(handle = nil)
         @mutex.synchronize do
           handle ? @handles[handle.operation_id].equal?(handle) : !@handles.empty?
         end
       end
 
+      # Flushes subscribers in registration order within an optional total
+      # timeout budget.
       def flush(timeout: nil)
         deadline = monotonic_time + Float(timeout) if timeout
         subscribers.each do |subscriber|
@@ -174,6 +239,7 @@ module LittleGhost
         end
       end
 
+      # Permanently shuts down this bus after all operations have finished.
       def shutdown(timeout: nil)
         should_shutdown = @mutex.synchronize do
           return if @shutdown
@@ -190,6 +256,7 @@ module LittleGhost
         end
       end
 
+      # Uses the first non-empty downstream trace context supplied by a subscriber.
       def trace_context(**attributes)
         subscribers.each do |subscriber|
           value = subscriber.trace_context(**attributes)
@@ -342,8 +409,10 @@ module LittleGhost
     end
 
     class << self
+      # Accesses the process-wide Bus.
       def notifier = bus
 
+      # Replaces the process-wide bus when it has no active operations.
       def notifier=(value)
         raise ArgumentError, "notifier must be an instrumentation bus" unless value.is_a?(Bus)
 
@@ -356,19 +425,32 @@ module LittleGhost
         end
       end
 
+      # Subscribes a process-wide backend.
       def subscribe(...) = bus.subscribe(...)
+      # Unsubscribes a process-wide backend.
       def unsubscribe(...) = bus.unsubscribe(...)
+      # Installs the process-wide diagnostic content policy.
       def capture_content(...) = bus.capture_content(...)
+      # Publishes a point event on the process-wide bus.
       def publish(...) = bus.publish(...)
+      # Starts a lifecycle operation on the process-wide bus.
       def start(...) = bus.start(...)
+      # Wraps a block in a lifecycle operation.
       def instrument(...) = bus.instrument(...)
+      # Returns the current fiber's active Handle.
       def current = bus.current
+      # Adds attributes while the block runs.
       def with_context(attributes, &block) = bus.with_context(attributes, &block)
+      # Copies the current instrumentation context.
       def context = bus.context
+      # Flushes process-wide subscribers.
       def flush(...) = bus.flush(...)
+      # Shuts down the process-wide bus.
       def shutdown(...) = bus.shutdown(...)
+      # Gets downstream trace fields from process-wide subscribers.
       def trace_context(...) = bus.trace_context(...)
 
+      # Temporarily subscribes a backend for the block's execution state.
       def subscribed(subscriber, prepend: false)
         unless subscriber.is_a?(Subscriber)
           raise ArgumentError, "instrumentation subscriber must be a LittleGhost::Instrumentation::Subscriber"

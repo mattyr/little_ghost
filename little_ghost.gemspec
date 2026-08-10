@@ -8,8 +8,8 @@ Gem::Specification.new do |spec|
   spec.authors = ["Matt Robinson"]
   spec.email = ["robinson.matty@gmail.com"]
 
-  spec.summary = "A dependency-light agent framework for Ruby"
-  spec.description = "A straightforward agent framework built for Ruby applications."
+  spec.summary = "A Ruby framework for AI features with agents and agentic workflows"
+  spec.description = "Add agents, tools, and agentic workflows to existing Ruby systems or dedicated AI services."
   spec.homepage = "https://github.com/mattyr/little_ghost"
   spec.license = "MIT"
   spec.required_ruby_version = ">= 3.3"
@@ -21,7 +21,7 @@ Gem::Specification.new do |spec|
   }
 
   spec.files = Dir.chdir(__dir__) do
-    Dir["lib/**/*.rb", "LICENSE.txt", "README.md"]
+    Dir["lib/**/*.rb", "docs/guides/*.md", "LICENSE.txt", "README.md"]
   end
   spec.require_paths = ["lib"]
 
@@ -30,5 +30,6 @@ Gem::Specification.new do |spec|
 
   spec.add_development_dependency "minitest", "~> 5.25"
   spec.add_development_dependency "rake", "~> 13.2"
+  spec.add_development_dependency "rdoc", "~> 8.0"
   spec.add_development_dependency "standard", "~> 1.44"
 end

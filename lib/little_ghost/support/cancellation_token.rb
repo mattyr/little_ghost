@@ -2,7 +2,14 @@
 
 module LittleGhost
   module Support
+    # CancellationToken lets related work stop cooperatively without killing its
+    # calling thread. Child tokens make cancellation flow through a run's tree of
+    # work.
+    #
+    # Cancellation is idempotent and flows only downward. Long-running
+    # extensions should call #raise_if_cancelled! at bounded intervals.
     class CancellationToken
+      # Optionally attaches this token to +parent+.
       def initialize(parent: nil)
         @cancelled = false
         @mutex = Mutex.new
@@ -12,8 +19,10 @@ module LittleGhost
         parent&.send(:attach, self)
       end
 
+      # Creates a child cancelled automatically with this token.
       def child = self.class.new(parent: self)
 
+      # Cancels this token and all currently attached children.
       def cancel
         parent, children = @mutex.synchronize do
           return self if @cancelled
@@ -31,14 +40,17 @@ module LittleGhost
         self
       end
 
+      # Indicates whether cancellation has been requested.
       def cancelled?
         @mutex.synchronize { @cancelled }
       end
 
+      # Raises CancelledError when cancellation has been requested.
       def raise_if_cancelled!
         raise CancelledError, "The run was cancelled" if cancelled?
       end
 
+      # Waits up to +timeout+ seconds for cancellation.
       def wait(timeout)
         deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + Float(timeout)
         @mutex.synchronize do

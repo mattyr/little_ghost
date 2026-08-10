@@ -2,15 +2,29 @@
 
 module LittleGhost
   module Support
+    # InterruptibleStream turns a blocking producer into a lazy, cancellable Ruby
+    # stream. It is useful when an SDK owns the blocking read but the agent still
+    # needs deadlines and cooperative cancellation.
+    #
+    # The producer receives an emitter callable. Ending enumeration early stops
+    # and joins the producer; CleanupError is raised if it cannot be stopped
+    # within the fixed shutdown bound.
+    #
+    #   stream = LittleGhost::Support::InterruptibleStream.new(
+    #     cancellation_token: token
+    #   ) { |emit| source.each { |value| emit.call(value) } }
     class InterruptibleStream
       include Enumerable
 
+      # Raised when the producer thread remains active past the fixed shutdown
+      # bound.
       class CleanupError < LittleGhost::CleanupError; end
 
-      POLL_INTERVAL = 0.05
-      SHUTDOWN_TIMEOUT = 0.1
-      BUFFER_SIZE = 16
+      POLL_INTERVAL = 0.05 # :nodoc:
+      SHUTDOWN_TIMEOUT = 0.1 # :nodoc:
+      BUFFER_SIZE = 16 # :nodoc:
 
+      # Configures a lazy stream. The producer starts when #each is consumed.
       def initialize(cancellation_token:, deadline: nil, buffer_size: BUFFER_SIZE, &producer)
         raise ArgumentError, "producer is required" unless producer
 
@@ -21,6 +35,8 @@ module LittleGhost
         raise ArgumentError, "buffer_size must be positive" unless @buffer_size.positive?
       end
 
+      # Yields produced values, raising producer, cancellation, deadline, or
+      # cleanup errors in the consuming thread.
       def each
         return enum_for(__method__) unless block_given?
 

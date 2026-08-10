@@ -6,13 +6,35 @@ require "net/http"
 require "uri"
 
 module LittleGhost
+  # MCP lets LittleGhost agents use tools published by Model Context Protocol
+  # servers. Require +little_ghost/mcp+ to load the optional HTTP integration.
   module MCP
+    # Model Context Protocol version negotiated by Client.
     PROTOCOL_VERSION = "2025-06-18"
 
+    # HTTPTransport sends MCP JSON-RPC messages over Streamable HTTP. It applies
+    # time and response-size limits and keeps the negotiated MCP session ID.
+    #
+    # === Security and trust
+    #
+    # HTTPS is required by default. +allow_insecure_http+ is only for an
+    # explicitly trusted local development endpoint. Scope caller-supplied
+    # credential headers to the target server. Response bodies and negotiated
+    # session IDs are validated before use.
+    #
+    # One transport instance retains one negotiated MCP session ID and sends it
+    # with later requests. Scope the transport and its Client to one trusted
+    # server and one authenticated principal; never share that pair across
+    # tenants. LittleGhost does not send MCP session-termination DELETE requests,
+    # so configure server-side expiry or manage that lifecycle outside this
+    # transport when the server requires explicit cleanup.
     class HTTPTransport
+      # Default upper bound for one MCP response body (10 MiB).
       DEFAULT_MAX_RESPONSE_BYTES = 10 * 1024 * 1024
-      SESSION_ID_PATTERN = /\A[\x21-\x7e]{1,256}\z/
+      SESSION_ID_PATTERN = /\A[\x21-\x7e]{1,256}\z/ # :nodoc:
 
+      # Configures time and response-size limits. +signer+, when
+      # supplied, is called with each Net::HTTP request before it is sent.
       def initialize(url:, headers: {}, timeout: 60, signer: nil, allow_insecure_http: false,
         max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES)
         @uri = URI(url)
@@ -34,6 +56,8 @@ module LittleGhost
         @session_id = nil
       end
 
+      # Sends one JSON-RPC payload. A RunContext supplies cancellation and a
+      # deadline; without it the configured timeout applies.
       def send(payload, context: nil)
         return perform_send(payload, timeout: @timeout) unless context
 
@@ -119,12 +143,33 @@ module LittleGhost
       end
     end
 
+    # Client makes tools from an MCP server available as ordinary LittleGhost
+    # tools. Agents can use a remote capability without learning a second tool
+    # interface.
+    #
+    #   transport = LittleGhost::MCP::HTTPTransport.new(url: "https://mcp.example/rpc")
+    #   client = LittleGhost::MCP::Client.new(transport:, prefix: "docs")
+    #   client.tools.map(&:tool_name) # => ["docs_search", "docs_fetch"]
+    #
+    # Tool names are normalized and checked for collisions. Pagination, tool
+    # count, and response sizes are limited; +rejected_tools+ and
+    # +definition_filter+ can enforce an application allowlist.
+    #
+    # Server definitions and results remain untrusted input. LittleGhost validates
+    # them before creating tools, but applications still decide which servers and
+    # capabilities an agent may use.
+    #
+    # A client and its transport represent one authenticated server session.
+    # Create a separate pair for each principal or trust boundary. Protocol
+    # initialization and subsequent requests through one client are serialized;
+    # do not share its transport with another client.
     class Client
-      MAX_TOOL_NAME_LENGTH = 64
-      ALIAS_DIGEST_LENGTH = 12
-      DEFAULT_MAX_TOOLS = 1_000
-      DEFAULT_MAX_PAGES = 100
+      MAX_TOOL_NAME_LENGTH = 64 # :nodoc:
+      ALIAS_DIGEST_LENGTH = 12 # :nodoc:
+      DEFAULT_MAX_TOOLS = 1_000 # :nodoc:
+      DEFAULT_MAX_PAGES = 100 # :nodoc:
 
+      # Uses a transport that responds to +send+.
       def initialize(
         transport:,
         name: "mcp",
@@ -153,6 +198,8 @@ module LittleGhost
         @initialized = false
       end
 
+      # Negotiates the protocol when needed, then provides Tool instances for
+      # the server's current definitions.
       def tools(context: nil)
         @initialization_mutex.synchronize do
           initialize_protocol(context:) unless @initialized
@@ -167,6 +214,8 @@ module LittleGhost
         end
       end
 
+      # Calls an exposed tool and produces text or serialized structured
+      # content. Server-declared errors raise ToolError.
       def call(name, arguments, context: nil)
         source_name = @source_names_mutex.synchronize { @source_names.fetch(name.to_s, name.to_s) }
         result = request("tools/call", {name: source_name, arguments: arguments}, context:)
@@ -316,7 +365,11 @@ module LittleGhost
       end
     end
 
+    # SigV4Signer adds AWS Signature Version 4 authentication to MCP requests.
+    # Requires the application-provided +aws-sigv4+ gem and uses its normal AWS
+    # credentials-provider chain unless one is supplied explicitly.
     class SigV4Signer
+      # Configures signing for +service+ and +region+.
       def initialize(service:, region:, credentials_provider: nil)
         require "aws-sigv4"
         @signer = Aws::Sigv4::Signer.new(
@@ -328,6 +381,7 @@ module LittleGhost
         raise ConfigurationError, "MCP SigV4 signing requires the optional aws-sigv4 gem"
       end
 
+      # Signs +request+ in place immediately before transport.
       def call(request)
         signature = @signer.sign_request(
           http_method: request.method,

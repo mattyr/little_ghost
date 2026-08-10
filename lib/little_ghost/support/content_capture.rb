@@ -4,11 +4,31 @@ require "json"
 
 module LittleGhost
   module Support
+    # ContentCapture lets an application opt selected diagnostic content into
+    # telemetry after redaction and scrubbing. Capture stays off until an
+    # application installs an enabled policy.
+    #
+    #   policy = LittleGhost::Support::ContentCapture.new(
+    #     enabled: true,
+    #     max_bytes: 16_384,
+    #     redactions: [ENV.fetch("API_TOKEN")]
+    #   )
+    #   LittleGhost::Instrumentation.capture_content(policy)
+    #
+    # === Security and trust
+    #
+    # Enabling capture may place model input, output, tool definitions, and
+    # exception details into telemetry. Redaction and a custom scrubber reduce
+    # accidental disclosure but are not a security boundary. Configure one
+    # policy per trusted process and apply exporter-side controls as well.
     class ContentCapture
-      CaptureLimitExceeded = Class.new(StandardError)
+      CaptureLimitExceeded = Class.new(StandardError) # :nodoc:
 
+      # Creates a policy that never captures diagnostics.
       def self.disabled = new(enabled: false)
 
+      # Configures a policy. +max_bytes+ is applied per captured attribute and
+      # +scrubber+ receives already redacted values.
       def initialize(enabled: false, max_bytes: nil, scrubber: nil, redactions: [])
         @enabled = enabled == true
         @max_bytes = Integer(max_bytes) if max_bytes
@@ -18,6 +38,8 @@ module LittleGhost
         raise ArgumentError, "scrubber must be callable" if @scrubber && !@scrubber.respond_to?(:call)
       end
 
+      # Produces scrubbed, JSON-encoded diagnostic attributes selected from
+      # +values+, or an empty hash when disabled.
       def capture(values)
         return {} unless @enabled && values.is_a?(Hash)
 

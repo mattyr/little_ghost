@@ -3,12 +3,39 @@
 require "securerandom"
 
 module LittleGhost
+  # Observe one top-level agent or workflow execution from start to finish.
+  # A run records its response, outcome, usage, error, and owned resources.
+  #
+  #   run = CustomerSupportAgent.new.ask("Why is transfer 481 pending?")
+  #
+  #   run.completed? # => true
+  #   run.outcome    # => "completed"
+  #   run.response   # => "Transfer 481 is waiting for the receiving bank."
+  #
+  # Standalone ask[rdoc-ref:LittleGhost::Agent#ask] consumes the event stream and
+  # returns the Run. For a live interface,
+  # stream_ask[rdoc-ref:LittleGhost::Agent#stream_ask] yields StreamEvent objects
+  # and returns the same run after enumeration. A run can execute only once.
+  #
+  # Completion, failure, deadline, and cancellation become the +completed+,
+  # +failed+, +partial+, and +cancelled+ outcomes. Ordinary execution failures
+  # are available through +error+ and the terminal stream event; cleanup, event
+  # delivery, or instrumentation failures may still raise because the framework
+  # cannot safely report a clean stop.
+  #
+  # The run opens its workspace, sandbox, session, and entrypoint, then closes
+  # registered resources in reverse order. +register+ extends that lifecycle for
+  # application resources. Interruption is available only while an agent
+  # entrypoint is active and unambiguous.
   class Run
     include Enumerable
 
+    # Runtime and declarations used to execute the run; its request, cancellation
+    # token, resources, terminal outcome, response, result, usage, and error.
     attr_reader :runtime, :agent_class, :entrypoint_class, :invocation, :cancellation_token, :result, :operation_id,
       :outcome, :response, :error, :session, :usage, :workspace, :sandbox
 
+    # Creates a dormant run for +invocation+.
     def initialize(invocation:, agent_class:, runtime:, entrypoint_class: agent_class,
       cancellation_token: Support::CancellationToken.new, workspace: nil, sandbox: nil)
       @runtime = runtime
@@ -35,11 +62,15 @@ module LittleGhost
       @usage = Usage.new
     end
 
+    # Consumes the event stream and returns +self+.
     def call
       each { |_event| }
       self
     end
 
+    # Yields events and returns +self+ after the terminal event.
+    #
+    # Without a block, returns an Enumerator. A second execution raises Error.
     def each
       return enum_for(__method__) unless block_given?
 
@@ -53,11 +84,22 @@ module LittleGhost
       @emitter = nil
     end
 
+    # True after successful completion.
     def completed? = outcome == "completed"
+
+    # True after execution or cleanup failed.
     def failed? = outcome == "failed"
+
+    # True when the deadline preserved a partial response.
     def partial? = outcome == "partial"
+
+    # True when cancellation stopped the run without a response.
     def cancelled? = outcome == "cancelled"
 
+    # Adds an interruption to the active entrypoint and waits for its response.
+    #
+    # Raises LittleGhost::AgentInterruptError before the entrypoint is ready,
+    # after it finishes, or when the entrypoint does not support interruptions.
     def interrupt_response(
       message,
       interruption_id: nil,
@@ -90,6 +132,7 @@ module LittleGhost
       )
     end
 
+    # Creates a RunContext with this run's cancellation token and deadline.
     def context(state: {}, metadata: {})
       RunContext.new(
         state:,
@@ -99,13 +142,17 @@ module LittleGhost
       )
     end
 
-    def publish(type, **data)
+    def publish(type, **data) # :nodoc:
       event = StreamEvent.build(type, **data)
       @event_mutex.synchronize { @emitter&.call(event) }
       instrument_event(type, data)
       event
     end
 
+    # Adds a resource or closer to reverse-order cleanup and returns the resource.
+    #
+    # A resource must respond to +close+ unless a block supplies the cleanup
+    # operation. Registering after the run has closed raises Error.
     def register(resource = nil, &closer)
       callback = closer || close_callback(resource)
       @mutex.synchronize do
@@ -115,10 +162,15 @@ module LittleGhost
       resource
     end
 
-    def synchronize_exclusive_tools(&block)
+    def synchronize_exclusive_tools(&block) # :nodoc:
       @exclusive_tools_mutex.synchronize(&block)
     end
 
+    # Performs the block at most once successfully for +key+ during this run.
+    #
+    # Concurrent callers are serialized. The caller that performs the block
+    # receives its value; later callers receive +nil+. If the block raises, the
+    # key is not recorded and a later call may retry it.
     def once(key)
       @once_mutex.synchronize do
         return if @once_keys.key?(key)
@@ -129,10 +181,14 @@ module LittleGhost
       end
     end
 
-    def prepare_interruption(payload)
+    def prepare_interruption(payload) # :nodoc:
       runtime.prepare_interruption(self, payload)
     end
 
+    # Closes registered resources in reverse order.
+    #
+    # The operation is idempotent. It attempts every closer and then raises the
+    # first LittleGhost::CleanupError, or otherwise the first cleanup exception.
     def close
       callbacks = @mutex.synchronize do
         return if @closed

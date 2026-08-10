@@ -6,19 +6,40 @@ require "pathname"
 
 module LittleGhost
   module Skills
+    # A Catalog lets an agent discover focused instructions without putting every
+    # skill in its prompt. The model sees short descriptions first and can load a
+    # skill's full instructions when the task calls for them.
+    #
+    #   catalog = LittleGhost::Skills::Catalog.new(paths: ["app/skills"])
+    #   catalog.names # => ["refund_policy", "search_orders"]
+    #   catalog.discovery_prompt.include?("refund_policy") # => true
+    #   catalog.tool # a LittleGhost::Tool that loads full instructions on demand
+    #
+    # Each immediate child directory may contain one +SKILL.md+ with YAML front
+    # matter. Symbolic-link escapes, unsafe names, oversized files, and invalid
+    # YAML are rejected or skipped before instructions reach a model. Optional
+    # resource listings are limited by count and depth.
+    #
+    # === Security and trust
+    #
+    # Configured roots and their contents are fully trusted instruction sources.
+    # The +allowed-tools+ field is metadata shown to the model, not an
+    # authorization boundary. Applications must enforce tool access separately
+    # and keep skill roots non-user-writable.
     class Catalog
       include Enumerable
 
-      class InvalidSkillError < ConfigurationError; end
+      class InvalidSkillError < ConfigurationError; end # :nodoc:
       private_constant :InvalidSkillError
 
-      DEFAULT_MAX_SKILLS = 1_000
-      DEFAULT_MAX_FILE_BYTES = 1_000_000
-      DEFAULT_MAX_RESOURCE_FILES = 20
-      MAX_RESOURCE_DEPTH = 3
-      RESOURCE_DIRECTORIES = %w[scripts references assets].freeze
-      SAFE_NAME_PATTERN = /\A[a-zA-Z0-9_-]+\z/
+      DEFAULT_MAX_SKILLS = 1_000 # :nodoc:
+      DEFAULT_MAX_FILE_BYTES = 1_000_000 # :nodoc:
+      DEFAULT_MAX_RESOURCE_FILES = 20 # :nodoc:
+      MAX_RESOURCE_DEPTH = 3 # :nodoc:
+      RESOURCE_DIRECTORIES = %w[scripts references assets].freeze # :nodoc:
+      SAFE_NAME_PATTERN = /\A[a-zA-Z0-9_-]+\z/ # :nodoc:
 
+      # Loads valid skills immediately using the supplied safety limits.
       def initialize(
         paths:,
         max_skills: DEFAULT_MAX_SKILLS,
@@ -36,18 +57,22 @@ module LittleGhost
         @skills = load_skills
       end
 
+      # Yields each Skill in lookup order.
       def each(&block)
         @skills.each_value(&block)
       end
 
+      # Finds the named Skill or raises ConfigurationError.
       def fetch(name)
         @skills.fetch(name.to_s) { raise ConfigurationError, "Unknown skill: #{name}" }
       end
 
+      # Lists immutable skill names in lookup order.
       def names
         @skills.keys.freeze
       end
 
+      # Produces the escaped, metadata-only prompt used for discovery.
       def discovery_prompt
         return "" if @skills.empty?
 
@@ -65,6 +90,7 @@ module LittleGhost
         lines.join("\n")
       end
 
+      # Exposes full instructions on demand through a +skills+ Tool.
       def tool
         catalog = self
         Tool.define(
@@ -88,6 +114,8 @@ module LittleGhost
         end
       end
 
+      # Formats one Skill, including allowed tools, compatibility, and bounded
+      # resource paths.
       def format(skill)
         parts = [skill.instructions]
         metadata = []

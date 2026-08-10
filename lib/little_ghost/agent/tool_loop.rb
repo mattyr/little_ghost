@@ -5,17 +5,47 @@ require "json"
 
 module LittleGhost
   class Agent
+    # Stop an agent from repeating a tool call that cannot make progress.
+    # Detection follows identical tool names, arguments, result status, and result
+    # content within one invocation.
+    #
+    #   class CustomerSupportAgent < LittleGhost::Agent
+    #     detect_tool_loops warning_at: 3, terminate_at: 5,
+    #       except: AccountRefreshTool
+    #   end
+    #
+    # If a support model makes the same ineffective lookup three times, its third
+    # result includes a warning to change approach. A fourth repeat carries the
+    # final warning, and a fifth stops the run with ToolLoopError.
+    #
+    # Detection is inactive until +detect_tool_loops+ is declared. Exclusions may
+    # be tool classes, instances, names, or symbols. State is isolated per active
+    # invocation and guarded for concurrent tool batches; unfinished subagent
+    # waits do not count as repeated progress failures.
+    #
+    # Only identical normalized arguments and results advance the counter. A
+    # changed result resets that sequence, while a terminating repeat prevents
+    # the duplicate tool body from running again.
     module ToolLoop
-      WARNING = "Repeated tool call detected. Change the approach or arguments before calling this tool again."
-      FINAL_WARNING = "Final repeated tool call warning. Calling this tool again with identical arguments and result will stop the run."
-      TRACKED_INVOCATION_LIMIT = 1_000
+      WARNING = "Repeated tool call detected. Change the approach or arguments before calling this tool again." # :nodoc:
+      FINAL_WARNING = "Final repeated tool call warning. Calling this tool again with identical arguments and result will stop the run." # :nodoc:
+      TRACKED_INVOCATION_LIMIT = 1_000 # :nodoc:
 
-      def self.included(base)
+      def self.included(base) # :nodoc:
         base.extend(ClassMethods)
         base.class_attribute :tool_loop_configuration_value
       end
 
+      # Exposes tool-loop detection declarations on agent classes.
+      # These methods become inheritable DSL entries when the capability is included.
       module ClassMethods
+        # Enables repeated tool-call detection.
+        #
+        # +warning_at+ defaults to 3 identical calls and +terminate_at+ defaults
+        # to 5. +except+ accepts tool classes, instances, names, or symbols.
+        #
+        # Raises ArgumentError unless +warning_at+ is at least 2 and
+        # +terminate_at+ is greater than +warning_at+.
         def detect_tool_loops(warning_at: 3, terminate_at: 5, except: [])
           warning_at = Integer(warning_at)
           terminate_at = Integer(terminate_at)
@@ -35,7 +65,7 @@ module LittleGhost
           after_tool :detect_repeated_tool_call, prepend: true
         end
 
-        def tool_loop_configuration = tool_loop_configuration_value
+        def tool_loop_configuration = tool_loop_configuration_value # :nodoc:
 
         private
 

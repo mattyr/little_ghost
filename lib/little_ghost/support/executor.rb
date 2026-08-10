@@ -2,13 +2,22 @@
 
 module LittleGhost
   module Support
+    # Executor runs independent work concurrently while preserving input order in
+    # the final results. It gives framework extensions bounded parallelism without
+    # losing cancellation or request-scoped state.
+    #
+    # ExecutionState is copied to workers. +on_result+ runs on the calling
+    # thread in completion order. After all workers join, the first cleanup
+    # error, or otherwise the first input-order error, is raised.
     class Executor
+      # Sets the maximum number of worker threads.
       def initialize(max_concurrency: 8)
         raise ArgumentError, "max_concurrency must be at least 1" if max_concurrency < 1
 
         @max_concurrency = max_concurrency
       end
 
+      # Maps +values+ with at most the configured number of workers.
       def map(values, cancellation_token: CancellationToken.new, on_result: nil, &block)
         unless on_result.nil? || on_result.respond_to?(:call)
           raise ArgumentError, "on_result must be callable"

@@ -7,48 +7,93 @@ require_relative "../session_store"
 
 module LittleGhost
   module SessionStores
+    # AgentCoreMemory keeps LittleGhost conversations in Amazon Bedrock AgentCore
+    # Memory so they can resume across Ruby processes and deployments.
+    #
+    #   store = LittleGhost::SessionStores::AgentCoreMemory.new(
+    #     memory_id: ENV.fetch("AGENTCORE_MEMORY_ID"),
+    #     region: "us-east-1"
+    #   )
+    #
+    # Configure the resulting store through Configuration#session_store; a
+    # Runtime then owns its construction and lifetime. The optional
+    # +aws-sdk-bedrockagentcore+ dependency is loaded only when a client is not
+    # supplied.
+    #
+    # === Privacy and concurrency
+    #
+    # This store sends session data to Amazon Bedrock AgentCore Memory. For
+    # stored transcripts and checkpoints, Session removes system messages,
+    # transient messages, and private reasoning first. The remaining complete
+    # message records may still contain personal data, visible text,
+    # attachments, tool calls and results, and message metadata. Checkpoints
+    # also send application state and session metadata.
+    #
+    # Conversation projection is a separate path. It removes private reasoning,
+    # but sends visible text from every message the caller supplies, including
+    # system or transient messages. Callers must filter projection input when
+    # those messages should stay local. Projection also sends selected metadata.
+    # None of this filtering anonymizes the remaining content.
+    #
+    # Use a memory, region, IAM policy, retention policy, and logging policy
+    # approved for that data. Do not enable this store for content that is not
+    # approved to leave the Ruby process.
+    #
+    # Session and actor identifiers become deterministic SHA-256 pseudonyms
+    # before leaving the process. These values remain linkable, and low-entropy
+    # identifiers may be recovered by dictionary matching. Treat them as
+    # sensitive identifiers, not anonymous data.
+    #
+    # AgentCore's immutable event API requires one active writer for each
+    # actor/session pair. This store serializes writers inside one Ruby process,
+    # but horizontally scaled applications need an external lock or unique
+    # active-run record. Commits use generation and checkpoint records so an
+    # incomplete write is never exposed as a successful snapshot.
     class AgentCoreMemory < SessionStore
-      MESSAGE_PREFIX = "little_ghost:message:v4:"
-      MESSAGE_CHUNK_PREFIX = "little_ghost:message_chunk:v4:"
-      CHECKPOINT_PREFIX = "little_ghost:checkpoint:v4:"
-      CONVERSATIONAL_TEXT_LIMIT = 100_000
-      MESSAGE_CHUNK_CONTENT_LIMIT = 90_000
-      EVENT_PAYLOAD_LIMIT = 100
-      MESSAGE_CHUNK_COUNT_LIMIT = 10_000
-      EVENT_TYPE_METADATA_KEY = "little_ghost_type"
-      GENERATION_METADATA_KEY = "little_ghost_generation"
-      COMMIT_METADATA_KEY = "little_ghost_commit"
-      SYMBOL_KEY_PREFIX = "little_ghost:symbol:"
-      STRING_KEY_PREFIX = "little_ghost:string:"
-      MESSAGE_EVENT_TYPE = "message_v4"
-      CHECKPOINT_EVENT_TYPE = "checkpoint_v4"
-      CONVERSATION_PROJECTION_EVENT_TYPE = "conversation_projection_v1"
+      MESSAGE_PREFIX = "little_ghost:message:v4:" # :nodoc:
+      MESSAGE_CHUNK_PREFIX = "little_ghost:message_chunk:v4:" # :nodoc:
+      CHECKPOINT_PREFIX = "little_ghost:checkpoint:v4:" # :nodoc:
+      CONVERSATIONAL_TEXT_LIMIT = 100_000 # :nodoc:
+      MESSAGE_CHUNK_CONTENT_LIMIT = 90_000 # :nodoc:
+      EVENT_PAYLOAD_LIMIT = 100 # :nodoc:
+      MESSAGE_CHUNK_COUNT_LIMIT = 10_000 # :nodoc:
+      EVENT_TYPE_METADATA_KEY = "little_ghost_type" # :nodoc:
+      GENERATION_METADATA_KEY = "little_ghost_generation" # :nodoc:
+      COMMIT_METADATA_KEY = "little_ghost_commit" # :nodoc:
+      SYMBOL_KEY_PREFIX = "little_ghost:symbol:" # :nodoc:
+      STRING_KEY_PREFIX = "little_ghost:string:" # :nodoc:
+      MESSAGE_EVENT_TYPE = "message_v4" # :nodoc:
+      CHECKPOINT_EVENT_TYPE = "checkpoint_v4" # :nodoc:
+      CONVERSATION_PROJECTION_EVENT_TYPE = "conversation_projection_v1" # :nodoc:
       PROJECTION_METADATA_KEYS = %w[
         little_ghost_parent_link
         little_ghost_conversation_id
         little_ghost_subagent_id
         little_ghost_kind
         little_ghost_turn
-      ].freeze
+      ].freeze # :nodoc:
       # AgentCore's SDK timestamp transport cannot preserve sub-second ordering.
-      EVENT_TIMESTAMP_INCREMENT = 1
-      LIST_PAGE_SIZE = 100
-      MAX_LIST_PAGES = 1_000
-      MAX_CHECKPOINT_EVENTS = 10_000
-      MAX_GENERATION_EVENTS = 10_000
-      MAX_GENERATION_PAYLOADS = 25_000
-      MAX_EVENT_SERIALIZED_BYTES = 10 * 1024 * 1024
-      MAX_CHECKPOINT_READ_BYTES = 64 * 1024 * 1024
-      MAX_SESSION_SERIALIZED_BYTES = 128 * 1024 * 1024
-      MAX_MESSAGE_SERIALIZED_BYTES = 16 * 1024 * 1024
-      MAX_CHECKPOINT_SERIALIZED_BYTES = 1 * 1024 * 1024
-      MAX_SESSION_MESSAGES = 10_000
-      MAX_REVISION = (2**63) - 1
+      EVENT_TIMESTAMP_INCREMENT = 1 # :nodoc:
+      LIST_PAGE_SIZE = 100 # :nodoc:
+      MAX_LIST_PAGES = 1_000 # :nodoc:
+      MAX_CHECKPOINT_EVENTS = 10_000 # :nodoc:
+      MAX_GENERATION_EVENTS = 10_000 # :nodoc:
+      MAX_GENERATION_PAYLOADS = 25_000 # :nodoc:
+      MAX_EVENT_SERIALIZED_BYTES = 10 * 1024 * 1024 # :nodoc:
+      MAX_CHECKPOINT_READ_BYTES = 64 * 1024 * 1024 # :nodoc:
+      MAX_SESSION_SERIALIZED_BYTES = 128 * 1024 * 1024 # :nodoc:
+      MAX_MESSAGE_SERIALIZED_BYTES = 16 * 1024 * 1024 # :nodoc:
+      MAX_CHECKPOINT_SERIALIZED_BYTES = 1 * 1024 * 1024 # :nodoc:
+      MAX_SESSION_MESSAGES = 10_000 # :nodoc:
+      MAX_REVISION = (2**63) - 1 # :nodoc:
 
+      # Produces a stable AgentCore-safe pseudonym. This is not anonymization.
       def self.safe_id(value)
         "lg_#{Digest::SHA256.hexdigest(String(value))}"
       end
 
+      # Supply +client+ for explicit dependency
+      # injection, or +region+ and an optional +client_factory+ for lazy refresh.
       def initialize(
         memory_id:,
         client: nil,
@@ -70,6 +115,7 @@ module LittleGhost
         @persistence_locks_mutex = Mutex.new
       end
 
+      # Loads the latest committed generation for the required actor and session.
       def load(id, actor_id: nil)
         actor = self.class.safe_id(required_actor_id(actor_id))
         session = self.class.safe_id(id)
@@ -85,6 +131,8 @@ module LittleGhost
         }
       end
 
+      # Appends sanitized messages as a new committed checkpoint when
+      # +expected_count+ matches the latest remote generation.
       def append(id, messages:, state:, metadata:, expected_count:, actor_id: nil)
         messages = persistable_messages(messages)
         actor = self.class.safe_id(required_actor_id(actor_id))
@@ -116,6 +164,7 @@ module LittleGhost
         {messages:, state:, metadata:}
       end
 
+      # Replaces the visible snapshot by committing a new remote generation.
       def replace(id, messages:, state:, metadata:, actor_id: nil)
         messages = persistable_messages(messages)
         actor = self.class.safe_id(required_actor_id(actor_id))
@@ -142,6 +191,10 @@ module LittleGhost
         {messages:, state:, metadata:}
       end
 
+      # Writes visible conversational text for AgentCore Memory extraction
+      # without changing LittleGhost's stored session transcript. This removes
+      # private reasoning, but does not remove system or transient messages;
+      # callers must omit any message whose visible text should stay local.
       def project_conversation(id, messages:, metadata:, actor_id: nil)
         payload = persistable_messages(messages).filter_map do |message|
           text = message.text
@@ -170,6 +223,7 @@ module LittleGhost
         )
       end
 
+      # Parents AgentCore telemetry emitted in the block to +operation_id+.
       def with_operation_context(operation_id)
         ExecutionState.with(@operation_context_key => operation_id) { yield }
       end

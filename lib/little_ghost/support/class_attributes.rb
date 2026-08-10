@@ -2,11 +2,15 @@
 
 module LittleGhost
   module Support
+    # ClassAttributes gives framework extension classes small, thread-safe,
+    # inheritable settings. A subclass inherits a value until it assigns its own;
+    # mutable defaults are not duplicated automatically.
     module ClassAttributes
-      def self.included(base)
+      def self.included(base) # :nodoc:
         base.extend(self)
       end
 
+      # Defines thread-safe singleton readers and writers for +names+.
       def class_attribute(*names, default: nil)
         names.each do |name|
           unless name.is_a?(String) || name.is_a?(Symbol)
