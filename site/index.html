@@ -5,23 +5,23 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#090a12">
     <meta name="color-scheme" content="dark">
-    <meta name="description" content="LittleGhost brings agents and agentic workflows into the Ruby systems you already know—or gives you a clean foundation for something new.">
+    <meta name="description" content="LittleGhost brings agents and flexible agent coordination into the Ruby systems you already know—or gives you a clean foundation for something new.">
     <meta property="og:type" content="website">
     <meta property="og:site_name" content="LittleGhost">
     <meta property="og:title" content="LittleGhost — A little ghost. A lot of agency.">
-    <meta property="og:description" content="Build AI features with agents, tools, streaming, and deliberate workflows in Ruby.">
+    <meta property="og:description" content="Build AI features with agents, tools, streaming, and flexible coordination in Ruby.">
     <meta property="og:url" content="https://mattyr.github.io/little_ghost/">
     <meta property="og:image" content="https://mattyr.github.io/little_ghost/assets/social-card.png">
     <meta property="og:image:width" content="1200">
     <meta property="og:image:height" content="630">
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:title" content="LittleGhost — A little ghost. A lot of agency.">
-    <meta name="twitter:description" content="Build AI features with agents, tools, streaming, and deliberate workflows in Ruby.">
+    <meta name="twitter:description" content="Build AI features with agents, tools, streaming, and flexible coordination in Ruby.">
     <meta name="twitter:image" content="https://mattyr.github.io/little_ghost/assets/social-card.png">
     <link rel="canonical" href="https://mattyr.github.io/little_ghost/">
     <link rel="icon" href="./assets/favicon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="./assets/site.css">
-    <title>LittleGhost — Agents and agentic workflows for Ruby</title>
+    <title>LittleGhost — Agents and agent coordination for Ruby</title>
     <script type="module" src="./assets/site.js"></script>
   </head>
   <body>
@@ -67,9 +67,9 @@
     <main id="main">
       <section class="hero" aria-labelledby="hero-title">
         <div class="hero-copy reveal">
-          <p class="eyebrow"><span></span> Agents and agentic workflows for Ruby</p>
-          <h1 id="hero-title">A little ghost.<br><em>A lot of agency.</em></h1>
-          <p class="hero-lede">Bring agents, tools, streaming, and deliberate workflows into the Ruby systems you already know—or start something entirely new.</p>
+          <p class="eyebrow"><span></span> Agents and agent coordination for Ruby</p>
+          <h1 id="hero-title"><span>A little ghost.</span><br><em>A lot of agency.</em></h1>
+          <p class="hero-lede">Bring agents, tools, streaming, and flexible coordination into the Ruby systems you already know—or start something entirely new.</p>
           <div class="hero-actions">
             <a class="button button-primary magnetic" href="./docs/docs/guides/Getting%20Started_md.html">
               <span>Start building</span>
@@ -88,7 +88,8 @@
         </div>
 
         <div class="hero-world reveal" data-delay="1">
-          <div class="orbit orbit-outer" aria-hidden="true">
+          <div class="orbit orbit-outer" aria-hidden="true"></div>
+          <div class="orbit-labels" aria-hidden="true">
             <span class="orbit-node node-agent">agent</span>
             <span class="orbit-node node-tool">tool</span>
             <span class="orbit-node node-flow">workflow</span>
@@ -144,7 +145,7 @@
       <section class="possibilities" id="possibilities" aria-labelledby="possibilities-title">
         <div class="section-heading reveal">
           <p class="eyebrow"><span></span> Build in the open space</p>
-          <h2 id="possibilities-title">Small enough to invite in.<br><em>Capable enough to stay.</em></h2>
+          <h2 id="possibilities-title"><span>Small enough to invite&nbsp;in.</span><br><em>Capable enough to&nbsp;stay.</em></h2>
           <p>LittleGhost gives AI behavior a clear home in your code without asking the rest of your system to disappear.</p>
         </div>
 
@@ -155,9 +156,15 @@
               <div class="agent-core">
                 <span></span><span></span>
               </div>
-              <i class="agent-satellite satellite-one"></i>
-              <i class="agent-satellite satellite-two"></i>
-              <i class="agent-satellite satellite-three"></i>
+              <span class="agent-satellite satellite-one">
+                <svg viewBox="0 0 20 20"><circle cx="8.5" cy="8.5" r="4.5"></circle><path d="m12 12 4 4"></path></svg>
+              </span>
+              <span class="agent-satellite satellite-two">
+                <svg viewBox="0 0 20 20"><path d="m4 6 3.5 4L4 14M10 14h6"></path></svg>
+              </span>
+              <span class="agent-satellite satellite-three">
+                <svg viewBox="0 0 20 20"><path d="M4 3.5h7l4 4v9H4zM11 3.5v4h4"></path></svg>
+              </span>
             </div>
             <div class="card-copy">
               <h3>Agents that act</h3>
@@ -165,19 +172,41 @@
             </div>
           </article>
 
-          <article class="capability-card card-workflows reveal interactive-card" data-delay="1">
+          <article class="capability-card card-coordination reveal interactive-card" data-delay="1">
             <div class="card-number">02</div>
-            <div class="card-visual card-visual-workflows" aria-hidden="true">
-              <span class="flow-line line-one"></span>
-              <span class="flow-line line-two"></span>
-              <span class="flow-line line-three"></span>
-              <i class="flow-node flow-start"></i>
-              <i class="flow-node flow-choice"></i>
-              <i class="flow-node flow-finish"></i>
+            <div class="card-visual card-visual-coordination" aria-hidden="true">
+              <div class="coordination-stage">
+                <svg class="coordination-links" viewBox="0 0 320 230">
+                  <path class="coordination-links-primary" d="M160 110 74 44M160 110 246 41M160 110 99 173M160 110 224 179M160 110 32 115M74 44 32 115M246 41 224 179"></path>
+                  <path class="coordination-links-depth depth-one" d="M74 44 160 12 246 41 301 71 307 124 294 186 224 179 166 221 99 173 26 200 32 115 22 9 74 44"></path>
+                  <path class="coordination-links-depth depth-two" d="M22 9 160 110M160 12 99 173M301 71 160 110M294 186 160 110M26 200 160 110"></path>
+                  <path class="coordination-links-depth depth-three" d="M22 9 99 173M160 12 224 179M74 44 294 186M32 115 246 41M166 221 307 124"></path>
+                </svg>
+                <svg class="coordination-defs" aria-hidden="true">
+                  <symbol id="coordination-ghost" viewBox="0 0 120 140">
+                    <path d="M60 8C31 8 13 31 13 62v60c0 6.6 7.8 9.9 13.2 4.9L38.3 116l10.1 10.1c5.5 5.5 17.7 5.5 23.2 0L81.7 116l12.1 10.9c5.4 5 13.2 1.7 13.2-4.9V62C107 31 89 8 60 8Z" fill="currentColor"></path>
+                    <ellipse cx="45" cy="69" rx="6" ry="8" fill="#191a28"></ellipse>
+                    <ellipse cx="75" cy="69" rx="6" ry="8" fill="#191a28"></ellipse>
+                  </symbol>
+                </svg>
+                <svg class="coordination-ghost ghost-lead" viewBox="0 0 120 140"><use href="#coordination-ghost"></use></svg>
+                <svg class="coordination-ghost ghost-one" viewBox="0 0 120 140"><use href="#coordination-ghost"></use></svg>
+                <svg class="coordination-ghost ghost-two" viewBox="0 0 120 140"><use href="#coordination-ghost"></use></svg>
+                <svg class="coordination-ghost ghost-three" viewBox="0 0 120 140"><use href="#coordination-ghost"></use></svg>
+                <svg class="coordination-ghost ghost-four" viewBox="0 0 120 140"><use href="#coordination-ghost"></use></svg>
+                <svg class="coordination-ghost ghost-five" viewBox="0 0 120 140"><use href="#coordination-ghost"></use></svg>
+                <svg class="coordination-ghost ghost-background ghost-six" viewBox="0 0 120 140"><use href="#coordination-ghost"></use></svg>
+                <svg class="coordination-ghost ghost-background ghost-seven" viewBox="0 0 120 140"><use href="#coordination-ghost"></use></svg>
+                <svg class="coordination-ghost ghost-background ghost-eight" viewBox="0 0 120 140"><use href="#coordination-ghost"></use></svg>
+                <svg class="coordination-ghost ghost-background ghost-nine" viewBox="0 0 120 140"><use href="#coordination-ghost"></use></svg>
+                <svg class="coordination-ghost ghost-background ghost-ten" viewBox="0 0 120 140"><use href="#coordination-ghost"></use></svg>
+                <svg class="coordination-ghost ghost-background ghost-eleven" viewBox="0 0 120 140"><use href="#coordination-ghost"></use></svg>
+                <svg class="coordination-ghost ghost-background ghost-twelve" viewBox="0 0 120 140"><use href="#coordination-ghost"></use></svg>
+              </div>
             </div>
             <div class="card-copy">
-              <h3>Workflows you shape</h3>
-              <p>Keep required sequencing explicit in Ruby, while agents retain room to make open-ended decisions.</p>
+              <h3>Agents in concert</h3>
+              <p>Coordinate everything from explicit sequences and delegated subagents to more complex workflows.</p>
             </div>
           </article>
 
@@ -210,9 +239,9 @@
 
       <section class="code-story" aria-labelledby="code-title">
         <div class="code-intro reveal">
-          <p class="eyebrow"><span></span> Familiar on purpose</p>
-          <h2 id="code-title">The powerful part<br><em>still looks like Ruby.</em></h2>
-          <p>Once a model role is configured, an agent stays this readable. The provider boundary, run lifecycle, and normalized stream remain available when you need to go deeper.</p>
+          <p class="eyebrow"><span></span> From zero to agent</p>
+          <h2 id="code-title">Your first agent.<br><em>Five lines of Ruby.</em></h2>
+          <p>One class. One prompt. One call. Turn an idea into a running agent and see LittleGhost move.</p>
           <a class="text-link" href="./docs/docs/guides/Getting%20Started_md.html">
             Walk through the first run
             <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 10h11M11 6l4 4-4 4"></path></svg>
@@ -223,20 +252,14 @@
           <div class="code-window">
             <div class="window-bar">
               <div class="window-controls" aria-hidden="true"><span></span><span></span><span></span></div>
-              <span>release_scout.rb</span>
+              <span>idea_agent.rb</span>
               <div class="ruby-gem" aria-label="Ruby code">◆</div>
             </div>
-            <pre aria-label="A LittleGhost agent example"><code><span class="code-keyword">class</span> <span class="code-class">ReleaseScout</span> <span class="code-operator">&lt;</span> <span class="code-constant">LittleGhost::Agent</span>
-  <span class="code-method">model</span> <span class="code-string">"research"</span>
-  <span class="code-method">system_prompt</span> <span class="code-string">"Find what changed and explain why it matters."</span>
-  <span class="code-method">tools</span> <span class="code-constant">SearchChanges</span>
+            <pre aria-label="A five-line LittleGhost agent example"><code><span class="code-keyword">class</span> <span class="code-class">IdeaAgent</span> <span class="code-operator">&lt;</span> <span class="code-constant">LittleGhost::Agent</span>
+  <span class="code-method">system_prompt</span> <span class="code-string">"Turn a rough idea into a practical first step."</span>
 <span class="code-keyword">end</span>
 
-<span class="code-variable">run</span> <span class="code-operator">=</span> <span class="code-class">ReleaseScout</span>.<span class="code-method">new</span>.<span class="code-method">ask</span>(
-  <span class="code-string">"What should we share this week?"</span>
-)
-
-<span class="code-method">puts</span> <span class="code-variable">run</span>.<span class="code-method">response</span></code></pre>
+<span class="code-method">puts</span> <span class="code-class">IdeaAgent</span>.<span class="code-method">new</span>.<span class="code-method">ask</span>(<span class="code-string">"Help me plan a launch"</span>).<span class="code-method">response</span></code></pre>
           </div>
 
           <div class="trace-panel" aria-label="Illustrative run activity">
@@ -250,14 +273,14 @@
             <div class="trace-flow">
               <div class="trace-row trace-agent">
                 <span class="trace-icon"><i></i><i></i></span>
-                <div><strong>ReleaseScout</strong><small>understands the goal</small></div>
+                <div><strong>IdeaAgent</strong><small>understands the goal</small></div>
                 <span class="trace-state">ready</span>
               </div>
               <div class="trace-connector"><span></span></div>
-              <div class="trace-row trace-tool">
+              <div class="trace-row trace-model">
                 <span class="trace-icon">⌁</span>
-                <div><strong>SearchChanges</strong><small>finds the useful context</small></div>
-                <span class="trace-state">called</span>
+                <div><strong>model</strong><small>creates a practical first step</small></div>
+                <span class="trace-state">thinking</span>
               </div>
               <div class="trace-connector"><span></span></div>
               <div class="trace-row trace-stream">
@@ -281,7 +304,7 @@
         </svg>
         <p class="eyebrow"><span></span> Ready when you are</p>
         <h2 id="final-title">Make a little room<br><em>for the next big idea.</em></h2>
-        <p>Start with one agent. Add tools, specialists, workflows, and durable context as the work asks for them.</p>
+        <p>Start with one agent. Add tools, subagents, coordination patterns, and durable context as the work asks for them.</p>
         <div class="final-actions">
           <a class="button button-primary magnetic" href="./docs/docs/guides/Getting%20Started_md.html">
             <span>Build your first agent</span>
@@ -301,7 +324,7 @@
         </svg>
         <span>LittleGhost</span>
       </a>
-      <p>Agents and agentic workflows for Ruby.</p>
+      <p>Agents and agent coordination for Ruby.</p>
       <nav aria-label="Footer navigation">
         <a href="./docs/">Documentation</a>
         <a href="https://github.com/mattyr/little_ghost">GitHub</a>

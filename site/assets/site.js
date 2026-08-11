@@ -139,6 +139,74 @@ ghostButton?.addEventListener("click", () => {
   releaseSparks();
 });
 
+const orbitLabels = [...document.querySelectorAll(".orbit-node")];
+const orbitLayer = document.querySelector(".orbit-labels");
+let orbitFrame = 0;
+let orbitElapsed = 0;
+let orbitResumedAt = 0;
+
+const clearOrbitLabelStyles = () => {
+  orbitLayer?.classList.remove("is-orbiting");
+  orbitLabels.forEach((label) => {
+    ["opacity", "transform"].forEach((property) => label.style.removeProperty(property));
+  });
+};
+
+const updateOrbitLabels = (timestamp) => {
+  orbitFrame = 0;
+  if (reduceMotion.matches || document.hidden) return;
+
+  const rotation = (-8 * Math.PI) / 180;
+  const elapsed = ((orbitElapsed + timestamp - orbitResumedAt) / 52_000) * Math.PI * 2;
+  const bounds = orbitLayer.getBoundingClientRect();
+
+  orbitLabels.forEach((label, index) => {
+    const angle = elapsed + (index * Math.PI * 2) / orbitLabels.length;
+    const ellipseX = Math.cos(angle) * bounds.width * 0.46;
+    const ellipseY = Math.sin(angle) * bounds.height * 0.22;
+    const x = ellipseX * Math.cos(rotation) - ellipseY * Math.sin(rotation);
+    const y = ellipseX * Math.sin(rotation) + ellipseY * Math.cos(rotation);
+    const depth = (Math.sin(angle) + 1) / 2;
+    const scale = 0.76 + depth * 0.14;
+
+    label.style.opacity = `${0.4 + depth * 0.24}`;
+    label.style.transform = `translate(calc(-50% + ${x}px), calc(-50% + ${y}px)) rotate(-8deg) skewX(-7deg) scale(${scale}, ${scale * 0.9})`;
+  });
+
+  orbitFrame = requestAnimationFrame(updateOrbitLabels);
+};
+
+const startOrbitLabels = () => {
+  if (!orbitLabels.length || orbitFrame || reduceMotion.matches || document.hidden) return;
+
+  orbitLayer?.classList.add("is-orbiting");
+  orbitResumedAt = performance.now();
+  orbitFrame = requestAnimationFrame(updateOrbitLabels);
+};
+
+const stopOrbitLabels = (reset = false) => {
+  if (orbitFrame && !reset) orbitElapsed += performance.now() - orbitResumedAt;
+  cancelAnimationFrame(orbitFrame);
+  orbitFrame = 0;
+  orbitResumedAt = 0;
+  if (reset) {
+    orbitElapsed = 0;
+    clearOrbitLabelStyles();
+  }
+};
+
+startOrbitLabels();
+
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) stopOrbitLabels();
+  else startOrbitLabels();
+});
+
+reduceMotion.addEventListener("change", (event) => {
+  if (event.matches) stopOrbitLabels(true);
+  else startOrbitLabels();
+});
+
 const tracePanel = document.querySelector(".trace-panel");
 const traceReplay = document.querySelector(".trace-replay");
 
