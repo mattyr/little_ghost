@@ -31,6 +31,19 @@ class EventsTest < Minitest::Test
     assert_kind_of Integer, listener.events.first.fetch(:timestamp)
   end
 
+  def test_default_reporter_emits_events_without_writing_to_the_console
+    event = nil
+    _stdout, stderr = capture_io do
+      LittleGhost::Events.reporter = LittleGhost::Events::Reporter.new
+      event = LittleGhost::Events.info("agent.ready", agent: "support")
+    end
+
+    assert_empty stderr
+    assert_equal "agent.ready", event.fetch(:name)
+    assert_equal :info, event.fetch(:level)
+    assert_equal({agent: "support"}, event.fetch(:payload))
+  end
+
   def test_context_is_scoped_to_the_current_execution
     listener = Listener.new
     LittleGhost::Events.subscribe(listener)
@@ -76,6 +89,35 @@ class EventsTest < Minitest::Test
     LittleGhost::Events.error("agent.failed")
 
     assert_equal ["agent.failed"], listener.events.map { |event| event.fetch(:name) }
+  end
+
+  def test_the_same_listener_can_have_distinct_filtered_subscriptions
+    listener = Listener.new
+    LittleGhost::Events.subscribe(listener) { |event| event.fetch(:level) == :info }
+    LittleGhost::Events.subscribe(listener) { |event| event.fetch(:level) == :error }
+
+    LittleGhost::Events.info("agent.ready")
+    LittleGhost::Events.warn("provider.retry")
+    LittleGhost::Events.error("agent.failed")
+
+    assert_equal ["agent.ready", "agent.failed"], listener.events.map { |event| event.fetch(:name) }
+  end
+
+  def test_console_destination_survives_reporter_replacement_without_leaking_to_the_old_reporter
+    old_reporter = nil
+    stdout, stderr = capture_io do
+      LittleGhost::Events.console_output = :stdout
+      old_reporter = LittleGhost::Events.reporter
+      LittleGhost::Events.reporter = LittleGhost::Events::Reporter.new
+
+      old_reporter.emit(:info, "old.reporter")
+      LittleGhost::Events.info("new.reporter")
+    end
+
+    assert_empty stderr
+    assert_equal ["new.reporter"], stdout.lines.map { |line| JSON.parse(line).fetch("name") }
+  ensure
+    LittleGhost::Events.console_output = nil
   end
 
   def test_listener_failures_do_not_interrupt_other_listeners

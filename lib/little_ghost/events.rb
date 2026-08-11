@@ -51,9 +51,11 @@ module LittleGhost
     end
 
     # Thread-safe event publisher with process-wide and fiber-scoped listeners.
+    # Reporters start without listeners so applications opt into their preferred
+    # event destination, including +ConsoleListener+ for JSON-line diagnostics.
     class Reporter
       # Starts with +listeners+ in subscription order.
-      def initialize(listeners: [ConsoleListener.new])
+      def initialize(listeners: [])
         @mutex = Mutex.new
         @listeners = []
         Array(listeners).each { |listener| subscribe(listener) }
@@ -193,7 +195,34 @@ module LittleGhost
       def reporter=(value)
         raise ArgumentError, "reporter must be an event reporter" unless value.is_a?(Reporter)
 
-        reporter_mutex.synchronize { @reporter = value }
+        reporter_mutex.synchronize do
+          @reporter&.unsubscribe(@console_listener) if @console_listener
+          @reporter = value
+          @reporter.subscribe(@console_listener) if @console_listener
+        end
+      end
+
+      # The process-wide JSON-line console destination, or +nil+ when console
+      # delivery is disabled.
+      def console_output
+        reporter_mutex.synchronize { @console_output }
+      end
+
+      # Selects +:stdout+, +:stderr+, or +nil+ as the process-wide JSON-line
+      # console destination. Replacing the destination leaves other listeners
+      # unchanged.
+      def console_output=(destination)
+        unless [nil, :stdout, :stderr].include?(destination)
+          raise ArgumentError, "event log destination must be :stdout, :stderr, or nil"
+        end
+
+        reporter_mutex.synchronize do
+          @reporter ||= Reporter.new
+          @reporter.unsubscribe(@console_listener) if @console_listener
+          @console_output = destination
+          @console_listener = destination && ConsoleListener.new(io: (destination == :stdout) ? $stdout : $stderr)
+          @reporter.subscribe(@console_listener) if @console_listener
+        end
       end
 
       # Subscribes a process-wide listener.

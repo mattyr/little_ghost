@@ -4,4 +4,6 @@
 /doc/
 /_site/
 /.ruby-lsp/
+/.env
+/mise.local.toml
 /*.gem

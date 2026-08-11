@@ -91,6 +91,29 @@ class AgentTest < Minitest::Test
     assert_equal [[:build_run, {message: "hello"}], [:call], [:build_run, {message: "goodbye"}], [:each]], calls
   end
 
+  def test_class_ask_uses_a_fresh_standalone_entrypoint
+    agent = Class.new(LittleGhost::Agent)
+    calls = []
+    completed_run = Object.new
+    runtime = Object.new
+    runtime.define_singleton_method(:build_run) do |payload, **|
+      calls << [:build_run, payload]
+      completed_run.tap do |run|
+        run.define_singleton_method(:call) do
+          calls << [:call]
+          self
+        end
+      end
+    end
+
+    result = LittleGhost::Runtime.stub(:new, ->(**) { runtime }) do
+      agent.ask("hello", channel: "console")
+    end
+
+    assert_same completed_run, result
+    assert_equal [[:build_run, {message: "hello", channel: "console"}], [:call]], calls
+  end
+
   def test_an_entrypoint_instance_delegates_manual_calls_to_its_runtime
     agent = Class.new(LittleGhost::Agent)
     calls = []

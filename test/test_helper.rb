@@ -11,6 +11,7 @@ end
 module InstrumentationIsolation
   def before_setup
     LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new
+    LittleGhost::Events.console_output = nil
     LittleGhost::Events.reporter = LittleGhost::Events::Reporter.new(listeners: [])
     super
   end

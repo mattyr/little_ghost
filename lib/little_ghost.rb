@@ -26,6 +26,7 @@ require_relative "little_ghost/providers/openai_compatible"
 require_relative "little_ghost/providers/openai"
 require_relative "little_ghost/providers/open_router"
 require_relative "little_ghost/providers/bedrock"
+require_relative "little_ghost/default_model_registry"
 require_relative "little_ghost/run_context"
 require_relative "little_ghost/workspace"
 require_relative "little_ghost/sandbox"
@@ -76,7 +77,7 @@ require_relative "little_ghost/runtime"
 #     subagent ResearchAgent, kind: "research"
 #   end
 #
-#   run = CustomerSupportAgent.new.ask("Why is transfer 481 still pending?")
+#   run = CustomerSupportAgent.ask("Why is transfer 481 still pending?")
 #   run.completed? # => true
 #   run.response   # => "Transfer 481 is waiting for the receiving bank."
 #

@@ -56,6 +56,14 @@ class RuntimeTest < Minitest::Test
     end
   end
 
+  def test_runtime_uses_the_default_model_registry_when_models_are_not_configured
+    Dir.mktmpdir do |root|
+      runtime = LittleGhost::Runtime.new(configuration: LittleGhost::Configuration.new(root:))
+
+      assert_instance_of LittleGhost::DefaultModelRegistry, runtime.models
+    end
+  end
+
   def test_runtime_reports_failed_startup_and_flushes_telemetry
     Dir.mktmpdir do |root|
       write(root, "app/agents/conflict_agent.rb", "class ConflictAgent; end")
