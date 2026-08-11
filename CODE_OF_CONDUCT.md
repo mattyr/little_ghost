@@ -11,7 +11,3 @@ all collaborative spaces, including issues, pull requests, and discussions:
   always assume good intentions.
 - Behavior that could reasonably be considered harassment will not be
   tolerated.
-
-If you believe these guidelines have been violated, email
-[robinson.matty@gmail.com](mailto:robinson.matty@gmail.com) to alert the
-maintainer.
