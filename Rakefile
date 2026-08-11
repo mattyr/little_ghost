@@ -3,12 +3,13 @@
 require "rake/testtask"
 require "rdoc/task"
 
-RDOC_TITLE = "LittleGhost API Documentation"
+RDOC_TITLE = "LittleGhost Docs"
 RDOC_MAIN = "README.md"
 RDOC_FILES = ["README.md", "docs/guides/*.md", "lib/**/*.rb"].freeze
 RDOC_OPTIONS = [
   "--encoding", "UTF-8",
   "--visibility", "public",
+  "--template-stylesheets", "site/assets/docs.css",
   "--warn-missing-rdoc-ref"
 ].freeze
 SITE_SOURCE = "site"
