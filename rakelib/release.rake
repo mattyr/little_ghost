@@ -14,7 +14,7 @@ namespace :package do
       LittleGhostRelease.extract(path, directory)
       ruby = RbConfig.ruby
       command = [ruby, "-I#{File.join(directory, "lib")}", "-e", "require 'little_ghost'; abort unless LittleGhost::VERSION == '#{LittleGhost::VERSION}'"]
-      loaded = Bundler.with_unbundled_env { system({"RUBYOPT" => nil, "RUBYLIB" => nil}, *command) }
+      loaded = system(*command)
       abort "Built gem could not be loaded" unless loaded
     end
 
