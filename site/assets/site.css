@@ -982,19 +982,19 @@ h2 {
 }
 
 .satellite-five {
-  top: 10%;
-  left: 58%;
+  top: 48%;
+  left: 5%;
   animation: satelliteFloat 6.1s -0.8s ease-in-out infinite;
 }
 
 .satellite-five::after {
-  width: 72px;
-  transform: rotate(112deg);
+  width: 92px;
+  transform: rotate(-4deg);
 }
 
 .satellite-six {
-  bottom: 5%;
-  left: 39%;
+  top: 62%;
+  right: 5%;
   color: #ffa6b8;
   border-color: rgba(255, 130, 156, 0.32);
   box-shadow: 0 0 18px rgba(255, 130, 156, 0.14);
@@ -1002,9 +1002,9 @@ h2 {
 }
 
 .satellite-six::after {
-  width: 68px;
+  width: 88px;
   background: linear-gradient(90deg, rgba(255, 130, 156, 0.4), transparent);
-  transform: rotate(-69deg);
+  transform: rotate(186deg);
 }
 
 .card-visual-coordination {
