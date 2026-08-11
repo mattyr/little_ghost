@@ -1,0 +1,33 @@
+<%- pages = @files.select { |file| file.text? && file.full_name != @options.main_page } %>
+
+<%- unless pages.empty? %>
+  <div id="fileindex-section" class="nav-section">
+    <details class="nav-section-collapsible" <%= 'open' unless @inside_class_file %>>
+      <summary class="nav-section-header">
+        <span class="nav-section-icon">
+          <svg>
+            <use href="#icon-file"></use>
+          </svg>
+        </span>
+
+        <span class="nav-section-title">Pages</span>
+
+        <span class="nav-section-chevron">
+          <svg>
+            <use href="#icon-chevron"></use>
+          </svg>
+        </span>
+      </summary>
+
+      <ul class="nav-list">
+        <%- pages.each do |page| %>
+          <li>
+            <a href="<%= rel_prefix %>/<%= h page.path %>">
+              <%= h page.page_name %>
+            </a>
+          </li>
+        <%- end %>
+      </ul>
+    </details>
+  </div>
+<%- end %>

@@ -17,6 +17,7 @@ Gem::Specification.new do |spec|
   spec.metadata = {
     "bug_tracker_uri" => "#{spec.homepage}/issues",
     "changelog_uri" => "#{spec.homepage}/releases",
+    "documentation_uri" => "https://mattyr.github.io/little_ghost/docs/",
     "source_code_uri" => spec.homepage
   }
 
@@ -32,4 +33,5 @@ Gem::Specification.new do |spec|
   spec.add_development_dependency "rake", "~> 13.2"
   spec.add_development_dependency "rdoc", "~> 8.0"
   spec.add_development_dependency "standard", "~> 1.44"
+  spec.add_development_dependency "webrick", "~> 1.9"
 end

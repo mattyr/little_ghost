@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <defs>
+    <linearGradient id="background" x1="52" y1="20" x2="1132" y2="611" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#151526"></stop>
+      <stop offset=".46" stop-color="#090a12"></stop>
+      <stop offset="1" stop-color="#101822"></stop>
+    </linearGradient>
+    <radialGradient id="glow" cx="0" cy="0" r="1" gradientTransform="matrix(0 330 -330 0 910 300)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#9b7aef" stop-opacity=".45"></stop>
+      <stop offset="1" stop-color="#9b7aef" stop-opacity="0"></stop>
+    </radialGradient>
+    <linearGradient id="body" x1="827" y1="118" x2="1003" y2="500" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#fffefa"></stop>
+      <stop offset=".55" stop-color="#eee8ff"></stop>
+      <stop offset="1" stop-color="#bca7ff"></stop>
+    </linearGradient>
+    <filter id="shadow" x="-80%" y="-80%" width="260%" height="260%">
+      <feDropShadow dx="0" dy="28" stdDeviation="30" flood-color="#7a5bce" flood-opacity=".45"></feDropShadow>
+    </filter>
+    <filter id="blur"><feGaussianBlur stdDeviation="36"></feGaussianBlur></filter>
+  </defs>
+
+  <rect width="1200" height="630" fill="url(#background)"></rect>
+  <circle cx="918" cy="315" r="330" fill="url(#glow)"></circle>
+  <circle cx="930" cy="315" r="230" fill="none" stroke="#d9cdff" stroke-opacity=".13"></circle>
+  <ellipse cx="930" cy="318" rx="340" ry="126" fill="none" stroke="#74f5d1" stroke-opacity=".18" transform="rotate(-12 930 318)"></ellipse>
+  <circle cx="649" cy="374" r="5" fill="#76f7d2" filter="url(#blur)"></circle>
+  <circle cx="1117" cy="173" r="4" fill="#ff829c"></circle>
+  <circle cx="1057" cy="509" r="5" fill="#76f7d2"></circle>
+
+  <g transform="translate(80 70)">
+    <path fill="#eee8ff" d="M30 0C12 0 0 14 0 32v27c0 4 4.8 6 8 3l7.7-7 6.4 6.4c3.5 3.5 12.3 3.5 15.8 0l6.4-6.4 7.7 7c3.2 3 8 1 8-3V32C60 14 48 0 30 0Z"></path>
+    <ellipse cx="21" cy="31" rx="4" ry="6" fill="#171827"></ellipse>
+    <ellipse cx="39" cy="31" rx="4" ry="6" fill="#171827"></ellipse>
+    <text x="82" y="45" fill="#f7f4ed" font-family="Arial, Helvetica, sans-serif" font-size="34" font-weight="700" letter-spacing="-1.4">LittleGhost</text>
+  </g>
+
+  <g transform="translate(80 210)">
+    <text fill="#f7f4ed" font-family="Arial, Helvetica, sans-serif" font-size="72" font-weight="700" letter-spacing="-4">
+      <tspan x="0" y="0">A little ghost.</tspan>
+      <tspan x="0" y="84" fill="#d6c9ff" font-family="Georgia, serif" font-style="italic" font-weight="400">A lot of agency.</tspan>
+    </text>
+    <text x="2" y="165" fill="#a6a4b1" font-family="Arial, Helvetica, sans-serif" font-size="24">Agents and agentic workflows for Ruby.</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <path fill="url(#body)" d="M912 112C835 112 787 171 787 253v170c0 17 20 25 34 12l32-30 27 27c14 14 50 14 64 0l27-27 32 30c14 13 34 5 34-12V253c0-82-48-141-125-141Z"></path>
+    <ellipse cx="866" cy="274" rx="19" ry="27" fill="#171827"></ellipse>
+    <ellipse cx="958" cy="274" rx="19" ry="27" fill="#171827"></ellipse>
+    <circle cx="872" cy="267" r="6" fill="#fff"></circle>
+    <circle cx="964" cy="267" r="6" fill="#fff"></circle>
+    <path d="M887 321c15 12 35 12 50 0" fill="none" stroke="#594b7f" stroke-linecap="round" stroke-width="8"></path>
+    <ellipse cx="834" cy="317" rx="20" ry="10" fill="#ff829c" opacity=".2"></ellipse>
+    <ellipse cx="990" cy="317" rx="20" ry="10" fill="#ff829c" opacity=".2"></ellipse>
+  </g>
+</svg>
