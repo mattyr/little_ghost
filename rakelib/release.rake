@@ -86,10 +86,28 @@ namespace :release do
     puts "Verified #{tag} can be created from origin/main and published to RubyGems."
   end
 
+  desc "Create and verify the signed version tag"
+  task tag: :doctor do
+    version = LittleGhost::VERSION
+    tag = LittleGhostRelease.expected_tag(version)
+    created = system("git", "-c", "gpg.format=ssh", "tag", "-s", tag, "-m", "Version #{version}")
+    abort "Could not create signed release tag #{tag}" unless created
+
+    begin
+      LittleGhostRelease.verify_tag_signature!(tag)
+    rescue
+      system("git", "tag", "-d", tag, out: File::NULL, err: File::NULL)
+      raise
+    end
+
+    puts "Created #{tag} with a verified release signature."
+  end
+
   desc "Verify the release tag and its main-branch ancestry"
   task :verify do
     tag = ENV.fetch("RELEASE_TAG", ENV["GITHUB_REF_NAME"])
     LittleGhostRelease.verify_tag!(tag, LittleGhost::VERSION)
+    LittleGhostRelease.verify_tag_signature!(tag)
 
     tag_revision, tag_status = Open3.capture2e("git", "rev-parse", "--verify", "refs/tags/#{tag}^{commit}")
     head_revision, head_status = Open3.capture2e("git", "rev-parse", "HEAD")
@@ -100,7 +118,7 @@ namespace :release do
       abort "Release commit must belong to #{main_ref}"
     end
 
-    puts "Verified #{tag} at a commit contained in #{main_ref}."
+    puts "Verified signed #{tag} at a commit contained in #{main_ref}."
   end
 
   desc "Verify a downloaded RubyGems package against the package built from this tag"

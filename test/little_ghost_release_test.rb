@@ -24,6 +24,44 @@ class LittleGhostReleaseTest < Minitest::Test
     end
   end
 
+  def test_verify_tag_signature_uses_the_allowed_ssh_signers
+    status = Minitest::Mock.new
+    status.expect(:success?, true)
+    command = nil
+    runner = lambda do |*arguments|
+      command = arguments
+      ["Good signature", status]
+    end
+
+    assert_equal "v1.2.3", LittleGhostRelease.verify_tag_signature!(
+      "v1.2.3",
+      allowed_signers_path: "signers",
+      command_runner: runner
+    )
+    assert_equal [
+      "git",
+      "-c", "gpg.format=ssh",
+      "-c", "gpg.ssh.allowedSignersFile=#{File.expand_path("signers")}",
+      "verify-tag", "v1.2.3"
+    ], command
+    status.verify
+  end
+
+  def test_verify_tag_signature_rejects_an_unsigned_or_untrusted_tag
+    status = Minitest::Mock.new
+    status.expect(:success?, false)
+    runner = ->(*) { ["error: no signature found", status] }
+
+    error = assert_raises(LittleGhostRelease::Error) do
+      LittleGhostRelease.verify_tag_signature!("v1.2.3", command_runner: runner)
+    end
+
+    assert_equal \
+      "Release tag v1.2.3 must have a valid SSH signature from an allowed release signer: error: no signature found",
+      error.message
+    status.verify
+  end
+
   def test_current_gem_package_has_the_release_contract
     Dir.mktmpdir("little-ghost-release-test") do |directory|
       path = File.join(directory, "little_ghost-#{LittleGhost::VERSION}.gem")

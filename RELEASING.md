@@ -45,15 +45,17 @@ All gem owners must have multi-factor authentication enabled. Published gem meta
    bundle exec rake release:doctor
    ```
 
-5. Create an annotated tag whose name exactly matches `v#{LittleGhost::VERSION}`:
+5. Create a signed tag whose name exactly matches `v#{LittleGhost::VERSION}`.
+   The task uses SSH signing and verifies the result against
+   `.github/release_allowed_signers` before keeping the local tag:
 
    ```sh
    version="$(ruby -Ilib -rlittle_ghost/version -e 'print LittleGhost::VERSION')"
-   git tag -a "v${version}" -m "Version ${version}"
+   bundle exec rake release:tag
    git push origin "v${version}"
    ```
 
-The tag starts the release workflow. It verifies that the tag matches the gem version and belongs to `main`, reruns the complete gate, publishes through RubyGems OIDC, verifies the served package, creates the GitHub Release, deploys the website and API documentation from that tag, and checks every public release surface. RubyGems checksum verification tolerates bounded API propagation delays while retaining complete package-equivalence checks.
+The tag starts the release workflow. It verifies the tag's signature, version, and membership in `main`, reruns the complete gate, publishes through RubyGems OIDC, verifies the served package, creates the GitHub Release, deploys the website and API documentation from that tag, and checks every public release surface. RubyGems checksum verification tolerates bounded API propagation delays while retaining complete package-equivalence checks.
 
 GitHub generates the release notes from merged pull requests. The `enhancement`, `bug`, and `documentation` labels group the notes; every other pull request appears under **Other changes**. Prerelease gem versions produce prerelease GitHub Releases and a prerelease version badge on the documentation site.
 

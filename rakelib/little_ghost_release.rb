@@ -3,6 +3,7 @@
 require "digest"
 require "json"
 require "net/http"
+require "open3"
 require "rubygems/package"
 require "tmpdir"
 require "uri"
@@ -30,6 +31,7 @@ module LittleGhostRelease
   RUBYGEMS_READ_TIMEOUT = 20
   RUBYGEMS_CHECKSUM_ATTEMPTS = 12
   RUBYGEMS_CHECKSUM_DELAY = 5
+  RELEASE_ALLOWED_SIGNERS = File.expand_path("../.github/release_allowed_signers", __dir__)
 
   module_function
 
@@ -42,6 +44,22 @@ module LittleGhostRelease
     raise Error, "Release tag must be #{expected}, got #{tag.inspect}" unless tag == expected
 
     expected
+  end
+
+  def verify_tag_signature!(tag, allowed_signers_path: RELEASE_ALLOWED_SIGNERS, command_runner: Open3.method(:capture2e))
+    command = [
+      "git",
+      "-c", "gpg.format=ssh",
+      "-c", "gpg.ssh.allowedSignersFile=#{File.expand_path(allowed_signers_path)}",
+      "verify-tag", tag
+    ]
+    output, status = command_runner.call(*command)
+    return tag if status.success?
+
+    detail = output.strip
+    message = "Release tag #{tag} must have a valid SSH signature from an allowed release signer"
+    message = "#{message}: #{detail}" unless detail.empty?
+    raise Error, message
   end
 
   def manifest(path)
