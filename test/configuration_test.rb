@@ -6,6 +6,118 @@ require "test_helper"
 require "little_ghost/ag_ui"
 
 class ConfigurationTest < Minitest::Test
+  def test_event_logging_can_be_sent_to_stdout_without_duplicate_runtime_subscriptions
+    stdout, stderr = capture_io do
+      Dir.mktmpdir do |root|
+        configuration = LittleGhost::Configuration.new(root:)
+        configuration.log_events_to :stdout
+
+        2.times { LittleGhost::Runtime.new(configuration:) }
+      end
+    end
+
+    events = stdout.lines.map { |line| JSON.parse(line) }
+    assert_empty stderr
+    assert_equal 4, events.length
+    assert events.all? { |event| event.fetch("name") == "little_ghost.runtime.startup" }
+    assert events.all? { |event| event.fetch("level") == "info" }
+    assert_equal %w[starting ready starting ready], events.map { |event| event.dig("payload", "status") }
+  end
+
+  def test_event_logging_can_be_sent_to_stderr_or_disabled
+    configuration = nil
+    stdout, stderr = capture_io do
+      configuration = LittleGhost::Configuration.new
+      assert_equal :stderr, configuration.log_events_to(:stderr)
+      LittleGhost::Events.warn("provider.retry")
+      assert_nil configuration.log_events_to(nil)
+      LittleGhost::Events.warn("provider.retry")
+    end
+
+    assert_empty stdout
+    assert_equal 1, stderr.lines.length
+    assert_equal "provider.retry", JSON.parse(stderr).fetch("name")
+    assert_nil configuration.log_events_to
+  end
+
+  def test_the_most_recent_configuration_replaces_the_process_console_destination
+    first = LittleGhost::Configuration.new
+    second = LittleGhost::Configuration.new
+    stdout, stderr = capture_io do
+      first.log_events_to :stdout
+      second.log_events_to :stderr
+      LittleGhost::Events.info("agent.ready")
+      first.log_events_to nil
+      LittleGhost::Events.info("agent.silent")
+    end
+
+    assert_empty stdout
+    assert_equal ["agent.ready"], stderr.lines.map { |line| JSON.parse(line).fetch("name") }
+    assert_nil first.log_events_to
+    assert_nil second.log_events_to
+  end
+
+  def test_concurrent_configuration_replacement_leaves_one_console_destination
+    stdout, stderr = capture_io do
+      threads = 20.times.map do |index|
+        Thread.new do
+          LittleGhost::Configuration.new.log_events_to(index.even? ? :stdout : :stderr)
+        end
+      end
+      threads.each(&:join)
+      LittleGhost::Events.info("agent.ready")
+    end
+
+    events = (stdout.lines + stderr.lines).map { |line| JSON.parse(line) }
+    assert_equal ["agent.ready"], events.map { |event| event.fetch("name") }
+  end
+
+  def test_lazily_loaded_console_configuration_receives_the_complete_startup_sequence
+    stdout, stderr = capture_io do
+      Dir.mktmpdir do |root|
+        config = File.join(root, "config/little_ghost.rb")
+        FileUtils.mkdir_p(File.dirname(config))
+        File.write(config, "LittleGhost.configure { |configuration| configuration.log_events_to :stdout }\n")
+
+        LittleGhost::Runtime.new(configuration: LittleGhost::Configuration.new(root:))
+      end
+    end
+
+    assert_empty stderr
+    events = stdout.lines.map { |line| JSON.parse(line) }
+    assert_equal %w[starting ready], events.map { |event| event.dig("payload", "status") }
+  end
+
+  def test_lazily_loaded_console_configuration_receives_a_paired_failure_sequence
+    stdout, stderr = capture_io do
+      Dir.mktmpdir do |root|
+        config = File.join(root, "config/little_ghost.rb")
+        FileUtils.mkdir_p(File.dirname(config))
+        File.write(config, <<~RUBY)
+          LittleGhost.configure { |configuration| configuration.log_events_to :stdout }
+          raise "invalid configuration"
+        RUBY
+
+        assert_raises(RuntimeError) do
+          LittleGhost::Runtime.new(configuration: LittleGhost::Configuration.new(root:))
+        end
+      end
+    end
+
+    assert_empty stderr
+    events = stdout.lines.map { |line| JSON.parse(line) }
+    assert_equal %w[starting failed], events.map { |event| event.dig("payload", "status") }
+    assert_equal %w[info error], events.map { |event| event.fetch("level") }
+  end
+
+  def test_event_logging_rejects_unknown_destinations
+    error = assert_raises(ArgumentError) do
+      LittleGhost::Configuration.new.log_events_to(:console)
+    end
+
+    assert_equal "event log destination must be :stdout, :stderr, or nil", error.message
+  end
+
   def test_configuration_overrides_are_isolated_between_fibers
     configurations = [LittleGhost::Configuration.new, LittleGhost::Configuration.new]
     observed = []

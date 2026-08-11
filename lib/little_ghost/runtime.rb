@@ -45,7 +45,7 @@ module LittleGhost
     def initialize(configuration:, settings: nil)
       @startup_started_at = monotonic_time
       @startup_phase = "configuration"
-      report_startup(status: "starting")
+      @startup_reported = false
 
       begin
         raise ArgumentError, "configuration must be a LittleGhost::Configuration" unless configuration.is_a?(Configuration)
@@ -58,6 +58,8 @@ module LittleGhost
           configuration.load_file!(root: bootstrap_root)
           @settings = configuration.settings(root: bootstrap_root)
         end
+        report_startup(status: "starting")
+        @startup_reported = true
         @root = canonical_application_root(@settings.fetch(:root))
         @skill_resource_root = @settings[:skill_resource_root]
         @workspace_class = @settings.fetch(:workspace)
@@ -75,7 +77,7 @@ module LittleGhost
 
         @startup_phase = "models"
         @invocation_class = @settings[:invocation] || Invocation
-        @models = build_service(@settings[:models], default: -> { ModelRegistry.new })
+        @models = build_service(@settings[:models], default: -> { DefaultModelRegistry.new })
         @default_model = @settings.fetch(:default_model, "default").to_s
 
         @startup_phase = "session_store"
@@ -97,6 +99,10 @@ module LittleGhost
         emit_startup(:runtime_stop, outcome: "ready")
         report_startup(status: "ready")
       rescue => error
+        unless @startup_reported
+          report_startup(status: "starting")
+          @startup_reported = true
+        end
         emit_startup(:runtime_stop, outcome: "failed", error:)
         Instrumentation.flush
         report_startup(status: "failed", error:)

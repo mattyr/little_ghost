@@ -44,7 +44,7 @@ end
 
 LittleGhost.configure { |config| config.models CustomerSupportModels }
 
-run = CustomerSupportAgent.new.ask("Can I get a refund after two weeks?")
+run = CustomerSupportAgent.ask("Can I get a refund after two weeks?")
 puts run.response
 # One possible response:
 # Refunds are available within 30 days, so your purchase is eligible.
@@ -70,7 +70,9 @@ request ──> ResponseWorkflow ──> ResearchAgent ──> CustomerSupportAg
 
 Configuration owns shared services such as model registries, sessions, lookup paths, workspaces, sandboxes, and instrumentation. Agent classes own behavior: their logical model role, prompt, tools, limits, structured result, and delegation policy. A tool is a validated boundary around application code. A subagent lets the model delegate work within configured turn, concurrency, and depth limits; a workflow uses ordinary Ruby when your application must choose the sequence.
 
-`CustomerSupportAgent.new.ask(...)` consumes a run and returns the completed `LittleGhost::Run`. Use `stream_ask` when an interface should render progress as `LittleGhost::StreamEvent` objects:
+`CustomerSupportAgent.ask(...)` creates a standalone entrypoint, consumes its run, and returns the completed `LittleGhost::Run`. Create an instance explicitly when reusing a runtime or when an interface should render progress as `LittleGhost::StreamEvent` objects:
+
+`LittleGhost::Agent.ask("hi")` uses the built-in default model selection and the system prompt `You are a helpful agent.` for a general-purpose agent.
 
 ```ruby
 CustomerSupportAgent.new.stream_ask("Can I get a refund?").each do |event|
@@ -89,6 +91,10 @@ gem "little_ghost"
 ```
 
 Then run `bundle install`. Provider SDKs and OpenTelemetry exporters are optional application dependencies. The built-in OpenAI, OpenAI-compatible, OpenRouter, and Amazon Bedrock integrations normalize their responses into the same LittleGhost protocol.
+
+By default, LittleGhost maps the `default` role to GPT-5.6 Terra. It selects the first nonblank API key from `LITTLEGHOST_OPENROUTER_API_KEY`, `LITTLEGHOST_OPENAI_API_KEY`, `OPENROUTER_API_KEY`, and `OPENAI_API_KEY`, in that order. Setting one of these keys authorizes model inputs—including prompts, conversation history, tool data, and attachments—to be sent to the selected external provider. Applications with provider or data-residency requirements should configure a model registry explicitly.
+
+By default, structured framework events have no console destination. Hosted applications can emit redacted JSON lines to standard output with `LittleGhost.configure { |config| config.log_events_to :stdout }`; `:stderr` selects standard error instead, and `nil` disables a configured destination. Event emission and severity levels are the same with or without a console destination.
 
 Prompts can stay inline while an agent is small, then move into conventional ERB templates under `app/prompts`. Agents and tools under `app/agents` and `app/tools` are loaded from the configured application root, keeping framework setup separate from product behavior.
 

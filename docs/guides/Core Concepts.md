@@ -56,12 +56,12 @@ end
 
 The class-level DSL is inheritable. It can declare prompts, limits, callbacks, tool classes, structured results, context management, skills, and delegation. A capability mixin may be included in `LittleGhost::Agent`, but its behavior remains inactive until the corresponding DSL is called.
 
-`CustomerSupportAgent.new` without a bound model or run creates the standalone, console-friendly entrypoint. Calling `#ask` builds and consumes a `LittleGhost::Run`; `#stream_ask` yields the run's events. Agents built by a runtime are instead scoped to their owning run and return a `LittleGhost::RunResult` from `#call`.
+`CustomerSupportAgent.ask` creates a standalone, console-friendly entrypoint, builds and consumes a `LittleGhost::Run`, and returns that run. Create `CustomerSupportAgent.new` explicitly to reuse a runtime or call `#stream_ask` for the run's events. Agents built by a runtime are instead scoped to their owning run and return a `LittleGhost::RunResult` from `#call`.
 
 That distinction explains two useful return paths:
 
 ```ruby
-run = CustomerSupportAgent.new.ask("Can I get a refund?")
+run = CustomerSupportAgent.ask("Can I get a refund?")
 run.response       # final text from the top-level execution
 run.result.output  # text, or a validated structured value when declared
 ```

@@ -43,7 +43,9 @@ module LittleGhost
     #   invocation(value) -> value
 
     ##
-    # The model registry class or instance used to resolve logical roles.
+    # The model registry class or instance used to resolve logical roles. By
+    # default, +DefaultModelRegistry+ selects a built-in provider from supported
+    # environment variables.
     #
     # :method: models
     # :call-seq:
@@ -183,6 +185,27 @@ module LittleGhost
 
       configuration_values[:instrumentation_subscribers] << subscriber
       subscriber
+    end
+
+    # :call-seq:
+    #   log_events_to() -> :stdout, :stderr, nil
+    #   log_events_to(destination) -> destination
+    #
+    # Sends structured framework events to +:stdout+ or +:stderr+. This setting
+    # controls the process-wide Events console destination; the most recent
+    # setting replaces it without changing other event listeners. By default,
+    # events have no console destination. Passing +nil+ disables console output.
+    # The console listener redacts sensitive values and writes one JSON object
+    # per line.
+    def log_events_to(destination = :__read__)
+      return Events.console_output if destination == :__read__
+
+      Events.console_output = destination
+    end
+
+    # Replaces the console destination for structured framework events.
+    def log_events_to=(destination)
+      log_events_to(destination)
     end
 
     # Adds a Runtime::Hook subclass to each new runtime and returns it.

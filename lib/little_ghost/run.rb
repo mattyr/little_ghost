@@ -6,14 +6,15 @@ module LittleGhost
   # Observe one top-level agent or workflow execution from start to finish.
   # A run records its response, outcome, usage, error, and owned resources.
   #
-  #   run = CustomerSupportAgent.new.ask("Why is transfer 481 pending?")
+  #   run = CustomerSupportAgent.ask("Why is transfer 481 pending?")
   #
   #   run.completed? # => true
   #   run.outcome    # => "completed"
   #   run.response   # => "Transfer 481 is waiting for the receiving bank."
   #
-  # Standalone ask[rdoc-ref:LittleGhost::Agent#ask] consumes the event stream and
-  # returns the Run. For a live interface,
+  # Agent.ask[rdoc-ref:LittleGhost::Agent.ask] or standalone
+  # ask[rdoc-ref:LittleGhost::Agent#ask] consumes the event stream and returns
+  # the Run. For a live interface,
   # stream_ask[rdoc-ref:LittleGhost::Agent#stream_ask] yields StreamEvent objects
   # and returns the same run after enumeration. A run can execute only once.
   #

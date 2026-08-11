@@ -25,7 +25,7 @@ module LittleGhost
   #     subagent ResearchAgent, kind: "research"
   #   end
   #
-  #   run = CustomerSupportAgent.new.ask("Why is transfer 481 pending?")
+  #   run = CustomerSupportAgent.ask("Why is transfer 481 pending?")
   #   run.completed? # => true
   #   run.response   # => "Transfer 481 is waiting for the receiving bank."
   #
@@ -35,17 +35,21 @@ module LittleGhost
   # Capabilities such as skills, context management, loop detection, and
   # delegation remain inactive until their DSL methods are called.
   #
-  # A standalone instance is the console-friendly entrypoint: +ask+ returns a
-  # completed Run, while +stream_ask+ yields StreamEvent objects. Runtimes build
-  # bound instances internally; their +call+ method returns a RunResult and
-  # their +stream+ method follows the owning run's single-execution lifecycle.
-  # Closing an agent closes owned tools and any standalone workspace and sandbox.
+  # The class-level +ask+ helper creates a standalone entrypoint and returns a
+  # completed Run. Create a standalone instance explicitly to reuse one Runtime
+  # or call +stream_ask+ for StreamEvent objects. Runtimes build bound instances
+  # internally; their +call+ method returns a RunResult and their +stream+ method
+  # follows the owning run's single-execution lifecycle. Closing an agent closes
+  # owned tools and any standalone workspace and sandbox.
+  # LittleGhost::Agent.ask uses <tt>You are a helpful agent.</tt> as its system
+  # prompt. Subclasses continue to use their inline or conventional prompts.
   #
   # Models can return ordinary text or a locally validated structured result.
   # Tool failures are sanitized before returning to the model, diagnostic
   # capture can be disabled for sensitive agents, and cancellation, deadlines,
   # and cleanup failures remain framework control flow.
   class Agent
+    DEFAULT_SYSTEM_PROMPT = "You are a helpful agent." # :nodoc:
     DEFAULT_MAX_TOOL_RESULT_TOKENS = 10_000 # :nodoc:
     MAX_STRUCTURED_RESULT_BYTES = 1_000_000 # :nodoc:
     MAX_STRUCTURED_RESULT_DEPTH = 64 # :nodoc:
@@ -77,6 +81,14 @@ module LittleGhost
     class_attribute :callback_values, default: Support::Callbacks.new(*CALLBACKS)
 
     class << self
+      # Executes +message+ through a fresh standalone entrypoint and returns the
+      # completed LittleGhost::Run. Invocation +options+ are forwarded to #ask.
+      #
+      # Create an instance explicitly when reusing a Runtime or streaming events.
+      def ask(message, **options)
+        new.ask(message, **options)
+      end
+
       # :call-seq:
       #   agent_id() -> String
       #   agent_id(value) -> String
@@ -1911,6 +1923,8 @@ module LittleGhost
       return prompt.call(locals) if prompt.respond_to?(:call)
       return prompt if prompt
       template = self.class.system_template
+      return DEFAULT_SYSTEM_PROMPT if instance_of?(Agent) && run && !template
+
       template ||= "#{self.class.logical_path}/system" if run
       return nil unless template
 
