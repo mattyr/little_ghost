@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security report
+    url: https://github.com/mattyr/little_ghost/security/advisories/new
+    about: Report a suspected vulnerability privately

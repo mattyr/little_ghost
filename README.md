@@ -111,12 +111,19 @@ Prompts can stay inline while an agent is small, then move into conventional ERB
 - [Core Concepts](docs/guides/Core%20Concepts.md) explains models, agents, tools, delegation, workflows, sessions, and streaming through the same example.
 - [API reference](rdoc-ref:LittleGhost) covers exact signatures, options, and lifecycle details.
 
-LittleGhost is licensed under the MIT License.
+## Contributing
 
-## Development
+LittleGhost welcomes focused contributions. See the
+[contributing guide](https://github.com/mattyr/little_ghost/blob/main/CONTRIBUTING.md),
+[Code of Conduct](https://github.com/mattyr/little_ghost/blob/main/CODE_OF_CONDUCT.md),
+and [security policy](https://github.com/mattyr/little_ghost/blob/main/SECURITY.md).
+
+For a local checkout:
 
 ```sh
 bundle install
 bundle exec rake test
 bundle exec standardrb --no-fix
 ```
+
+LittleGhost is licensed under the MIT License.
