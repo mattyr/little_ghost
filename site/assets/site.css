@@ -871,6 +871,8 @@ h2 {
 }
 
 .agent-core-ghost {
+  position: relative;
+  z-index: 2;
   width: 118px;
   overflow: visible;
   filter: drop-shadow(0 0 28px rgba(144, 111, 238, 0.28));
@@ -950,6 +952,59 @@ h2 {
   width: 49px;
   background: linear-gradient(90deg, rgba(118, 247, 210, 0.5), transparent);
   transform: rotate(-52deg);
+}
+
+.agent-satellite-secondary {
+  width: 27px;
+  height: 27px;
+  border-radius: 9px;
+  opacity: 0.72;
+}
+
+.agent-satellite-secondary svg {
+  width: 14px;
+  stroke-width: 1.45;
+}
+
+.satellite-four {
+  right: 20%;
+  bottom: 16%;
+  color: #aeeede;
+  border-color: rgba(118, 247, 210, 0.35);
+  box-shadow: 0 0 18px rgba(118, 247, 210, 0.16);
+  animation: satelliteFloat 5.6s -3.2s ease-in-out infinite;
+}
+
+.satellite-four::after {
+  width: 64px;
+  background: linear-gradient(90deg, rgba(118, 247, 210, 0.42), transparent);
+  transform: rotate(-137deg);
+}
+
+.satellite-five {
+  top: 10%;
+  left: 58%;
+  animation: satelliteFloat 6.1s -0.8s ease-in-out infinite;
+}
+
+.satellite-five::after {
+  width: 72px;
+  transform: rotate(112deg);
+}
+
+.satellite-six {
+  bottom: 5%;
+  left: 39%;
+  color: #ffa6b8;
+  border-color: rgba(255, 130, 156, 0.32);
+  box-shadow: 0 0 18px rgba(255, 130, 156, 0.14);
+  animation: satelliteFloat 5.8s -4.1s ease-in-out infinite;
+}
+
+.satellite-six::after {
+  width: 68px;
+  background: linear-gradient(90deg, rgba(255, 130, 156, 0.4), transparent);
+  transform: rotate(-69deg);
 }
 
 .card-visual-coordination {
