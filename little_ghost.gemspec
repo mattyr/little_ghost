@@ -33,4 +33,5 @@ Gem::Specification.new do |spec|
   spec.add_development_dependency "rake", "~> 13.2"
   spec.add_development_dependency "rdoc", "~> 8.0"
   spec.add_development_dependency "standard", "~> 1.44"
+  spec.add_development_dependency "webrick", "~> 1.9"
 end
