@@ -182,6 +182,9 @@ workflow unless a task explicitly adds it.
   `enhancement`, `bug`, or `documentation`. Leave a pull request unlabeled only
   when it intentionally belongs under **Other changes**. The categories are
   configured in `.github/release.yml`.
+- Create release tags only with `bundle exec rake release:tag`. The task creates
+  an SSH-signed tag; the release workflow rejects any tag whose signature
+  GitHub does not verify.
 
 Use a concise pull-request description:
 

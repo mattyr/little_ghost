@@ -83,7 +83,18 @@ namespace :release do
     abort "Tag #{tag} already exists on origin" unless remote_tag.empty?
     abort "little_ghost #{version} already exists on RubyGems" if LittleGhostRelease.published_version?(version)
 
-    puts "Verified #{tag} can be created from origin/main and published to RubyGems."
+    LittleGhostRelease.verify_release_signing_key!
+
+    puts "Verified #{tag} can be signed from origin/main and published to RubyGems."
+  end
+
+  desc "Create the signed version tag"
+  task tag: :doctor do
+    version = LittleGhost::VERSION
+    tag = LittleGhostRelease.expected_tag(version)
+    LittleGhostRelease.create_signed_tag!(tag, version)
+
+    puts "Created SSH-signed release tag #{tag}."
   end
 
   desc "Verify the release tag and its main-branch ancestry"

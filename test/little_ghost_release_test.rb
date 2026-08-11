@@ -24,6 +24,106 @@ class LittleGhostReleaseTest < Minitest::Test
     end
   end
 
+  def test_release_signing_key_must_be_registered_with_the_authenticated_github_user
+    runner = command_runner(
+      [["git", "config", "--get", "user.signingkey"], ["ssh-ed25519 local-key comment\n", true]],
+      [["gh", "api", "user", "--jq", ".login"], ["octocat\n", true]],
+      [
+        ["gh", "api", "users/octocat/ssh_signing_keys", "--paginate", "--jq", ".[].key"],
+        ["ssh-ed25519 another-key\nssh-ed25519 local-key\n", true]
+      ]
+    )
+
+    assert_equal "ssh-ed25519 local-key", LittleGhostRelease.verify_release_signing_key!(command_runner: runner)
+  end
+
+  def test_release_signing_key_accepts_a_public_key_file
+    Dir.mktmpdir("little-ghost-signing-key") do |directory|
+      path = File.join(directory, "release.pub")
+      File.write(path, "ssh-ed25519 file-key comment\n")
+      runner = command_runner(
+        [["git", "config", "--get", "user.signingkey"], ["#{path}\n", true]],
+        [["gh", "api", "user", "--jq", ".login"], ["octocat\n", true]],
+        [
+          ["gh", "api", "users/octocat/ssh_signing_keys", "--paginate", "--jq", ".[].key"],
+          ["ssh-ed25519 file-key\n", true]
+        ]
+      )
+
+      assert_equal "ssh-ed25519 file-key", LittleGhostRelease.verify_release_signing_key!(command_runner: runner)
+    end
+  end
+
+  def test_release_signing_key_accepts_git_literal_key_syntax
+    runner = command_runner(
+      [["git", "config", "--get", "user.signingkey"], ["key::ssh-ed25519 literal-key comment\n", true]],
+      [["gh", "api", "user", "--jq", ".login"], ["octocat\n", true]],
+      [
+        ["gh", "api", "users/octocat/ssh_signing_keys", "--paginate", "--jq", ".[].key"],
+        ["ssh-ed25519 literal-key\n", true]
+      ]
+    )
+
+    assert_equal "ssh-ed25519 literal-key", LittleGhostRelease.verify_release_signing_key!(command_runner: runner)
+  end
+
+  def test_release_signing_key_rejects_an_oversized_public_key_file
+    Dir.mktmpdir("little-ghost-signing-key") do |directory|
+      path = File.join(directory, "release.pub")
+      File.write(path, "ssh-ed25519 #{"a" * (16 * 1024)}")
+      runner = command_runner(
+        [["git", "config", "--get", "user.signingkey"], ["#{path}\n", true]]
+      )
+
+      error = assert_raises(LittleGhostRelease::Error) do
+        LittleGhostRelease.verify_release_signing_key!(command_runner: runner)
+      end
+      assert_equal "Configure user.signingkey as an SSH public key registered with GitHub for signing", error.message
+    end
+  end
+
+  def test_release_signing_key_rejects_missing_or_unregistered_keys
+    missing_key = command_runner(
+      [["git", "config", "--get", "user.signingkey"], ["", false]]
+    )
+    error = assert_raises(LittleGhostRelease::Error) do
+      LittleGhostRelease.verify_release_signing_key!(command_runner: missing_key)
+    end
+    assert_equal "Configure user.signingkey as an SSH public key registered with GitHub for signing", error.message
+
+    unregistered_key = command_runner(
+      [["git", "config", "--get", "user.signingkey"], ["ssh-ed25519 local-key\n", true]],
+      [["gh", "api", "user", "--jq", ".login"], ["octocat\n", true]],
+      [
+        ["gh", "api", "users/octocat/ssh_signing_keys", "--paginate", "--jq", ".[].key"],
+        ["ssh-ed25519 another-key\n", true]
+      ]
+    )
+    error = assert_raises(LittleGhostRelease::Error) do
+      LittleGhostRelease.verify_release_signing_key!(command_runner: unregistered_key)
+    end
+    assert_equal "user.signingkey is not registered as a GitHub SSH signing key for octocat", error.message
+  end
+
+  def test_create_signed_tag_forces_ssh_signing
+    command = nil
+    runner = lambda do |*arguments|
+      command = arguments
+      true
+    end
+
+    assert_equal "v1.2.3", LittleGhostRelease.create_signed_tag!("v1.2.3", "1.2.3", command_runner: runner)
+    assert_equal ["git", "-c", "gpg.format=ssh", "tag", "-s", "v1.2.3", "-m", "Version 1.2.3"], command
+  end
+
+  def test_create_signed_tag_fails_when_git_cannot_sign
+    error = assert_raises(LittleGhostRelease::Error) do
+      LittleGhostRelease.create_signed_tag!("v1.2.3", "1.2.3", command_runner: ->(*) { false })
+    end
+
+    assert_equal "Could not create signed release tag v1.2.3", error.message
+  end
+
   def test_current_gem_package_has_the_release_contract
     Dir.mktmpdir("little-ghost-release-test") do |directory|
       path = File.join(directory, "little_ghost-#{LittleGhost::VERSION}.gem")
@@ -78,6 +178,18 @@ class LittleGhostReleaseTest < Minitest::Test
   end
 
   private
+
+  def command_runner(*expectations)
+    lambda do |*arguments|
+      expected_arguments, (output, success) = expectations.shift
+      assert_equal expected_arguments, arguments
+      status = Object.new
+      status.define_singleton_method(:success?) { success }
+      [output, status]
+    ensure
+      assert_empty expectations if expectations.empty?
+    end
+  end
 
   class PackageWithUndeclaredFile < Gem::Package
     def add_files(tar)

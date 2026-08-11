@@ -3,6 +3,7 @@
 require "digest"
 require "json"
 require "net/http"
+require "open3"
 require "rubygems/package"
 require "tmpdir"
 require "uri"
@@ -42,6 +43,36 @@ module LittleGhostRelease
     raise Error, "Release tag must be #{expected}, got #{tag.inspect}" unless tag == expected
 
     expected
+  end
+
+  def verify_release_signing_key!(command_runner: Open3.method(:capture2e))
+    signing_key, signing_key_status = command_runner.call("git", "config", "--get", "user.signingkey")
+    normalized_key = resolve_ssh_public_key(signing_key)
+    unless signing_key_status.success? && normalized_key
+      raise Error, "Configure user.signingkey as an SSH public key registered with GitHub for signing"
+    end
+
+    login, login_status = command_runner.call("gh", "api", "user", "--jq", ".login")
+    raise Error, "Could not determine the authenticated GitHub user" unless login_status.success? && !login.strip.empty?
+
+    registered_keys, keys_status = command_runner.call(
+      "gh", "api", "users/#{login.strip}/ssh_signing_keys", "--paginate", "--jq", ".[].key"
+    )
+    unless keys_status.success?
+      raise Error, "Could not inspect GitHub signing keys for #{login.strip}"
+    end
+    unless registered_keys.lines.filter_map { |key| normalize_ssh_public_key(key) }.include?(normalized_key)
+      raise Error, "user.signingkey is not registered as a GitHub SSH signing key for #{login.strip}"
+    end
+
+    normalized_key
+  end
+
+  def create_signed_tag!(tag, version, command_runner: Kernel.method(:system))
+    created = command_runner.call("git", "-c", "gpg.format=ssh", "tag", "-s", tag, "-m", "Version #{version}")
+    raise Error, "Could not create signed release tag #{tag}" unless created
+
+    tag
   end
 
   def manifest(path)
@@ -206,6 +237,34 @@ module LittleGhostRelease
     entries.sort_by { |entry| [entry.fetch(:path), entry.fetch(:type)] }
   end
   private_class_method :archive_entries
+
+  def normalize_ssh_public_key(key)
+    type, body = key.to_s.split
+    return unless type&.match?(/\A(?:ecdsa-|sk-|ssh-)/) && body
+
+    "#{type} #{body}"
+  end
+  private_class_method :normalize_ssh_public_key
+
+  def resolve_ssh_public_key(configured_key)
+    configured_key = configured_key.to_s.strip
+    return normalize_ssh_public_key(configured_key.delete_prefix("key::")) if configured_key.start_with?("key::")
+
+    inline_key = normalize_ssh_public_key(configured_key)
+    return inline_key if inline_key
+
+    File.open(File.expand_path(configured_key), "rb") do |file|
+      next unless file.stat.file?
+
+      contents = file.read((16 * 1024) + 1)
+      next if contents.bytesize > 16 * 1024
+
+      normalize_ssh_public_key(contents)
+    end
+  rescue SystemCallError
+    nil
+  end
+  private_class_method :resolve_ssh_public_key
 
   def normalized_specification(specification)
     normalized = specification.dup
