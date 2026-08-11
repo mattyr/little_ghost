@@ -12,6 +12,20 @@ require "webrick"
 
 require_relative "lib/little_ghost/version"
 
+task "release:trusted_publishing_guard" do
+  expected_ref = "refs/tags/v#{LittleGhost::VERSION}"
+  trusted_workflow = ENV["GITHUB_ACTIONS"] == "true" &&
+    ENV["GITHUB_REF"] == expected_ref &&
+    ENV["LITTLEGHOST_TRUSTED_PUBLISHING"] == "true"
+  abort "Direct gem publishing is disabled. Follow RELEASING.md and push a version tag." unless trusted_workflow
+end
+
+%w[release release:source_control_push release:rubygem_push].each do |task_name|
+  Rake::Task[task_name].prerequisites.unshift("release:trusted_publishing_guard")
+end
+Rake::Task["release"].clear_comments
+Rake::Task["release"].add_description("Publish through the trusted tag-triggered GitHub Actions workflow")
+
 RDOC_TITLE = "LittleGhost Docs"
 RDOC_GENERATOR = "littleghost"
 RDOC_MAIN = "README.md"

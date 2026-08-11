@@ -14,6 +14,7 @@ concurrency:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -42,6 +43,7 @@ jobs:
   publish:
     needs: validate
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
       id-token: write
@@ -60,12 +62,10 @@ jobs:
         run: |
           bundle exec rake package:check
           ruby <<'RUBY'
-          require "json"
-          require "net/http"
           require_relative "lib/little_ghost/version"
+          require_relative "rakelib/little_ghost_release"
 
-          versions = JSON.parse(Net::HTTP.get(URI("https://rubygems.org/api/v1/versions/little_ghost.json")))
-          published = versions.any? { |entry| entry.fetch("number") == LittleGhost::VERSION }
+          published = LittleGhostRelease.published_version?(LittleGhost::VERSION)
           prerelease = Gem::Version.new(LittleGhost::VERSION).prerelease?
 
           File.open(ENV.fetch("GITHUB_OUTPUT"), "a") do |output|
@@ -77,6 +77,8 @@ jobs:
       - name: Publish gem
         if: steps.publication.outputs.published != 'true'
         uses: rubygems/release-gem@7f9650160c1a4e7989fdc9855807bdbd421d8b6b # v1
+        env:
+          LITTLEGHOST_TRUSTED_PUBLISHING: "true"
         with:
           attestations: true
       - name: Download and verify published gem
@@ -85,22 +87,10 @@ jobs:
         run: |
           published_gem="$RUNNER_TEMP/little_ghost-${VERSION}.gem"
           curl --fail --location --retry 12 --retry-all-errors --retry-delay 5 \
+            --connect-timeout 10 --max-time 30 \
             --output "$published_gem" \
             "https://rubygems.org/downloads/little_ghost-${VERSION}.gem"
           bundle exec rake "release:verify_published[$published_gem]"
-          ruby <<'RUBY'
-          require "digest"
-          require "json"
-          require "net/http"
-
-          version = ENV.fetch("VERSION")
-          path = File.join(ENV.fetch("RUNNER_TEMP"), "little_ghost-#{version}.gem")
-          versions = JSON.parse(Net::HTTP.get(URI("https://rubygems.org/api/v1/versions/little_ghost.json")))
-          expected = versions.find { |entry| entry.fetch("number") == version }&.fetch("sha")
-          actual = Digest::SHA256.file(path).hexdigest
-          abort "RubyGems SHA does not match the downloaded gem" unless expected == actual
-          File.write("#{path}.sha256", "#{actual}  #{File.basename(path)}\n")
-          RUBY
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -127,6 +117,7 @@ jobs:
   deploy-pages:
     needs: publish
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       pages: write
       id-token: write
@@ -139,3 +130,51 @@ jobs:
       - name: Deploy released documentation
         id: deployment
         uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
+
+  verify-release:
+    needs: [publish, deploy-pages]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Verify public release surfaces
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+
+          wait_for_content() {
+            label="$1"
+            url="$2"
+            marker="$3"
+
+            for attempt in $(seq 1 12); do
+              if body="$(curl --fail --silent --show-error --location --connect-timeout 10 --max-time 30 "$url")" && grep --fixed-strings --quiet "$marker" <<<"$body"; then
+                echo "Verified $label."
+                return 0
+              fi
+              sleep 5
+            done
+
+            echo "::error::$label did not expose version $version after 12 attempts"
+            return 1
+          }
+
+          wait_for_content "RubyGems" \
+            "https://rubygems.org/api/v1/versions/little_ghost.json" \
+            "\"number\":\"${version}\""
+          wait_for_content "website" \
+            "https://mattyr.github.io/little_ghost/" \
+            ">v${version}<"
+          wait_for_content "API documentation" \
+            "https://mattyr.github.io/little_ghost/docs/" \
+            ">v${version}<"
+
+          assets="$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json assets,isDraft --jq '[.isDraft, ([.assets[].name] | sort)]')"
+          expected="[false,[\"little_ghost-${version}.gem\",\"little_ghost-${version}.gem.sha256\"]]"
+          if [[ "$assets" != "$expected" ]]; then
+            echo "::error::GitHub Release assets do not match the verified gem and checksum: $assets"
+            exit 1
+          fi
+          echo "Verified GitHub Release assets."
