@@ -1,8 +1,11 @@
 # frozen_string_literal: true
 
 require "digest"
+require "json"
+require "net/http"
 require "rubygems/package"
 require "tmpdir"
+require "uri"
 require "yaml"
 require "zlib"
 
@@ -22,6 +25,11 @@ module LittleGhostRelease
     "allowed_push_host" => "https://rubygems.org",
     "rubygems_mfa_required" => "true"
   }.freeze
+  RUBYGEMS_API = "https://rubygems.org/api/v1/versions/little_ghost.json"
+  RUBYGEMS_OPEN_TIMEOUT = 10
+  RUBYGEMS_READ_TIMEOUT = 20
+  RUBYGEMS_CHECKSUM_ATTEMPTS = 12
+  RUBYGEMS_CHECKSUM_DELAY = 5
 
   module_function
 
@@ -104,9 +112,73 @@ module LittleGhostRelease
     published
   end
 
+  def published_version?(version, attempts: 5, delay: 2)
+    last_error = nil
+
+    attempts.times do |attempt|
+      begin
+        return true if rubygems_versions.any? { |entry| entry.fetch("number") == version.to_s }
+
+        last_error = nil
+      rescue => error
+        last_error = error
+      end
+
+      sleep(delay) if attempt + 1 < attempts
+    end
+
+    raise Error, "Could not determine whether little_ghost #{version} is published: #{last_error.message}" if last_error
+
+    false
+  end
+
+  def verify_rubygems_checksum!(version, path, attempts: RUBYGEMS_CHECKSUM_ATTEMPTS, delay: RUBYGEMS_CHECKSUM_DELAY)
+    actual = Digest::SHA256.file(path).hexdigest
+    last_expected = nil
+    last_error = nil
+
+    attempts.times do |attempt|
+      begin
+        entry = rubygems_versions.find { |candidate| candidate.fetch("number") == version.to_s }
+        last_expected = entry&.fetch("sha", nil)
+        return actual if last_expected == actual
+
+        last_error = entry ? "RubyGems reported checksum #{last_expected.inspect}" : "RubyGems did not list version #{version}"
+      rescue => error
+        last_error = "RubyGems API request failed with #{error.class}: #{error.message}"
+      end
+
+      sleep(delay) if attempt + 1 < attempts
+    end
+
+    raise Error,
+      "RubyGems did not report the served gem checksum #{actual} after #{attempts} attempts: #{last_error}"
+  end
+
   def extract(path, destination)
     Gem::Package.new(path).extract_files(destination)
   end
+
+  def rubygems_versions
+    uri = URI(RUBYGEMS_API)
+    request = Net::HTTP::Get.new(uri)
+    request["accept"] = "application/json"
+    request["cache-control"] = "no-cache"
+
+    response = Net::HTTP.start(
+      uri.hostname,
+      uri.port,
+      use_ssl: true,
+      open_timeout: RUBYGEMS_OPEN_TIMEOUT,
+      read_timeout: RUBYGEMS_READ_TIMEOUT
+    ) { |http| http.request(request) }
+    raise Error, "RubyGems API returned HTTP #{response.code}" unless response.is_a?(Net::HTTPSuccess)
+
+    JSON.parse(response.body)
+  rescue JSON::ParserError => error
+    raise Error, "RubyGems API returned invalid JSON: #{error.message}"
+  end
+  private_class_method :rubygems_versions
 
   def archive_entries(path)
     entries = []
@@ -138,6 +210,7 @@ module LittleGhostRelease
   def normalized_specification(specification)
     normalized = specification.dup
     normalized.date = Time.utc(1980, 1, 1)
+    normalized.rubygems_version = nil
     normalized.to_yaml
   end
   private_class_method :normalized_specification
