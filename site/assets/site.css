@@ -1125,12 +1125,20 @@ h2 {
 }
 
 .ghost-background {
-  z-index: 0;
+  --ghost-depth-opacity: 0.24;
+  z-index: 1;
   width: 25px;
   color: #c9bbf5;
   filter: drop-shadow(0 5px 10px rgba(126, 101, 198, 0.18));
-  opacity: 0.24;
   animation: coordinationDepthFloat 9s ease-in-out infinite;
+}
+
+.coordination-ghost-matte {
+  fill: #171827;
+}
+
+.coordination-ghost-visible {
+  opacity: var(--ghost-depth-opacity);
 }
 
 .ghost-six {
@@ -1172,18 +1180,18 @@ h2 {
 }
 
 .ghost-eleven {
+  --ghost-depth-opacity: 0.16;
   top: 4%;
   left: 7%;
   width: 19px;
-  opacity: 0.16;
   animation-delay: -2.5s;
 }
 
 .ghost-twelve {
+  --ghost-depth-opacity: 0.2;
   top: 54%;
   left: 96%;
   width: 21px;
-  opacity: 0.2;
   animation-delay: -8s;
 }
 
@@ -1755,8 +1763,8 @@ pre {
 }
 
 @keyframes coordinationDepthFloat {
-  0%, 100% { opacity: 0.16; transform: translate(-50%, calc(-50% + 2px)) scale(0.96); }
-  50% { opacity: 0.32; transform: translate(-50%, calc(-50% - 4px)) scale(1.03); }
+  0%, 100% { transform: translate(-50%, calc(-50% + 2px)) scale(0.96); }
+  50% { transform: translate(-50%, calc(-50% - 4px)) scale(1.03); }
 }
 
 @keyframes coordinationWebFade {
