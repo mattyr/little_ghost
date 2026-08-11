@@ -56,6 +56,22 @@ a {
   text-decoration: none;
 }
 
+.version-badge {
+  margin-left: 12px;
+  padding: 5px 9px;
+  color: var(--violet-soft);
+  border: 1px solid var(--line-bright);
+  border-radius: 999px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.72rem;
+  letter-spacing: 0.02em;
+}
+
+.version-badge:hover {
+  color: var(--aqua);
+  border-color: rgba(118, 247, 210, 0.5);
+}
+
 button,
 a {
   -webkit-tap-highlight-color: transparent;
@@ -172,6 +188,11 @@ svg {
   font-size: 1rem;
   font-weight: 780;
   letter-spacing: -0.035em;
+}
+
+.brand-version {
+  display: flex;
+  align-items: center;
 }
 
 .brand-mark {

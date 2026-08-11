@@ -18,7 +18,9 @@ Gem::Specification.new do |spec|
     "bug_tracker_uri" => "#{spec.homepage}/issues",
     "changelog_uri" => "#{spec.homepage}/releases",
     "documentation_uri" => "https://mattyr.github.io/little_ghost/docs/",
-    "source_code_uri" => spec.homepage
+    "source_code_uri" => spec.homepage,
+    "allowed_push_host" => "https://rubygems.org",
+    "rubygems_mfa_required" => "true"
   }
 
   spec.files = Dir.chdir(__dir__) do
