@@ -243,6 +243,14 @@ header.top-navbar .navbar-search {
   text-decoration: none;
 }
 
+#sidebar-navigation code {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: inherit;
+}
+
 main {
   padding-top: 3.6rem;
   padding-bottom: 5rem;
