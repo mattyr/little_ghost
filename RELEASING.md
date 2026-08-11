@@ -6,6 +6,10 @@ LittleGhost releases use a version tag, RubyGems Trusted Publishing, generated G
 
 Create a GitHub environment named `release` and restrict it to tags matching `v*`.
 
+Create an active tag ruleset for `v*` that restricts updates and deletions with
+no bypass actors. Leave tag creation allowed. A release tag is immutable once
+it is pushed.
+
 The GitHub-created `github-pages` environment must also allow tags matching `v*`. This is a one-time repository setting; release runs do not modify environment policies.
 
 Register a trusted publisher for the existing `little_ghost` gem on RubyGems.org with these values:
@@ -18,6 +22,16 @@ Register a trusted publisher for the existing `little_ghost` gem on RubyGems.org
 Leave the workflow repository fields empty. The workflow lives in the LittleGhost repository.
 
 All gem owners must have multi-factor authentication enabled. Published gem metadata requires MFA and restricts the push host to `https://rubygems.org`.
+
+Add the release maintainer's SSH public key to GitHub as a **signing key**, then
+configure `user.signingkey` with the path to the same public key:
+
+```sh
+git config user.signingkey ~/.ssh/id_ed25519.pub
+```
+
+The release doctor checks that the configured key appears among the
+authenticated GitHub user's public SSH signing keys before creating a tag.
 
 ## Publish a version
 
@@ -38,7 +52,7 @@ All gem owners must have multi-factor authentication enabled. Published gem meta
    ```
 
 3. Merge the version pull request and update the local `main` branch.
-4. Fetch the remote state and run the release doctor. It fails when the worktree is dirty, `HEAD` differs from `origin/main`, the tag exists, or RubyGems already contains the version:
+4. Fetch the remote state and run the release doctor. It fails when the worktree is dirty, `HEAD` differs from `origin/main`, the tag exists, RubyGems already contains the version, or the configured SSH signing key is not registered with GitHub:
 
    ```sh
    git fetch origin main --tags
@@ -46,8 +60,7 @@ All gem owners must have multi-factor authentication enabled. Published gem meta
    ```
 
 5. Create a signed tag whose name exactly matches `v#{LittleGhost::VERSION}`.
-   The task uses SSH signing and verifies the result against
-   `.github/release_allowed_signers` before keeping the local tag:
+   The task forces SSH signing and fails when Git cannot create the signature:
 
    ```sh
    version="$(ruby -Ilib -rlittle_ghost/version -e 'print LittleGhost::VERSION')"
@@ -55,7 +68,7 @@ All gem owners must have multi-factor authentication enabled. Published gem meta
    git push origin "v${version}"
    ```
 
-The tag starts the release workflow. It verifies the tag's signature, version, and membership in `main`, reruns the complete gate, publishes through RubyGems OIDC, verifies the served package, creates the GitHub Release, deploys the website and API documentation from that tag, and checks every public release surface. RubyGems checksum verification tolerates bounded API propagation delays while retaining complete package-equivalence checks.
+The tag starts the release workflow. Repository permissions control who can push it, and the workflow requires GitHub to report a valid tag signature before verifying the version and membership in `main`. Immediately before trusted publishing, it confirms that the remote tag is still the exact verified tag object and commit. It then reruns the complete gate, publishes through RubyGems OIDC, verifies the served package, creates the GitHub Release, deploys the website and API documentation from that tag, and checks every public release surface. RubyGems checksum verification tolerates bounded API propagation delays while retaining complete package-equivalence checks.
 
 GitHub generates the release notes from merged pull requests. The `enhancement`, `bug`, and `documentation` labels group the notes; every other pull request appears under **Other changes**. Prerelease gem versions produce prerelease GitHub Releases and a prerelease version badge on the documentation site.
 

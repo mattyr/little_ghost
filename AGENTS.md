@@ -183,8 +183,8 @@ workflow unless a task explicitly adds it.
   when it intentionally belongs under **Other changes**. The categories are
   configured in `.github/release.yml`.
 - Create release tags only with `bundle exec rake release:tag`. The task creates
-  and verifies an SSH-signed tag; the release workflow rejects unsigned tags or
-  signatures from keys outside `.github/release_allowed_signers`.
+  an SSH-signed tag; the release workflow rejects any tag whose signature
+  GitHub does not verify.
 
 Use a concise pull-request description:
 
