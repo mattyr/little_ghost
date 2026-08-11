@@ -625,6 +625,16 @@ h2 em {
   left: 28%;
 }
 
+.node-subagent {
+  top: 80%;
+  left: 72%;
+}
+
+.node-context {
+  top: 18%;
+  left: 68%;
+}
+
 .hero-status {
   position: absolute;
   right: 3%;
