@@ -1,5 +1,11 @@
 # Build AI features with LittleGhost
 
+<hr>
+
+**Growing in public.** LittleGhost is under active development, and interfaces may evolve between releases. Pin the gem version and review the release notes when upgrading.
+
+<hr>
+
 Bring agents and agentic workflows into an existing Ruby system, or use them as the core of a dedicated AI service. LittleGhost brings model providers, tools, streaming, sessions, delegation, deterministic composition, and observability together behind one coherent set of Ruby APIs.
 
 Here is the shape of a small customer support agent. `CustomerSupportModels` keeps provider details out of agent behavior, `HelpCenterLookupTool` exposes one narrow, validated help center lookup, and `CustomerSupportAgent` brings them together:
@@ -104,10 +110,6 @@ Prompts can stay inline while an agent is small, then move into conventional ERB
 - [Getting Started](docs/guides/Getting%20Started.md) builds the customer support example from an empty application and runs it.
 - [Core Concepts](docs/guides/Core%20Concepts.md) explains models, agents, tools, delegation, workflows, sessions, and streaming through the same example.
 - [API reference](rdoc-ref:LittleGhost) covers exact signatures, options, and lifecycle details.
-
-## Status
-
-LittleGhost was extracted from Algernon, an experimental self-improving agent framework. It is functional but still early, so APIs may change before 1.0.
 
 LittleGhost is licensed under the MIT License.
 

@@ -1,0 +1,141 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: little-ghost-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1
+        with:
+          ruby-version: 4.0.4
+          bundler-cache: true
+      - name: Verify release tag
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          git fetch origin main:refs/remotes/origin/main
+          bundle exec rake release:verify
+      - run: bundle exec rake test
+      - run: bundle exec standardrb
+      - run: bundle exec rake site:check
+      - run: bundle exec rake package:check
+      - name: Upload GitHub Pages artifact
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: _site
+          include-hidden-files: true
+
+  publish:
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    environment: release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1
+        with:
+          ruby-version: 4.0.4
+          bundler-cache: true
+      - name: Check publication state
+        id: publication
+        run: |
+          bundle exec rake package:check
+          ruby <<'RUBY'
+          require "json"
+          require "net/http"
+          require_relative "lib/little_ghost/version"
+
+          versions = JSON.parse(Net::HTTP.get(URI("https://rubygems.org/api/v1/versions/little_ghost.json")))
+          published = versions.any? { |entry| entry.fetch("number") == LittleGhost::VERSION }
+          prerelease = Gem::Version.new(LittleGhost::VERSION).prerelease?
+
+          File.open(ENV.fetch("GITHUB_OUTPUT"), "a") do |output|
+            output.puts "version=#{LittleGhost::VERSION}"
+            output.puts "published=#{published}"
+            output.puts "prerelease=#{prerelease}"
+          end
+          RUBY
+      - name: Publish gem
+        if: steps.publication.outputs.published != 'true'
+        uses: rubygems/release-gem@7f9650160c1a4e7989fdc9855807bdbd421d8b6b # v1
+        with:
+          attestations: true
+      - name: Download and verify published gem
+        env:
+          VERSION: ${{ steps.publication.outputs.version }}
+        run: |
+          published_gem="$RUNNER_TEMP/little_ghost-${VERSION}.gem"
+          curl --fail --location --retry 12 --retry-all-errors --retry-delay 5 \
+            --output "$published_gem" \
+            "https://rubygems.org/downloads/little_ghost-${VERSION}.gem"
+          bundle exec rake "release:verify_published[$published_gem]"
+          ruby <<'RUBY'
+          require "digest"
+          require "json"
+          require "net/http"
+
+          version = ENV.fetch("VERSION")
+          path = File.join(ENV.fetch("RUNNER_TEMP"), "little_ghost-#{version}.gem")
+          versions = JSON.parse(Net::HTTP.get(URI("https://rubygems.org/api/v1/versions/little_ghost.json")))
+          expected = versions.find { |entry| entry.fetch("number") == version }&.fetch("sha")
+          actual = Digest::SHA256.file(path).hexdigest
+          abort "RubyGems SHA does not match the downloaded gem" unless expected == actual
+          File.write("#{path}.sha256", "#{actual}  #{File.basename(path)}\n")
+          RUBY
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ steps.publication.outputs.prerelease }}
+          VERSION: ${{ steps.publication.outputs.version }}
+        run: |
+          gem_path="$RUNNER_TEMP/little_ghost-${VERSION}.gem"
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "$gem_path" "$gem_path.sha256" --clobber
+            exit 0
+          fi
+
+          release_args=(--verify-tag --generate-notes --fail-on-no-commits)
+          previous_tag="$(git describe --tags --abbrev=0 "$GITHUB_SHA^" 2>/dev/null || true)"
+          if [[ -n "$previous_tag" ]]; then
+            release_args+=(--notes-start-tag "$previous_tag")
+          fi
+          if [[ "$PRERELEASE" == "true" ]]; then
+            release_args+=(--prerelease --latest=false)
+          fi
+
+          gh release create "$GITHUB_REF_NAME" "$gem_path" "$gem_path.sha256" "${release_args[@]}"
+
+  deploy-pages:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+      - name: Deploy released documentation
+        id: deployment
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0

@@ -35,22 +35,26 @@
     </div>
 
     <header class="site-header">
-      <a class="brand" href="./" aria-label="LittleGhost home">
-        <svg class="brand-mark" viewBox="0 0 56 56" aria-hidden="true">
-          <defs>
-            <linearGradient id="brand-body" x1="8" y1="4" x2="47" y2="53" gradientUnits="userSpaceOnUse">
-              <stop stop-color="#fffdf8"></stop>
-              <stop offset="1" stop-color="#c9b8ff"></stop>
-            </linearGradient>
-          </defs>
-          <path fill="url(#brand-body)" d="M28 5C16.4 5 9 14.1 9 26.1v20.5c0 3.2 3.2 4.8 5.3 2.4l4.9-4.8 4.1 4.4c2.2 2.4 7.2 2.4 9.4 0l4.1-4.4 4.9 4.8c2.1 2.4 5.3.8 5.3-2.4V26.1C47 14.1 39.6 5 28 5Z"></path>
-          <ellipse cx="21.5" cy="26" rx="3.2" ry="4.3" fill="#131522"></ellipse>
-          <ellipse cx="34.5" cy="26" rx="3.2" ry="4.3" fill="#131522"></ellipse>
-          <circle cx="22.5" cy="24.7" r=".9" fill="#fff"></circle>
-          <circle cx="35.5" cy="24.7" r=".9" fill="#fff"></circle>
-        </svg>
-        <span>LittleGhost</span>
-      </a>
+      <div class="brand-version">
+        <a class="brand" href="./" aria-label="LittleGhost home">
+          <svg class="brand-mark" viewBox="0 0 56 56" aria-hidden="true">
+            <defs>
+              <linearGradient id="brand-body" x1="8" y1="4" x2="47" y2="53" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#fffdf8"></stop>
+                <stop offset="1" stop-color="#c9b8ff"></stop>
+              </linearGradient>
+            </defs>
+            <path fill="url(#brand-body)" d="M28 5C16.4 5 9 14.1 9 26.1v20.5c0 3.2 3.2 4.8 5.3 2.4l4.9-4.8 4.1 4.4c2.2 2.4 7.2 2.4 9.4 0l4.1-4.4 4.9 4.8c2.1 2.4 5.3.8 5.3-2.4V26.1C47 14.1 39.6 5 28 5Z"></path>
+            <ellipse cx="21.5" cy="26" rx="3.2" ry="4.3" fill="#131522"></ellipse>
+            <ellipse cx="34.5" cy="26" rx="3.2" ry="4.3" fill="#131522"></ellipse>
+            <circle cx="22.5" cy="24.7" r=".9" fill="#fff"></circle>
+            <circle cx="35.5" cy="24.7" r=".9" fill="#fff"></circle>
+          </svg>
+          <span>LittleGhost</span>
+        </a>
+
+        <a class="version-badge" href="https://rubygems.org/gems/little_ghost/versions/<%= LittleGhost::VERSION %>" aria-label="LittleGhost version <%= LittleGhost::VERSION %>">v<%= LittleGhost::VERSION %></a>
+      </div>
 
       <nav class="site-nav" aria-label="Primary navigation">
         <a class="nav-home" href="./" aria-current="page">Home</a>

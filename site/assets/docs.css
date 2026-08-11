@@ -125,6 +125,11 @@ a:hover {
   text-decoration-color: currentcolor;
 }
 
+main hr {
+  margin-right: 0;
+  margin-left: 0;
+}
+
 header.top-navbar {
   grid-template-columns: auto minmax(18rem, 1fr) auto 2.5rem;
   gap: clamp(1rem, 2vw, 2rem);
@@ -140,6 +145,14 @@ body.has-toc header.top-navbar {
   grid-template-columns: auto minmax(18rem, 1fr) auto 2.5rem;
 }
 
+header.top-navbar .navbar-identity {
+  display: flex;
+  grid-column: 1;
+  grid-row: 1;
+  align-items: center;
+  gap: 0.75rem;
+}
+
 header.top-navbar .navbar-brand {
   display: inline-flex;
   grid-column: 1;
@@ -150,6 +163,21 @@ header.top-navbar .navbar-brand {
   font-size: 1rem;
   font-weight: 780;
   letter-spacing: -0.035em;
+}
+
+header.top-navbar .navbar-version {
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  color: var(--color-accent-primary);
+  border: 1px solid var(--color-border-default);
+  border-radius: 999px;
+  font-family: var(--font-code);
+  font-size: 0.72rem;
+  text-decoration: none;
+}
+
+header.top-navbar .navbar-version:hover {
+  border-color: var(--color-accent-primary);
 }
 
 header.top-navbar .navbar-brand::before {
@@ -577,6 +605,11 @@ footer.site-footer {
     grid-row: 1;
     grid-column: 1;
     margin-left: 2.3rem;
+  }
+
+  header.top-navbar .navbar-identity {
+    grid-row: 1;
+    grid-column: 1;
   }
 
   header.top-navbar .navbar-search-mobile {

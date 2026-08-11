@@ -1,12 +1,16 @@
 # frozen_string_literal: true
 
 require "cgi"
+require "erb"
 require "pathname"
+require "bundler/gem_tasks"
 require "rake/testtask"
 require "rdoc/rdoc"
 require "rdoc/task"
 require "uri"
 require "webrick"
+
+require_relative "lib/little_ghost/version"
 
 RDOC_TITLE = "LittleGhost Docs"
 RDOC_GENERATOR = "littleghost"
@@ -148,17 +152,29 @@ class LittleGhostSiteChecker
 
     errors << "Landing page is missing its primary heading" unless html.match?(/<h1\b[^>]*>.*?<\/h1>/m)
     errors << "Landing page is missing skip navigation" unless html.include?('href="#main"')
+    check_version(page, html)
     check_navigation(page, html, "Home")
   end
 
   def check_documentation_navigation
     site_root.join("docs").glob("**/*.html").each do |page|
       html = page.read
+      check_version(page, html)
       check_navigation(page, html, "Docs")
+      errors << "#{page.relative_path_from(site_root)} is missing Docs home navigation" unless html.include?(">Docs home</a>")
       if html.match?(/<summary>\s*docs\s*(?:<|$)/mi)
         errors << "#{page.relative_path_from(site_root)} nests guides under docs navigation"
       end
     end
+  end
+
+  def check_version(page, html)
+    relative_page = page.relative_path_from(site_root)
+    version = LittleGhost::VERSION
+    expected_link = "https://rubygems.org/gems/little_ghost/versions/#{version}"
+
+    errors << "#{relative_page} is missing version v#{version}" unless html.include?(">v#{version}<")
+    errors << "#{relative_page} has the wrong RubyGems version link" unless html.include?(%(href="#{expected_link}"))
   end
 
   def check_navigation(page, html, current_label)
@@ -301,7 +317,10 @@ namespace :site do
   task :build do
     rm_rf SITE_OUTPUT
     mkdir_p SITE_OUTPUT
-    cp_r FileList["#{SITE_SOURCE}/*"].exclude(SITE_TEMPLATE_ROOT).to_a, SITE_OUTPUT
+    static_files = FileList["#{SITE_SOURCE}/*"].exclude(SITE_TEMPLATE_ROOT, "#{SITE_SOURCE}/index.html")
+    cp_r static_files.to_a, SITE_OUTPUT
+    homepage = ERB.new(File.read("#{SITE_SOURCE}/index.html"), trim_mode: "-")
+    File.write("#{SITE_OUTPUT}/index.html", homepage.result)
     touch "#{SITE_OUTPUT}/.nojekyll"
 
     RDoc::RDoc.new.document([

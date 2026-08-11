@@ -1,7 +1,11 @@
 <header class="top-navbar">
-  <a href="<%= rel_prefix %>/../index.html" class="navbar-brand" aria-label="LittleGhost home">
-    LittleGhost
-  </a>
+  <div class="navbar-identity">
+    <a href="<%= rel_prefix %>/../index.html" class="navbar-brand" aria-label="LittleGhost home">
+      LittleGhost
+    </a>
+
+    <a class="navbar-version" href="https://rubygems.org/gems/little_ghost/versions/<%= LittleGhost::VERSION %>" aria-label="LittleGhost version <%= LittleGhost::VERSION %>">v<%= LittleGhost::VERSION %></a>
+  </div>
 
   <nav class="common-navigation" aria-label="Primary navigation">
     <a href="<%= rel_prefix %>/../index.html">Home</a>
