@@ -312,8 +312,8 @@ h1,
 h2 {
   margin: 0;
   font-weight: 680;
-  letter-spacing: -0.065em;
-  line-height: 0.98;
+  letter-spacing: -0.045em;
+  line-height: 1.07;
 }
 
 h1 {
@@ -325,7 +325,7 @@ h1 {
 h1 em,
 h2 em {
   padding: 0.04em 0.08em 0.1em 0.04em;
-  margin: -0.04em -0.08em -0.1em -0.04em;
+  margin: 0.02em -0.08em -0.1em -0.04em;
   color: transparent;
   background: linear-gradient(110deg, var(--paper) 8%, var(--violet-soft) 47%, var(--aqua) 106%);
   -webkit-background-clip: text;
@@ -334,7 +334,7 @@ h2 em {
   box-decoration-break: clone;
   font-family: Georgia, "Times New Roman", serif;
   font-weight: 400;
-  letter-spacing: -0.055em;
+  letter-spacing: -0.03em;
 }
 
 .hero-lede {
@@ -550,8 +550,24 @@ h2 em {
 }
 
 .orbit-labels.is-orbiting .orbit-node {
+  top: 0;
+  left: 0;
+}
+
+.orbit-anchor-track {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  transform-origin: center;
+  will-change: transform;
+}
+
+.orbit-anchor-track i {
+  position: absolute;
   top: 50%;
-  left: 50%;
+  right: -1px;
+  width: 2px;
+  height: 2px;
 }
 
 .orbit-node {
@@ -838,6 +854,7 @@ h2 {
 }
 
 .agent-core {
+  --agent-fill: linear-gradient(145deg, rgba(254, 251, 255, 0.95), rgba(184, 163, 255, 0.8));
   position: relative;
   display: flex;
   width: 118px;
@@ -847,7 +864,8 @@ h2 {
   gap: 17px;
   border: 1px solid rgba(225, 216, 255, 0.3);
   border-radius: 44% 44% 46% 46%;
-  background: linear-gradient(145deg, rgba(254, 251, 255, 0.95), rgba(184, 163, 255, 0.8));
+  background: var(--agent-fill);
+  background-size: 148px 148px;
   box-shadow:
     0 0 0 18px rgba(170, 140, 255, 0.035),
     0 0 70px rgba(144, 111, 238, 0.22);
@@ -860,7 +878,7 @@ h2 {
   bottom: -12px;
   width: 30px;
   height: 30px;
-  background: #b8acdf;
+  background: var(--agent-fill) -74px -106px / 148px 148px no-repeat;
   clip-path: polygon(0 0, 100% 0, 20% 100%);
   content: "";
 }
@@ -986,28 +1004,30 @@ h2 {
   height: 100%;
   overflow: visible;
   fill: none;
-  stroke: rgba(118, 247, 210, 0.3);
+  stroke: rgba(118, 247, 210, 0.62);
   stroke-dasharray: 4 8;
   stroke-linecap: round;
-  stroke-width: 1.2;
-  filter: drop-shadow(0 0 6px rgba(118, 247, 210, 0.22));
+  stroke-width: 1.45;
+  filter: drop-shadow(0 0 7px rgba(118, 247, 210, 0.34));
   animation: coordinationSignal 7s linear infinite;
 }
 
 .coordination-links-depth {
-  opacity: 0.18;
-  stroke: rgba(190, 174, 246, 0.28);
-  stroke-dasharray: 2 11;
-  stroke-width: 0.8;
+  opacity: 0.34;
+  stroke: rgba(190, 174, 246, 0.68);
+  stroke-dasharray: 3 9;
+  stroke-width: 0.9;
   animation: coordinationWebFade 9s ease-in-out infinite;
 }
 
 .depth-two {
+  stroke: rgba(118, 247, 210, 0.58);
   animation-delay: -3.2s;
   animation-duration: 11s;
 }
 
 .depth-three {
+  stroke: rgba(255, 130, 156, 0.5);
   animation-delay: -6.7s;
   animation-duration: 13s;
 }
@@ -1711,9 +1731,9 @@ pre {
 }
 
 @keyframes coordinationWebFade {
-  0%, 100% { opacity: 0.07; }
-  34% { opacity: 0.24; }
-  68% { opacity: 0.12; }
+  0%, 100% { opacity: 0.28; }
+  34% { opacity: 0.66; }
+  68% { opacity: 0.4; }
 }
 
 @keyframes ctaGhostFloat {
@@ -1876,7 +1896,7 @@ pre {
 
   h1 {
     font-size: clamp(3.35rem, 17vw, 5rem);
-    line-height: 0.96;
+    line-height: 1.06;
   }
 
   .hero-lede {
@@ -1934,7 +1954,7 @@ pre {
   h2,
   .code-intro h2 {
     font-size: clamp(2.75rem, 13vw, 4rem);
-    line-height: 0.98;
+    line-height: 1.07;
   }
 
   .capability-card {

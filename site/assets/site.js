@@ -140,6 +140,7 @@ ghostButton?.addEventListener("click", () => {
 });
 
 const orbitLabels = [...document.querySelectorAll(".orbit-node")];
+const orbitTracks = [...document.querySelectorAll(".orbit-anchor-track")];
 const orbitLayer = document.querySelector(".orbit-labels");
 let orbitFrame = 0;
 let orbitElapsed = 0;
@@ -156,16 +157,20 @@ const updateOrbitLabels = (timestamp) => {
   orbitFrame = 0;
   if (reduceMotion.matches || document.hidden) return;
 
-  const rotation = (-8 * Math.PI) / 180;
-  const elapsed = ((orbitElapsed + timestamp - orbitResumedAt) / 52_000) * Math.PI * 2;
+  const elapsed = ((orbitElapsed + timestamp - orbitResumedAt) / 110_000) * Math.PI * 2;
+  const angles = orbitTracks.map((track, index) => {
+    const angle = elapsed + (index * Math.PI * 2) / orbitTracks.length;
+    track.style.transform = `rotate(${angle}rad)`;
+    return angle;
+  });
   const bounds = orbitLayer.getBoundingClientRect();
+  const anchors = orbitTracks.map((track) => track.firstElementChild.getBoundingClientRect());
 
   orbitLabels.forEach((label, index) => {
-    const angle = elapsed + (index * Math.PI * 2) / orbitLabels.length;
-    const ellipseX = Math.cos(angle) * bounds.width * 0.46;
-    const ellipseY = Math.sin(angle) * bounds.height * 0.22;
-    const x = ellipseX * Math.cos(rotation) - ellipseY * Math.sin(rotation);
-    const y = ellipseX * Math.sin(rotation) + ellipseY * Math.cos(rotation);
+    const angle = angles[index];
+    const anchor = anchors[index];
+    const x = anchor.left + anchor.width / 2 - bounds.left;
+    const y = anchor.top + anchor.height / 2 - bounds.top;
     const depth = (Math.sin(angle) + 1) / 2;
     const scale = 0.76 + depth * 0.14;
 
@@ -177,7 +182,7 @@ const updateOrbitLabels = (timestamp) => {
 };
 
 const startOrbitLabels = () => {
-  if (!orbitLabels.length || orbitFrame || reduceMotion.matches || document.hidden) return;
+  if (!orbitLabels.length || orbitLabels.length !== orbitTracks.length || orbitFrame || reduceMotion.matches || document.hidden) return;
 
   orbitLayer?.classList.add("is-orbiting");
   orbitResumedAt = performance.now();
