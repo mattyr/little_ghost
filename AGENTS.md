@@ -175,6 +175,13 @@ workflow unless a task explicitly adds it.
 - Keep commits focused and describe the behavior or documentation changed.
 - Open pull requests as drafts unless the user explicitly requests otherwise.
 - Do not merge a pull request without explicit user instruction.
+- Write pull-request titles as concise, reader-facing release-note bullets.
+  GitHub uses merged pull-request titles to generate each release's
+  **What's Changed** section.
+- Before merge, apply the release-note label that best describes the change:
+  `enhancement`, `bug`, or `documentation`. Leave a pull request unlabeled only
+  when it intentionally belongs under **Other changes**. The categories are
+  configured in `.github/release.yml`.
 
 Use a concise pull-request description:
 
