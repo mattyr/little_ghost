@@ -221,6 +221,15 @@ svg {
   transform-origin: left;
 }
 
+.site-nav a[aria-current="page"] {
+  color: var(--paper);
+}
+
+.site-nav a[aria-current="page"]::after {
+  transform: scaleX(1);
+  transform-origin: left;
+}
+
 .site-nav .nav-github {
   display: inline-flex;
   align-items: center;
@@ -1764,7 +1773,7 @@ pre {
     --header-height: 72px;
   }
 
-  .site-nav a:first-child {
+  .site-nav .nav-home {
     display: none;
   }
 

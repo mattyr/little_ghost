@@ -2,8 +2,10 @@
 
 require "rake/testtask"
 require "rdoc/task"
+require_relative "script/little_ghost_rdoc_generator"
 
 RDOC_TITLE = "LittleGhost Docs"
+RDOC_GENERATOR = "littleghost"
 RDOC_MAIN = "README.md"
 RDOC_FILES = ["README.md", "docs/guides/*.md", "lib/**/*.rb"].freeze
 RDOC_OPTIONS = [
@@ -22,6 +24,7 @@ Rake::TestTask.new do |task|
 end
 
 RDoc::Task.new do |rdoc|
+  rdoc.generator = RDOC_GENERATOR
   rdoc.title = RDOC_TITLE
   rdoc.main = RDOC_MAIN
   rdoc.rdoc_dir = "doc/rdoc"
@@ -37,7 +40,11 @@ namespace :site do
     cp_r "#{SITE_SOURCE}/.", SITE_OUTPUT
     touch "#{SITE_OUTPUT}/.nojekyll"
 
-    sh Gem.ruby, "-S", "rdoc",
+    sh Gem.ruby,
+      "-I", File.expand_path("script", __dir__),
+      "-rlittle_ghost_rdoc_generator",
+      "-S", "rdoc",
+      "--format", RDOC_GENERATOR,
       "--op", "#{SITE_OUTPUT}/docs",
       "--title", RDOC_TITLE,
       "--main", RDOC_MAIN,
