@@ -9,7 +9,7 @@ module LittleGhost
     # snapshot packaged with LittleGhost. Refresh is always explicit.
     class Catalog
       # Path to the offline model metadata snapshot packaged with the gem.
-      SNAPSHOT_PATH = File.expand_path("../model_catalog.json", __dir__)
+      SNAPSHOT_PATH = File.expand_path("../data/model_catalog.json", __dir__)
 
       # Builds a layered catalog from bundled, refreshed, and application facts.
       def initialize(overrides: {}, sources: [], snapshot_path: SNAPSHOT_PATH, clock: -> { Time.now.utc })
