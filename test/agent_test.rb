@@ -74,6 +74,41 @@ class AgentTest < Minitest::Test
     end
   end
 
+  def test_model_dsl_preserves_roles_targets_and_inline_configuration
+    role_agent = Class.new(LittleGhost::Agent) { model :customer_support }
+    target_agent = Class.new(LittleGhost::Agent) { model "openai:gpt-5.6-luna" }
+    inline_agent = Class.new(LittleGhost::Agent) do
+      model(provider: "openai", model: "gpt-5.6-luna", reasoning_effort: "high")
+    end
+
+    assert_equal :customer_support, role_agent.model
+    assert_equal "openai:gpt-5.6-luna", target_agent.model
+    assert_equal({provider: "openai", model: "gpt-5.6-luna", reasoning_effort: "high"}, inline_agent.model)
+    assert_predicate inline_agent.model, :frozen?
+  end
+
+  def test_dynamic_model_dsl_can_return_any_model_selection
+    agent = Class.new(LittleGhost::Agent) do
+      model do |invocation|
+        invocation[:direct] ? {provider: "openai", model: "gpt-5.6-luna"} : :customer_support
+      end
+    end
+
+    role = agent.model_selection(LittleGhost::Invocation.new(message: "hello"))
+    direct = agent.model_selection(LittleGhost::Invocation.new(message: "hello", direct: true))
+
+    assert_equal :customer_support, role
+    assert_equal({provider: "openai", model: "gpt-5.6-luna"}, direct)
+  end
+
+  def test_model_dsl_rejects_unsupported_declarations
+    error = assert_raises(LittleGhost::ConfigurationError) do
+      Class.new(LittleGhost::Agent) { model 123 }
+    end
+
+    assert_equal "model must be a role, provider:model target, or configuration mapping", error.message
+  end
+
   def test_ask_and_stream_ask_wrap_a_raw_message
     agent = Class.new(LittleGhost::Agent)
     calls = []

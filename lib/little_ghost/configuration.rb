@@ -136,7 +136,8 @@ module LittleGhost
       providers(value)
     end
 
-    # Logical model profiles for the default resolver.
+    # Logical model profiles for the default resolver. Role names cannot contain
+    # a colon because that syntax identifies a canonical model target.
     def models(value = :__read__)
       return configuration_values[:models] if value == :__read__
       raise ArgumentError, "models must be a Hash" unless value.is_a?(Hash)

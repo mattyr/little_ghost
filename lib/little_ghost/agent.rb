@@ -134,23 +134,35 @@ module LittleGhost
       end
 
       # :call-seq:
-      #   model() -> String, Proc, nil
-      #   model(role) -> String
+      #   model() -> String, Symbol, Hash, Proc, nil
+      #   model(role_or_target) -> String, Symbol
+      #   model(provider:, model:, **settings) -> Hash
       #   model { |invocation| ... } -> Proc
       #
-      # The logical model role for this agent.
+      # Selects this agent's model by logical role, canonical
+      # <tt>provider:model-id</tt> target, or an inline mapping with +provider+,
+      # +model+, and trusted model settings. The provider names a configured
+      # connection, not necessarily its adapter.
       #
-      # Pass a block to choose a role from each Invocation at run time.
+      # Pass a block to choose any supported form from each Invocation at run
+      # time. Inline mappings use flat settings, for example:
+      #
+      #   model(provider: "openai", model: "gpt-5.6-luna", reasoning_effort: "high")
       def model(*values, &block)
         return model_value if values.empty? && !block
+        if block && !values.empty?
+          raise ArgumentError, "model accepts either one selection or a block"
+        end
+        if values.length > 1
+          raise ArgumentError, "model accepts one selection"
+        end
 
-        self.model_value = block || values.fetch(0).to_s
+        self.model_value = block || copy_model_selection(values.fetch(0))
       end
 
-      def model_role(invocation) # :nodoc:
+      def model_selection(invocation) # :nodoc:
         value = model_value
-        resolved = value.respond_to?(:call) ? value.call(invocation) : value
-        resolved&.to_s
+        value.is_a?(Proc) ? value.call(invocation) : value
       end
 
       # :call-seq:
@@ -362,6 +374,32 @@ module LittleGhost
       #   after_tool(callable = nil, prepend: false) { |payload| ... } -> self
 
       private
+
+      def copy_model_selection(value)
+        case value
+        when String
+          value.dup.freeze
+        when Symbol
+          value
+        when Hash
+          value.to_h { |key, child| [key, copy_model_selection_value(child)] }.freeze
+        else
+          raise ConfigurationError, "model must be a role, provider:model target, or configuration mapping"
+        end
+      end
+
+      def copy_model_selection_value(value)
+        case value
+        when Hash
+          value.to_h { |key, child| [key, copy_model_selection_value(child)] }.freeze
+        when Array
+          value.map { |child| copy_model_selection_value(child) }.freeze
+        when String
+          value.dup.freeze
+        else
+          value
+        end
+      end
 
       def validate_result_schema_keywords!(schema, path = "$")
         unsupported = schema.keys - RESULT_SCHEMA_KEYWORDS

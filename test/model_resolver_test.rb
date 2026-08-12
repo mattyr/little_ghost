@@ -75,6 +75,91 @@ class ModelResolverTest < Minitest::Test
     end
   end
 
+  def test_canonical_target_bypasses_profiles
+    providers = LittleGhost::Providers::Configuration.new(openai: {adapter: :test})
+    resolver = LittleGhost::ModelResolver.new(
+      providers:,
+      profiles: {main: {target: "openai:profile-model"}},
+      provider_adapters: {"test" => ->(**) { RecordingProvider.new }}
+    )
+
+    model = resolver.resolve(
+      "openai:gpt-5.6-luna",
+      profiles: {"openai:gpt-5.6-luna" => {target: "openai:overridden", settings: {temperature: 1.0}}}
+    )
+
+    assert_equal "openai:gpt-5.6-luna", model.target.to_s
+    assert_empty model.settings
+    assert_nil model.role
+  end
+
+  def test_inline_configuration_uses_flat_model_settings
+    providers = LittleGhost::Providers::Configuration.new(openai: {adapter: :test})
+    resolver = LittleGhost::ModelResolver.new(
+      providers:,
+      profiles: {},
+      provider_adapters: {"test" => ->(**) { RecordingProvider.new }}
+    )
+
+    model = resolver.resolve({"provider" => "openai", "model" => "gpt-5.6-luna", "reasoning_effort" => "high"})
+
+    assert_equal "openai:gpt-5.6-luna", model.target.to_s
+    assert_equal({reasoning_effort: "high"}, model.settings)
+    assert_nil model.role
+  end
+
+  def test_inline_configuration_snapshots_nested_settings
+    providers = LittleGhost::Providers::Configuration.new(openai: {adapter: :test})
+    resolver = LittleGhost::ModelResolver.new(
+      providers:,
+      profiles: {},
+      provider_adapters: {"test" => ->(**) { RecordingProvider.new }}
+    )
+    selection = {provider: "openai", model: "gpt-5.6-luna", reasoning: {effort: "low"}}
+
+    model = resolver.resolve(selection)
+    selection.fetch(:reasoning)[:effort] = "max"
+
+    assert_equal "low", model.settings.dig(:reasoning, :effort)
+    assert_predicate model.settings.fetch(:reasoning), :frozen?
+  end
+
+  def test_inline_configuration_requires_provider_and_model
+    providers = LittleGhost::Providers::Configuration.new(openai: {adapter: :test})
+    resolver = LittleGhost::ModelResolver.new(providers:, profiles: {})
+
+    provider_error = assert_raises(LittleGhost::ConfigurationError) { resolver.resolve({model: "gpt-5.6-luna"}) }
+    model_error = assert_raises(LittleGhost::ConfigurationError) { resolver.resolve({provider: "openai"}) }
+
+    assert_equal "Inline model configuration requires provider", provider_error.message
+    assert_equal "Inline model configuration requires model", model_error.message
+  end
+
+  def test_rejects_an_unsupported_model_selection
+    resolver = LittleGhost::ModelResolver.new(profiles: {})
+
+    error = assert_raises(LittleGhost::ConfigurationError) { resolver.resolve(123) }
+
+    assert_equal "Model selection must be a role, provider:model target, or configuration mapping", error.message
+  end
+
+  def test_model_roles_and_inheritance_references_cannot_contain_colons
+    providers = LittleGhost::Providers::Configuration.new(openai: {adapter: :test})
+
+    name_error = assert_raises(LittleGhost::ConfigurationError) do
+      LittleGhost::ModelResolver.new(providers:, profiles: {"openai:model" => {target: "openai:model"}})
+    end
+    parent_error = assert_raises(LittleGhost::ConfigurationError) do
+      LittleGhost::ModelResolver.new(
+        providers:,
+        profiles: {main: {target: "openai:model"}, child: {inherits: "openai:model"}}
+      )
+    end
+
+    assert_equal "Model role names cannot contain ':' (openai:model)", name_error.message
+    assert_equal "Model role names cannot contain ':' (openai:model)", parent_error.message
+  end
+
   def test_explicit_profile_request_options_cannot_replace_provider_connections
     with_configuration(
       providers: "providers:\n  test:\n    adapter: test\n    api_key: trusted-secret\n",

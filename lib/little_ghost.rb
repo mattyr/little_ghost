@@ -72,24 +72,14 @@ require_relative "little_ghost/runtime"
 # A customer support agent can answer directly, use an application tool, or ask a
 # specialist for research while the caller observes one run:
 #
-#   LittleGhost.configure do |config|
-#     config.providers = {
-#       openai: {adapter: :openai, api_key: ENV.fetch("OPENAI_API_KEY")}
-#     }
-#     config.models = {
-#       customer_support: {target: "openai:gpt-5.6-luna"}
-#     }
-#     config.default_model = :customer_support
-#   end
-#
 #   class ResearchAgent < LittleGhost::Agent
 #     description "Researches difficult support questions"
-#     model "customer_support.research"
+#     model "openai:gpt-5.6-luna"
 #   end
 #
 #   class CustomerSupportAgent < LittleGhost::Agent
 #     description "Handles support requests"
-#     model :customer_support
+#     model "openai:gpt-5.6-luna"
 #     tools AccountTool
 #     subagent ResearchAgent, kind: "research"
 #   end

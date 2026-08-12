@@ -64,6 +64,33 @@ class RuntimeTest < Minitest::Test
     end
   end
 
+  def test_runtime_forwards_agent_model_selections_without_coercion
+    resolver = Object.new
+    selections = []
+    resolver.define_singleton_method(:resolve) do |selection, **|
+      selections << selection
+      Object.new
+    end
+    runtime = LittleGhost::Runtime.allocate
+    runtime.instance_variable_set(:@model_resolver, resolver)
+    runtime.instance_variable_set(:@default_model, "default")
+    invocation = LittleGhost::Invocation.new(message: "hello")
+    run = Data.define(:invocation).new(invocation)
+    role_agent = Class.new(LittleGhost::Agent) { model :customer_support }
+    target_agent = Class.new(LittleGhost::Agent) { model "openai:gpt-5.6-luna" }
+    inline_agent = Class.new(LittleGhost::Agent) { model(provider: "openai", model: "gpt-5.6-luna") }
+
+    runtime.model_for(role_agent, run)
+    runtime.model_for(target_agent, run)
+    runtime.model_for(inline_agent, run)
+
+    assert_equal [
+      :customer_support,
+      "openai:gpt-5.6-luna",
+      {provider: "openai", model: "gpt-5.6-luna"}
+    ], selections
+  end
+
   def test_runtime_reports_failed_startup_and_flushes_telemetry
     Dir.mktmpdir do |root|
       write(root, "app/agents/conflict_agent.rb", "class ConflictAgent; end")

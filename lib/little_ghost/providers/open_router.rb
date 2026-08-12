@@ -6,8 +6,8 @@ require_relative "open_router/catalog_source"
 module LittleGhost
   module Providers
     # OpenRouter gives one LittleGhost provider access to models routed through
-    # OpenRouter. Agents keep their model roles while configuration selects an
-    # OpenRouter model for each role.
+    # OpenRouter. Agents may select an OpenRouter target directly or keep a
+    # logical role while shared configuration selects its physical model.
     #
     #   provider = LittleGhost::Providers::OpenRouter.new(
     #     api_key: ENV.fetch("OPENROUTER_API_KEY"),

@@ -19,7 +19,7 @@ $ bundle install
 $ export OPENAI_API_KEY="..."
 ```
 
-With `OPENAI_API_KEY` present, LittleGhost's default model role uses GPT-5.6 Luna through OpenAI. OpenRouter credentials work as well. Use application secret management outside a local shell, and do not commit provider credentials.
+With `OPENAI_API_KEY` present, LittleGhost can connect the `openai` provider name used below. OpenRouter credentials work as well. Use application secret management outside a local shell, and do not commit provider credentials.
 
 ## Give the agent a tool
 
@@ -61,6 +61,7 @@ Now describe the agent's behavior and make the lookup available to it:
 ```ruby
 class CustomerSupportAgent < LittleGhost::Agent
   description "Answers customer support questions."
+  model "openai:gpt-5.6-luna"
   system_prompt <<~PROMPT
     Answer clearly and do not invent company guidance.
     Use the help center lookup tool before stating company guidance.
@@ -70,7 +71,7 @@ class CustomerSupportAgent < LittleGhost::Agent
 end
 ```
 
-An agent class is a reusable behavior definition. It owns its prompt, tools, model role, limits, and other capabilities. This agent uses LittleGhost's `default` model role because it does not declare a different one.
+An agent class is a reusable behavior definition. It owns its prompt, tools, model selection, limits, and other capabilities. This agent names an OpenAI connection and model directly, so the first example does not need a separate model profile.
 
 ## Ask a question
 
@@ -117,9 +118,9 @@ The stream yields `LittleGhost::StreamEvent` objects. Text, tool activity, usage
 
 Both calls use the same agent definition and active LittleGhost configuration. Core Concepts explains reusable runtimes when an application needs more control over shared services.
 
-## Choose a provider or model explicitly
+## Add a model role when the application grows
 
-The defaults keep the first run short. Applications that want a named model role can configure one directly:
+Direct targets keep a small application easy to read. A larger application can give the same selection a stable role, then change the underlying provider, model, and defaults without editing each agent class:
 
 ```ruby
 LittleGhost.configure do |config|
@@ -134,9 +135,25 @@ LittleGhost.configure do |config|
   }
   config.default_model = :customer_support
 end
+
+class CustomerSupportAgent < LittleGhost::Agent
+  model :customer_support
+end
 ```
 
-Provider connections and model profiles may instead come from independent YAML files under `config/little_ghost`, or from paths selected in `LittleGhost.configure`. Inline declarations take precedence over explicit paths, which take precedence over conventional files; environment-based selection and the built-in default are the final fallback. `LittleGhost::Configuration` documents the complete shapes and precedence.
+An agent may also keep a small amount of model-specific configuration beside its behavior:
+
+```ruby
+class DeliberateSupportAgent < LittleGhost::Agent
+  model(
+    provider: "openai",
+    model: "gpt-5.6-luna",
+    reasoning_effort: "high"
+  )
+end
+```
+
+Here, `provider` names a configured connection and every other key after `model` is a trusted model setting. Provider connections and model profiles may instead come from independent YAML files under `config/little_ghost`, or from paths selected in `LittleGhost.configure`. Inline declarations take precedence over explicit paths, which take precedence over conventional files; environment-based selection and the built-in default are the final fallback. `LittleGhost::Agent` and `LittleGhost::Configuration` document the complete shapes and precedence.
 
 ## Fit LittleGhost into your application
 
@@ -144,4 +161,4 @@ LittleGhost does not require an application layout. Keep agents and tools beside
 
 Hosting remains the surrounding application's responsibility. A Rails controller, Rack endpoint, background job, CLI, or another Ruby entrypoint can call the same agent APIs shown above.
 
-Read [Core Concepts](core_concepts.md) next for model roles, reusable runtimes, subagents, workflows, sessions, and the boundaries between them. The API reference covers exact signatures for `LittleGhost::Agent`, `LittleGhost::Tool`, `LittleGhost::Configuration`, and `LittleGhost::Run`.
+Read [Core Concepts](core_concepts.md) next for model selection, reusable runtimes, subagents, workflows, sessions, and the boundaries between them. The API reference covers exact signatures for `LittleGhost::Agent`, `LittleGhost::Tool`, `LittleGhost::Configuration`, and `LittleGhost::Run`.

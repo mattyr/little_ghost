@@ -4,7 +4,7 @@ LittleGhost gives Ruby software two ways to compose AI behavior. Agents can choo
 
 ```text
 shared configuration
-└── ModelResolver ── resolves logical roles ──> provider clients
+└── ModelResolver ── resolves model selections ──> provider clients
 
 one request
 └── Run
@@ -17,9 +17,25 @@ one deterministic request
 └── Run ──> ResponseWorkflow ──> ResearchAgent ──> CustomerSupportAgent
 ```
 
-## Models are selected by role
+## Models can be selected directly or by role
 
-An agent names a logical role such as `customer_support`, not a vendor model. Inline configuration can map that stable application vocabulary to a canonical target:
+An agent can name a canonical target directly when the choice belongs beside its behavior:
+
+```ruby
+class CustomerSupportAgent < LittleGhost::Agent
+  model "openai:gpt-5.6-luna"
+end
+```
+
+It can also attach trusted model settings without defining a shared profile:
+
+```ruby
+class DeliberateSupportAgent < LittleGhost::Agent
+  model(provider: "openai", model: "gpt-5.6-luna", reasoning_effort: "high")
+end
+```
+
+In both forms, `provider` is the name of a configured connection. A role such as `customer_support` adds stable application vocabulary when several agents or deployments should share routing policy:
 
 ```ruby
 LittleGhost.configure do |config|
@@ -31,6 +47,14 @@ LittleGhost.configure do |config|
   }
 end
 ```
+
+```ruby
+class CustomerSupportAgent < LittleGhost::Agent
+  model :customer_support
+end
+```
+
+Strings and symbols without a colon are roles; strings containing a colon are canonical targets; mappings require `provider` and `model`, with remaining keys treated as model settings. Role names cannot contain a colon. Direct targets and mappings bypass role inheritance and overlays.
 
 Dotted roles inherit from the nearest registered parent. `ResearchAgent` can request `customer_support.research` and initially use the `customer_support` profile; registering `customer_support.research` later specializes it. A resolver caller may pass an explicit `profiles:` overlay without mutating the configured profiles or agent class. Because an overlay can select a different registered provider, model, and settings, it is trusted application configuration and must be constructed or allowlisted by the application rather than copied from unchecked request data. The base resolver does not inspect application-specific invocation fields.
 

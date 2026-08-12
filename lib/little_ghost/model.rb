@@ -15,8 +15,9 @@ module LittleGhost
     def capabilities = ModelCapabilities.permissive
   end
 
-  # Model is the configured connection between an agent role and a provider. It
-  # keeps provider choice and defaults out of the agent class that uses them.
+  # Model is the resolved connection between an agent selection and a provider.
+  # It keeps provider behavior behind one executable interface whether an agent
+  # selected a role, canonical target, or inline configuration.
   #
   # It merges profile settings into every ModelRequest, validates attachment
   # modalities declared in metadata, lets providers prepare capability-sensitive

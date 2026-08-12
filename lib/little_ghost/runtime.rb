@@ -192,8 +192,8 @@ module LittleGhost
     end
 
     def model_for(agent_class, run) # :nodoc:
-      role = agent_class.model_role(run.invocation) || @default_model
-      model_resolver.resolve(role, invocation: run.invocation, context: run)
+      selection = agent_class.model_selection(run.invocation) || @default_model
+      model_resolver.resolve(selection, invocation: run.invocation, context: run)
     end
 
     def open_session(run) # :nodoc:

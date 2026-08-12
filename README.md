@@ -8,20 +8,10 @@
 
 Bring agents and agentic workflows into an existing Ruby system, or use them as the core of a dedicated AI service. LittleGhost connects model providers, tools, streaming, sessions, delegation, deterministic workflows, and observability through Ruby APIs.
 
-This customer support agent uses a logical model role and a validated application tool:
+Set `OPENAI_API_KEY`, then paste this customer support agent into a Ruby console or file. It selects a model directly and exposes one validated application tool:
 
 ```ruby
 require "little_ghost"
-
-LittleGhost.configure do |config|
-  config.providers = {
-    openai: {adapter: :openai, api_key: ENV.fetch("OPENAI_API_KEY")}
-  }
-  config.models = {
-    customer_support: {target: "openai:gpt-5.6-luna"}
-  }
-  config.default_model = :customer_support
-end
 
 class HelpCenterLookupTool < LittleGhost::Tool
   description "Look up a help center entry by topic."
@@ -40,7 +30,7 @@ end
 
 class CustomerSupportAgent < LittleGhost::Agent
   description "Answers customer support questions."
-  model "customer_support"
+  model "openai:gpt-5.6-luna"
   system_prompt "Answer clearly. Check the help center before stating company guidance."
   tools HelpCenterLookupTool
 end
@@ -62,8 +52,8 @@ end
 ## How the pieces fit
 
 ```text
-provider connections + model profiles ──> ModelResolver ──> provider
-                                             │
+provider connections + model selections ──> ModelResolver ──> provider
+                                               │
 request ──> CustomerSupportAgent ──> HelpCenterLookupTool
                   │
                   └────────> ResearchAgent subagent
@@ -71,7 +61,7 @@ request ──> CustomerSupportAgent ──> HelpCenterLookupTool
 request ──> ResponseWorkflow ──> ResearchAgent ──> CustomerSupportAgent
 ```
 
-Configuration owns shared services such as model resolution, sessions, lookup paths, workspaces, sandboxes, and instrumentation. Agent classes own behavior: their model role, prompt, tools, limits, result schema, and delegation policy. Tools expose narrow application operations. A subagent lets the model delegate within configured limits; a workflow uses ordinary Ruby when the application must control ordering.
+Configuration owns shared services such as model resolution, sessions, lookup paths, workspaces, sandboxes, and instrumentation. Agent classes own behavior: their model selection, prompt, tools, limits, result schema, and delegation policy. Tools expose narrow application operations. A subagent lets the model delegate within configured limits; a workflow uses ordinary Ruby when the application must control ordering.
 
 Each top-level execution owns a run lifecycle. The run checkpoints session state, closes its resources, aggregates usage, and emits framework events whether the entrypoint is an agent or a workflow.
 
@@ -110,7 +100,7 @@ models:
     target: openai:gpt-5.6-luna
 ```
 
-By default, LittleGhost maps `default` to GPT-5.6 Luna. It selects the first nonblank key from `LITTLEGHOST_OPENROUTER_API_KEY`, `LITTLEGHOST_OPENAI_API_KEY`, `OPENROUTER_API_KEY`, and `OPENAI_API_KEY`. Model inputs—including prompts, history, tool data, and attachments—leave the application for the selected external provider. Configure providers explicitly when provider choice or data residency matters.
+By default, LittleGhost maps `default` to GPT-5.6 Luna. It configures conventional OpenRouter and OpenAI connections from nonblank `LITTLEGHOST_OPENROUTER_API_KEY`, `LITTLEGHOST_OPENAI_API_KEY`, `OPENROUTER_API_KEY`, and `OPENAI_API_KEY` values; that order determines the default when more than one provider is available. Model inputs—including prompts, history, tool data, and attachments—leave the application for the selected external provider. Configure providers explicitly when provider choice or data residency matters.
 
 Applications that need custom routing can subclass `LittleGhost::ModelResolver` and install the class with `config.model_resolver`. A custom resolver owns its profiles and default role; configuring `models`, `models_path`, or `default_model` at the same time is an error. Provider configuration remains available to the resolver.
 

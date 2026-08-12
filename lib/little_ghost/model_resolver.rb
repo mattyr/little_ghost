@@ -1,9 +1,9 @@
 # frozen_string_literal: true
 
 module LittleGhost
-  # Resolves logical profiles and canonical +provider:model-id+ targets into
-  # executable Model objects. Subclasses may override #resolve, #details, or
-  # #refresh! while preserving those public signatures.
+  # Resolves logical profiles, canonical +provider:model-id+ targets, and inline
+  # model mappings into executable Model objects. Subclasses may override
+  # #resolve, #details, or #refresh! while preserving those public signatures.
   class ModelResolver
     DEFAULT_CREDENTIALS = [ # :nodoc:
       ["LITTLEGHOST_OPENROUTER_API_KEY", "openrouter"],
@@ -42,14 +42,19 @@ module LittleGhost
     # Logical role used when an agent does not declare one.
     attr_reader :default_model
 
-    # Resolves a logical role or canonical target into an executable Model.
-    # The optional +profiles+ mapping overlays trusted profiles explicitly; the
-    # resolver does not read overlays from +invocation+.
-    def resolve(name, invocation: nil, context: nil, profiles: nil, **options)
-      role = name.to_s
-      base = role.include?(":") ? {target: role, settings: {}, request: {}} : resolved_role(role)
-      profile_overlays = profiles || {}
-      override_names(role).each { |profile| base = merge(base, profile_overlays[profile] || profile_overlays[profile.to_sym]) }
+    # Resolves a logical role, canonical target, or inline model mapping into an
+    # executable Model. Inline mappings require +provider+ and +model+; remaining
+    # entries are trusted model settings. The optional +profiles+ mapping applies
+    # only to role selections and is never read from +invocation+.
+    def resolve(selection, invocation: nil, context: nil, profiles: nil, **options)
+      base, role = normalize_selection(selection)
+      if role
+        base = resolved_role(role)
+        profile_overlays = profiles || {}
+        override_names(role).each do |profile|
+          base = merge(base, profile_overlays[profile] || profile_overlays[profile.to_sym])
+        end
+      end
       target = Models::Target.parse(base.fetch(:target))
       provider_config = @connections.fetch(target.provider) do
         raise ConfigurationError, "Model target references unknown provider #{target.provider}"
@@ -164,9 +169,13 @@ module LittleGhost
     end
 
     def configure_default_providers
-      variable, provider = DEFAULT_CREDENTIALS.find { |key, _provider| !ENV[key].to_s.strip.empty? }
-      if variable
-        @connections = {provider => {"adapter" => provider, "api_key" => ENV.fetch(variable)}}
+      connections = DEFAULT_CREDENTIALS.each_with_object({}) do |(variable, provider), configured|
+        next if configured.key?(provider) || ENV[variable].to_s.strip.empty?
+
+        configured[provider] = {"adapter" => provider, "api_key" => ENV.fetch(variable)}
+      end
+      if connections.any?
+        @connections = connections
       else
         @connections = {"unconfigured" => {"adapter" => "unconfigured"}}
         missing = "No API key is configured for the default model. Set #{DEFAULT_CREDENTIALS.map(&:first).join(", ")}, configure providers inline, or add config/little_ghost/providers.yml."
@@ -185,6 +194,51 @@ module LittleGhost
       end
     end
 
+    def normalize_selection(selection)
+      case selection
+      when Hash
+        [inline_selection(selection), nil]
+      when String, Symbol
+        value = selection.to_s
+        value.include?(":") ? [{target: value, settings: {}, request: {}}, nil] : [nil, value]
+      else
+        raise ConfigurationError, "Model selection must be a role, provider:model target, or configuration mapping"
+      end
+    end
+
+    def inline_selection(selection)
+      values = selection.to_h do |key, value|
+        unless key.is_a?(String) || key.is_a?(Symbol)
+          raise ConfigurationError, "Inline model configuration keys must be strings or symbols"
+        end
+
+        [key.to_sym, immutable_selection_value(value)]
+      end
+      provider = values.delete(:provider)
+      model_id = values.delete(:model)
+      raise ConfigurationError, "Inline model configuration requires provider" if provider.to_s.strip.empty?
+      raise ConfigurationError, "Inline model configuration requires model" if model_id.to_s.strip.empty?
+
+      {
+        target: Models::Target.new(provider:, model_id:),
+        settings: values.freeze,
+        request: {}
+      }
+    end
+
+    def immutable_selection_value(value)
+      case value
+      when Hash
+        value.to_h { |key, child| [key, immutable_selection_value(child)] }.freeze
+      when Array
+        value.map { |child| immutable_selection_value(child) }.freeze
+      when String
+        value.dup.freeze
+      else
+        value
+      end
+    end
+
     def resolved_role(role)
       profile_name = profile_for(role)
       resolved_profile(profile_name)
@@ -193,7 +247,21 @@ module LittleGhost
     def normalize_profiles(profiles)
       raise ConfigurationError, "models must be a mapping" unless profiles.is_a?(Hash)
 
-      profiles.to_h { |name, profile| [name.to_s, profile.to_h] }
+      profiles.to_h do |name, profile|
+        role = name.to_s
+        validate_role_name!(role)
+        raise ConfigurationError, "models.#{role} must be a mapping" unless profile.is_a?(Hash)
+
+        parent = profile["inherits"] || profile[:inherits]
+        validate_role_name!(parent.to_s) if parent
+        [role, profile.to_h]
+      end
+    end
+
+    def validate_role_name!(role)
+      return unless role.include?(":")
+
+      raise ConfigurationError, "Model role names cannot contain ':' (#{role})"
     end
 
     def profile_for(role)
