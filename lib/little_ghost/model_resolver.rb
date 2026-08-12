@@ -16,40 +16,43 @@ module LittleGhost
       "openai" => "gpt-5.6-luna"
     }.freeze
 
-    # Parsed configuration and model metadata catalog.
-    attr_reader :configuration, :catalog
+    # Provider configuration and model metadata catalog.
+    attr_reader :providers, :catalog
 
-    # Builds a resolver from explicit collaborators or a LittleGhost YAML
-    # +directory+. With neither, conventional credentials select GPT-5.6 Luna.
-    def initialize(configuration: nil, directory: nil, provider_registry: ProviderRegistry.new,
+    # Builds a resolver from explicit provider connections and profiles. With
+    # neither, conventional credentials select GPT-5.6 Luna.
+    def initialize(providers: nil, profiles: nil, default_model: nil, provider_registry: ProviderRegistry.new,
       catalog: nil, catalog_sources: [], provider_adapters: {}, credential_resolver: nil)
-      @configuration = configuration || (directory && Models::Configuration.new(directory:))
-      @providers = @configuration&.providers || {}
-      @profiles = @configuration&.models || {}
-      @default_model = @configuration&.default_model || "default"
+      unless providers.nil? || providers.is_a?(Providers::Configuration)
+        raise ArgumentError, "providers must be a LittleGhost::Providers::Configuration"
+      end
+
+      @providers = providers
+      @connections = providers&.connections || {}
+      @profiles = normalize_profiles(profiles || {})
+      @default_model = default_model&.to_s || "default"
       @provider_registry = provider_adapters.empty? ? provider_registry : ProviderRegistry.new(adapters: provider_adapters)
       @credential_resolver = credential_resolver
-      configure_zero_default unless @configuration
+      configure_default_providers unless providers
+      configure_default_profiles unless profiles
       sources = catalog_sources.empty? ? built_in_catalog_sources : catalog_sources
-      @catalog = catalog || Models::Catalog.new(
-        overrides: @configuration&.model_overrides || {},
-        sources:
-      )
+      @catalog = catalog || Models::Catalog.new(sources:)
     end
 
     # Logical role used when an agent does not declare one.
     attr_reader :default_model
 
     # Resolves a logical role or canonical target into an executable Model.
+    # The optional +profiles+ mapping overlays trusted profiles explicitly; the
+    # resolver does not read overlays from +invocation+.
     def resolve(name, invocation: nil, override: nil, run: nil, context: nil, profiles: nil, **options)
       role = name.to_s
       base = role.include?(":") ? {target: role, settings: {}, request: {}} : resolved_role(role)
-      invocation_configuration = invocation ? (invocation[:model_configuration] || {}) : {}
-      invocation_profiles = profiles || invocation_configuration["profiles"] || invocation_configuration[:profiles] || {}
-      override_names(role).each { |profile| base = merge(base, invocation_profiles[profile] || invocation_profiles[profile.to_sym]) }
+      profile_overlays = profiles || {}
+      override_names(role).each { |profile| base = merge(base, profile_overlays[profile] || profile_overlays[profile.to_sym]) }
       base = merge(base, override)
       target = Models::Target.parse(base.fetch(:target))
-      provider_config = @providers.fetch(target.provider) do
+      provider_config = @connections.fetch(target.provider) do
         raise ConfigurationError, "Model target references unknown provider #{target.provider}"
       end
       provider_config = provider_config.merge(resolved_credentials(target.provider, provider_config)) if @credential_resolver
@@ -104,9 +107,9 @@ module LittleGhost
     end
 
     def built_in_catalog_sources
-      adapters = @providers.to_h { |name, values| [name, values["adapter"].to_s] }
+      adapters = @connections.to_h { |name, values| [name, values["adapter"].to_s] }
       sources = [Models::Catalog::ModelsDevSource.new(provider_adapters: adapters)]
-      @providers.each do |name, values|
+      @connections.each do |name, values|
         case values["adapter"].to_s
         when "openrouter"
           sources << Providers::OpenRouter::CatalogSource.new(provider: name, api_key: values["api_key"])
@@ -123,24 +126,37 @@ module LittleGhost
       sources
     end
 
-    def configure_zero_default
+    def configure_default_providers
       variable, provider = DEFAULT_CREDENTIALS.find { |key, _provider| !ENV[key].to_s.strip.empty? }
       if variable
-        @providers = {provider => {"adapter" => provider, "api_key" => ENV.fetch(variable)}}
-        @profiles = {"default" => {"target" => "#{provider}:#{DEFAULT_MODELS.fetch(provider)}"}}
+        @connections = {provider => {"adapter" => provider, "api_key" => ENV.fetch(variable)}}
       else
-        @providers = {"unconfigured" => {"adapter" => "unconfigured"}}
-        @profiles = {"default" => {"target" => "unconfigured:#{DEFAULT_MODELS.fetch("openai")}"}}
-        missing = "No API key is configured for the default model. Set #{DEFAULT_CREDENTIALS.map(&:first).join(", ")}, or add config/little_ghost/providers.yml and models.yml."
+        @connections = {"unconfigured" => {"adapter" => "unconfigured"}}
+        missing = "No API key is configured for the default model. Set #{DEFAULT_CREDENTIALS.map(&:first).join(", ")}, configure providers inline, or add config/little_ghost/providers.yml."
         @provider_registry = ProviderRegistry.new(adapters: {
           "unconfigured" => ->(**) { raise CredentialError, missing }
         })
       end
     end
 
+    def configure_default_profiles
+      connection, values = @connections.find { |_name, options| DEFAULT_MODELS.key?(options["adapter"].to_s) }
+      @profiles = if connection
+        {"default" => {"target" => "#{connection}:#{DEFAULT_MODELS.fetch(values["adapter"].to_s)}"}}
+      else
+        {"default" => {"target" => "unconfigured:#{DEFAULT_MODELS.fetch("openai")}"}}
+      end
+    end
+
     def resolved_role(role)
       profile_name = profile_for(role)
       resolved_profile(profile_name)
+    end
+
+    def normalize_profiles(profiles)
+      raise ConfigurationError, "models must be a mapping" unless profiles.is_a?(Hash)
+
+      profiles.to_h { |name, profile| [name.to_s, profile.to_h] }
     end
 
     def profile_for(role)

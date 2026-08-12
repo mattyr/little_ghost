@@ -97,7 +97,13 @@ Place a comment immediately before the definition. Start with the object's purpo
 # Profiles use application-level names so agents do not depend on provider
 # model identifiers.
 #
-#   resolver = LittleGhost::ModelResolver.new(directory: "config/little_ghost")
+#   providers = LittleGhost::Providers::Configuration.new(
+#     openai: {adapter: :openai, api_key: ENV.fetch("OPENAI_API_KEY")}
+#   )
+#   resolver = LittleGhost::ModelResolver.new(
+#     providers:,
+#     profiles: {customer_support: {target: "openai:gpt-5"}}
+#   )
 #   resolver.resolve("customer_support")
 class ModelResolver
 end

@@ -27,7 +27,7 @@ models:
     target: openai:gpt-5
 ```
 
-Dotted roles inherit from the nearest registered parent. `ResearchAgent` can request `customer_support.research` and initially use the `customer_support` profile; registering `customer_support.research` later specializes it. Per-invocation profile overrides can vary a request without mutating the registry or agent class. Because an override can select a different registered provider, model, and settings, it is trusted application configuration and must be constructed or allowlisted by the application rather than copied from unchecked request data.
+Dotted roles inherit from the nearest registered parent. `ResearchAgent` can request `customer_support.research` and initially use the `customer_support` profile; registering `customer_support.research` later specializes it. A resolver caller may pass an explicit `profiles:` overlay without mutating the configured profiles or agent class. Because an overlay can select a different registered provider, model, and settings, it is trusted application configuration and must be constructed or allowlisted by the application rather than copied from unchecked request data. The base resolver does not inspect application-specific invocation fields.
 
 The provider performs model I/O. `LittleGhost::ModelResolver` resolves application intent into a `LittleGhost::Model`, which carries the provider, target, settings, details, and role for a run.
 
@@ -186,7 +186,7 @@ Streams expose generic framework events rather than provider wire formats. Consu
 
 The core design can be summarized as four choices:
 
-- Put shared construction and provider policy in `providers.yml` and `models.yml`.
+- Put shared construction and provider policy inline or in independent `providers.yml` and `models.yml` files.
 - Put model behavior and available capabilities on agent classes.
 - Put privileged application operations behind narrow, authorized tools.
 - Put mandatory ordering in workflows; leave optional delegation to subagents.

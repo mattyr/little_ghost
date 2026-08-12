@@ -8,7 +8,7 @@
 
 Bring agents and agentic workflows into an existing Ruby system, or use them as the core of a dedicated AI service. LittleGhost brings model providers, tools, streaming, sessions, delegation, deterministic composition, and observability together behind one coherent set of Ruby APIs.
 
-Here is the shape of a small customer support agent. Provider connections live in `config/little_ghost/providers.yml`, while logical choices live in `config/little_ghost/models.yml`:
+Here is the shape of a small customer support agent. This example uses the conventional `config/little_ghost/providers.yml` and `config/little_ghost/models.yml` paths, while applications may configure either section inline or point it at another file:
 
 ```yaml
 # providers.yml
@@ -77,7 +77,7 @@ request ──> ResponseWorkflow ──> ResearchAgent ──> CustomerSupportAg
 
 Configuration owns shared services such as model resolution, sessions, lookup paths, workspaces, sandboxes, and instrumentation. Agent classes own behavior: their logical model role, prompt, tools, limits, structured result, and delegation policy. A tool is a validated boundary around application code. A subagent lets the model delegate work within configured turn, concurrency, and depth limits; a workflow uses ordinary Ruby when your application must choose the sequence.
 
-Applications that need custom routing can subclass `LittleGhost::ModelResolver` and install the instance with `config.model_resolver`. Provider adapters similarly subclass `LittleGhost::Providers::Base`; catalog sources subclass `LittleGhost::Models::Catalog::Source`. These explicit interfaces keep runtime behavior predictable while preserving extension points.
+Applications that need custom routing can subclass `LittleGhost::ModelResolver` and install the class with `config.model_resolver`. Provider adapters similarly subclass `LittleGhost::Providers::Base`; catalog sources subclass `LittleGhost::Models::Catalog::Source`. These explicit interfaces keep runtime behavior predictable while preserving extension points.
 
 `CustomerSupportAgent.ask(...)` creates a standalone entrypoint, consumes its run, and returns the completed `LittleGhost::Run`. Create an instance explicitly when reusing a runtime or when an interface should render progress as `LittleGhost::StreamEvent` objects:
 
@@ -101,7 +101,25 @@ gem "little_ghost"
 
 Then run `bundle install`. Built-in OpenAI-compatible, OpenRouter, Anthropic, Gemini, Vertex AI, and Amazon Bedrock integrations use Ruby's standard library and normalize responses into the same LittleGhost protocol.
 
-By default, LittleGhost maps the `default` role to GPT-5.6 Luna. It selects the first nonblank API key from `LITTLEGHOST_OPENROUTER_API_KEY`, `LITTLEGHOST_OPENAI_API_KEY`, `OPENROUTER_API_KEY`, and `OPENAI_API_KEY`, in that order. Setting one of these keys authorizes model inputs—including prompts, conversation history, tool data, and attachments—to be sent to the selected external provider. Applications with provider or data-residency requirements should configure both YAML files explicitly.
+By default, LittleGhost maps the `default` role to GPT-5.6 Luna. It selects the first nonblank API key from `LITTLEGHOST_OPENROUTER_API_KEY`, `LITTLEGHOST_OPENAI_API_KEY`, `OPENROUTER_API_KEY`, and `OPENAI_API_KEY`, in that order. Setting one of these keys authorizes model inputs—including prompts, conversation history, tool data, and attachments—to be sent to the selected external provider. Applications with provider or data-residency requirements should configure providers and profiles explicitly.
+
+Provider connections and model profiles are independent. Inline declarations take precedence over an explicitly selected or conventional file, and an explicitly selected path must exist. Missing conventional files are valid and fall through to environment-based providers and the Luna profile:
+
+```ruby
+LittleGhost.configure do |config|
+  config.providers = {
+    openai: {adapter: :openai, api_key: ENV.fetch("OPENAI_API_KEY")}
+  }
+  config.models = {
+    customer_support: {target: "openai:gpt-5"}
+  }
+  config.default_model = :customer_support
+end
+```
+
+Use `config.providers_path` or `config.models_path` when only one section belongs in YAML or when the files live outside the conventional directory. Application directories such as `config/little_ghost`, `app/agents`, `app/prompts`, and `app/skills` are defaults and suggested conventions, not a required project layout.
+
+A custom resolver class owns its profiles and default role. LittleGhost constructs it with `providers:`, `provider_adapters:`, `catalog_sources:`, and `credential_resolver:`. Configuring `models`, `models_path`, or `default_model` alongside a custom resolver emits one warning and ignores those model declarations; provider configuration remains active. A `Providers::Configuration` subclass may override `credentials(provider:, adapter:, configuration:)` to resolve secrets lazily. An explicit `config.provider_credentials` callable takes precedence over that method.
 
 By default, structured framework events have no console destination. Hosted applications can emit redacted JSON lines to standard output with `LittleGhost.configure { |config| config.log_events_to :stdout }`; `:stderr` selects standard error instead, and `nil` disables a configured destination. Event emission and severity levels are the same with or without a console destination.
 

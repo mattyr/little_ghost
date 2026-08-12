@@ -5,15 +5,14 @@ require "time"
 
 module LittleGhost
   module Models
-    # Resolves model facts from application overrides, refreshed data, and the
-    # snapshot packaged with LittleGhost. Refresh is always explicit.
+    # Resolves model facts from refreshed data and the snapshot packaged with
+    # LittleGhost. Refresh is always explicit.
     class Catalog
       # Path to the offline model metadata snapshot packaged with the gem.
       SNAPSHOT_PATH = File.expand_path("../data/model_catalog.json", __dir__)
 
-      # Builds a layered catalog from bundled, refreshed, and application facts.
-      def initialize(overrides: {}, sources: [], snapshot_path: SNAPSHOT_PATH, clock: -> { Time.now.utc })
-        @overrides = normalize_records(overrides, "application")
+      # Builds a layered catalog from bundled and refreshed facts.
+      def initialize(sources: [], snapshot_path: SNAPSHOT_PATH, clock: -> { Time.now.utc })
         @sources = Array(sources).freeze
         @snapshot = load_snapshot(snapshot_path)
         @refreshed = {}
@@ -24,7 +23,7 @@ module LittleGhost
       # Returns immutable normalized details for +target+.
       def details(target)
         target = Target.parse(target)
-        records = [@snapshot[target.to_s], @mutex.synchronize { @refreshed[target.to_s] }, @overrides[target.to_s]].compact
+        records = [@snapshot[target.to_s], @mutex.synchronize { @refreshed[target.to_s] }].compact
         merge_details(target, records)
       end
 

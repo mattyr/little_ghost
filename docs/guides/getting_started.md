@@ -23,7 +23,7 @@ Use application-specific secret management outside a local shell. Do not commit 
 
 ## Create the application shape
 
-LittleGhost looks for agents, tools, prompts, and skills under conventional application directories. This example needs four files:
+LittleGhost looks for agents, tools, prompts, and skills under conventional application directories. These paths are defaults rather than a required project layout. This example needs four files:
 
 ```text
 customer_support_app/
@@ -60,7 +60,9 @@ models:
       temperature: 0.2
 ```
 
-The agent will ask for the role `customer_support`; it never needs the provider name or provider model identifier. This separation lets an application change providers or override a profile for one invocation without changing agent classes. Treat model settings and profile overrides as trusted application configuration: construct or allowlist them server-side instead of copying unchecked request fields.
+The agent will ask for the role `customer_support`; it never needs the provider name or provider model identifier. This separation lets an application change providers without changing agent classes. Treat model settings and profile overlays as trusted application configuration: construct or allowlist them server-side instead of copying unchecked request fields.
+
+Each section resolves independently. `config.providers` or `config.models` wins over its explicit path, an explicit `providers_path` or `models_path` wins over the matching conventional file, and a missing conventional file falls through to defaults. An explicitly configured missing path raises `LittleGhost::ConfigurationError`. `config.default_model` replaces only the default role declared in `models.yml`, so inline providers can be combined with file-backed models and either YAML file may exist alone.
 
 ## Give the agent one validated tool
 

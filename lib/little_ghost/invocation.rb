@@ -33,12 +33,11 @@ module LittleGhost
       "history" => -> { [] },
       "settings" => -> { {} },
       "context" => -> { {} },
-      "metadata" => -> { {} },
-      "model_configuration" => -> { {} }
+      "metadata" => -> { {} }
     }.freeze # :nodoc:
 
     ACCESSORS = %i[
-      message history settings context metadata model_configuration
+      message history settings context metadata
       run_id invocation_id session_id actor_id
     ].freeze # :nodoc:
 
@@ -89,12 +88,6 @@ module LittleGhost
     #   metadata() -> Hash
 
     ##
-    # Trusted, versioned model configuration snapshot for this invocation.
-    # :method: model_configuration
-    # :call-seq:
-    #   model_configuration() -> Hash
-
-    ##
     # The caller-supplied or generated top-level run identifier.
     # :method: run_id
     # :call-seq:
@@ -135,12 +128,6 @@ module LittleGhost
     # :method: metadata=
     # :call-seq:
     #   metadata=(value) -> value
-
-    ##
-    # Replaces the trusted per-request model profile overrides.
-    # :method: model_configuration=
-    # :call-seq:
-    #   model_configuration=(value) -> value
 
     ##
     # Replaces the top-level run identifier.

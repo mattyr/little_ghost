@@ -792,7 +792,7 @@ class ConfigurationTest < Minitest::Test
     end
   end
 
-  def test_invocation_model_profile_overrides_are_applied_by_models
+  def test_custom_model_resolver_can_apply_invocation_profiles
     with_runtime(settings: {temperature: 0.1}) do |harness, provider|
       harness.agent_instance.call(
         message: "hello",
@@ -1573,7 +1573,7 @@ class ConfigurationTest < Minitest::Test
       File.write(config, "# harness fixture\n")
       configuration = TestHarness.new
       configuration.select_agent agent
-      configuration.model_resolver models_for(provider, settings:)
+      configuration.instance_variable_set(:@resolved_model_resolver, models_for(provider, settings:))
       configuration.session_store = {provider: session_store_provider(session_store)} if session_store
       configure&.call(configuration)
       harness = configuration.runtime(root:)
@@ -1585,7 +1585,7 @@ class ConfigurationTest < Minitest::Test
     resolver = LittleGhost::ModelResolver.allocate
     resolver.define_singleton_method(:default_model) { "default" }
     resolver.define_singleton_method(:resolve) do |role, invocation: nil, **|
-      profiles = invocation&.model_configuration&.fetch("profiles", {}) || {}
+      profiles = invocation&.[](:model_configuration)&.fetch("profiles", {}) || {}
       overrides = profiles.fetch(role.to_s, {}).fetch("settings", {})
       LittleGhost::Model.new(provider:, target: "test:test", settings: settings.merge(overrides.transform_keys(&:to_sym)), role:)
     end

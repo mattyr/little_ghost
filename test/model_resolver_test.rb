@@ -38,8 +38,7 @@ class ModelResolverTest < Minitest::Test
       provider = RecordingProvider.new
       previous = ENV["MODELS_TEST_KEY"]
       ENV["MODELS_TEST_KEY"] = "secret"
-      configuration = LittleGhost::Models::Configuration.new(directory:)
-      models = LittleGhost::ModelResolver.new(configuration:, provider_adapters: {"test" => ->(**) { provider }})
+      models = resolver_from(directory, provider_adapters: {"test" => ->(**) { provider }})
 
       model = models.resolve("main.research.review")
 
@@ -53,7 +52,7 @@ class ModelResolverTest < Minitest::Test
     end
   end
 
-  def test_invocation_settings_overlay_profiles_without_legacy_parameter_aliases
+  def test_explicit_profiles_overlay_settings
     with_configuration(
       providers: "providers:\n  test:\n    adapter: test\n",
       models: <<~YAML
@@ -64,50 +63,59 @@ class ModelResolverTest < Minitest::Test
               temperature: 0.1
       YAML
     ) do |directory|
-      models = LittleGhost::ModelResolver.new(
-        directory:,
-        provider_adapters: {"test" => ->(**) { RecordingProvider.new }}
-      )
+      models = resolver_from(directory, provider_adapters: {"test" => ->(**) { RecordingProvider.new }})
       invocation = LittleGhost::Invocation.new(
         message: "hello",
-        model_configuration: {"profiles" => {"main" => {"settings" => {"temperature" => 0.4}}}}
+        model_configuration: {"profiles" => {"main" => {"settings" => {"temperature" => 0.9}}}}
       )
 
-      model = models.resolve("main", invocation:)
+      model = models.resolve("main", invocation:, profiles: {"main" => {"settings" => {"temperature" => 0.4}}})
 
       assert_equal({temperature: 0.4}, model.settings)
     end
   end
 
-  def test_invocation_request_options_cannot_replace_provider_connections
+  def test_invocation_model_configuration_is_not_an_implicit_overlay
+    providers = LittleGhost::Providers::Configuration.new(test: {adapter: :test})
+    models = LittleGhost::ModelResolver.new(
+      providers:,
+      profiles: {main: {target: "test:model", settings: {temperature: 0.1}}},
+      provider_adapters: {"test" => ->(**) { RecordingProvider.new }}
+    )
+    invocation = LittleGhost::Invocation.new(
+      message: "hello",
+      model_configuration: {"profiles" => {"main" => {"settings" => {"temperature" => 0.9}}}}
+    )
+
+    model = models.resolve("main", invocation:)
+
+    assert_equal({temperature: 0.1}, model.settings)
+  end
+
+  def test_explicit_profile_request_options_cannot_replace_provider_connections
     with_configuration(
       providers: "providers:\n  test:\n    adapter: test\n    api_key: trusted-secret\n",
       models: "models:\n  main:\n    target: test:model\n"
     ) do |directory|
-      models = LittleGhost::ModelResolver.new(
-        directory:,
-        provider_adapters: {"test" => ->(**) { RecordingProvider.new }}
-      )
+      models = resolver_from(directory, provider_adapters: {"test" => ->(**) { RecordingProvider.new }})
       invocation = LittleGhost::Invocation.new(
         message: "hello",
         model_configuration: {"profiles" => {"main" => {"request" => {"base_url" => "https://attacker.example/"}}}}
       )
 
-      error = assert_raises(LittleGhost::ConfigurationError) { models.resolve("main", invocation:) }
+      profiles = {"main" => {"request" => {"base_url" => "https://attacker.example/"}}}
+      error = assert_raises(LittleGhost::ConfigurationError) { models.resolve("main", invocation:, profiles:) }
 
       assert_includes error.message, "base_url"
     end
   end
 
-  def test_invocation_details_snapshot_replaces_local_catalog_facts
+  def test_explicit_profile_details_replace_local_catalog_facts
     with_configuration(
       providers: "providers:\n  test:\n    adapter: test\n",
       models: "models:\n  main:\n    target: test:model\n"
     ) do |directory|
-      models = LittleGhost::ModelResolver.new(
-        directory:,
-        provider_adapters: {"test" => ->(**) { RecordingProvider.new }}
-      )
+      models = resolver_from(directory, provider_adapters: {"test" => ->(**) { RecordingProvider.new }})
       invocation = LittleGhost::Invocation.new(
         message: "hello",
         model_configuration: {"profiles" => {"main" => {"details" => {
@@ -115,7 +123,10 @@ class ModelResolverTest < Minitest::Test
         }}}}
       )
 
-      model = models.resolve("main", invocation:)
+      profiles = {"main" => {"details" => {
+        "target" => "test:model", "context_window" => 321, "provenance" => {"context_window" => "run-snapshot"}
+      }}}
+      model = models.resolve("main", invocation:, profiles:)
 
       assert_equal 321, model.details.context_window
       assert_equal "run-snapshot", model.details.provenance.fetch(:context_window)
@@ -128,8 +139,8 @@ class ModelResolverTest < Minitest::Test
       models: "models:\n  main:\n    target: test:model\n    request:\n      retries: 4\n"
     ) do |directory|
       received = nil
-      models = LittleGhost::ModelResolver.new(
-        directory:,
+      models = resolver_from(
+        directory,
         provider_adapters: {"test" => lambda { |configuration:, **|
           received = configuration
           RecordingProvider.new
@@ -148,7 +159,7 @@ class ModelResolverTest < Minitest::Test
       providers: "providers:\n  gateway:\n    adapter: test\n",
       models: "models:\n  main:\n    target: gateway:known\n"
     ) do |directory|
-      models = LittleGhost::ModelResolver.new(directory:, provider_adapters: {"test" => ->(**) { RecordingProvider.new }})
+      models = resolver_from(directory, provider_adapters: {"test" => ->(**) { RecordingProvider.new }})
 
       model = models.resolve("gateway:released-today")
 
@@ -157,7 +168,7 @@ class ModelResolverTest < Minitest::Test
     end
   end
 
-  def test_catalog_precedence_and_failed_refresh_preserve_last_good_data
+  def test_failed_refresh_preserves_last_good_data
     source = Class.new(LittleGhost::Models::Catalog::Source).new(name: "test")
     calls = 0
     source.define_singleton_method(:refresh) do |target:|
@@ -166,17 +177,14 @@ class ModelResolverTest < Minitest::Test
 
       {target.to_s => {context_window: 200, pricing: {input: 1.0}, observed_at: "2026-08-12T00:00:00Z"}}
     end
-    catalog = LittleGhost::Models::Catalog.new(
-      overrides: {"openai:gpt-5.6-terra" => {context_window: 300}},
-      sources: [source]
-    )
+    catalog = LittleGhost::Models::Catalog.new(sources: [source])
 
     result = catalog.refresh!(target: "openai:gpt-5.6-terra")
     details = catalog.details("openai:gpt-5.6-terra")
     failed = catalog.refresh!(target: "openai:gpt-5.6-terra")
 
     assert_empty result.fetch(:errors)
-    assert_equal 300, details.context_window
+    assert_equal 200, details.context_window
     assert_equal({input: 1.0}, details.pricing)
     assert_equal 1, failed.fetch(:errors).length
     assert_equal({input: 1.0}, catalog.details("openai:gpt-5.6-terra").pricing)
@@ -215,15 +223,15 @@ class ModelResolverTest < Minitest::Test
     assert_equal 1.25, records.dig("router:new/model", :pricing, "input")
   end
 
-  def test_requires_both_configuration_files
+  def test_provider_configuration_is_independent_of_models
     Dir.mktmpdir do |root|
       directory = File.join(root, "config/little_ghost")
       FileUtils.mkdir_p(directory)
       File.write(File.join(directory, "providers.yml"), "providers: {}\n")
 
-      error = assert_raises(LittleGhost::ConfigurationError) { LittleGhost::Models::Configuration.new(directory:) }
+      providers = LittleGhost::Models::Configuration.providers(File.join(directory, "providers.yml"))
 
-      assert_includes error.message, "models.yml"
+      assert_empty providers.connections
     end
   end
 
@@ -246,8 +254,8 @@ class ModelResolverTest < Minitest::Test
       models: "models:\n  main:\n    target: router:model\n"
     ) do |directory|
       received = nil
-      models = LittleGhost::ModelResolver.new(
-        directory:,
+      models = resolver_from(
+        directory,
         credential_resolver: ->(provider:, **_context) { {api_key: "resolved-#{provider}"} },
         provider_adapters: {"test" => lambda { |configuration:, **|
           received = configuration
@@ -271,5 +279,11 @@ class ModelResolverTest < Minitest::Test
       File.write(File.join(directory, "models.yml"), models)
       yield directory
     end
+  end
+
+  def resolver_from(directory, **options)
+    providers = LittleGhost::Models::Configuration.providers(File.join(directory, "providers.yml"))
+    profiles, default_model = LittleGhost::Models::Configuration.models(File.join(directory, "models.yml"))
+    LittleGhost::ModelResolver.new(providers:, profiles:, default_model:, **options)
   end
 end

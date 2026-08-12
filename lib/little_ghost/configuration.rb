@@ -29,7 +29,7 @@ module LittleGhost
   # not from an unverified request field.
   class Configuration
     FILE_LOAD_MUTEX = Mutex.new # :nodoc:
-    CONFIGURATION_KEYS = %i[invocation default_model service_name].freeze # :nodoc:
+    CONFIGURATION_KEYS = %i[invocation service_name].freeze # :nodoc:
     DEFAULT_PROMPT_PATHS = ["app/prompts"].freeze # :nodoc:
     DEFAULT_SKILL_PATHS = ["app/skills"].freeze # :nodoc:
 
@@ -42,14 +42,6 @@ module LittleGhost
     #   invocation(value) -> value
 
     ##
-    # The fallback logical model role for agents without an explicit role.
-    # Values are normalized to strings.
-    #
-    # :method: default_model
-    # :call-seq:
-    #   default_model() -> String, nil
-    #   default_model(value) -> String
-
     ##
     # The low-cardinality service name attached to instrumentation.
     #
@@ -61,7 +53,7 @@ module LittleGhost
       define_method(name) do |value = :__read__|
         return configuration_values[name] if value == :__read__
 
-        configuration_values[name] = (name == :default_model) ? value.to_s : value
+        configuration_values[name] = value
       end
     end
 
@@ -78,11 +70,6 @@ module LittleGhost
     #   model_resolver=(value) -> value
 
     ##
-    # Replaces the fallback logical model role and normalizes it to a String.
-    # :method: default_model=
-    # :call-seq:
-    #   default_model=(value) -> String
-
     ##
     # Replaces the service name attached to telemetry from new runtimes.
     # :method: service_name=
@@ -131,46 +118,106 @@ module LittleGhost
     # Session-store declaration used for subsequently built runtimes.
     def session_store = configuration_values[:session_store]
 
-    # Directory containing providers.yml and models.yml. It defaults to
-    # config/little_ghost beneath the application root.
-    def configuration_path(value = :__read__)
-      return configuration_values[:configuration_path] if value == :__read__ && configuration_values.key?(:configuration_path)
-      return configuration_values[:configuration_path] = value if value != :__read__
+    # Trusted provider connections for the default or custom resolver.
+    def providers(value = :__read__)
+      return configuration_values[:providers] if value == :__read__
 
-      root.join("config/little_ghost")
+      unless value.is_a?(Hash) || value.is_a?(Providers::Configuration)
+        raise ArgumentError, "providers must be a Hash or LittleGhost::Providers::Configuration"
+      end
+
+      configuration_values[:providers] = value
+      reset_model_resolver
+      value
     end
 
-    def configuration_path=(value)
-      configuration_path(value)
+    # Replaces trusted provider connections for subsequently built runtimes.
+    def providers=(value)
+      providers(value)
+    end
+
+    # Logical model profiles for the default resolver.
+    def models(value = :__read__)
+      return configuration_values[:models] if value == :__read__
+      raise ArgumentError, "models must be a Hash" unless value.is_a?(Hash)
+
+      configuration_values[:models] = value
+      reset_model_resolver
+      value
+    end
+
+    # Replaces logical model profiles for subsequently built runtimes.
+    def models=(value)
+      models(value)
+    end
+
+    # Fallback logical role for the default resolver.
+    def default_model(value = :__read__)
+      return configuration_values[:default_model] if value == :__read__
+
+      configuration_values[:default_model] = value.to_s
+      reset_model_resolver
+      value.to_s
+    end
+
+    # Replaces the fallback logical role and normalizes it to a String.
+    def default_model=(value)
+      default_model(value)
+    end
+
+    # Provider YAML path. The conventional path is optional; an explicitly set
+    # path must exist when a runtime is built.
+    def providers_path(value = :__read__) = configuration_path(:providers_path, "providers.yml", value)
+
+    # Replaces the provider YAML path for subsequently built runtimes.
+    def providers_path=(value)
+      providers_path(value)
+    end
+
+    # Model YAML path. The conventional path is optional; an explicitly set
+    # path must exist when a runtime is built.
+    def models_path(value = :__read__) = configuration_path(:models_path, "models.yml", value)
+
+    # Replaces the model YAML path for subsequently built runtimes.
+    def models_path=(value)
+      models_path(value)
     end
 
     # Installs a complete resolver override for subsequently built runtimes.
     def model_resolver(value = :__read__)
       if value != :__read__
-        validate_model_resolver!(value)
+        validate_model_resolver_class!(value)
 
         configuration_values[:model_resolver] = value
         @resolved_model_resolver = nil
         return value
       end
 
-      configured = configuration_values[:model_resolver]
-      if configured
-        validate_model_resolver!(configured)
-        return configured
-      end
-
       @model_resolver_mutex ||= Mutex.new
       @model_resolver_mutex.synchronize do
         @resolved_model_resolver ||= begin
-          directory = Pathname(configuration_path)
-          model_configuration = Models::Configuration.new(directory:) if Models::Configuration.present?(directory)
-          ModelResolver.new(
-            configuration: model_configuration,
-            provider_adapters: configuration_values[:provider_adapters],
-            catalog_sources: configuration_values[:catalog_sources],
-            credential_resolver: configuration_values[:provider_credentials]
-          )
+          providers = resolved_providers
+          credential_resolver = configuration_values[:provider_credentials] || providers&.method(:credentials)
+          configured = configuration_values[:model_resolver]
+          if configured
+            warn_ignored_model_configuration
+            configured.new(
+              providers:,
+              provider_adapters: configuration_values[:provider_adapters],
+              catalog_sources: configuration_values[:catalog_sources],
+              credential_resolver:
+            )
+          else
+            profiles, file_default = resolved_models
+            ModelResolver.new(
+              providers:,
+              profiles:,
+              default_model: configuration_values.fetch(:default_model, file_default),
+              provider_adapters: configuration_values[:provider_adapters],
+              catalog_sources: configuration_values[:catalog_sources],
+              credential_resolver:
+            )
+          end
         end
       end
     end
@@ -365,7 +412,7 @@ module LittleGhost
       values[:instrumentation_subscribers] = Array(values[:instrumentation_subscribers]).dup
       values[:runtime_hooks] = Array(values[:runtime_hooks]).dup
       values[:model_resolver] = model_resolver
-      values[:default_model] ||= model_resolver.default_model
+      values[:default_model] = values[:model_resolver].default_model
       values[:root] = requested_root || values[:root] || self.root
       values
     end
@@ -393,10 +440,57 @@ module LittleGhost
 
     attr_reader :configuration_values
 
-    def validate_model_resolver!(value)
-      return if value.is_a?(ModelResolver)
+    def validate_model_resolver_class!(value)
+      return if value.is_a?(Class) && value <= ModelResolver
 
-      raise ArgumentError, "model_resolver must be a ModelResolver"
+      raise ArgumentError, "model_resolver must be a LittleGhost::ModelResolver subclass"
+    end
+
+    def configuration_path(key, filename, value)
+      if value != :__read__
+        configuration_values[key] = value
+        reset_model_resolver
+        return value
+      end
+
+      configuration_values.fetch(key) { root.join("config/little_ghost", filename) }
+    end
+
+    def resolved_providers
+      return unless configuration_values.key?(:providers) || (path = resolved_configuration_file(:providers_path, "providers.yml"))
+
+      configured = configuration_values[:providers]
+      return configured if configured.is_a?(Providers::Configuration)
+      return Providers::Configuration.new(configured) if configuration_values.key?(:providers)
+
+      Models::Configuration.providers(path)
+    end
+
+    def resolved_models
+      return [configuration_values[:models], nil] if configuration_values.key?(:models)
+
+      path = resolved_configuration_file(:models_path, "models.yml")
+      path ? Models::Configuration.models(path) : [nil, nil]
+    end
+
+    def resolved_configuration_file(key, filename)
+      explicit = configuration_values.key?(key)
+      path = Pathname(configuration_values.fetch(key) { root.join("config/little_ghost", filename) })
+      path = root.join(path) unless path.absolute?
+      return path if path.file?
+      raise ConfigurationError, "LittleGhost configuration file does not exist: #{path}" if explicit
+    end
+
+    def warn_ignored_model_configuration
+      ignored = %i[models models_path default_model].select { |key| configuration_values.key?(key) }
+      return if ignored.empty? || @warned_model_resolver_conflict
+
+      Kernel.warn("LittleGhost custom model_resolver ignores configured #{ignored.join(", ")}")
+      @warned_model_resolver_conflict = true
+    end
+
+    def reset_model_resolver
+      @resolved_model_resolver = nil
     end
 
     def component_class(value, base_class, name)
