@@ -5,13 +5,13 @@ module LittleGhost
   # executable Model objects. Subclasses may override #resolve, #details, or
   # #refresh! while preserving those public signatures.
   class ModelResolver
-    DEFAULT_CREDENTIALS = [
+    DEFAULT_CREDENTIALS = [ # :nodoc:
       ["LITTLEGHOST_OPENROUTER_API_KEY", "openrouter"],
       ["LITTLEGHOST_OPENAI_API_KEY", "openai"],
       ["OPENROUTER_API_KEY", "openrouter"],
       ["OPENAI_API_KEY", "openai"]
     ].freeze
-    DEFAULT_MODELS = {
+    DEFAULT_MODELS = { # :nodoc:
       "openrouter" => "openai/gpt-5.6-luna",
       "openai" => "gpt-5.6-luna"
     }.freeze
@@ -45,12 +45,11 @@ module LittleGhost
     # Resolves a logical role or canonical target into an executable Model.
     # The optional +profiles+ mapping overlays trusted profiles explicitly; the
     # resolver does not read overlays from +invocation+.
-    def resolve(name, invocation: nil, override: nil, run: nil, context: nil, profiles: nil, **options)
+    def resolve(name, invocation: nil, context: nil, profiles: nil, **options)
       role = name.to_s
       base = role.include?(":") ? {target: role, settings: {}, request: {}} : resolved_role(role)
       profile_overlays = profiles || {}
       override_names(role).each { |profile| base = merge(base, profile_overlays[profile] || profile_overlays[profile.to_sym]) }
-      base = merge(base, override)
       target = Models::Target.parse(base.fetch(:target))
       provider_config = @connections.fetch(target.provider) do
         raise ConfigurationError, "Model target references unknown provider #{target.provider}"
@@ -67,7 +66,7 @@ module LittleGhost
         settings: base.fetch(:settings),
         details:,
         invocation:,
-        context: context || run,
+        context:,
         **options
       )
       Model.new(provider:, target:, settings: base.fetch(:settings), details:, role:)
@@ -110,20 +109,49 @@ module LittleGhost
       adapters = @connections.to_h { |name, values| [name, values["adapter"].to_s] }
       sources = [Models::Catalog::ModelsDevSource.new(provider_adapters: adapters)]
       @connections.each do |name, values|
+        credentials = -> { catalog_credentials(name, values) }
         case values["adapter"].to_s
         when "openrouter"
-          sources << Providers::OpenRouter::CatalogSource.new(provider: name, api_key: values["api_key"])
+          sources << Providers::OpenRouter::CatalogSource.new(provider: name, credential_resolver: credentials)
         when "anthropic"
-          sources << Providers::Anthropic::CatalogSource.new(provider: name, api_key: values["api_key"])
+          sources << Providers::Anthropic::CatalogSource.new(provider: name, credential_resolver: credentials)
         when "gemini"
-          sources << Providers::Gemini::CatalogSource.new(provider: name, api_key: values["api_key"])
+          sources << Providers::Gemini::CatalogSource.new(provider: name, credential_resolver: credentials)
         when "bedrock"
-          resolver = values["credential_resolver"] || Providers::Bedrock::CredentialResolver.new
+          resolver = values["credential_resolver"] || bedrock_credential_resolver(name, values)
           region = values["region"] || (resolver.region if resolver.is_a?(Providers::Bedrock::CredentialResolver))
           sources << Providers::Bedrock::CatalogSource.new(provider: name, region:, credential_resolver: resolver) if region
         end
       end
       sources
+    end
+
+    def catalog_credentials(provider, configuration)
+      return configuration unless @credential_resolver
+
+      configuration.merge(resolved_credentials(provider, configuration))
+    end
+
+    def bedrock_credential_resolver(provider, configuration)
+      return Providers::Bedrock::CredentialResolver.new unless @credential_resolver
+
+      fallback = Providers::Bedrock::CredentialResolver.new
+      lambda do
+        values = catalog_credentials(provider, configuration)
+        next values["credentials"] if values["credentials"]
+
+        access_key_id = values["access_key_id"] || values["aws_access_key_id"]
+        secret_access_key = values["secret_access_key"] || values["aws_secret_access_key"]
+        if access_key_id || secret_access_key
+          Providers::Bedrock::Credentials.new(
+            access_key_id:,
+            secret_access_key:,
+            session_token: values["session_token"] || values["aws_session_token"]
+          )
+        else
+          fallback.call
+        end
+      end
     end
 
     def configure_default_providers
@@ -174,7 +202,7 @@ module LittleGhost
 
       raw = @profiles.fetch(name)
       profile = normalize(raw)
-      parent_name = raw["inherits"] || raw["inherit"] || raw[:inherits] || raw[:inherit]
+      parent_name = raw["inherits"] || raw[:inherits]
       return profile unless parent_name
 
       merge(resolved_profile(parent_name.to_s, [*seen, name]), profile)

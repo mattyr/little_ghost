@@ -155,10 +155,10 @@ module LittleGhost
         end
       end
 
-      # Returns the legacy capability contract expected from compatible APIs.
+      # Returns the permissive capability contract expected from compatible APIs.
       # Subclasses can override this when the endpoint advertises precise support.
       def capabilities(metadata: {})
-        ModelCapabilities.legacy
+        ModelCapabilities.permissive
       end
 
       private

@@ -67,7 +67,7 @@ Keep each page responsible for one level. The README should not become a complet
 
 Use the same customer support story across introductory documentation so readers learn LittleGhost rather than a new domain on every page:
 
-- `CustomerSupportModels` maps the logical `customer_support` role to a provider.
+- `LittleGhost::ModelResolver` maps the logical `customer_support` role to a provider.
 - `CustomerSupportAgent` answers the customer.
 - `HelpCenterLookupTool` reads help center information through a narrow, validated lookup.
 - `ResearchAgent` handles open-ended investigation.

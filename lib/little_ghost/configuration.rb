@@ -200,7 +200,7 @@ module LittleGhost
           credential_resolver = configuration_values[:provider_credentials] || providers&.method(:credentials)
           configured = configuration_values[:model_resolver]
           if configured
-            warn_ignored_model_configuration
+            validate_model_resolver_configuration!
             configured.new(
               providers:,
               provider_adapters: configuration_values[:provider_adapters],
@@ -481,12 +481,12 @@ module LittleGhost
       raise ConfigurationError, "LittleGhost configuration file does not exist: #{path}" if explicit
     end
 
-    def warn_ignored_model_configuration
-      ignored = %i[models models_path default_model].select { |key| configuration_values.key?(key) }
-      return if ignored.empty? || @warned_model_resolver_conflict
+    def validate_model_resolver_configuration!
+      conflicting = %i[models models_path default_model].select { |key| configuration_values.key?(key) }
+      return if conflicting.empty?
 
-      Kernel.warn("LittleGhost custom model_resolver ignores configured #{ignored.join(", ")}")
-      @warned_model_resolver_conflict = true
+      raise ConfigurationError,
+        "custom model_resolver cannot be combined with #{conflicting.join(", ")}"
     end
 
     def reset_model_resolver

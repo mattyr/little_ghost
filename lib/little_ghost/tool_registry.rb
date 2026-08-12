@@ -12,7 +12,7 @@ module LittleGhost
   # Entries may be Tool instances, Tool subclasses, nested arrays, or provider
   # classes that implement <tt>tools(binding)</tt>. Names must be unique, contain only
   # letters, numbers, underscores, or hyphens, and be at most 64 characters.
-  # Owned tools that implement +close+ are closed once in reverse order.
+  # Owned tools are closed once in reverse order.
   class ToolRegistry
     MAX_NAME_LENGTH = 64 # :nodoc:
     NAME_PATTERN = /\A[a-zA-Z0-9_-]+\z/ # :nodoc:
@@ -76,7 +76,7 @@ module LittleGhost
       raise error
     end
 
-    # Closes every owned tool that responds to +close+.
+    # Closes every owned tool.
     def close
       return if @closed
 
@@ -113,7 +113,6 @@ module LittleGhost
     def close_instances(instances)
       first_error = nil
       instances.reverse_each do |instance|
-        next unless instance.respond_to?(:close)
         next if @closed_tool_ids[instance.object_id]
 
         @closed_tool_ids[instance.object_id] = true

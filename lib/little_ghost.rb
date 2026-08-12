@@ -73,7 +73,13 @@ require_relative "little_ghost/runtime"
 # specialist for research while the caller observes one run:
 #
 #   LittleGhost.configure do |config|
-#     config.default_model :customer_support
+#     config.providers = {
+#       openai: {adapter: :openai, api_key: ENV.fetch("OPENAI_API_KEY")}
+#     }
+#     config.models = {
+#       customer_support: {target: "openai:gpt-5"}
+#     }
+#     config.default_model = :customer_support
 #   end
 #
 #   class ResearchAgent < LittleGhost::Agent
@@ -107,10 +113,6 @@ module LittleGhost
     def configuration
       ExecutionState[:configuration] || (@configuration ||= Configuration.new)
     end
-
-    # Alias for .configuration. Without an execution-scoped override, this is the
-    # process-wide default Configuration.
-    alias_method :default_configuration, :configuration
 
     # Opens the active Configuration for application setup and returns it.
     #

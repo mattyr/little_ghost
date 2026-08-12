@@ -5,19 +5,20 @@ module LittleGhost
     class OpenRouter < OpenAICompatible
       # Adds richer routing metadata and pricing from OpenRouter's live catalog.
       class CatalogSource < Models::Catalog::Source
-        URL = URI("https://openrouter.ai/api/v1/models")
-        attr_reader :name
+        URL = URI("https://openrouter.ai/api/v1/models") # :nodoc:
 
-        def initialize(provider:, api_key:)
+        # Creates a source for the named provider connection.
+        def initialize(provider:, credential_resolver:)
           super(name: "openrouter")
           @provider = provider
-          @api_key = api_key
+          @credential_resolver = credential_resolver
         end
 
         def refresh(target: nil)
+          api_key = @credential_resolver.call.fetch("api_key")
           values = JSON.parse(
             Support::HTTPClient.new(open_timeout: 5, read_timeout: 30, max_response_bytes: 25 * 1024 * 1024)
-              .request(uri: URL, headers: {"Authorization" => "Bearer #{@api_key}"})
+              .request(uri: URL, headers: {"Authorization" => "Bearer #{api_key}"})
           ).fetch("data")
           values.select! { |value| value["id"] == target.model_id } if target
           values.to_h do |value|

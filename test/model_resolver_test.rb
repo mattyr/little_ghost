@@ -75,23 +75,6 @@ class ModelResolverTest < Minitest::Test
     end
   end
 
-  def test_invocation_model_configuration_is_not_an_implicit_overlay
-    providers = LittleGhost::Providers::Configuration.new(test: {adapter: :test})
-    models = LittleGhost::ModelResolver.new(
-      providers:,
-      profiles: {main: {target: "test:model", settings: {temperature: 0.1}}},
-      provider_adapters: {"test" => ->(**) { RecordingProvider.new }}
-    )
-    invocation = LittleGhost::Invocation.new(
-      message: "hello",
-      model_configuration: {"profiles" => {"main" => {"settings" => {"temperature" => 0.9}}}}
-    )
-
-    model = models.resolve("main", invocation:)
-
-    assert_equal({temperature: 0.1}, model.settings)
-  end
-
   def test_explicit_profile_request_options_cannot_replace_provider_connections
     with_configuration(
       providers: "providers:\n  test:\n    adapter: test\n    api_key: trusted-secret\n",
@@ -235,7 +218,7 @@ class ModelResolverTest < Minitest::Test
     end
   end
 
-  def test_model_metadata_does_not_preflight_reject_attachments
+  def test_model_details_preflight_reject_unsupported_attachments
     provider = RecordingProvider.new
     details = LittleGhost::Models::Details.new(target: "test:text", attributes: {input_modalities: ["text"]})
     model = LittleGhost::Model.new(provider:, target: "test:text", details:)
@@ -243,9 +226,41 @@ class ModelResolverTest < Minitest::Test
       LittleGhost::Message.new(role: :user, content: [LittleGhost::Content::Image.new(data: "image", media_type: "image/png")])
     ])
 
+    error = assert_raises(LittleGhost::UnsupportedInputError) { model.stream(request).to_a }
+
+    assert_includes error.message, "image attachments"
+    assert_nil provider.request
+  end
+
+  def test_model_details_preflight_accepts_pdf_documents_for_pdf_models
+    provider = RecordingProvider.new
+    details = LittleGhost::Models::Details.new(target: "test:documents", attributes: {input_modalities: %w[text pdf]})
+    model = LittleGhost::Model.new(provider:, target: "test:documents", details:)
+    request = LittleGhost::ModelRequest.new(messages: [
+      LittleGhost::Message.new(role: :user, content: [
+        LittleGhost::Content::Document.new(data: "pdf", media_type: "application/pdf", name: "guide.pdf")
+      ])
+    ])
+
     model.stream(request).to_a
 
     assert_equal request.messages, provider.request.messages
+  end
+
+  def test_model_details_preflight_rejects_non_pdf_documents_for_pdf_models
+    provider = RecordingProvider.new
+    details = LittleGhost::Models::Details.new(target: "test:documents", attributes: {input_modalities: %w[text pdf]})
+    model = LittleGhost::Model.new(provider:, target: "test:documents", details:)
+    request = LittleGhost::ModelRequest.new(messages: [
+      LittleGhost::Message.new(role: :user, content: [
+        LittleGhost::Content::Document.new(data: "text", media_type: "text/plain", name: "notes.txt")
+      ])
+    ])
+
+    error = assert_raises(LittleGhost::UnsupportedInputError) { model.stream(request).to_a }
+
+    assert_includes error.message, "file attachments"
+    assert_nil provider.request
   end
 
   def test_provider_credentials_are_resolved_at_model_construction
@@ -267,6 +282,113 @@ class ModelResolverTest < Minitest::Test
 
       assert_equal "resolved-router", received.fetch(:api_key)
     end
+  end
+
+  def test_catalog_credentials_are_resolved_only_when_the_catalog_refreshes
+    calls = []
+    providers = LittleGhost::Providers::Configuration.new(router: {adapter: :openrouter})
+    resolver = LittleGhost::ModelResolver.new(
+      providers:,
+      profiles: {main: {target: "router:new/model"}},
+      credential_resolver: lambda { |provider:, **|
+        calls << provider
+        {api_key: "refreshed-secret"}
+      }
+    )
+
+    assert_empty calls
+
+    requested_headers = nil
+    response = JSON.generate(data: [{id: "new/model", pricing: {prompt: "0.000001"}}])
+    stub_http_client(lambda { |uri:, headers: {}, **|
+      if uri.host == "openrouter.ai"
+        requested_headers = headers
+        response
+      else
+        raise "offline"
+      end
+    }) do
+      resolver.refresh!(target: "router:new/model")
+    end
+
+    assert_equal ["router"], calls
+    assert_equal "Bearer refreshed-secret", requested_headers.fetch("Authorization")
+    assert_equal 1.0, resolver.details("router:new/model").pricing.fetch(:input)
+  end
+
+  def test_bedrock_catalog_uses_lazy_provider_credentials
+    credentials = LittleGhost::Providers::Bedrock::Credentials.new(
+      access_key_id: "key",
+      secret_access_key: "secret"
+    )
+    calls = []
+    providers = Class.new(LittleGhost::Providers::Configuration) do
+      define_method(:credentials) do |provider:, **|
+        calls << provider
+        {credentials: credentials}
+      end
+    end.new(aws: {adapter: :bedrock, region: "us-west-2"})
+    pricing = %w[Input Output].map do |kind|
+      JSON.generate(
+        product: {attributes: {
+          model: "Amazon Test", regionCode: "us-west-2",
+          usagetype: "#{kind} tokens", inferenceType: "On Demand"
+        }},
+        terms: {OnDemand: {term: {priceDimensions: {dimension: {
+          description: "#{kind} tokens", unit: "1M tokens", pricePerUnit: {USD: (kind == "Input") ? "1.25" : "2.50"}
+        }}}}}
+      )
+    end
+    stub_http_client(lambda { |uri:, **|
+      if uri.host.start_with?("bedrock.")
+        JSON.generate(modelSummaries: [{modelId: "amazon.test", modelName: "Amazon Test"}])
+      elsif uri.host == "api.pricing.us-east-1.amazonaws.com"
+        JSON.generate(PriceList: pricing)
+      else
+        raise "offline"
+      end
+    }) do
+      resolver = LittleGhost::ModelResolver.new(
+        providers:,
+        profiles: {main: {target: "aws:amazon.test"}},
+        credential_resolver: providers.method(:credentials)
+      )
+
+      assert_empty calls
+      resolver.refresh!(target: "aws:amazon.test")
+      assert_equal 1.25, resolver.details("aws:amazon.test").pricing.fetch(:input)
+      assert_equal "aws_pricing", resolver.details("aws:amazon.test").provenance.fetch(:pricing)
+    end
+
+    assert_equal ["aws"], calls
+  end
+
+  def test_bedrock_catalog_uses_the_aws_credential_chain_when_provider_credentials_are_empty
+    keys = %w[AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN]
+    original = keys.to_h { |key| [key, ENV[key]] }
+    ENV["AWS_ACCESS_KEY_ID"] = "chain-key"
+    ENV["AWS_SECRET_ACCESS_KEY"] = "chain-secret"
+    ENV.delete("AWS_SESSION_TOKEN")
+    providers = LittleGhost::Providers::Configuration.new(aws: {adapter: :bedrock, region: "us-west-2"})
+    authorization = nil
+
+    stub_http_client(lambda { |uri:, headers: {}, **|
+      raise "offline" unless uri.host.start_with?("bedrock.")
+
+      authorization = headers.fetch("authorization")
+      JSON.generate(modelSummaries: [])
+    }) do
+      resolver = LittleGhost::ModelResolver.new(
+        providers:,
+        profiles: {main: {target: "aws:amazon.test"}},
+        credential_resolver: providers.method(:credentials)
+      )
+      resolver.refresh!(target: "aws:amazon.test")
+    end
+
+    assert_includes authorization, "Credential=chain-key/"
+  ensure
+    original&.each { |key, value| value ? ENV[key] = value : ENV.delete(key) }
   end
 
   private

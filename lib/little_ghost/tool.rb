@@ -309,6 +309,10 @@ module LittleGhost
       raise AbstractMethodError, "#{self.class} must implement #call"
     end
 
+    # Releases resources owned by this tool. Subclasses may override it.
+    def close
+    end
+
     protected
 
     attr_reader :binding

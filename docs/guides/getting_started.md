@@ -2,7 +2,7 @@
 
 This guide builds a small AI customer support feature around an agent that checks an in-memory help center and returns a normal Ruby result. By the end, you will have configured a model provider, declared a validated tool, run `CustomerSupportAgent`, and streamed the same request as events.
 
-The example uses OpenAI, but the agent and tool do not depend on that choice. Conventional YAML keeps the provider boundary behind the logical model role `customer_support`.
+The example uses OpenAI, but the agent and tool do not depend on that choice. A logical model role named `customer_support` keeps the provider choice out of both classes.
 
 ## Before you begin
 
@@ -23,7 +23,7 @@ Use application-specific secret management outside a local shell. Do not commit 
 
 ## Create the application shape
 
-LittleGhost looks for agents, tools, prompts, and skills under conventional application directories. These paths are defaults rather than a required project layout. This example needs four files:
+LittleGhost can load agents, tools, prompts, and skills from conventional application directories. These paths are defaults, not a required project layout. This example uses four files:
 
 ```text
 customer_support_app/
@@ -33,36 +33,35 @@ customer_support_app/
 │   │   └── customer_support_agent.rb
 │   └── tools/
 │       └── help_center_lookup_tool.rb
-└── config/little_ghost/
-    ├── providers.yml
-    └── models.yml
+└── support.rb
 ```
 
-Run the application from `customer_support_app/`, or set the configuration root explicitly before the first runtime is built. The runtime loads `config/little_ghost.rb` lazily and eager-loads conventional application code.
+Run the application from `customer_support_app/`, or set the configuration root before the first runtime is built. The runtime eager-loads conventional application code. Applications that already own loading may place these classes anywhere.
 
 ## Configure a logical model role
 
-Define the named connection and logical model role in the conventional files:
+In `support.rb`, define the named connection and logical model role:
 
-```yaml
-# config/little_ghost/providers.yml
-providers:
-  openai:
-    adapter: openai
-    api_key: <%= ENV.fetch("OPENAI_API_KEY") %>
+```ruby
+require "little_ghost"
 
-# config/little_ghost/models.yml
-default_model: customer_support
-models:
-  customer_support:
-    target: openai:gpt-5
-    settings:
-      temperature: 0.2
+LittleGhost.configure do |config|
+  config.providers = {
+    openai: {adapter: :openai, api_key: ENV.fetch("OPENAI_API_KEY")}
+  }
+  config.models = {
+    customer_support: {
+      target: "openai:gpt-5",
+      settings: {temperature: 0.2}
+    }
+  }
+  config.default_model = :customer_support
+end
 ```
 
 The agent will ask for the role `customer_support`; it never needs the provider name or provider model identifier. This separation lets an application change providers without changing agent classes. Treat model settings and profile overlays as trusted application configuration: construct or allowlist them server-side instead of copying unchecked request fields.
 
-Each section resolves independently. `config.providers` or `config.models` wins over its explicit path, an explicit `providers_path` or `models_path` wins over the matching conventional file, and a missing conventional file falls through to defaults. An explicitly configured missing path raises `LittleGhost::ConfigurationError`. `config.default_model` replaces only the default role declared in `models.yml`, so inline providers can be combined with file-backed models and either YAML file may exist alone.
+Provider connections and model profiles resolve independently. Inline declarations take precedence over an explicit path, which takes precedence over an optional conventional file under `config/little_ghost/`; environment-based providers and the built-in default profile are the final fallback. An explicit missing path raises `LittleGhost::ConfigurationError`. See `LittleGhost::Configuration` for the YAML shape and path settings.
 
 ## Give the agent one validated tool
 
@@ -130,11 +129,9 @@ The class is a readable behavior boundary. It declares which model role, prompt,
 
 ## Run the agent
 
-From the application root, start a Ruby process that requires LittleGhost and asks the agent a question:
+From the application root, run `support.rb` and ask the agent a question:
 
 ```ruby
-require "little_ghost"
-
 runtime = LittleGhost::Runtime.new(configuration: LittleGhost.configuration)
 customer_support_agent = CustomerSupportAgent.new(runtime:)
 run = customer_support_agent.ask(

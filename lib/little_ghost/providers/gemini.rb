@@ -11,10 +11,12 @@ module LittleGhost
   module Providers
     # Zero-dependency Gemini generateContent adapter.
     class Gemini < Base
-      DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/"
+      DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/" # :nodoc:
 
+      # Provider-owned model identifier.
       attr_reader :model
 
+      # Creates a Gemini generateContent client for +model+.
       def initialize(api_key:, model:, base_url: DEFAULT_BASE_URL, open_timeout: 10, read_timeout: 120,
         max_response_bytes: Support::HTTPClient::DEFAULT_MAX_RESPONSE_BYTES, transport: nil, **)
         raise CredentialError, "Gemini api_key is required" if api_key.to_s.empty?

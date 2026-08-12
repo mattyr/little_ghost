@@ -4,6 +4,7 @@ require "json"
 require "time"
 
 module LittleGhost
+  # Immutable model identities, metadata, configuration readers, and catalogs.
   module Models
     # Resolves model facts from refreshed data and the snapshot packaged with
     # LittleGhost. Refresh is always explicit.

@@ -679,6 +679,18 @@ class ConfigurationTest < Minitest::Test
     assert_equal "support", harness.default_model
   end
 
+  def test_custom_model_resolver_cannot_be_combined_with_default_resolver_configuration
+    resolver = Class.new(LittleGhost::ModelResolver)
+    harness = TestHarness.new
+    harness.model_resolver resolver
+    harness.models(main: {target: "test:model"})
+    harness.default_model :main
+
+    error = assert_raises(LittleGhost::ConfigurationError) { harness.model_resolver }
+
+    assert_equal "custom model_resolver cannot be combined with models, default_model", error.message
+  end
+
   def test_instrument_dsl_subscribes_configured_objects
     events = []
     subscriber = TestTelemetryRecorder.new(events)

@@ -11,9 +11,10 @@ module LittleGhost
       # Resolves Vertex access tokens from explicit values, service-account ADC,
       # or the Google metadata server.
       class CredentialResolver
-        TOKEN_URI = URI("https://oauth2.googleapis.com/token")
-        SCOPE = "https://www.googleapis.com/auth/cloud-platform"
+        TOKEN_URI = URI("https://oauth2.googleapis.com/token") # :nodoc:
+        SCOPE = "https://www.googleapis.com/auth/cloud-platform" # :nodoc:
 
+        # Uses an explicit token or Google application credentials in +environment+.
         def initialize(environment: ENV, access_token: nil, clock: -> { Time.now.to_i })
           @environment = environment
           @access_token = access_token
@@ -21,6 +22,7 @@ module LittleGhost
           @mutex = Mutex.new
         end
 
+        # Returns a current access token, refreshing cached credentials as needed.
         def call(cancellation_token: nil, deadline: nil)
           return @access_token unless @access_token.to_s.empty?
 

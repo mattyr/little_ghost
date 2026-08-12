@@ -7,6 +7,7 @@ module LittleGhost
   module Providers
     # Google Vertex AI variant of the Gemini wire protocol.
     class VertexAI < Gemini
+      # Creates a Vertex AI client for a Google Cloud +project+ and +location+.
       def initialize(model:, project:, location: "global", access_token: nil, credential_resolver: nil,
         base_url: nil, **arguments)
         @project = project.to_s

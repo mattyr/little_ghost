@@ -4,14 +4,17 @@ module LittleGhost
   module Providers
     # Reports a bounded HTTP or network failure from a provider connection.
     class HTTPError < ProviderError
+      # HTTP status, when a response was received, and the bounded response body.
       attr_reader :status, :body
 
+      # Captures a provider failure without retaining an unbounded response.
       def initialize(message, status: nil, body: nil)
         @status = status
         @body = body
         super(message)
       end
 
+      # Whether retrying the same provider request may succeed.
       def retryable?
         status.nil? || status == 408 || status == 409 || status == 429 || status >= 500
       end

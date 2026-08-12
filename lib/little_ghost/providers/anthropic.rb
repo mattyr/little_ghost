@@ -10,10 +10,12 @@ module LittleGhost
   module Providers
     # Zero-dependency Anthropic Messages API adapter.
     class Anthropic < Base
-      DEFAULT_BASE_URL = "https://api.anthropic.com/v1/"
+      DEFAULT_BASE_URL = "https://api.anthropic.com/v1/" # :nodoc:
 
+      # Provider-owned model identifier.
       attr_reader :model
 
+      # Creates an Anthropic Messages client for +model+.
       def initialize(api_key:, model:, base_url: DEFAULT_BASE_URL, api_version: "2023-06-01",
         open_timeout: 10, read_timeout: 120, max_response_bytes: Support::HTTPClient::DEFAULT_MAX_RESPONSE_BYTES,
         transport: nil, **)
@@ -25,6 +27,7 @@ module LittleGhost
         @transport = transport || Support::HTTPClient.new(base_url:, open_timeout:, read_timeout:, max_response_bytes:)
       end
 
+      # Streams normalized events for +request+.
       def stream(request)
         return enum_for(__method__, request) unless block_given?
 
@@ -50,6 +53,7 @@ module LittleGhost
         raise ProtocolError, "Anthropic returned invalid JSON: #{error.message}"
       end
 
+      # Reports tool and structured-output support from model metadata.
       def capabilities(metadata: {})
         parameters = metadata[:supported_parameters]
         ModelCapabilities.new(

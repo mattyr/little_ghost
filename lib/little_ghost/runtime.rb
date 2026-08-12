@@ -10,7 +10,10 @@ module LittleGhost
   #
   #   configuration = LittleGhost::Configuration.new(
   #     root: Dir.pwd,
-  #     model_resolver: LittleGhost::ModelResolver.new,
+  #     providers: {
+  #       openai: {adapter: :openai, api_key: ENV.fetch("OPENAI_API_KEY")}
+  #     },
+  #     models: {customer_support: {target: "openai:gpt-5"}},
   #     default_model: "customer_support",
   #     service_name: "support-api"
   #   )
@@ -190,7 +193,7 @@ module LittleGhost
 
     def model_for(agent_class, run) # :nodoc:
       role = agent_class.model_role(run.invocation) || @default_model
-      model_resolver.resolve(role, invocation: run.invocation, run:)
+      model_resolver.resolve(role, invocation: run.invocation, context: run)
     end
 
     def open_session(run) # :nodoc:

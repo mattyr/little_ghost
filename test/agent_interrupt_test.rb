@@ -246,7 +246,7 @@ class AgentInterruptTest < Minitest::Test
     agent&.close
   end
 
-  def test_unkeyed_interruptions_retain_legacy_one_per_boundary_behavior
+  def test_unkeyed_interruptions_are_delivered_one_per_boundary
     interruptions = LittleGhost::AgentInterruptions.new
     message = LittleGhost::Message.new(role: :user, content: "steer")
     first_ticket = interruptions.enqueue(message, id: "one")

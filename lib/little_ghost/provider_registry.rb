@@ -4,9 +4,11 @@ module LittleGhost
   # Constructs built-in and application provider adapters from named provider
   # connections. Register adapters during application configuration.
   class ProviderRegistry
+    # :nodoc:
     REQUEST_OPTIONS = %i[
       app_name max_response_bytes max_retries max_retry_delay open_timeout read_timeout retries
     ].freeze
+    # :nodoc:
     BUILT_INS = {
       "openai_compatible" => Providers::OpenAICompatible,
       "openai" => Providers::OpenAI,
@@ -17,10 +19,17 @@ module LittleGhost
       "bedrock" => Providers::Bedrock
     }.freeze
 
+    # Creates a registry with optional adapter factories keyed by adapter name.
+    # Application adapters supplement the built-in provider adapters.
     def initialize(adapters: {})
       @adapters = BUILT_INS.merge(adapters.to_h.transform_keys(&:to_s))
     end
 
+    # Constructs the configured provider for +model+.
+    #
+    # Connection +configuration+ remains authoritative. The trusted per-profile
+    # +request+ mapping may adjust bounded request behavior, but cannot replace
+    # endpoints or credentials.
     def build(adapter:, model:, configuration:, request: {}, **context)
       factory = @adapters.fetch(adapter.to_s) do
         raise AdapterLoadError, "Unknown provider adapter: #{adapter}"

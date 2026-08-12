@@ -119,7 +119,7 @@ module LittleGhost
 
         @entrypoint
       end
-      unless entrypoint.respond_to?(:interrupt_response)
+      unless entrypoint.is_a?(Agent)
         raise AgentInterruptError, "Run entrypoint does not support interruptions"
       end
 
@@ -417,7 +417,7 @@ module LittleGhost
     def entrypoint_name
       return entrypoint_class.name.to_s if workflow_run?
 
-      return @entrypoint.entrypoint_name if @entrypoint&.respond_to?(:entrypoint_name)
+      return @entrypoint.entrypoint_name if @entrypoint.is_a?(Agent)
 
       entrypoint_class.agent_id
     end
@@ -563,7 +563,6 @@ module LittleGhost
 
     def diagnostic_invocation_message
       message = invocation.message
-      return message unless message.respond_to?(:text)
       return message.text unless message.text.empty?
 
       {

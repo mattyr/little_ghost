@@ -11,7 +11,7 @@ class StructuredResultsTest < Minitest::Test
 
     attr_reader :capabilities
 
-    def initialize(*responses, capabilities: LittleGhost::ModelCapabilities.legacy)
+    def initialize(*responses, capabilities: LittleGhost::ModelCapabilities.permissive)
       @responses = responses
       @requests = []
       @capabilities = capabilities
@@ -596,7 +596,7 @@ class StructuredResultsTest < Minitest::Test
     model = Class.new do
       include LittleGhost::ModelInterface
 
-      def capabilities = LittleGhost::ModelCapabilities.legacy
+      def capabilities = LittleGhost::ModelCapabilities.permissive
 
       def stream(_request)
         raise LittleGhost::Providers::HTTPError.new(

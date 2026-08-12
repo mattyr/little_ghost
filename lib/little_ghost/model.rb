@@ -12,7 +12,7 @@ module LittleGhost
     # Immutable capabilities, limits, modalities, and pricing facts.
     def details = Models::Details.new(target:)
     # Normalized feature support used for request strategy selection.
-    def capabilities = ModelCapabilities.legacy
+    def capabilities = ModelCapabilities.permissive
   end
 
   # Model is the configured connection between an agent role and a provider. It
@@ -28,7 +28,8 @@ module LittleGhost
     # details, and logical application role.
     attr_reader :provider, :target, :settings, :details, :role
 
-    # Wraps an object that responds to +stream+.
+    # Connects a provider adapter to its canonical +target+, profile +settings+,
+    # optional model +details+, and logical +role+.
     def initialize(provider:, target:, settings: {}, details: nil, role: nil)
       raise ArgumentError, "provider must be a LittleGhost::Providers::Base" unless provider.is_a?(Providers::Base)
 
@@ -46,6 +47,7 @@ module LittleGhost
     #
     # Profile settings are defaults; settings on +request+ take precedence.
     def stream(request, &block)
+      validate_input_modalities!(request)
       configured_request = ModelRequest.new(
         messages: request.messages,
         tools: request.tools,
@@ -60,10 +62,30 @@ module LittleGhost
       provider.stream(configured_request, &block)
     end
 
-    # Uses advertised provider capabilities, falling back to the permissive legacy
-    # contract for providers that do not advertise them.
+    # Uses advertised provider capabilities.
     def capabilities
       @capabilities ||= provider.capabilities(metadata: details.attributes)
+    end
+
+    private
+
+    def validate_input_modalities!(request)
+      supported = details.input_modalities
+      return unless supported
+
+      required = request.messages.flat_map do |message|
+        message.content.filter_map do |block|
+          case block
+          when Content::Image then "image"
+          when Content::Document then (block.media_type == "application/pdf") ? "pdf" : "file"
+          end
+        end
+      end.uniq
+      missing = required - Array(supported).map { |value| value.to_s.downcase }
+      return if missing.empty?
+
+      raise UnsupportedInputError,
+        "The selected model does not support #{missing.join(" and ")} attachments. Choose a compatible model or remove those attachments."
     end
   end
 end

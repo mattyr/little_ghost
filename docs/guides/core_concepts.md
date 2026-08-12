@@ -1,10 +1,10 @@
 # Core Concepts
 
-LittleGhost gives Ruby software two ways to compose AI behavior. Agents can choose among validated tools and delegated specialists, while agentic workflows keep required ordering and branching under application control. The customer support example makes that boundary visible: CustomerSupportModels chooses provider-backed models, CustomerSupportAgent owns behavior, HelpCenterLookupTool exposes a narrow help center lookup, ResearchAgent handles delegated investigation, and ResponseWorkflow imposes a deterministic sequence when the surrounding system requires one.
+LittleGhost gives Ruby software two ways to compose AI behavior. Agents can choose among validated tools and delegated specialists, while agentic workflows keep required ordering and branching under application control. The customer support example makes that boundary visible: ModelResolver chooses provider-backed models, CustomerSupportAgent owns behavior, HelpCenterLookupTool exposes a narrow help center lookup, ResearchAgent handles delegated investigation, and ResponseWorkflow imposes a deterministic sequence when the surrounding system requires one.
 
 ```text
 shared configuration
-└── CustomerSupportModels ── resolves logical roles ──> provider clients
+└── ModelResolver ── resolves logical roles ──> provider clients
 
 one request
 └── Run
@@ -19,12 +19,17 @@ one deterministic request
 
 ## Models are selected by role
 
-An agent names a logical role such as `customer_support`, not a vendor model. `models.yml` maps that stable application vocabulary to a canonical target:
+An agent names a logical role such as `customer_support`, not a vendor model. Inline configuration can map that stable application vocabulary to a canonical target:
 
-```yaml
-models:
-  customer_support:
-    target: openai:gpt-5
+```ruby
+LittleGhost.configure do |config|
+  config.providers = {
+    openai: {adapter: :openai, api_key: ENV.fetch("OPENAI_API_KEY")}
+  }
+  config.models = {
+    customer_support: {target: "openai:gpt-5"}
+  }
+end
 ```
 
 Dotted roles inherit from the nearest registered parent. `ResearchAgent` can request `customer_support.research` and initially use the `customer_support` profile; registering `customer_support.research` later specializes it. A resolver caller may pass an explicit `profiles:` overlay without mutating the configured profiles or agent class. Because an overlay can select a different registered provider, model, and settings, it is trusted application configuration and must be constructed or allowlisted by the application rather than copied from unchecked request data. The base resolver does not inspect application-specific invocation fields.
@@ -186,7 +191,7 @@ Streams expose generic framework events rather than provider wire formats. Consu
 
 The core design can be summarized as four choices:
 
-- Put shared construction and provider policy inline or in independent `providers.yml` and `models.yml` files.
+- Put shared construction and provider policy in configuration; use inline declarations or independent YAML files according to the application's needs.
 - Put model behavior and available capabilities on agent classes.
 - Put privileged application operations behind narrow, authorized tools.
 - Put mandatory ordering in workflows; leave optional delegation to subagents.

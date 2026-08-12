@@ -45,8 +45,9 @@ module LittleGhost
       names.flatten.any? { |name| supported_parameters.include?(name.to_s) }
     end
 
-    # Supplies the backwards-compatible capability set for legacy providers.
-    def self.legacy
+    # Supplies a permissive capability set when a provider accepts every
+    # optional model feature.
+    def self.permissive
       new(native_structured_output: true, tools: true, tool_choice: true)
     end
 
@@ -115,9 +116,9 @@ module LittleGhost
     # capability set supports every name.
 
     ##
-    # :singleton-method: legacy
-    # Supplies the permissive capability set for providers that predate explicit
-    # capability reporting.
+    # :singleton-method: permissive
+    # Supplies a permissive capability set for providers that accept every
+    # optional model feature.
 
     ##
     # :singleton-method: unknown

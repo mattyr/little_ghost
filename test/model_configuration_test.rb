@@ -148,7 +148,7 @@ class ModelConfigurationTest < Minitest::Test
     end
   end
 
-  def test_custom_resolver_receives_providers_and_owns_profiles_and_default
+  def test_custom_resolver_receives_providers_and_owns_its_profiles_and_default
     resolver_class = Class.new(LittleGhost::ModelResolver) do
       def initialize(providers:, provider_adapters:, catalog_sources:, credential_resolver:)
         super(
@@ -164,18 +164,10 @@ class ModelConfigurationTest < Minitest::Test
     configuration = LittleGhost::Configuration.new
     configuration.providers = LittleGhost::Providers::Configuration.new(primary: {adapter: :test})
     configuration.provider_adapter("test", ->(**) { RecordingProvider.new })
-    configuration.models = {ignored: {target: "primary:ignored"}}
-    configuration.models_path = "ignored.yml"
-    configuration.default_model = :ignored
     configuration.model_resolver = resolver_class
 
-    _output, warnings = capture_io do
-      assert_equal "primary:model", configuration.model_resolver.resolve("owned").target.to_s
-      assert_equal "owned", configuration.settings.fetch(:default_model)
-    end
-
-    assert_equal 1, warnings.lines.grep(/custom model_resolver/).length
-    assert_includes warnings, "models, models_path, default_model"
+    assert_equal "primary:model", configuration.model_resolver.resolve("owned").target.to_s
+    assert_equal "owned", configuration.settings.fetch(:default_model)
   end
 
   def test_model_resolver_requires_a_subclass

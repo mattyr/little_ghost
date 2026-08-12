@@ -18,17 +18,21 @@ module LittleGhost
 
       # Resolves common AWS credentials without depending on an AWS SDK.
       class CredentialResolver
+        # Uses +environment+ and the selected shared-credentials +profile+.
         def initialize(environment: ENV, profile: nil, credentials_file: nil)
           @environment = environment
           @profile = profile || environment["AWS_PROFILE"] || "default"
           @credentials_file = credentials_file || environment["AWS_SHARED_CREDENTIALS_FILE"] || File.expand_path("~/.aws/credentials")
         end
 
+        # Returns the first complete credential set from the environment,
+        # shared credentials, container metadata, or IMDSv2.
         def call
           from_environment || from_profile || from_container || from_instance_metadata ||
             raise(CredentialError, "No AWS credentials were found in the environment, selected shared profile, container credentials, or IMDSv2")
         end
 
+        # Returns the configured AWS region, when one can be resolved.
         def region
           @environment["AWS_REGION"] || @environment["AWS_DEFAULT_REGION"] || profile_values(config_file)["region"]
         end

@@ -5,20 +5,20 @@ module LittleGhost
     class Gemini < Base
       # Enriches Gemini availability and limits from the Developer API.
       class CatalogSource < Models::Catalog::Source
-        URL = URI("https://generativelanguage.googleapis.com/v1beta/models")
-        attr_reader :name
+        URL = URI("https://generativelanguage.googleapis.com/v1beta/models") # :nodoc:
 
-        def initialize(provider:, api_key:)
+        # Creates a source for the named provider connection.
+        def initialize(provider:, credential_resolver:)
           super(name: "gemini")
           @provider = provider
-          @api_key = api_key
+          @credential_resolver = credential_resolver
         end
 
         def refresh(target: nil)
-          uri = URI("#{URL}?key=#{URI.encode_www_form_component(@api_key)}")
+          api_key = @credential_resolver.call.fetch("api_key")
           values = JSON.parse(
             Support::HTTPClient.new(open_timeout: 5, read_timeout: 30, max_response_bytes: 25 * 1024 * 1024)
-              .request(uri:)
+              .request(uri: URL, headers: {"x-goog-api-key" => api_key})
           ).fetch("models")
           values.select! { |value| value["name"].to_s.delete_prefix("models/") == target.model_id } if target
           values.to_h do |value|

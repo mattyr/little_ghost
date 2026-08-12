@@ -6,23 +6,23 @@ require "uri"
 module LittleGhost
   module Models
     class Catalog
-      MAX_CATALOG_BYTES = 25 * 1024 * 1024
+      MAX_CATALOG_BYTES = 25 * 1024 * 1024 # :nodoc:
 
       # Refreshes normalized facts from the public models.dev catalog.
       class ModelsDevSource < Source
-        URL = URI("https://models.dev/api.json")
-        NAMESPACES = {
+        URL = URI("https://models.dev/api.json") # :nodoc:
+        NAMESPACES = { # :nodoc:
           "openai" => "openai", "openrouter" => "openrouter", "anthropic" => "anthropic",
           "gemini" => "google", "vertex_ai" => "google-vertex", "bedrock" => "amazon-bedrock"
         }.freeze
 
-        attr_reader :name
-
+        # Creates a source that maps application provider names to adapters.
         def initialize(provider_adapters:)
           super(name: "models.dev")
           @provider_adapters = provider_adapters.to_h.transform_keys(&:to_s)
         end
 
+        # Fetches normalized model facts, optionally for one canonical +target+.
         def refresh(target: nil)
           document = JSON.parse(
             Support::HTTPClient.new(open_timeout: 5, read_timeout: 30, max_response_bytes: MAX_CATALOG_BYTES)
