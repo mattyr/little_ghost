@@ -116,6 +116,52 @@ class ModelResolverTest < Minitest::Test
     end
   end
 
+  def test_resolve_uses_overridable_details_interface_and_clamps_output_tokens
+    providers = LittleGhost::Providers::Configuration.new(test: {adapter: :test})
+    resolver = Class.new(LittleGhost::ModelResolver) do
+      def details(target)
+        LittleGhost::Models::Details.new(target:, attributes: {max_output_tokens: 200})
+      end
+    end.new(
+      providers:,
+      profiles: {main: {target: "test:model", settings: {max_tokens: 500}}},
+      provider_adapters: {"test" => ->(**) { RecordingProvider.new }}
+    )
+
+    model = resolver.resolve("main")
+
+    assert_equal 200, model.settings.fetch(:max_tokens)
+  end
+
+  def test_request_settings_cannot_exceed_advertised_output_limit
+    provider = RecordingProvider.new
+    details = LittleGhost::Models::Details.new(target: "test:model", attributes: {max_output_tokens: 200})
+    model = LittleGhost::Model.new(provider:, target: "test:model", settings: {max_tokens: 50}, details:)
+    request = LittleGhost::ModelRequest.new(
+      messages: [LittleGhost::Message.new(role: :user, content: "hello")],
+      settings: {max_tokens: 500}
+    )
+
+    model.stream(request).to_a
+
+    assert_equal 200, provider.request.settings.fetch(:max_tokens)
+  end
+
+  def test_string_request_settings_cannot_exceed_advertised_output_limit
+    provider = RecordingProvider.new
+    details = LittleGhost::Models::Details.new(target: "test:model", attributes: {max_output_tokens: 200})
+    model = LittleGhost::Model.new(provider:, target: "test:model", settings: {max_tokens: 50}, details:)
+    request = LittleGhost::ModelRequest.new(
+      messages: [LittleGhost::Message.new(role: :user, content: "hello")],
+      settings: {"max_tokens" => 100}
+    )
+
+    model.stream(request).to_a
+
+    assert_equal 100, provider.request.settings.fetch(:max_tokens)
+    refute provider.request.settings.key?("max_tokens")
+  end
+
   def test_conventional_retries_request_option_maps_to_provider_max_retries
     with_configuration(
       providers: "providers:\n  test:\n    adapter: test\n",
@@ -235,6 +281,21 @@ class ModelResolverTest < Minitest::Test
   def test_model_details_preflight_accepts_pdf_documents_for_pdf_models
     provider = RecordingProvider.new
     details = LittleGhost::Models::Details.new(target: "test:documents", attributes: {input_modalities: %w[text pdf]})
+    model = LittleGhost::Model.new(provider:, target: "test:documents", details:)
+    request = LittleGhost::ModelRequest.new(messages: [
+      LittleGhost::Message.new(role: :user, content: [
+        LittleGhost::Content::Document.new(data: "pdf", media_type: "application/pdf", name: "guide.pdf")
+      ])
+    ])
+
+    model.stream(request).to_a
+
+    assert_equal request.messages, provider.request.messages
+  end
+
+  def test_model_details_preflight_accepts_pdf_documents_for_generic_file_models
+    provider = RecordingProvider.new
+    details = LittleGhost::Models::Details.new(target: "test:documents", attributes: {input_modalities: %w[text file]})
     model = LittleGhost::Model.new(provider:, target: "test:documents", details:)
     request = LittleGhost::ModelRequest.new(messages: [
       LittleGhost::Message.new(role: :user, content: [

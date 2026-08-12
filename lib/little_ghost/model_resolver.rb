@@ -56,6 +56,7 @@ module LittleGhost
       end
       provider_config = provider_config.merge(resolved_credentials(target.provider, provider_config)) if @credential_resolver
       details = details_for(target, base[:details])
+      settings = clamp_output_tokens(base.fetch(:settings), details)
       adapter = provider_config.fetch("adapter")
       provider = @provider_registry.build(
         adapter:,
@@ -63,13 +64,13 @@ module LittleGhost
         configuration: provider_config,
         request: base.fetch(:request),
         role:,
-        settings: base.fetch(:settings),
+        settings:,
         details:,
         invocation:,
         context:,
         **options
       )
-      Model.new(provider:, target:, settings: base.fetch(:settings), details:, role:)
+      Model.new(provider:, target:, settings:, details:, role:)
     end
 
     # Returns normalized metadata for +target+ without constructing a provider.
@@ -91,7 +92,7 @@ module LittleGhost
     end
 
     def details_for(target, snapshot)
-      return catalog.details(target) unless snapshot
+      return details(target) unless snapshot
 
       values = snapshot.to_h.transform_keys(&:to_sym)
       snapshot_target = Models::Target.parse(values.delete(:target) || target)
@@ -103,6 +104,14 @@ module LittleGhost
         provenance: values[:provenance] || {},
         observed_at: values[:observed_at]
       )
+    end
+
+    def clamp_output_tokens(settings, details)
+      configured = settings[:max_tokens]
+      advertised = details.max_output_tokens
+      return settings unless configured && advertised
+
+      settings.merge(max_tokens: [configured, advertised].min)
     end
 
     def built_in_catalog_sources

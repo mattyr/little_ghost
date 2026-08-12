@@ -48,10 +48,23 @@ module LittleGhost
     # Profile settings are defaults; settings on +request+ take precedence.
     def stream(request, &block)
       validate_input_modalities!(request)
+      configured_settings = settings.merge(request.settings)
+      configured_max_tokens = if request.settings.key?(:max_tokens)
+        request.settings[:max_tokens]
+      elsif request.settings.key?("max_tokens")
+        request.settings["max_tokens"]
+      else
+        settings[:max_tokens] || settings["max_tokens"]
+      end
+      if configured_max_tokens && details.max_output_tokens
+        configured_settings.delete(:max_tokens)
+        configured_settings.delete("max_tokens")
+        configured_settings[:max_tokens] = [configured_max_tokens, details.max_output_tokens].min
+      end
       configured_request = ModelRequest.new(
         messages: request.messages,
         tools: request.tools,
-        settings: settings.merge(request.settings),
+        settings: configured_settings,
         output_schema: request.output_schema,
         tool_choice: request.tool_choice,
         required_capabilities: request.required_capabilities,
@@ -81,7 +94,10 @@ module LittleGhost
           end
         end
       end.uniq
-      missing = required - Array(supported).map { |value| value.to_s.downcase }
+      available = Array(supported).map { |value| value.to_s.downcase }
+      missing = required.reject do |modality|
+        available.include?(modality) || (modality == "pdf" && available.include?("file"))
+      end
       return if missing.empty?
 
       raise UnsupportedInputError,
