@@ -69,11 +69,27 @@ module LittleGhost
       end
 
       def merge_records(left, right)
+        attributes = left.fetch(:attributes, {}).merge(right.fetch(:attributes, {}))
+        provenance = left.fetch(:provenance, {}).merge(right.fetch(:provenance, {}))
+        merge_additive_bedrock_modalities!(attributes, provenance, left, right)
         {
-          attributes: left.fetch(:attributes, {}).merge(right.fetch(:attributes, {})),
-          provenance: left.fetch(:provenance, {}).merge(right.fetch(:provenance, {})),
+          attributes:,
+          provenance:,
           observed_at: right[:observed_at] || left[:observed_at]
         }
+      end
+
+      def merge_additive_bedrock_modalities!(attributes, provenance, left, right)
+        right_provenance = right.fetch(:provenance, {})
+        source = right_provenance[:input_modalities] || right_provenance["input_modalities"]
+        existing = left.fetch(:attributes, {})[:input_modalities]
+        refreshed = right.fetch(:attributes, {})[:input_modalities]
+        return unless source == "bedrock" && existing && refreshed
+
+        attributes[:input_modalities] = (Array(existing) + Array(refreshed)).uniq
+        left_provenance = left.fetch(:provenance, {})
+        previous_source = left_provenance[:input_modalities] || left_provenance["input_modalities"]
+        provenance[:input_modalities] = [previous_source, source].compact.uniq.join("+")
       end
     end
   end

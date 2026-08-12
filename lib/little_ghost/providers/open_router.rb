@@ -20,6 +20,9 @@ module LittleGhost
     # Requests that need a capability ask OpenRouter to route only to providers
     # that advertise it.
     class OpenRouter < OpenAICompatible
+      # Adds OpenRouter attribution to the shared OpenAI-compatible policy.
+      def self.request_options = (super + [:app_name]).freeze
+
       # The OpenRouter API endpoint used when +base_url+ is omitted.
       DEFAULT_BASE_URL = "https://openrouter.ai/api/v1/"
       TOP_LEVEL_CACHE_MODELS = ["anthropic/", "~anthropic/"].freeze # :nodoc:

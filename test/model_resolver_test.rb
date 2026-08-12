@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require "fileutils"
+require "json"
+require "tempfile"
 require "tmpdir"
 require "test_helper"
 
@@ -268,6 +270,22 @@ class ModelResolverTest < Minitest::Test
     end
   end
 
+  def test_built_in_providers_receive_only_the_request_options_they_support
+    provider = LittleGhost::ProviderRegistry.new.build(
+      adapter: "bedrock",
+      model: "anthropic.claude-test",
+      configuration: {region: "us-east-2", client: Object.new},
+      request: {
+        app_name: "Support",
+        max_retry_delay: 60,
+        read_timeout: 300,
+        retries: 7
+      }
+    )
+
+    assert_instance_of LittleGhost::Providers::Bedrock, provider
+  end
+
   def test_arbitrary_canonical_target_resolves_with_unknown_details
     with_configuration(
       providers: "providers:\n  gateway:\n    adapter: test\n",
@@ -314,6 +332,52 @@ class ModelResolverTest < Minitest::Test
     assert_equal 9, fast.pricing.fetch(:output)
     assert_equal 0.5, capable.pricing.fetch(:input)
     assert_equal 3.15, capable.pricing.fetch(:output)
+  end
+
+  def test_bedrock_refresh_preserves_richer_bundled_input_modalities
+    Tempfile.create(["model-catalog", ".json"]) do |snapshot|
+      snapshot.write(JSON.generate(
+        "bedrock:anthropic.claude-test" => {
+          input_modalities: %w[text image pdf],
+          provenance: {input_modalities: "bundled:models.dev"}
+        }
+      ))
+      snapshot.flush
+      source = Class.new(LittleGhost::Models::Catalog::Source).new(name: "bedrock")
+      source.define_singleton_method(:refresh) do |target:|
+        {target.to_s => {available: true, input_modalities: %w[text image], output_modalities: ["text"]}}
+      end
+      catalog = LittleGhost::Models::Catalog.new(sources: [source], snapshot_path: snapshot.path)
+
+      catalog.refresh!(target: "bedrock:anthropic.claude-test")
+      details = catalog.details("bedrock:anthropic.claude-test")
+      provider = RecordingProvider.new
+      model = LittleGhost::Model.new(provider:, target: details.target, details:)
+      request = LittleGhost::ModelRequest.new(messages: [
+        LittleGhost::Message.new(role: :user, content: [
+          LittleGhost::Content::Document.new(data: "pdf", media_type: "application/pdf", name: "guide.pdf")
+        ])
+      ])
+      model.stream(request).to_a
+
+      assert_equal %w[text image pdf], details.input_modalities
+      assert_equal "bundled:models.dev+bedrock", details.provenance.fetch(:input_modalities)
+      assert_equal request.messages, provider.request.messages
+    end
+  end
+
+  def test_bedrock_refresh_keeps_input_modalities_for_live_only_models
+    source = Class.new(LittleGhost::Models::Catalog::Source).new(name: "bedrock")
+    source.define_singleton_method(:refresh) do |target:|
+      {target.to_s => {available: true, input_modalities: %w[text image]}}
+    end
+    catalog = LittleGhost::Models::Catalog.new(sources: [source], snapshot_path: "/missing/catalog.json")
+
+    catalog.refresh!(target: "bedrock:vendor.released-today")
+    details = catalog.details("bedrock:vendor.released-today")
+
+    assert_equal %w[text image], details.input_modalities
+    assert_equal "bedrock", details.provenance.fetch(:input_modalities)
   end
 
   def test_models_dev_source_targets_named_provider_connection

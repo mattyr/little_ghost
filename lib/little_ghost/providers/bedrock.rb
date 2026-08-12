@@ -27,6 +27,11 @@ module LittleGhost
     # retry emits +:model_retry+ and reports whether partial text was already
     # emitted, allowing stream consumers to handle repeated output deliberately.
     class Bedrock < Base
+      # Request policy supported by Bedrock retries and its built-in HTTP client.
+      def self.request_options
+        %i[max_response_bytes max_retries open_timeout read_timeout].freeze
+      end
+
       INITIAL_RETRY_DELAY = 1 # :nodoc:
       MAX_RETRY_DELAY = 16 # :nodoc:
       TRANSIENT_STREAM_ERRORS = %w[

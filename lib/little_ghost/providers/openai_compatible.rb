@@ -26,6 +26,11 @@ module LittleGhost
     # emitted. Partial text may repeat after a retry, so consumers that assemble
     # streams must use that event to discard or replace superseded output.
     class OpenAICompatible < Base
+      # Request policy supported by OpenAI-compatible HTTP clients.
+      def self.request_options
+        %i[max_response_bytes max_retries max_retry_delay open_timeout read_timeout].freeze
+      end
+
       # The OpenAI API endpoint used when +base_url+ is omitted.
       DEFAULT_BASE_URL = "https://api.openai.com/v1/"
       INITIAL_RETRY_DELAY = 1 # :nodoc:

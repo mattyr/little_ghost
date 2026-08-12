@@ -34,6 +34,7 @@ class BedrockCatalogSourceTest < Minitest::Test
 
     assert_empty result.fetch(:errors)
     assert_equal({input: 3.0, output: 15.0}, details.pricing)
+    assert_equal ["text"], details.input_modalities
     assert_equal "aws_pricing", details.provenance.fetch(:pricing)
     assert_equal "bedrock", details.provenance.fetch(:available)
     pricing_requests = client.requests.select { |request| request[:uri].host == "api.pricing.us-east-1.amazonaws.com" }

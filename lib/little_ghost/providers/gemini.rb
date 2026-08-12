@@ -11,6 +11,9 @@ module LittleGhost
   module Providers
     # Zero-dependency Gemini generateContent adapter.
     class Gemini < Base
+      # Request policy supported by Gemini and Vertex AI HTTP clients.
+      def self.request_options = %i[max_response_bytes open_timeout read_timeout].freeze
+
       DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/" # :nodoc:
 
       # Provider-owned model identifier.

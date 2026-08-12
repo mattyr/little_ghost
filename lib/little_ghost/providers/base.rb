@@ -23,6 +23,10 @@ module LittleGhost
     # Shared provider contract. Provider adapters implement #stream and may
     # override capability-sensitive request preparation.
     class Base
+      # Returns the trusted per-profile request options this adapter accepts.
+      # Connection options remain authoritative and are configured separately.
+      def self.request_options = [].freeze
+
       # Streams normalized events for +request+.
       def stream(_request)
         raise AbstractMethodError, "#{self.class} must implement #stream"

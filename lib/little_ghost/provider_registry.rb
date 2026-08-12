@@ -44,6 +44,13 @@ module LittleGhost
         request_options[:max_retries] ||= request_options[:retries]
         request_options.delete(:retries)
       end
+      if factory.is_a?(Class)
+        unless factory <= Providers::Base
+          raise AdapterLoadError, "Provider adapter #{adapter} must inherit LittleGhost::Providers::Base"
+        end
+
+        request_options.select! { |key| factory.request_options.include?(key) }
+      end
       options.merge!(request_options)
       provider = if factory.is_a?(Class)
         factory.new(model:, **options)

@@ -10,6 +10,9 @@ module LittleGhost
   module Providers
     # Zero-dependency Anthropic Messages API adapter.
     class Anthropic < Base
+      # Request policy supported by the Anthropic HTTP client.
+      def self.request_options = %i[max_response_bytes open_timeout read_timeout].freeze
+
       DEFAULT_BASE_URL = "https://api.anthropic.com/v1/" # :nodoc:
 
       # Provider-owned model identifier.
