@@ -36,11 +36,12 @@ class BedrockCredentialResolverTest < Minitest::Test
 
   def test_aws_container_endpoint_rejects_untrusted_hosts
     resolver = LittleGhost::Providers::Bedrock::CredentialResolver.new(
-      environment: {"AWS_CONTAINER_CREDENTIALS_FULL_URI" => "http://example.com/credentials"},
-      http_get: ->(*) { flunk "must not request" }
+      environment: {"AWS_CONTAINER_CREDENTIALS_FULL_URI" => "http://example.com/credentials"}
     )
 
-    error = assert_raises(LittleGhost::CredentialError) { resolver.call }
+    error = stub_http_client(->(**) { flunk "must not request" }) do
+      assert_raises(LittleGhost::CredentialError) { resolver.call }
+    end
 
     assert_includes error.message, "allowed local address"
   end

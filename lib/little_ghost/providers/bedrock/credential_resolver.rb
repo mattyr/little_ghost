@@ -18,11 +18,10 @@ module LittleGhost
 
       # Resolves common AWS credentials without depending on an AWS SDK.
       class CredentialResolver
-        def initialize(environment: ENV, profile: nil, credentials_file: nil, http_get: nil)
+        def initialize(environment: ENV, profile: nil, credentials_file: nil)
           @environment = environment
           @profile = profile || environment["AWS_PROFILE"] || "default"
           @credentials_file = credentials_file || environment["AWS_SHARED_CREDENTIALS_FILE"] || File.expand_path("~/.aws/credentials")
-          @http_get = http_get || method(:http_get)
         end
 
         def call
@@ -66,20 +65,25 @@ module LittleGhost
           token_file = @environment["AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE"]
           token ||= File.read(token_file).strip if token_file && File.file?(token_file)
           headers["Authorization"] = token if token
-          credential_json(@http_get.call(uri, headers:))
+          credential_json(http_client.request(uri:, headers:, allow_insecure_http: true))
         end
 
         def from_instance_metadata
           return if @environment["AWS_EC2_METADATA_DISABLED"].to_s.casecmp?("true")
 
           base = URI("http://169.254.169.254/latest/")
-          token = @http_get.call(URI.join(base, "api/token"), method: :put,
-            headers: {"X-aws-ec2-metadata-token-ttl-seconds" => "21600"})
+          token = http_client.request(uri: URI.join(base, "api/token"), method: :put,
+            headers: {"X-aws-ec2-metadata-token-ttl-seconds" => "21600"}, allow_insecure_http: true)
           headers = {"X-aws-ec2-metadata-token" => token}
-          role = @http_get.call(URI.join(base, "meta-data/iam/security-credentials/"), headers:).strip
+          role = http_client.request(uri: URI.join(base, "meta-data/iam/security-credentials/"), headers:,
+            allow_insecure_http: true).strip
           return if role.empty?
 
-          credential_json(@http_get.call(URI.join(base, "meta-data/iam/security-credentials/#{URI.encode_www_form_component(role)}"), headers:))
+          credential_json(http_client.request(
+            uri: URI.join(base, "meta-data/iam/security-credentials/#{URI.encode_www_form_component(role)}"),
+            headers:,
+            allow_insecure_http: true
+          ))
         rescue HTTPError
           nil
         end
@@ -108,10 +112,7 @@ module LittleGhost
 
         def config_file = @environment["AWS_CONFIG_FILE"] || File.expand_path("~/.aws/config")
 
-        def http_get(uri, method: :get, headers: {})
-          Support::HTTPClient.new(open_timeout: 1, read_timeout: 1, max_response_bytes: 1024 * 1024)
-            .request(uri:, method:, headers:, allow_insecure_http: true)
-        end
+        def http_client = Support::HTTPClient.new(open_timeout: 1, read_timeout: 1, max_response_bytes: 1024 * 1024)
       end
     end
   end

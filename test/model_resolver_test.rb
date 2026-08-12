@@ -206,12 +206,10 @@ class ModelResolverTest < Minitest::Test
         }
       }
     )
-    source = LittleGhost::Models::Catalog::ModelsDevSource.new(
-      provider_adapters: {"router" => "openrouter"},
-      http_get: ->(_uri) { response }
-    )
-
-    records = source.refresh(target: LittleGhost::Models::Target.parse("router:new/model"))
+    source = LittleGhost::Models::Catalog::ModelsDevSource.new(provider_adapters: {"router" => "openrouter"})
+    records = stub_http_client(->(**) { response }) do
+      source.refresh(target: LittleGhost::Models::Target.parse("router:new/model"))
+    end
 
     assert_equal 123, records.dig("router:new/model", :context_window)
     assert_equal 1.25, records.dig("router:new/model", :pricing, "input")

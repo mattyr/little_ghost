@@ -19,6 +19,29 @@ end
 
 Minitest::Test.prepend(InstrumentationIsolation)
 
+class TestHTTPClient
+  attr_reader :requests
+
+  def initialize(&response)
+    @response = response
+    @requests = []
+  end
+
+  def request(**arguments)
+    requests << arguments
+    @response.call(**arguments)
+  end
+end
+
+module HTTPClientTestSupport
+  def stub_http_client(response)
+    client = TestHTTPClient.new(&response)
+    LittleGhost::Support::HTTPClient.stub(:new, client) { yield client }
+  end
+end
+
+Minitest::Test.include(HTTPClientTestSupport)
+
 class TestInstrumentationSubscriber < LittleGhost::Instrumentation::Subscriber
   attr_reader :events
 

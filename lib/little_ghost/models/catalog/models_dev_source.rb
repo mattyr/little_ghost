@@ -18,14 +18,16 @@ module LittleGhost
 
         attr_reader :name
 
-        def initialize(provider_adapters:, http_get: nil)
+        def initialize(provider_adapters:)
           super(name: "models.dev")
           @provider_adapters = provider_adapters.to_h.transform_keys(&:to_s)
-          @http_get = http_get || method(:http_get)
         end
 
         def refresh(target: nil)
-          document = JSON.parse(@http_get.call(URL))
+          document = JSON.parse(
+            Support::HTTPClient.new(open_timeout: 5, read_timeout: 30, max_response_bytes: MAX_CATALOG_BYTES)
+              .request(uri: URL)
+          )
           providers = target ? [target.provider] : @provider_adapters.keys
           providers.each_with_object({}) do |provider, result|
             namespace = NAMESPACES[@provider_adapters[provider]]
@@ -53,10 +55,6 @@ module LittleGhost
             supported_parameters: parameters.empty? ? nil : parameters, pricing: value["cost"],
             observed_at: value["last_updated"] || value["release_date"]
           }.compact
-        end
-
-        def http_get(uri)
-          Support::HTTPClient.new(open_timeout: 5, read_timeout: 30, max_response_bytes: MAX_CATALOG_BYTES).request(uri:)
         end
       end
     end

@@ -11,21 +11,19 @@ class VertexAICredentialResolverTest < Minitest::Test
       path = File.join(root, "service-account.json")
       File.write(path, JSON.generate(type: "service_account", client_email: "service@example.test", private_key: key.to_pem,
         token_uri: "https://oauth2.example.test/token"))
-      requests = []
       resolver = LittleGhost::Providers::VertexAI::CredentialResolver.new(
         environment: {"GOOGLE_APPLICATION_CREDENTIALS" => path},
-        clock: -> { 1_700_000_000 },
-        http_request: lambda do |uri, method:, headers:, body:, **|
-          requests << [uri, method, headers, URI.decode_www_form(body).to_h]
-          JSON.generate(access_token: "token", expires_in: 3600)
-        end
+        clock: -> { 1_700_000_000 }
       )
 
-      assert_equal "token", resolver.call
-      assert_equal "token", resolver.call
-      assert_equal 1, requests.length
-      assert_equal "urn:ietf:params:oauth:grant-type:jwt-bearer", requests.first.last.fetch("grant_type")
-      assert_equal 3, requests.first.last.fetch("assertion").split(".").length
+      stub_http_client(->(**) { JSON.generate(access_token: "token", expires_in: 3600) }) do |client|
+        assert_equal "token", resolver.call
+        assert_equal "token", resolver.call
+        assert_equal 1, client.requests.length
+        form = URI.decode_www_form(client.requests.first.fetch(:body)).to_h
+        assert_equal "urn:ietf:params:oauth:grant-type:jwt-bearer", form.fetch("grant_type")
+        assert_equal 3, form.fetch("assertion").split(".").length
+      end
     end
   end
 end

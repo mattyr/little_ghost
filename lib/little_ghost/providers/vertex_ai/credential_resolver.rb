@@ -14,10 +14,9 @@ module LittleGhost
         TOKEN_URI = URI("https://oauth2.googleapis.com/token")
         SCOPE = "https://www.googleapis.com/auth/cloud-platform"
 
-        def initialize(environment: ENV, access_token: nil, http_request: nil, clock: -> { Time.now.to_i })
+        def initialize(environment: ENV, access_token: nil, clock: -> { Time.now.to_i })
           @environment = environment
           @access_token = access_token
-          @http_request = http_request || method(:http_request)
           @clock = clock
           @mutex = Mutex.new
         end
@@ -52,7 +51,7 @@ module LittleGhost
             aud: document["token_uri"] || TOKEN_URI.to_s, iat: now, exp: now + 3600))
           signature = OpenSSL::PKey::RSA.new(document.fetch("private_key")).sign(OpenSSL::Digest.new("SHA256"), "#{header}.#{claim}")
           assertion = "#{header}.#{claim}.#{urlsafe(signature)}"
-          response = @http_request.call(URI(document["token_uri"] || TOKEN_URI.to_s), method: :post,
+          response = http_client.request(uri: URI(document["token_uri"] || TOKEN_URI.to_s), method: :post,
             headers: {"content-type" => "application/x-www-form-urlencoded"},
             body: URI.encode_www_form(grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer", assertion:),
             cancellation_token:, deadline:)
@@ -62,10 +61,11 @@ module LittleGhost
         end
 
         def metadata_token(cancellation_token:, deadline:)
-          response = @http_request.call(
-            URI("http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token"),
+          response = http_client.request(
+            uri: URI("http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token"),
             method: :get,
-            headers: {"Metadata-Flavor" => "Google"}, body: nil, cancellation_token:, deadline:
+            headers: {"Metadata-Flavor" => "Google"}, body: nil, cancellation_token:, deadline:,
+            allow_insecure_http: true
           )
           token_json(response)
         rescue HTTPError
@@ -81,10 +81,7 @@ module LittleGhost
 
         def urlsafe(value) = Base64.urlsafe_encode64(value, padding: false)
 
-        def http_request(uri, method:, headers:, body:, cancellation_token:, deadline:)
-          Support::HTTPClient.new(open_timeout: 2, read_timeout: 5, max_response_bytes: 1024 * 1024)
-            .request(uri:, method:, headers:, body:, allow_insecure_http: true, cancellation_token:, deadline:)
-        end
+        def http_client = Support::HTTPClient.new(open_timeout: 2, read_timeout: 5, max_response_bytes: 1024 * 1024)
       end
     end
   end
