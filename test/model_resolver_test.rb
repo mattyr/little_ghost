@@ -182,16 +182,16 @@ class ModelResolverTest < Minitest::Test
     assert_equal({input: 1.0}, catalog.details("openai:gpt-5.6-terra").pricing)
   end
 
-  def test_bundled_catalog_has_normalized_pricing_for_atlas_defaults
+  def test_bundled_catalog_has_normalized_pricing_for_representative_models
     catalog = LittleGhost::Models::Catalog.new
 
-    main = catalog.details("openrouter:google/gemini-3.5-flash")
-    engineering = catalog.details("openrouter:z-ai/glm-5.2")
+    fast = catalog.details("openrouter:google/gemini-3.5-flash")
+    capable = catalog.details("openrouter:z-ai/glm-5.2")
 
-    assert_equal 1.5, main.pricing.fetch(:input)
-    assert_equal 9, main.pricing.fetch(:output)
-    assert_equal 0.5, engineering.pricing.fetch(:input)
-    assert_equal 3.15, engineering.pricing.fetch(:output)
+    assert_equal 1.5, fast.pricing.fetch(:input)
+    assert_equal 9, fast.pricing.fetch(:output)
+    assert_equal 0.5, capable.pricing.fetch(:input)
+    assert_equal 3.15, capable.pricing.fetch(:output)
   end
 
   def test_models_dev_source_targets_named_provider_connection
