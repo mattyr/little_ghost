@@ -27,7 +27,7 @@ LittleGhost.configure do |config|
     openai: {adapter: :openai, api_key: ENV.fetch("OPENAI_API_KEY")}
   }
   config.models = {
-    customer_support: {target: "openai:gpt-5"}
+    customer_support: {target: "openai:gpt-5.6-luna"}
   }
 end
 ```
@@ -52,7 +52,7 @@ end
 
 The class-level DSL is inheritable. It can declare prompts, limits, callbacks, tool classes, structured results, context management, skills, and delegation. A capability mixin may be included in `LittleGhost::Agent`, but its behavior remains inactive until the corresponding DSL is called.
 
-`CustomerSupportAgent.ask` creates a standalone, console-friendly entrypoint, builds and consumes a `LittleGhost::Run`, and returns that run. Create `CustomerSupportAgent.new` explicitly to reuse a runtime or call `#stream_ask` for the run's events. Agents built by a runtime are instead scoped to their owning run and return a `LittleGhost::RunResult` from `#call`.
+`CustomerSupportAgent.ask` creates a standalone entrypoint, builds and consumes a `LittleGhost::Run`, and returns that run. `CustomerSupportAgent.stream_ask` creates the same kind of entrypoint and yields the run's events. Create `CustomerSupportAgent.new(runtime:)` explicitly when several calls should reuse one runtime. Agents built by a runtime are instead scoped to their owning run and return a `LittleGhost::RunResult` from `#call`.
 
 That distinction explains two useful return paths:
 

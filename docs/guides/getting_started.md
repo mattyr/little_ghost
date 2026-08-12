@@ -1,10 +1,10 @@
 # Getting Started with LittleGhost
 
-This guide builds a small AI customer support feature around an agent that checks an in-memory help center and returns a normal Ruby result. By the end, you will have configured a model provider, declared a validated tool, run `CustomerSupportAgent`, and streamed the same request as events.
+This guide builds a customer support agent that checks a small help center before answering. It focuses on the Ruby objects needed for one useful run: a tool, an agent, and the call that starts it.
 
-The example uses OpenAI, but the agent and tool do not depend on that choice. A logical model role named `customer_support` keeps the provider choice out of both classes.
+LittleGhost runs inside your Ruby process. It does not choose how your application is hosted or where these definitions live.
 
-## Before you begin
+## Install LittleGhost
 
 LittleGhost requires Ruby 3.3 or newer. Add the gem to your `Gemfile`:
 
@@ -12,62 +12,22 @@ LittleGhost requires Ruby 3.3 or newer. Add the gem to your `Gemfile`:
 gem "little_ghost"
 ```
 
-Install the bundle and provide the credential used by this example:
+Install the bundle and set a provider credential:
 
 ```sh
 $ bundle install
 $ export OPENAI_API_KEY="..."
 ```
 
-Use application-specific secret management outside a local shell. Do not commit provider credentials.
+With `OPENAI_API_KEY` present, LittleGhost's default model role uses GPT-5.6 Luna through OpenAI. OpenRouter credentials work as well. Use application secret management outside a local shell, and do not commit provider credentials.
 
-## Create the application shape
+## Give the agent a tool
 
-LittleGhost can load agents, tools, prompts, and skills from conventional application directories. These paths are defaults, not a required project layout. This example uses four files:
-
-```text
-customer_support_app/
-├── app/
-│   ├── agents/
-│   │   ├── research_agent.rb
-│   │   └── customer_support_agent.rb
-│   └── tools/
-│       └── help_center_lookup_tool.rb
-└── support.rb
-```
-
-Run the application from `customer_support_app/`, or set the configuration root before the first runtime is built. The runtime eager-loads conventional application code. Applications that already own loading may place these classes anywhere.
-
-## Configure a logical model role
-
-In `support.rb`, define the named connection and logical model role:
+Start by requiring LittleGhost and defining a narrow help center lookup:
 
 ```ruby
 require "little_ghost"
 
-LittleGhost.configure do |config|
-  config.providers = {
-    openai: {adapter: :openai, api_key: ENV.fetch("OPENAI_API_KEY")}
-  }
-  config.models = {
-    customer_support: {
-      target: "openai:gpt-5",
-      settings: {temperature: 0.2}
-    }
-  }
-  config.default_model = :customer_support
-end
-```
-
-The agent will ask for the role `customer_support`; it never needs the provider name or provider model identifier. This separation lets an application change providers without changing agent classes. Treat model settings and profile overlays as trusted application configuration: construct or allowlist them server-side instead of copying unchecked request fields.
-
-Provider connections and model profiles resolve independently. Inline declarations take precedence over an explicit path, which takes precedence over an optional conventional file under `config/little_ghost/`; environment-based providers and the built-in default profile are the final fallback. An explicit missing path raises `LittleGhost::ConfigurationError`. See `LittleGhost::Configuration` for the YAML shape and path settings.
-
-## Give the agent one validated tool
-
-Create `app/tools/help_center_lookup_tool.rb`:
-
-```ruby
 class HelpCenterLookupTool < LittleGhost::Tool
   HELP_CENTER_ENTRIES = {
     "refunds" => "Refunds are available within 30 days of purchase.",
@@ -90,51 +50,34 @@ class HelpCenterLookupTool < LittleGhost::Tool
 end
 ```
 
-A tool exposes a name, description, JSON input schema, and implementation. `HelpCenterLookupTool` gets its default model-visible name from the class name. LittleGhost validates input before calling `#call` and turns the returned value into text for model context.
+A tool gives the model one application operation with a name, description, and validated JSON input. LittleGhost validates the input before calling `#call` and turns the returned value into model context.
 
-This boundary is also the right place for application authorization. If lookup behavior or results depended on an account or tenant, `#call` would verify trusted run context before reading them. A schema validates shape; it does not authorize access.
+The schema checks shape, not authorization. A tool that reads customer data or performs an action must enforce the application's trust rules inside its implementation.
 
-## Define the agents
+## Define the agent
 
-Create `app/agents/research_agent.rb`:
-
-```ruby
-class ResearchAgent < LittleGhost::Agent
-  description "Investigates support questions that need broader research."
-  model "customer_support.research"
-  system_prompt "Research the question and return a concise evidence summary."
-end
-```
-
-There is no separate `customer_support.research` profile yet. Dotted roles fall back to the nearest registered parent, so this role resolves through `customer_support`. You can add a specialized profile later without changing `ResearchAgent`.
-
-Now create `app/agents/customer_support_agent.rb`:
+Now describe the agent's behavior and make the lookup available to it:
 
 ```ruby
 class CustomerSupportAgent < LittleGhost::Agent
   description "Answers customer support questions."
-  model "customer_support"
   system_prompt <<~PROMPT
     Answer clearly and do not invent company guidance.
     Use the help center lookup tool before stating company guidance.
-    Delegate open-ended investigation to the research agent.
   PROMPT
 
   tools HelpCenterLookupTool
-  subagent ResearchAgent, kind: "research"
 end
 ```
 
-The class is a readable behavior boundary. It declares which model role, prompt, tools, and subagent capabilities can participate in a `CustomerSupportAgent` run. Declaring `ResearchAgent` as a subagent gives the model tools for delegation, with the turn, concurrency, and depth limits configured by the surrounding system; it does not force every request through research.
+An agent class is a reusable behavior definition. It owns its prompt, tools, model role, limits, and other capabilities. This agent uses LittleGhost's `default` model role because it does not declare a different one.
 
-## Run the agent
+## Ask a question
 
-From the application root, run `support.rb` and ask the agent a question:
+Call the agent class to run one request to completion:
 
 ```ruby
-runtime = LittleGhost::Runtime.new(configuration: LittleGhost.configuration)
-customer_support_agent = CustomerSupportAgent.new(runtime:)
-run = customer_support_agent.ask(
+run = CustomerSupportAgent.ask(
   "I bought an item two weeks ago. Can I get a refund?"
 )
 
@@ -145,7 +88,7 @@ else
 end
 ```
 
-`#ask` consumes the invocation and returns its owning `LittleGhost::Run`. A successful run exposes the final text through `#response` and the normalized terminal value through `#result`. It also retains outcome, usage, messages, and any terminal error.
+`CustomerSupportAgent.ask` creates and consumes a `LittleGhost::Run`. A successful run exposes its final text through `#response`; it also retains the normalized result, outcome, usage, messages, and any terminal error.
 
 The model can call `HelpCenterLookupTool` with `{"topic":"refunds"}` and answer along these lines:
 
@@ -153,14 +96,14 @@ The model can call `HelpCenterLookupTool` with `{"topic":"refunds"}` and answer 
 Refunds are available within 30 days, so a purchase from two weeks ago is eligible.
 ```
 
-Model wording is not deterministic. The important outcome is that the refund guidance comes from the validated tool result rather than from an unverified guess.
+Model wording and tool selection are not deterministic. The prompt directs the agent to ground company guidance in the validated lookup; applications that must enforce a lookup should put that ordering in a workflow.
 
-## Stream the response
+## Stream the same agent
 
-Use `#stream_ask` when a console, web response, or UI should receive progress before the run completes:
+Use `.stream_ask` when a console, HTTP response, or user interface should receive progress while the run is active:
 
 ```ruby
-CustomerSupportAgent.new(runtime:).stream_ask("Can I get a refund?").each do |event|
+CustomerSupportAgent.stream_ask("Can I get a refund?").each do |event|
   case event.type
   when :text_delta
     print event.data.fetch(:text)
@@ -170,8 +113,35 @@ CustomerSupportAgent.new(runtime:).stream_ask("Can I get a refund?").each do |ev
 end
 ```
 
-The enumerator yields `LittleGhost::StreamEvent` objects. Text, tool activity, usage, traces, subagent activity, and terminal lifecycle facts share that interface, so adapters can translate one framework stream into a console, HTTP stream, or AG-UI transport.
+The stream yields `LittleGhost::StreamEvent` objects. Text, tool activity, usage, traces, and terminal lifecycle facts share this interface, so callers do not need provider-specific response handling.
 
-## Where to go next
+Both calls use the same agent definition and active LittleGhost configuration. Core Concepts explains reusable runtimes when an application needs more control over shared services.
 
-Read [Core Concepts](core_concepts.md) for the distinction between model-directed subagents and application-directed workflows, how sessions and runs divide ownership, and when `ResponseWorkflow` is a better fit than delegation. The API reference covers exact signatures for `LittleGhost::Agent`, `LittleGhost::Tool`, `LittleGhost::ModelResolver`, and `LittleGhost::Run`.
+## Choose a provider or model explicitly
+
+The defaults keep the first run short. Applications that want a named model role can configure one directly:
+
+```ruby
+LittleGhost.configure do |config|
+  config.providers = {
+    openai: {adapter: :openai, api_key: ENV.fetch("OPENAI_API_KEY")}
+  }
+  config.models = {
+    customer_support: {
+      target: "openai:gpt-5.6-luna",
+      settings: {temperature: 0.2}
+    }
+  }
+  config.default_model = :customer_support
+end
+```
+
+Provider connections and model profiles may instead come from independent YAML files under `config/little_ghost`, or from paths selected in `LittleGhost.configure`. Inline declarations take precedence over explicit paths, which take precedence over conventional files; environment-based selection and the built-in default are the final fallback. `LittleGhost::Configuration` documents the complete shapes and precedence.
+
+## Fit LittleGhost into your application
+
+LittleGhost does not require an application layout. Keep agents and tools beside related application code when your framework or loader already has a home for them. If you want LittleGhost to eager-load these definitions, `app/agents` and `app/tools` are available conventions, and every lookup path is configurable.
+
+Hosting remains the surrounding application's responsibility. A Rails controller, Rack endpoint, background job, CLI, or another Ruby entrypoint can call the same agent APIs shown above.
+
+Read [Core Concepts](core_concepts.md) next for model roles, reusable runtimes, subagents, workflows, sessions, and the boundaries between them. The API reference covers exact signatures for `LittleGhost::Agent`, `LittleGhost::Tool`, `LittleGhost::Configuration`, and `LittleGhost::Run`.

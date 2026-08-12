@@ -12,10 +12,11 @@ module LittleGhost
   #   run.outcome    # => "completed"
   #   run.response   # => "Transfer 481 is waiting for the receiving bank."
   #
-  # Agent.ask[rdoc-ref:LittleGhost::Agent.ask] or standalone
-  # ask[rdoc-ref:LittleGhost::Agent#ask] consumes the event stream and returns
-  # the Run. For a live interface,
-  # stream_ask[rdoc-ref:LittleGhost::Agent#stream_ask] yields StreamEvent objects
+  # The class-level ask helper[rdoc-ref:LittleGhost::Agent.ask] or standalone
+  # ask method[rdoc-ref:LittleGhost::Agent#ask] consumes the event stream and
+  # returns the Run. For a live interface, the class-level streaming
+  # helper[rdoc-ref:LittleGhost::Agent.stream_ask] or standalone streaming
+  # method[rdoc-ref:LittleGhost::Agent#stream_ask] yields StreamEvent objects
   # and returns the same run after enumeration. A run can execute only once.
   #
   # Completion, failure, deadline, and cancellation become the +completed+,

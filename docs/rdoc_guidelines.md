@@ -102,7 +102,7 @@ Place a comment immediately before the definition. Start with the object's purpo
 #   )
 #   resolver = LittleGhost::ModelResolver.new(
 #     providers:,
-#     profiles: {customer_support: {target: "openai:gpt-5"}}
+#     profiles: {customer_support: {target: "openai:gpt-5.6-luna"}}
 #   )
 #   resolver.resolve("customer_support")
 class ModelResolver
@@ -188,8 +188,8 @@ After, the reader can predict the observable contract:
 # Executes +message+ to completion and returns the owning LittleGhost::Run.
 #
 # The run checkpoints its session and closes registered resources before
-# returning. Use #stream_ask when the caller needs LittleGhost::StreamEvent
-# objects as work progresses.
+# returning. Use Agent.stream_ask when the caller needs
+# LittleGhost::StreamEvent objects as work progresses.
 def ask(message, **options)
 end
 ```

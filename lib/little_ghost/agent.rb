@@ -35,12 +35,12 @@ module LittleGhost
   # Capabilities such as skills, context management, loop detection, and
   # delegation remain inactive until their DSL methods are called.
   #
-  # The class-level +ask+ helper creates a standalone entrypoint and returns a
-  # completed Run. Create a standalone instance explicitly to reuse one Runtime
-  # or call +stream_ask+ for StreamEvent objects. Runtimes build bound instances
-  # internally; their +call+ method returns a RunResult and their +stream+ method
-  # follows the owning run's single-execution lifecycle. Closing an agent closes
-  # owned tools and any standalone workspace and sandbox.
+  # The class-level +ask+ and +stream_ask+ helpers create fresh standalone
+  # entrypoints. Create an instance explicitly to reuse one Runtime across
+  # calls. Runtimes build bound instances internally; their +call+ method
+  # returns a RunResult and their +stream+ method follows the owning run's
+  # single-execution lifecycle. Closing an agent closes owned tools and any
+  # standalone workspace and sandbox.
   # LittleGhost::Agent.ask uses <tt>You are a helpful agent.</tt> as its system
   # prompt. Subclasses continue to use their inline or conventional prompts.
   #
@@ -87,6 +87,19 @@ module LittleGhost
       # Create an instance explicitly when reusing a Runtime or streaming events.
       def ask(message, **options)
         new.ask(message, **options)
+      end
+
+      # Streams +message+ through a fresh standalone entrypoint and returns an
+      # Enumerator of LittleGhost::StreamEvent objects. Invocation +options+
+      # are forwarded to #stream_ask.
+      #
+      # Create an instance explicitly when reusing one Runtime across calls.
+      def stream_ask(message, **options)
+        stream = nil
+        Enumerator.new do |events|
+          stream ||= new.stream_ask(message, **options)
+          stream.each { |event| events << event }
+        end
       end
 
       # :call-seq:
@@ -455,9 +468,9 @@ module LittleGhost
 
     # Creates either a standalone entrypoint or a run-scoped agent.
     #
-    # Calling <tt>new</tt> without +model+ and +run+ creates the console-friendly
-    # standalone form. Runtime builders supply the remaining dependencies and
-    # apply class-level limits and declarations.
+    # Calling <tt>new</tt> without +model+ and +run+ creates the standalone form
+    # used by +ask+ and +stream_ask+. Runtime builders supply the remaining
+    # dependencies and apply class-level limits and declarations.
     def initialize(
       model: nil,
       runtime: nil,
@@ -563,7 +576,7 @@ module LittleGhost
       result
     end
 
-    # Console-friendly name for +#call+.
+    # Runs +message+ to completion through the standalone or run-scoped agent.
     def ask(message, **options)
       call(message, **options)
     end
@@ -690,7 +703,13 @@ module LittleGhost
       if @standalone
         raise ArgumentError, "input is required" if input.nil?
 
-        return build_run(entrypoint_payload(input, {})).each
+        return build_run(entrypoint_payload(input, {
+          history:,
+          context:,
+          settings:,
+          template_paths:,
+          deadline_at: deadline
+        }.compact)).each
       end
 
       raise ArgumentError, "input is required" if input.nil?
@@ -744,8 +763,19 @@ module LittleGhost
       end
     end
 
-    # Console-friendly name for +#stream+.
+    # Streams +message+ through the standalone or run-scoped agent.
+    # Standalone +options+ become Invocation fields; run-scoped options are
+    # forwarded to #stream.
     def stream_ask(message, **options)
+      if @standalone
+        options[:deadline_at] = options.delete(:deadline) if options.key?(:deadline)
+        stream = nil
+        return Enumerator.new do |events|
+          stream ||= build_run(entrypoint_payload(message, options)).each
+          stream.each { |event| events << event }
+        end
+      end
+
       stream(message, **options)
     end
 

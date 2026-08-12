@@ -77,7 +77,7 @@ require_relative "little_ghost/runtime"
 #       openai: {adapter: :openai, api_key: ENV.fetch("OPENAI_API_KEY")}
 #     }
 #     config.models = {
-#       customer_support: {target: "openai:gpt-5"}
+#       customer_support: {target: "openai:gpt-5.6-luna"}
 #     }
 #     config.default_model = :customer_support
 #   end

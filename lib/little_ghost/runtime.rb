@@ -13,7 +13,7 @@ module LittleGhost
   #     providers: {
   #       openai: {adapter: :openai, api_key: ENV.fetch("OPENAI_API_KEY")}
   #     },
-  #     models: {customer_support: {target: "openai:gpt-5"}},
+  #     models: {customer_support: {target: "openai:gpt-5.6-luna"}},
   #     default_model: "customer_support",
   #     service_name: "support-api"
   #   )

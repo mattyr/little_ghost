@@ -18,7 +18,7 @@ LittleGhost.configure do |config|
     openai: {adapter: :openai, api_key: ENV.fetch("OPENAI_API_KEY")}
   }
   config.models = {
-    customer_support: {target: "openai:gpt-5"}
+    customer_support: {target: "openai:gpt-5.6-luna"}
   }
   config.default_model = :customer_support
 end
@@ -54,7 +54,7 @@ puts run.response
 The completed `LittleGhost::Run` exposes its outcome, final response, normalized messages, token usage, and terminal error. Streaming callers receive `LittleGhost::StreamEvent` objects instead of provider-specific payloads:
 
 ```ruby
-CustomerSupportAgent.new.stream_ask("Can I get a refund?").each do |event|
+CustomerSupportAgent.stream_ask("Can I get a refund?").each do |event|
   print event.data.fetch(:text) if event.type == :text_delta
 end
 ```
@@ -107,14 +107,14 @@ providers:
 default_model: customer_support
 models:
   customer_support:
-    target: openai:gpt-5
+    target: openai:gpt-5.6-luna
 ```
 
 By default, LittleGhost maps `default` to GPT-5.6 Luna. It selects the first nonblank key from `LITTLEGHOST_OPENROUTER_API_KEY`, `LITTLEGHOST_OPENAI_API_KEY`, `OPENROUTER_API_KEY`, and `OPENAI_API_KEY`. Model inputs—including prompts, history, tool data, and attachments—leave the application for the selected external provider. Configure providers explicitly when provider choice or data residency matters.
 
 Applications that need custom routing can subclass `LittleGhost::ModelResolver` and install the class with `config.model_resolver`. A custom resolver owns its profiles and default role; configuring `models`, `models_path`, or `default_model` at the same time is an error. Provider configuration remains available to the resolver.
 
-`config/little_ghost`, `app/agents`, `app/prompts`, `app/tools`, and `app/skills` are suggested conventions. Every path can be configured, and agents, prompts, and tools may live wherever the application loads them.
+LittleGhost runs inside the surrounding Ruby process; it does not prescribe an HTTP server, CLI, job system, or application layout. `config/little_ghost`, `app/agents`, `app/prompts`, `app/tools`, and `app/skills` are optional conventions. Every path can be configured, and agents, prompts, and tools may live wherever the application loads them.
 
 ## Documentation
 
