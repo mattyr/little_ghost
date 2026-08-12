@@ -116,6 +116,7 @@ class LittleGhostSiteChecker
     "docs/core_concepts.html"
   ].freeze
   COMMON_NAVIGATION_LABELS = %w[Home Docs GitHub].freeze
+  GUIDE_NAVIGATION_LABELS = ["Core Concepts", "Getting Started"].freeze
   COMMON_NAVIGATION_PATTERN = /<nav\b[^>]*aria-label=["']Primary navigation["'][^>]*>(.*?)<\/nav>/mi
   NAVIGATION_LINK_PATTERN = /<a\b([^>]*)>(.*?)<\/a>/mi
   ATTRIBUTE_PATTERN = /\b(?:href|src)=["']([^"']+)["']/i
@@ -176,6 +177,11 @@ class LittleGhostSiteChecker
       check_version(page, html)
       check_navigation(page, html, "Docs")
       errors << "#{page.relative_path_from(site_root)} is missing Docs home navigation" unless html.include?(">Docs home</a>")
+      GUIDE_NAVIGATION_LABELS.each do |label|
+        unless html.match?(/>\s*#{Regexp.escape(label)}\s*<\/a>/)
+          errors << "#{page.relative_path_from(site_root)} is missing the #{label} guide navigation"
+        end
+      end
       if html.match?(/<summary>\s*docs\s*(?:<|$)/mi)
         errors << "#{page.relative_path_from(site_root)} nests guides under docs navigation"
       end
