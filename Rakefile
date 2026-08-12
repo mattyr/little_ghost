@@ -43,12 +43,12 @@ SITE_TEMPLATE_ROOT = "#{SITE_SOURCE}/rdoc"
 class RDoc::Generator::LittleGhost < RDoc::Generator::Aliki
   DESCRIPTION = "Aliki with LittleGhost navigation"
   GUIDE_PATHS = {
-    "docs/guides/Core Concepts.md" => "core_concepts.html",
-    "docs/guides/Getting Started.md" => "getting_started.html"
+    "docs/guides/core_concepts.md" => "core_concepts.html",
+    "docs/guides/getting_started.md" => "getting_started.html"
   }.freeze
   LEGACY_GUIDE_LINKS = {
-    %r{(?:docs/guides/)?Core%20Concepts_md\.html} => "core_concepts.html",
-    %r{(?:docs/guides/)?Getting%20Started_md\.html} => "getting_started.html"
+    %r{(?:docs/guides/)?core_concepts_md\.html} => "core_concepts.html",
+    %r{(?:docs/guides/)?getting_started_md\.html} => "getting_started.html"
   }.freeze
   ALIKI_TEMPLATE = Pathname.new(
     File.join(File.dirname(RDoc::Generator::Aliki.instance_method(:initialize).source_location.first), "template", "aliki")

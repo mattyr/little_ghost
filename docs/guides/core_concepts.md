@@ -191,4 +191,4 @@ The core design can be summarized as four choices:
 - Put privileged application operations behind narrow, authorized tools.
 - Put mandatory ordering in workflows; leave optional delegation to subagents.
 
-Return to [Getting Started](Getting%20Started.md) for the complete first-run setup. The API reference covers exact signatures and lifecycle details for `LittleGhost::Runtime`, `LittleGhost::Run`, `LittleGhost::Agent`, `LittleGhost::Tool`, `LittleGhost::Workflow`, and `LittleGhost::ModelResolver`.
+Return to [Getting Started](getting_started.md) for the complete first-run setup. The API reference covers exact signatures and lifecycle details for `LittleGhost::Runtime`, `LittleGhost::Run`, `LittleGhost::Agent`, `LittleGhost::Tool`, `LittleGhost::Workflow`, and `LittleGhost::ModelResolver`.
