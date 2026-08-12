@@ -136,7 +136,9 @@ class LittleGhostReleaseTest < Minitest::Test
       manifest = LittleGhostRelease.verify_package!(path, LittleGhost::VERSION)
 
       assert_equal "little_ghost", manifest.fetch(:name)
-      assert_includes manifest.fetch(:files), "lib/little_ghost/default_model_registry.rb"
+      assert_includes manifest.fetch(:files), "lib/little_ghost/models.rb"
+      assert_includes manifest.fetch(:files), "lib/little_ghost/model_catalog.json"
+      refute_includes manifest.fetch(:files), "lib/little_ghost/model_registry.rb"
       refute manifest.fetch(:files).any? { |file| file.start_with?("test/") }
     end
   end

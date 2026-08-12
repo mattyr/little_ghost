@@ -10,7 +10,7 @@ module LittleGhost
   #
   #   configuration = LittleGhost::Configuration.new(
   #     root: Dir.pwd,
-  #     models: CustomerSupportModels,
+  #     model_resolver: LittleGhost::Models.new,
   #     default_model: "customer_support",
   #     service_name: "support-api"
   #   )
@@ -22,7 +22,7 @@ module LittleGhost
   # Without explicit +settings+, construction canonicalizes the root, loads
   # +config/little_ghost.rb+ once through the Configuration, snapshots settings,
   # configures instrumentation, eager-loads application constants, and builds the
-  # selected model registry and session store. Supplying +settings+ is the
+  # selected model resolver and session store. Supplying +settings+ is the
   # lower-level path used to create a sibling runtime from an existing snapshot.
   #
   # Reuse a runtime across runs. +build_run+ creates any missing workspace and
@@ -77,7 +77,7 @@ module LittleGhost
 
         @startup_phase = "models"
         @invocation_class = @settings[:invocation] || Invocation
-        @models = build_service(@settings[:models], default: -> { DefaultModelRegistry.new })
+        @models = @settings.fetch(:models)
         @default_model = @settings.fetch(:default_model, "default").to_s
 
         @startup_phase = "session_store"

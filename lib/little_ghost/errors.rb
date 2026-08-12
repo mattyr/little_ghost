@@ -5,6 +5,10 @@ module LittleGhost
   class Error < StandardError; end
   # Raised for invalid framework or application configuration.
   class ConfigurationError < Error; end
+  # Raised when a configured provider adapter cannot be constructed.
+  class AdapterLoadError < ConfigurationError; end
+  # Raised when no usable credentials can be resolved for a provider.
+  class CredentialError < ConfigurationError; end
   # Raised when an invocation payload or operation is invalid.
   class InvocationError < Error; end
   # Raised when an invocation contains an unsupported input form.

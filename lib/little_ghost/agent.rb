@@ -1146,7 +1146,7 @@ module LittleGhost
               outcome: :completed,
               turn: turn + 1
             )
-            metadata = model.respond_to?(:metadata) ? model.metadata : {}
+            metadata = model.respond_to?(:details) ? model.details.to_h.merge(model_role: model.role) : {}
             finish_instrumentation(
               agent_handle,
               outcome: :completed,
@@ -1228,7 +1228,7 @@ module LittleGhost
         diagnostic: {exception: diagnostic_exception(error)},
         **usage_attributes(context.usage)
       )
-      metadata = model.respond_to?(:metadata) ? model.metadata : {}
+      metadata = model.respond_to?(:details) ? model.details.to_h.merge(model_role: model.role) : {}
       emit(events, :invocation_error, error:, usage: context.usage, metadata:)
       raise
     end
@@ -1874,7 +1874,7 @@ module LittleGhost
         outcome: :completed,
         turn:
       )
-      metadata = model.respond_to?(:metadata) ? model.metadata : {}
+      metadata = model.respond_to?(:details) ? model.details.to_h.merge(model_role: model.role) : {}
       finish_instrumentation(
         agent_handle,
         outcome: :completed,
@@ -1994,9 +1994,9 @@ module LittleGhost
 
     def model_attributes
       {
-        model_id: model.respond_to?(:id) ? model.id : nil,
+        model_id: model.respond_to?(:model_id) ? model.model_id : nil,
         model_role: model.respond_to?(:role) ? model.role : nil,
-        model_provider: model.respond_to?(:provider_name) ? model.provider_name : model.class.name
+        model_provider: model.respond_to?(:target) ? model.target.provider : model.class.name
       }.compact
     end
 

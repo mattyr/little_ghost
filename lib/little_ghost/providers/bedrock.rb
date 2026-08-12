@@ -4,7 +4,7 @@ require "json"
 
 module LittleGhost
   # Provider adapters translate model APIs into LittleGhost's shared streaming
-  # request and response types. Agents select them through a ModelRegistry rather
+  # request and response types. Agents select them through model configuration rather
   # than depending on a provider class directly.
   module Providers
     # Bedrock lets LittleGhost agents use models available through Amazon Bedrock
@@ -16,9 +16,8 @@ module LittleGhost
     #     region: ENV.fetch("AWS_REGION")
     #   )
     #
-    # The default client requires the optional +aws-sdk-bedrockruntime+ gem and
-    # uses the AWS SDK credential chain. Applications may inject +client+
-    # instead.
+    # The default client uses LittleGhost's standard-library SigV4 and AWS
+    # EventStream implementations. Applications may inject +client+ instead.
     #
     # Transient service and stream failures retry with exponential backoff. Each
     # retry emits +:model_retry+ and reports whether partial text was already
@@ -54,9 +53,9 @@ module LittleGhost
 
       # Configures Bedrock for +model+.
       #
-      # +region+ and remaining +client_options+ configure the default AWS client.
+      # +region+ and remaining +client_options+ configure the built-in HTTP client.
       # +max_retries+, +sleeper+, and +on_retry+ control retry behavior. Injecting
-      # +client+ bypasses creation of the optional SDK client.
+      # +client+ bypasses creation of the built-in HTTP client.
       def initialize(model:, region: nil, client: nil, max_retries: 2, sleeper: nil,
         on_retry: ->(*) {}, **client_options)
         @model = model
@@ -142,11 +141,10 @@ module LittleGhost
       private
 
       def build_client(region:, **options)
-        require "aws-sdk-bedrockruntime"
-        Aws::BedrockRuntime::Client.new(**options, **({region:} if region))
-      rescue LoadError
-        raise ConfigurationError,
-          "Bedrock requires the optional aws-sdk-bedrockruntime gem; add it to your application's Gemfile"
+        resolver = options.delete(:credential_resolver)
+        resolver ||= AwsCredentialResolver.new
+        region ||= resolver.region if resolver.respond_to?(:region)
+        BedrockHTTPClient.new(region:, credential_resolver: resolver, **options)
       end
 
       def request_parameters(request)

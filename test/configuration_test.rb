@@ -796,7 +796,7 @@ class ConfigurationTest < Minitest::Test
     with_runtime(settings: {temperature: 0.1}) do |harness, provider|
       harness.agent_instance.call(
         message: "hello",
-        model_profiles: {"main" => {"parameters" => {"temperature" => 0.7, "max_tokens" => 50}}}
+        model_configuration: {"profiles" => {"main" => {"settings" => {"temperature" => 0.7, "max_tokens" => 50}}}}
       )
 
       assert_equal({temperature: 0.7, max_tokens: 50}, provider.requests.first.settings)
@@ -1162,7 +1162,8 @@ class ConfigurationTest < Minitest::Test
 
       assert_equal "Replacement", result.response
       refute harness.settings.frozen?
-      refute_same harness.models, isolated.models
+      assert_same replacement_models, isolated.runtime_instance.models
+      refute_same harness.runtime_instance.models, isolated.runtime_instance.models
     end
   end
 
@@ -1572,7 +1573,7 @@ class ConfigurationTest < Minitest::Test
       File.write(config, "# harness fixture\n")
       configuration = TestHarness.new
       configuration.select_agent agent
-      configuration.models models_for(provider, settings:)
+      configuration.model_resolver models_for(provider, settings:)
       configuration.session_store = {provider: session_store_provider(session_store)} if session_store
       configure&.call(configuration)
       harness = configuration.runtime(root:)
@@ -1581,9 +1582,13 @@ class ConfigurationTest < Minitest::Test
   end
 
   def models_for(provider, settings: {})
-    LittleGhost::ModelRegistry.new
-      .provider(:test) { |**| provider }
-      .profile("main", provider: :test, model: "test", settings:)
+    resolver = Object.new
+    resolver.define_singleton_method(:resolve) do |role, invocation: nil, **|
+      profiles = invocation&.model_configuration&.fetch("profiles", {}) || {}
+      overrides = profiles.fetch(role.to_s, {}).fetch("settings", {})
+      LittleGhost::Model.new(provider:, target: "test:test", settings: settings.merge(overrides.transform_keys(&:to_sym)), role:)
+    end
+    resolver
   end
 
   def session_store_provider(store)

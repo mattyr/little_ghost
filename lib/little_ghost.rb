@@ -18,15 +18,27 @@ require_relative "little_ghost/model_request"
 require_relative "little_ghost/model_response"
 require_relative "little_ghost/run_result"
 require_relative "little_ghost/model_capabilities"
+require_relative "little_ghost/model_target"
+require_relative "little_ghost/model_details"
 require_relative "little_ghost/model"
-require_relative "little_ghost/model_registry"
 require_relative "little_ghost/providers/sse_parser"
 require_relative "little_ghost/providers/http_transport"
+require_relative "little_ghost/providers/cloud_credentials"
+require_relative "little_ghost/providers/aws_sigv4"
+require_relative "little_ghost/providers/bedrock_http_client"
 require_relative "little_ghost/providers/openai_compatible"
 require_relative "little_ghost/providers/openai"
 require_relative "little_ghost/providers/open_router"
 require_relative "little_ghost/providers/bedrock"
-require_relative "little_ghost/default_model_registry"
+require_relative "little_ghost/providers/anthropic"
+require_relative "little_ghost/providers/gemini"
+require_relative "little_ghost/providers/vertex_ai"
+require_relative "little_ghost/model_catalog"
+require_relative "little_ghost/model_catalog_snapshot"
+require_relative "little_ghost/catalog_sources"
+require_relative "little_ghost/model_configuration"
+require_relative "little_ghost/provider_registry"
+require_relative "little_ghost/models"
 require_relative "little_ghost/run_context"
 require_relative "little_ghost/workspace"
 require_relative "little_ghost/sandbox"
@@ -61,7 +73,6 @@ require_relative "little_ghost/runtime"
 # specialist for research while the caller observes one run:
 #
 #   LittleGhost.configure do |config|
-#     config.models CustomerSupportModels
 #     config.default_model :customer_support
 #   end
 #
@@ -108,6 +119,9 @@ module LittleGhost
     def configure(&block)
       configuration.configure(&block)
     end
+
+    # Returns the model resolver owned by the active process configuration.
+    def models = configuration.models
 
     # Makes +configuration+ current only while the block runs.
     #

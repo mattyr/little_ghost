@@ -2,7 +2,7 @@
 
 This guide builds a small AI customer support feature around an agent that checks an in-memory help center and returns a normal Ruby result. By the end, you will have configured a model provider, declared a validated tool, run `CustomerSupportAgent`, and streamed the same request as events.
 
-The example uses OpenAI, but the agent and tool do not depend on that choice. A `ModelRegistry` keeps the provider boundary behind the logical model role `customer_support`.
+The example uses OpenAI, but the agent and tool do not depend on that choice. Conventional YAML keeps the provider boundary behind the logical model role `customer_support`.
 
 ## Before you begin
 
@@ -33,40 +33,31 @@ customer_support_app/
 │   │   └── customer_support_agent.rb
 │   └── tools/
 │       └── help_center_lookup_tool.rb
-└── config/
-    └── little_ghost.rb
+└── config/little_ghost/
+    ├── providers.yml
+    └── models.yml
 ```
 
 Run the application from `customer_support_app/`, or set the configuration root explicitly before the first runtime is built. The runtime loads `config/little_ghost.rb` lazily and eager-loads conventional application code.
 
 ## Configure a logical model role
 
-Define `CustomerSupportModels` in `config/little_ghost.rb` and register it with LittleGhost:
+Define the named connection and logical model role in the conventional files:
 
-```ruby
-require "little_ghost"
+```yaml
+# config/little_ghost/providers.yml
+providers:
+  openai:
+    adapter: openai
+    api_key: <%= ENV.fetch("OPENAI_API_KEY") %>
 
-class CustomerSupportModels < LittleGhost::ModelRegistry
-  def initialize
-    super
-
-    provider(:openai) do |model:, **|
-      LittleGhost::Providers::OpenAI.new(
-        api_key: ENV.fetch("OPENAI_API_KEY"),
-        model:
-      )
-    end
-
-    profile "customer_support",
-      provider: :openai,
-      model: "gpt-5",
-      settings: {temperature: 0.2}
-  end
-end
-
-LittleGhost.configure do |config|
-  config.models CustomerSupportModels
-end
+# config/little_ghost/models.yml
+default_model: customer_support
+models:
+  customer_support:
+    target: openai:gpt-5
+    settings:
+      temperature: 0.2
 ```
 
 The agent will ask for the role `customer_support`; it never needs the provider name or provider model identifier. This separation lets an application change providers or override a profile for one invocation without changing agent classes. Treat model settings and profile overrides as trusted application configuration: construct or allowlist them server-side instead of copying unchecked request fields.
@@ -184,4 +175,4 @@ The enumerator yields `LittleGhost::StreamEvent` objects. Text, tool activity, u
 
 ## Where to go next
 
-Read [Core Concepts](Core%20Concepts.md) for the distinction between model-directed subagents and application-directed workflows, how sessions and runs divide ownership, and when `ResponseWorkflow` is a better fit than delegation. The API reference covers exact signatures for `LittleGhost::Agent`, `LittleGhost::Tool`, `LittleGhost::ModelRegistry`, and `LittleGhost::Run`.
+Read [Core Concepts](Core%20Concepts.md) for the distinction between model-directed subagents and application-directed workflows, how sessions and runs divide ownership, and when `ResponseWorkflow` is a better fit than delegation. The API reference covers exact signatures for `LittleGhost::Agent`, `LittleGhost::Tool`, `LittleGhost::Models`, and `LittleGhost::Run`.

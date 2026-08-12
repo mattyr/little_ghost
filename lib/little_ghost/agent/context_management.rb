@@ -259,10 +259,11 @@ module LittleGhost
       end
 
       def model_context_window_tokens(configuration)
-        value = model.respond_to?(:metadata) && (
-          model.metadata[:context_window_tokens] || model.metadata["context_window_tokens"] ||
-          model.metadata[:context_window] || model.metadata["context_window"]
-        )
+        value = model.details.context_window if model.respond_to?(:details)
+        if !value && model.respond_to?(:metadata)
+          value = model.metadata[:context_window_tokens] || model.metadata["context_window_tokens"] ||
+            model.metadata[:context_window] || model.metadata["context_window"]
+        end
         value = Integer(value) if value
         value&.positive? ? value : configuration.fetch(:context_window_tokens)
       rescue ArgumentError, TypeError

@@ -8,23 +8,26 @@
 
 Bring agents and agentic workflows into an existing Ruby system, or use them as the core of a dedicated AI service. LittleGhost brings model providers, tools, streaming, sessions, delegation, deterministic composition, and observability together behind one coherent set of Ruby APIs.
 
-Here is the shape of a small customer support agent. `CustomerSupportModels` keeps provider details out of agent behavior, `HelpCenterLookupTool` exposes one narrow, validated help center lookup, and `CustomerSupportAgent` brings them together:
+Here is the shape of a small customer support agent. Provider connections live in `config/little_ghost/providers.yml`, while logical choices live in `config/little_ghost/models.yml`:
+
+```yaml
+# providers.yml
+providers:
+  openai:
+    adapter: openai
+    api_key: <%= ENV.fetch("OPENAI_API_KEY") %>
+```
+
+```yaml
+# models.yml
+default_model: customer_support
+models:
+  customer_support:
+    target: openai:gpt-5
+```
 
 ```ruby
 require "little_ghost"
-
-class CustomerSupportModels < LittleGhost::ModelRegistry
-  def initialize
-    super
-    provider(:openai) do |model:, **|
-      LittleGhost::Providers::OpenAI.new(
-        api_key: ENV.fetch("OPENAI_API_KEY"),
-        model:
-      )
-    end
-    profile "customer_support", provider: :openai, model: "gpt-5"
-  end
-end
 
 class HelpCenterLookupTool < LittleGhost::Tool
   description "Look up a help center entry by topic."
@@ -48,8 +51,6 @@ class CustomerSupportAgent < LittleGhost::Agent
   tools HelpCenterLookupTool
 end
 
-LittleGhost.configure { |config| config.models CustomerSupportModels }
-
 run = CustomerSupportAgent.ask("Can I get a refund after two weeks?")
 puts run.response
 # One possible response:
@@ -65,7 +66,7 @@ The core stays dependency-light, while provider SDKs and deployment choices rema
 ## How it fits together
 
 ```text
-application configuration ──> CustomerSupportModels ──> provider
+providers.yml + models.yml ──> LittleGhost.models ──> provider
                                       │
 request ──> CustomerSupportAgent ──> HelpCenterLookupTool
                   │
@@ -74,7 +75,7 @@ request ──> CustomerSupportAgent ──> HelpCenterLookupTool
 request ──> ResponseWorkflow ──> ResearchAgent ──> CustomerSupportAgent
 ```
 
-Configuration owns shared services such as model registries, sessions, lookup paths, workspaces, sandboxes, and instrumentation. Agent classes own behavior: their logical model role, prompt, tools, limits, structured result, and delegation policy. A tool is a validated boundary around application code. A subagent lets the model delegate work within configured turn, concurrency, and depth limits; a workflow uses ordinary Ruby when your application must choose the sequence.
+Configuration owns shared services such as model resolution, sessions, lookup paths, workspaces, sandboxes, and instrumentation. Agent classes own behavior: their logical model role, prompt, tools, limits, structured result, and delegation policy. A tool is a validated boundary around application code. A subagent lets the model delegate work within configured turn, concurrency, and depth limits; a workflow uses ordinary Ruby when your application must choose the sequence.
 
 `CustomerSupportAgent.ask(...)` creates a standalone entrypoint, consumes its run, and returns the completed `LittleGhost::Run`. Create an instance explicitly when reusing a runtime or when an interface should render progress as `LittleGhost::StreamEvent` objects:
 
@@ -96,9 +97,9 @@ LittleGhost requires Ruby 3.3 or newer. Add it to your bundle:
 gem "little_ghost"
 ```
 
-Then run `bundle install`. Provider SDKs and OpenTelemetry exporters are optional application dependencies. The built-in OpenAI, OpenAI-compatible, OpenRouter, and Amazon Bedrock integrations normalize their responses into the same LittleGhost protocol.
+Then run `bundle install`. Built-in OpenAI-compatible, OpenRouter, Anthropic, Gemini, Vertex AI, and Amazon Bedrock integrations use Ruby's standard library and normalize responses into the same LittleGhost protocol.
 
-By default, LittleGhost maps the `default` role to GPT-5.6 Terra. It selects the first nonblank API key from `LITTLEGHOST_OPENROUTER_API_KEY`, `LITTLEGHOST_OPENAI_API_KEY`, `OPENROUTER_API_KEY`, and `OPENAI_API_KEY`, in that order. Setting one of these keys authorizes model inputs—including prompts, conversation history, tool data, and attachments—to be sent to the selected external provider. Applications with provider or data-residency requirements should configure a model registry explicitly.
+By default, LittleGhost maps the `default` role to GPT-5.6 Terra. It selects the first nonblank API key from `LITTLEGHOST_OPENROUTER_API_KEY`, `LITTLEGHOST_OPENAI_API_KEY`, `OPENROUTER_API_KEY`, and `OPENAI_API_KEY`, in that order. Setting one of these keys authorizes model inputs—including prompts, conversation history, tool data, and attachments—to be sent to the selected external provider. Applications with provider or data-residency requirements should configure both YAML files explicitly.
 
 By default, structured framework events have no console destination. Hosted applications can emit redacted JSON lines to standard output with `LittleGhost.configure { |config| config.log_events_to :stdout }`; `:stderr` selects standard error instead, and `nil` disables a configured destination. Event emission and severity levels are the same with or without a console destination.
 

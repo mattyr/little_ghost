@@ -41,7 +41,7 @@ class InvocationTest < Minitest::Test
     assert_equal first.run_id, first.session_id
     refute_equal first.run_id, second.run_id
     refute_same first.history, second.history
-    refute_same first.model_profiles, second.model_profiles
+    refute_same first.model_configuration, second.model_configuration
   end
 
   def test_parses_deadline_lazily_and_requires_a_message

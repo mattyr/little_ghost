@@ -19,26 +19,17 @@ one deterministic request
 
 ## Models are selected by role
 
-An agent names a logical role such as `customer_support`, not a vendor model. `CustomerSupportModels` maps that stable application vocabulary to a provider and model identifier:
+An agent names a logical role such as `customer_support`, not a vendor model. `models.yml` maps that stable application vocabulary to a canonical target:
 
-```ruby
-class CustomerSupportModels < LittleGhost::ModelRegistry
-  def initialize
-    super
-    provider(:openai) do |model:, **|
-      LittleGhost::Providers::OpenAI.new(
-        api_key: ENV.fetch("OPENAI_API_KEY"),
-        model:
-      )
-    end
-    profile "customer_support", provider: :openai, model: "gpt-5"
-  end
-end
+```yaml
+models:
+  customer_support:
+    target: openai:gpt-5
 ```
 
 Dotted roles inherit from the nearest registered parent. `ResearchAgent` can request `customer_support.research` and initially use the `customer_support` profile; registering `customer_support.research` later specializes it. Per-invocation profile overrides can vary a request without mutating the registry or agent class. Because an override can select a different registered provider, model, and settings, it is trusted application configuration and must be constructed or allowlisted by the application rather than copied from unchecked request data.
 
-The provider performs model I/O. The registry resolves application intent into a `LittleGhost::Model`, which carries the provider, settings, metadata, model identifier, and role for a run.
+The provider performs model I/O. `LittleGhost::Models` resolves application intent into a `LittleGhost::Model`, which carries the provider, target, settings, details, and role for a run.
 
 ## Agents declare behavior
 
@@ -195,9 +186,9 @@ Streams expose generic framework events rather than provider wire formats. Consu
 
 The core design can be summarized as four choices:
 
-- Put shared construction and provider policy in configuration and model registries.
+- Put shared construction and provider policy in `providers.yml` and `models.yml`.
 - Put model behavior and available capabilities on agent classes.
 - Put privileged application operations behind narrow, authorized tools.
 - Put mandatory ordering in workflows; leave optional delegation to subagents.
 
-Return to [Getting Started](Getting%20Started.md) for the complete first-run setup. The API reference covers exact signatures and lifecycle details for `LittleGhost::Runtime`, `LittleGhost::Run`, `LittleGhost::Agent`, `LittleGhost::Tool`, `LittleGhost::Workflow`, and `LittleGhost::ModelRegistry`.
+Return to [Getting Started](Getting%20Started.md) for the complete first-run setup. The API reference covers exact signatures and lifecycle details for `LittleGhost::Runtime`, `LittleGhost::Run`, `LittleGhost::Agent`, `LittleGhost::Tool`, `LittleGhost::Workflow`, and `LittleGhost::Models`.

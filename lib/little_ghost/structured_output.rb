@@ -117,8 +117,8 @@ module LittleGhost
     private_class_method :validate_explicit_tool!
 
     def model_identity(model)
-      provider = model.respond_to?(:provider_name) ? model.provider_name : model.class.name
-      id = model.respond_to?(:id) ? model.id : nil
+      provider = model.respond_to?(:target) ? model.target.provider : model.class.name
+      id = model.respond_to?(:model_id) ? model.model_id : nil
       [provider, id].compact.join("/")
     end
     private_class_method :model_identity

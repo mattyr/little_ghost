@@ -8,7 +8,6 @@ module LittleGhost
   # instrumentation, and runtime hooks for an application.
   #
   #   LittleGhost.configure do |config|
-  #     config.models CustomerSupportModels
   #     config.default_model :customer_support
   #     config.service_name "support-api"
   #   end
@@ -30,7 +29,7 @@ module LittleGhost
   # not from an unverified request field.
   class Configuration
     FILE_LOAD_MUTEX = Mutex.new # :nodoc:
-    CONFIGURATION_KEYS = %i[invocation models default_model service_name].freeze # :nodoc:
+    CONFIGURATION_KEYS = %i[invocation default_model service_name].freeze # :nodoc:
     DEFAULT_PROMPT_PATHS = ["app/prompts"].freeze # :nodoc:
     DEFAULT_SKILL_PATHS = ["app/skills"].freeze # :nodoc:
 
@@ -41,16 +40,6 @@ module LittleGhost
     # :call-seq:
     #   invocation() -> value
     #   invocation(value) -> value
-
-    ##
-    # The model registry class or instance used to resolve logical roles. By
-    # default, +DefaultModelRegistry+ selects a built-in provider from supported
-    # environment variables.
-    #
-    # :method: models
-    # :call-seq:
-    #   models() -> value
-    #   models(value) -> value
 
     ##
     # The fallback logical model role for agents without an explicit role.
@@ -83,7 +72,7 @@ module LittleGhost
     #   invocation=(value) -> value
 
     ##
-    # Replaces the model registry declaration for subsequently built runtimes.
+    # Replaces the model resolver declaration for subsequently built runtimes.
     # :method: models=
     # :call-seq:
     #   models=(value) -> value
@@ -124,6 +113,9 @@ module LittleGhost
         @configuration_values[:instrumentation_subscribers]
       ).dup
       @configuration_values[:runtime_hooks] = Array(@configuration_values[:runtime_hooks]).dup
+      @configuration_values[:provider_adapters] = @configuration_values.fetch(:provider_adapters, {}).dup
+      @configuration_values[:catalog_sources] = Array(@configuration_values[:catalog_sources]).dup
+      @configuration_values[:provider_credentials] ||= nil
     end
 
     # Yields this builder for setup and returns the same instance.
@@ -138,6 +130,85 @@ module LittleGhost
     def sandbox = configuration_values[:sandbox]
     # Session-store declaration used for subsequently built runtimes.
     def session_store = configuration_values[:session_store]
+
+    # Directory containing providers.yml and models.yml. It defaults to
+    # config/little_ghost beneath the application root.
+    def configuration_path(value = :__read__)
+      return configuration_values[:configuration_path] if value == :__read__ && configuration_values.key?(:configuration_path)
+      return configuration_values[:configuration_path] = value if value != :__read__
+
+      root.join("config/little_ghost")
+    end
+
+    def configuration_path=(value)
+      configuration_path(value)
+    end
+
+    # Installs a complete resolver override for subsequently built runtimes.
+    def model_resolver(value = :__read__)
+      return configuration_values[:model_resolver] if value == :__read__
+
+      raise ArgumentError, "model_resolver must respond to resolve" unless value.respond_to?(:resolve)
+
+      configuration_values[:model_resolver] = value
+      @models = nil
+    end
+
+    def model_resolver=(value)
+      model_resolver(value)
+    end
+
+    # Registers a provider adapter factory under +name+.
+    def provider_adapter(name, callable = nil, &factory)
+      implementation = factory || callable
+      raise ArgumentError, "provider adapter must be callable or a Class" unless implementation.is_a?(Class) || implementation.respond_to?(:call)
+
+      configuration_values[:provider_adapters][name.to_s] = implementation
+      @models = nil
+      implementation
+    end
+
+    # Adds an explicit catalog source. Sources refresh only when callers invoke
+    # Models#refresh!.
+    def catalog_source(source)
+      raise ArgumentError, "catalog source must respond to refresh" unless source.respond_to?(:refresh)
+
+      configuration_values[:catalog_sources] << source
+      @models = nil
+      source
+    end
+
+    # Installs a trusted callable that returns credential options for a named
+    # provider connection when each executable model is constructed.
+    def provider_credentials(callable = nil, &resolver)
+      value = resolver || callable
+      return configuration_values[:provider_credentials] unless value
+      raise ArgumentError, "provider credential resolver must be callable" unless value.respond_to?(:call)
+
+      configuration_values[:provider_credentials] = value
+      @models = nil
+      value
+    end
+
+    # Returns the process configuration's lazily built model resolver.
+    def models
+      configured = configuration_values[:model_resolver]
+      return configured if configured
+
+      @models_mutex ||= Mutex.new
+      @models_mutex.synchronize do
+        @models ||= begin
+          directory = Pathname(configuration_path)
+          model_configuration = ModelConfiguration.new(directory:) if ModelConfiguration.present?(directory)
+          Models.new(
+            configuration: model_configuration,
+            provider_adapters: configuration_values[:provider_adapters],
+            catalog_sources: configuration_values[:catalog_sources],
+            credential_resolver: configuration_values[:provider_credentials]
+          )
+        end
+      end
+    end
 
     # Selects the Workspace subclass instantiated for each run.
     def workspace=(value)
@@ -286,6 +357,8 @@ module LittleGhost
       values[:skill_paths] = Array(values[:skill_paths]).dup
       values[:instrumentation_subscribers] = Array(values[:instrumentation_subscribers]).dup
       values[:runtime_hooks] = Array(values[:runtime_hooks]).dup
+      values[:models] = models
+      values[:default_model] ||= models.respond_to?(:default_model) ? models.default_model : "default"
       values[:root] = requested_root || values[:root] || self.root
       values
     end

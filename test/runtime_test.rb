@@ -56,11 +56,11 @@ class RuntimeTest < Minitest::Test
     end
   end
 
-  def test_runtime_uses_the_default_model_registry_when_models_are_not_configured
+  def test_runtime_uses_the_default_models_when_files_are_not_configured
     Dir.mktmpdir do |root|
       runtime = LittleGhost::Runtime.new(configuration: LittleGhost::Configuration.new(root:))
 
-      assert_instance_of LittleGhost::DefaultModelRegistry, runtime.models
+      assert_instance_of LittleGhost::Models, runtime.models
     end
   end
 

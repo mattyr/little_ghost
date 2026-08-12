@@ -5,7 +5,7 @@ require_relative "openai_compatible"
 module LittleGhost
   module Providers
     # OpenRouter gives one LittleGhost provider access to models routed through
-    # OpenRouter. Agents keep their model roles while the registry selects an
+    # OpenRouter. Agents keep their model roles while configuration selects an
     # OpenRouter model for each role.
     #
     #   provider = LittleGhost::Providers::OpenRouter.new(
