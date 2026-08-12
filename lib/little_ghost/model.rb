@@ -3,10 +3,15 @@
 module LittleGhost
   # Interface for executable model implementations accepted by agents.
   module ModelInterface
+    # Canonical physical provider and model identifier.
     def target = Models::Target.parse("custom:#{self.class.name || "anonymous"}")
+    # Provider-owned model identifier without the connection name.
     def model_id = target.model_id
+    # Logical application role that selected this model, when available.
     def role = nil
+    # Immutable capabilities, limits, modalities, and pricing facts.
     def details = Models::Details.new(target:)
+    # Normalized feature support used for request strategy selection.
     def capabilities = ModelCapabilities.legacy
   end
 
@@ -34,6 +39,7 @@ module LittleGhost
       @details = details || Models::Details.new(target: @target)
     end
 
+    # Provider-owned identifier from the canonical target.
     def model_id = target.model_id
 
     # Streams +request+ through the configured provider.
