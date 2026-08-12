@@ -29,7 +29,7 @@ models:
 
 Dotted roles inherit from the nearest registered parent. `ResearchAgent` can request `customer_support.research` and initially use the `customer_support` profile; registering `customer_support.research` later specializes it. Per-invocation profile overrides can vary a request without mutating the registry or agent class. Because an override can select a different registered provider, model, and settings, it is trusted application configuration and must be constructed or allowlisted by the application rather than copied from unchecked request data.
 
-The provider performs model I/O. `LittleGhost::Models` resolves application intent into a `LittleGhost::Model`, which carries the provider, target, settings, details, and role for a run.
+The provider performs model I/O. `LittleGhost::ModelResolver` resolves application intent into a `LittleGhost::Model`, which carries the provider, target, settings, details, and role for a run.
 
 ## Agents declare behavior
 
@@ -191,4 +191,4 @@ The core design can be summarized as four choices:
 - Put privileged application operations behind narrow, authorized tools.
 - Put mandatory ordering in workflows; leave optional delegation to subagents.
 
-Return to [Getting Started](Getting%20Started.md) for the complete first-run setup. The API reference covers exact signatures and lifecycle details for `LittleGhost::Runtime`, `LittleGhost::Run`, `LittleGhost::Agent`, `LittleGhost::Tool`, `LittleGhost::Workflow`, and `LittleGhost::Models`.
+Return to [Getting Started](Getting%20Started.md) for the complete first-run setup. The API reference covers exact signatures and lifecycle details for `LittleGhost::Runtime`, `LittleGhost::Run`, `LittleGhost::Agent`, `LittleGhost::Tool`, `LittleGhost::Workflow`, and `LittleGhost::ModelResolver`.

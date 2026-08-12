@@ -246,7 +246,7 @@ module LittleGhost
     # Implements the composition and returns its final unconsumed invocation.
     # Subclasses must override this hook.
     def perform
-      raise NotImplementedError, "#{self.class} must implement #perform"
+      raise AbstractMethodError, "#{self.class} must implement #perform"
     end
 
     # :doc:

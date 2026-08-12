@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "openai_compatible"
+require_relative "open_router/catalog_source"
 
 module LittleGhost
   module Providers

@@ -60,7 +60,7 @@ class RuntimeTest < Minitest::Test
     Dir.mktmpdir do |root|
       runtime = LittleGhost::Runtime.new(configuration: LittleGhost::Configuration.new(root:))
 
-      assert_instance_of LittleGhost::Models, runtime.models
+      assert_instance_of LittleGhost::ModelResolver, runtime.model_resolver
     end
   end
 

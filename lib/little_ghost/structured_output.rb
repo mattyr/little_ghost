@@ -56,11 +56,7 @@ module LittleGhost
       return unless configuration
 
       requested = configuration.fetch(:strategy, :auto).to_sym
-      capabilities = if model.respond_to?(:capabilities)
-        model.capabilities
-      else
-        ModelCapabilities.legacy
-      end
+      capabilities = model.capabilities
       strategy = case requested
       when :auto then automatic_strategy(model, capabilities, ordinary_tools)
       when :provider
@@ -117,9 +113,7 @@ module LittleGhost
     private_class_method :validate_explicit_tool!
 
     def model_identity(model)
-      provider = model.respond_to?(:target) ? model.target.provider : model.class.name
-      id = model.respond_to?(:model_id) ? model.model_id : nil
-      [provider, id].compact.join("/")
+      [model.target.provider, model.model_id].join("/")
     end
     private_class_method :model_identity
   end

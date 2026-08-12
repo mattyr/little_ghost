@@ -105,7 +105,7 @@ class OpenRouterTest < Minitest::Test
       provider:,
       target: "openrouter:openai/gpt-test",
       settings: {temperature: 0.0, max_tokens: 200},
-      details: LittleGhost::ModelDetails.new(
+      details: LittleGhost::Models::Details.new(
         target: "openrouter:openai/gpt-test",
         attributes: {supported_parameters: %w[structured_outputs max_tokens]}
       )
@@ -138,7 +138,7 @@ class OpenRouterTest < Minitest::Test
     model = LittleGhost::Model.new(
       provider:,
       target: "openrouter:tool-model",
-      details: LittleGhost::ModelDetails.new(
+      details: LittleGhost::Models::Details.new(
         target: "openrouter:tool-model",
         attributes: {supported_parameters: %w[tools tool_choice]}
       )

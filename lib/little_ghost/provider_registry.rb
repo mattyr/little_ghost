@@ -36,11 +36,16 @@ module LittleGhost
         request_options.delete(:retries)
       end
       options.merge!(request_options)
-      if factory.is_a?(Class)
+      provider = if factory.is_a?(Class)
         factory.new(model:, **options)
       else
         factory.call(model:, configuration: options, **context)
       end
+      unless provider.is_a?(Providers::Base)
+        raise AdapterLoadError, "Provider adapter #{adapter} must return a LittleGhost::Providers::Base"
+      end
+
+      provider
     rescue ArgumentError => error
       raise unless error.message.match?(/unknown keyword|missing keyword/)
 

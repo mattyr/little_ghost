@@ -1,11 +1,10 @@
 # frozen_string_literal: true
 
 require "test_helper"
-require "little_ghost/model_catalog_snapshot"
 
-class ModelCatalogSnapshotTest < Minitest::Test
+class ModelsCatalogSnapshotTest < Minitest::Test
   def test_generation_is_sorted_and_normalized
-    document = LittleGhost::ModelCatalogSnapshot::NAMESPACES.to_h do |namespace, _provider|
+    document = LittleGhost::Models::CatalogSnapshot::NAMESPACES.to_h do |namespace, _provider|
       [namespace, {"models" => {}}]
     end
     document["openrouter"]["models"] = {
@@ -13,8 +12,8 @@ class ModelCatalogSnapshotTest < Minitest::Test
       "a-model" => {"limit" => {"output" => 20}, "tool_call" => true}
     }
 
-    first = LittleGhost::ModelCatalogSnapshot.generate(document)
-    second = LittleGhost::ModelCatalogSnapshot.generate(document)
+    first = LittleGhost::Models::CatalogSnapshot.generate(document)
+    second = LittleGhost::Models::CatalogSnapshot.generate(document)
     parsed = JSON.parse(first)
 
     assert_equal first, second
@@ -25,10 +24,10 @@ class ModelCatalogSnapshotTest < Minitest::Test
   end
 
   def test_packaged_snapshot_is_deterministically_ordered_and_normalized
-    packaged = JSON.parse(File.read(LittleGhost::ModelCatalog::SNAPSHOT_PATH))
+    packaged = JSON.parse(File.read(LittleGhost::Models::Catalog::SNAPSHOT_PATH))
 
     providers = packaged.keys.map { |target| target.split(":", 2).first }
-    expected_provider_order = LittleGhost::ModelCatalogSnapshot::NAMESPACES.sort.map(&:last)
+    expected_provider_order = LittleGhost::Models::CatalogSnapshot::NAMESPACES.sort.map(&:last)
     assert_equal expected_provider_order, providers.uniq
     providers.uniq.each do |provider|
       targets = packaged.keys.select { |target| target.start_with?("#{provider}:") }

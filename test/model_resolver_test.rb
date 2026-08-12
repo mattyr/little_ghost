@@ -4,8 +4,8 @@ require "fileutils"
 require "tmpdir"
 require "test_helper"
 
-class ModelsTest < Minitest::Test
-  class RecordingProvider
+class ModelResolverTest < Minitest::Test
+  class RecordingProvider < LittleGhost::Providers::Base
     attr_reader :request
 
     def stream(request)
@@ -38,8 +38,8 @@ class ModelsTest < Minitest::Test
       provider = RecordingProvider.new
       previous = ENV["MODELS_TEST_KEY"]
       ENV["MODELS_TEST_KEY"] = "secret"
-      configuration = LittleGhost::ModelConfiguration.new(directory:)
-      models = LittleGhost::Models.new(configuration:, provider_adapters: {"test" => ->(**) { provider }})
+      configuration = LittleGhost::Models::Configuration.new(directory:)
+      models = LittleGhost::ModelResolver.new(configuration:, provider_adapters: {"test" => ->(**) { provider }})
 
       model = models.resolve("main.research.review")
 
@@ -64,7 +64,7 @@ class ModelsTest < Minitest::Test
               temperature: 0.1
       YAML
     ) do |directory|
-      models = LittleGhost::Models.new(
+      models = LittleGhost::ModelResolver.new(
         directory:,
         provider_adapters: {"test" => ->(**) { RecordingProvider.new }}
       )
@@ -84,7 +84,7 @@ class ModelsTest < Minitest::Test
       providers: "providers:\n  test:\n    adapter: test\n    api_key: trusted-secret\n",
       models: "models:\n  main:\n    target: test:model\n"
     ) do |directory|
-      models = LittleGhost::Models.new(
+      models = LittleGhost::ModelResolver.new(
         directory:,
         provider_adapters: {"test" => ->(**) { RecordingProvider.new }}
       )
@@ -104,7 +104,7 @@ class ModelsTest < Minitest::Test
       providers: "providers:\n  test:\n    adapter: test\n",
       models: "models:\n  main:\n    target: test:model\n"
     ) do |directory|
-      models = LittleGhost::Models.new(
+      models = LittleGhost::ModelResolver.new(
         directory:,
         provider_adapters: {"test" => ->(**) { RecordingProvider.new }}
       )
@@ -128,7 +128,7 @@ class ModelsTest < Minitest::Test
       models: "models:\n  main:\n    target: test:model\n    request:\n      retries: 4\n"
     ) do |directory|
       received = nil
-      models = LittleGhost::Models.new(
+      models = LittleGhost::ModelResolver.new(
         directory:,
         provider_adapters: {"test" => lambda { |configuration:, **|
           received = configuration
@@ -148,7 +148,7 @@ class ModelsTest < Minitest::Test
       providers: "providers:\n  gateway:\n    adapter: test\n",
       models: "models:\n  main:\n    target: gateway:known\n"
     ) do |directory|
-      models = LittleGhost::Models.new(directory:, provider_adapters: {"test" => ->(**) { RecordingProvider.new }})
+      models = LittleGhost::ModelResolver.new(directory:, provider_adapters: {"test" => ->(**) { RecordingProvider.new }})
 
       model = models.resolve("gateway:released-today")
 
@@ -158,7 +158,7 @@ class ModelsTest < Minitest::Test
   end
 
   def test_catalog_precedence_and_failed_refresh_preserve_last_good_data
-    source = Object.new
+    source = Class.new(LittleGhost::Models::Catalog::Source).new(name: "test")
     calls = 0
     source.define_singleton_method(:refresh) do |target:|
       calls += 1
@@ -166,7 +166,7 @@ class ModelsTest < Minitest::Test
 
       {target.to_s => {context_window: 200, pricing: {input: 1.0}, observed_at: "2026-08-12T00:00:00Z"}}
     end
-    catalog = LittleGhost::ModelCatalog.new(
+    catalog = LittleGhost::Models::Catalog.new(
       overrides: {"openai:gpt-5.6-terra" => {context_window: 300}},
       sources: [source]
     )
@@ -183,7 +183,7 @@ class ModelsTest < Minitest::Test
   end
 
   def test_bundled_catalog_has_normalized_pricing_for_atlas_defaults
-    catalog = LittleGhost::ModelCatalog.new
+    catalog = LittleGhost::Models::Catalog.new
 
     main = catalog.details("openrouter:google/gemini-3.5-flash")
     engineering = catalog.details("openrouter:z-ai/glm-5.2")
@@ -206,12 +206,12 @@ class ModelsTest < Minitest::Test
         }
       }
     )
-    source = LittleGhost::CatalogSources::ModelsDev.new(
+    source = LittleGhost::Models::Catalog::ModelsDevSource.new(
       provider_adapters: {"router" => "openrouter"},
       http_get: ->(_uri) { response }
     )
 
-    records = source.refresh(target: LittleGhost::ModelTarget.parse("router:new/model"))
+    records = source.refresh(target: LittleGhost::Models::Target.parse("router:new/model"))
 
     assert_equal 123, records.dig("router:new/model", :context_window)
     assert_equal 1.25, records.dig("router:new/model", :pricing, "input")
@@ -223,7 +223,7 @@ class ModelsTest < Minitest::Test
       FileUtils.mkdir_p(directory)
       File.write(File.join(directory, "providers.yml"), "providers: {}\n")
 
-      error = assert_raises(LittleGhost::ConfigurationError) { LittleGhost::ModelConfiguration.new(directory:) }
+      error = assert_raises(LittleGhost::ConfigurationError) { LittleGhost::Models::Configuration.new(directory:) }
 
       assert_includes error.message, "models.yml"
     end
@@ -231,7 +231,7 @@ class ModelsTest < Minitest::Test
 
   def test_model_metadata_does_not_preflight_reject_attachments
     provider = RecordingProvider.new
-    details = LittleGhost::ModelDetails.new(target: "test:text", attributes: {input_modalities: ["text"]})
+    details = LittleGhost::Models::Details.new(target: "test:text", attributes: {input_modalities: ["text"]})
     model = LittleGhost::Model.new(provider:, target: "test:text", details:)
     request = LittleGhost::ModelRequest.new(messages: [
       LittleGhost::Message.new(role: :user, content: [LittleGhost::Content::Image.new(data: "image", media_type: "image/png")])
@@ -248,7 +248,7 @@ class ModelsTest < Minitest::Test
       models: "models:\n  main:\n    target: router:model\n"
     ) do |directory|
       received = nil
-      models = LittleGhost::Models.new(
+      models = LittleGhost::ModelResolver.new(
         directory:,
         credential_resolver: ->(provider:, **_context) { {api_key: "resolved-#{provider}"} },
         provider_adapters: {"test" => lambda { |configuration:, **|

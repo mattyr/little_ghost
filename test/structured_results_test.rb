@@ -5,6 +5,8 @@ require "test_helper"
 
 class StructuredResultsTest < Minitest::Test
   class ScriptedModel
+    include LittleGhost::ModelInterface
+
     attr_reader :requests
 
     attr_reader :capabilities
@@ -592,6 +594,8 @@ class StructuredResultsTest < Minitest::Test
       subscribers: [TestTelemetryRecorder.new(telemetry)]
     )
     model = Class.new do
+      include LittleGhost::ModelInterface
+
       def capabilities = LittleGhost::ModelCapabilities.legacy
 
       def stream(_request)

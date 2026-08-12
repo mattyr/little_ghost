@@ -66,7 +66,7 @@ The core stays dependency-light, while provider SDKs and deployment choices rema
 ## How it fits together
 
 ```text
-providers.yml + models.yml ──> LittleGhost.models ──> provider
+providers.yml + models.yml ──> LittleGhost.model_resolver ──> provider
                                       │
 request ──> CustomerSupportAgent ──> HelpCenterLookupTool
                   │
@@ -76,6 +76,8 @@ request ──> ResponseWorkflow ──> ResearchAgent ──> CustomerSupportAg
 ```
 
 Configuration owns shared services such as model resolution, sessions, lookup paths, workspaces, sandboxes, and instrumentation. Agent classes own behavior: their logical model role, prompt, tools, limits, structured result, and delegation policy. A tool is a validated boundary around application code. A subagent lets the model delegate work within configured turn, concurrency, and depth limits; a workflow uses ordinary Ruby when your application must choose the sequence.
+
+Applications that need custom routing can subclass `LittleGhost::ModelResolver` and install the instance with `config.model_resolver`. Provider adapters similarly subclass `LittleGhost::Providers::Base`; catalog sources subclass `LittleGhost::Models::Catalog::Source`. These explicit interfaces keep runtime behavior predictable while preserving extension points.
 
 `CustomerSupportAgent.ask(...)` creates a standalone entrypoint, consumes its run, and returns the completed `LittleGhost::Run`. Create an instance explicitly when reusing a runtime or when an interface should render progress as `LittleGhost::StreamEvent` objects:
 
@@ -99,7 +101,7 @@ gem "little_ghost"
 
 Then run `bundle install`. Built-in OpenAI-compatible, OpenRouter, Anthropic, Gemini, Vertex AI, and Amazon Bedrock integrations use Ruby's standard library and normalize responses into the same LittleGhost protocol.
 
-By default, LittleGhost maps the `default` role to GPT-5.6 Terra. It selects the first nonblank API key from `LITTLEGHOST_OPENROUTER_API_KEY`, `LITTLEGHOST_OPENAI_API_KEY`, `OPENROUTER_API_KEY`, and `OPENAI_API_KEY`, in that order. Setting one of these keys authorizes model inputs—including prompts, conversation history, tool data, and attachments—to be sent to the selected external provider. Applications with provider or data-residency requirements should configure both YAML files explicitly.
+By default, LittleGhost maps the `default` role to GPT-5.6 Luna. It selects the first nonblank API key from `LITTLEGHOST_OPENROUTER_API_KEY`, `LITTLEGHOST_OPENAI_API_KEY`, `OPENROUTER_API_KEY`, and `OPENAI_API_KEY`, in that order. Setting one of these keys authorizes model inputs—including prompts, conversation history, tool data, and attachments—to be sent to the selected external provider. Applications with provider or data-residency requirements should configure both YAML files explicitly.
 
 By default, structured framework events have no console destination. Hosted applications can emit redacted JSON lines to standard output with `LittleGhost.configure { |config| config.log_events_to :stdout }`; `:stderr` selects standard error instead, and `nil` disables a configured destination. Event emission and severity levels are the same with or without a console destination.
 

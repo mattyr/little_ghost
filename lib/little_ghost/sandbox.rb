@@ -90,22 +90,22 @@ module LittleGhost
 
     # Reads UTF-8 text at a workspace-relative +path+.
     def read(path, context: nil)
-      raise NotImplementedError, "#{self.class} does not support filesystem reads"
+      raise AbstractMethodError, "#{self.class} does not support filesystem reads"
     end
 
     # Lists entries at a workspace-relative directory +path+.
     def list(path = ".", context: nil)
-      raise NotImplementedError, "#{self.class} does not support filesystem listings"
+      raise AbstractMethodError, "#{self.class} does not support filesystem listings"
     end
 
     # Writes +content+ to a workspace-relative +path+.
     def write(path, content, context: nil)
-      raise NotImplementedError, "#{self.class} does not support filesystem writes"
+      raise AbstractMethodError, "#{self.class} does not support filesystem writes"
     end
 
     # Replaces one exact +old_text+ occurrence with +new_text+.
     def replace(path, old_text, new_text, context: nil)
-      raise NotImplementedError, "#{self.class} does not support filesystem edits"
+      raise AbstractMethodError, "#{self.class} does not support filesystem edits"
     end
 
     # Executes +command+ through +/bin/sh+.
@@ -127,7 +127,7 @@ module LittleGhost
     # Implementations must enforce +timeout+ and +max_output_bytes+. Environment
     # inheritance is disabled by default to avoid leaking process credentials.
     def execute_program(command, timeout:, context: nil, max_output_bytes: 1_000_000, environment: {}, inherit_environment: false)
-      raise NotImplementedError, "#{self.class} does not support program execution"
+      raise AbstractMethodError, "#{self.class} does not support program execution"
     end
 
     # Releases sandbox resources. Runs close the sandbox before its workspace.

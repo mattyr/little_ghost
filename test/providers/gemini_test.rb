@@ -37,7 +37,7 @@ class GeminiTest < Minitest::Test
   def test_vertex_uses_bearer_token_and_vertex_endpoint
     transport = Transport.new
     provider = LittleGhost::Providers::VertexAI.new(model: "gemini", project: "project", location: "us-central1",
-      credential_resolver: -> { "token" }, transport:)
+      credential_resolver: ->(**) { "token" }, transport:)
     request = LittleGhost::ModelRequest.new(messages: [LittleGhost::Message.new(role: :user, content: "Hi")])
 
     provider.stream(request).to_a

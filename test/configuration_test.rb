@@ -148,7 +148,7 @@ class ConfigurationTest < Minitest::Test
     end
   end
 
-  class ScriptedProvider
+  class ScriptedProvider < LittleGhost::Providers::Base
     attr_reader :requests
 
     def initialize(text = "Done")
@@ -172,7 +172,7 @@ class ConfigurationTest < Minitest::Test
     end
   end
 
-  class ProgressThenDeadlineProvider
+  class ProgressThenDeadlineProvider < LittleGhost::Providers::Base
     def initialize(error = LittleGhost::DeadlineExceededError.new("deadline"))
       @turn = 0
       @error = error
@@ -201,7 +201,7 @@ class ConfigurationTest < Minitest::Test
     end
   end
 
-  class ProgressThenRetryDeadlineProvider
+  class ProgressThenRetryDeadlineProvider < LittleGhost::Providers::Base
     def initialize(complete_failed_attempt:)
       @complete_failed_attempt = complete_failed_attempt
       @turn = 0
@@ -242,7 +242,7 @@ class ConfigurationTest < Minitest::Test
     end
   end
 
-  class FailingProvider
+  class FailingProvider < LittleGhost::Providers::Base
     def initialize(error)
       @error = error
     end
@@ -252,7 +252,7 @@ class ConfigurationTest < Minitest::Test
     end
   end
 
-  class StubbornProvider
+  class StubbornProvider < LittleGhost::Providers::Base
     attr_reader :cleanup_started, :producer_started, :release
 
     def initialize
@@ -278,7 +278,7 @@ class ConfigurationTest < Minitest::Test
     end
   end
 
-  class ReasoningThenAnswerProvider
+  class ReasoningThenAnswerProvider < LittleGhost::Providers::Base
     attr_reader :requests
 
     def initialize
@@ -443,7 +443,7 @@ class ConfigurationTest < Minitest::Test
   end
 
   def test_run_interrupt_response_forwards_to_active_entrypoint_and_rejects_terminal_states
-    provider = Object.new
+    provider = Class.new(LittleGhost::Providers::Base).new
     started = Queue.new
     release = Queue.new
     requests = []
@@ -1156,14 +1156,14 @@ class ConfigurationTest < Minitest::Test
     with_runtime do |harness|
       replacement_provider = ScriptedProvider.new("Replacement")
       replacement_models = models_for(replacement_provider)
-      isolated = harness.build(models: replacement_models)
+      isolated = harness.build(model_resolver: replacement_models)
 
       result = isolated.agent_instance.call(message: "hello")
 
       assert_equal "Replacement", result.response
       refute harness.settings.frozen?
-      assert_same replacement_models, isolated.runtime_instance.models
-      refute_same harness.runtime_instance.models, isolated.runtime_instance.models
+      assert_same replacement_models, isolated.runtime_instance.model_resolver
+      refute_same harness.runtime_instance.model_resolver, isolated.runtime_instance.model_resolver
     end
   end
 
@@ -1187,7 +1187,7 @@ class ConfigurationTest < Minitest::Test
       }
 
       harness = configuration.build(
-        models: models_for(ScriptedProvider.new),
+        model_resolver: models_for(ScriptedProvider.new),
         session_store: {provider: LittleGhost::SessionStores::Memory},
         instrumentation_subscribers: []
       )
@@ -1372,7 +1372,7 @@ class ConfigurationTest < Minitest::Test
       subagent child, kind: "child"
     end
     parent_turn = 0
-    provider = Object.new
+    provider = Class.new(LittleGhost::Providers::Base).new
     provider.define_singleton_method(:stream) do |request|
       system = request.messages.find { |message| message.role == :system }&.text
       parent_turn += 1 if system == "Parent"
@@ -1415,7 +1415,7 @@ class ConfigurationTest < Minitest::Test
   end
 
   def test_application_restores_nested_async_subagent_conversations
-    provider = Object.new
+    provider = Class.new(LittleGhost::Providers::Base).new
     counts = Hash.new(0)
     tool_id = 0
     child_id = nil
@@ -1582,7 +1582,8 @@ class ConfigurationTest < Minitest::Test
   end
 
   def models_for(provider, settings: {})
-    resolver = Object.new
+    resolver = LittleGhost::ModelResolver.allocate
+    resolver.define_singleton_method(:default_model) { "default" }
     resolver.define_singleton_method(:resolve) do |role, invocation: nil, **|
       profiles = invocation&.model_configuration&.fetch("profiles", {}) || {}
       overrides = profiles.fetch(role.to_s, {}).fetch("settings", {})

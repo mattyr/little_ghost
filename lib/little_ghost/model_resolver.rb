@@ -1,8 +1,10 @@
 # frozen_string_literal: true
 
 module LittleGhost
-  # Resolves logical profiles and canonical targets into executable models.
-  class Models
+  # Resolves logical profiles and canonical +provider:model-id+ targets into
+  # executable Model objects. Subclasses may override #resolve, #details, or
+  # #refresh! while preserving those public signatures.
+  class ModelResolver
     DEFAULT_CREDENTIALS = [
       ["LITTLEGHOST_OPENROUTER_API_KEY", "openrouter"],
       ["LITTLEGHOST_OPENAI_API_KEY", "openai"],
@@ -10,15 +12,18 @@ module LittleGhost
       ["OPENAI_API_KEY", "openai"]
     ].freeze
     DEFAULT_MODELS = {
-      "openrouter" => "openai/gpt-5.6-terra",
-      "openai" => "gpt-5.6-terra"
+      "openrouter" => "openai/gpt-5.6-luna",
+      "openai" => "gpt-5.6-luna"
     }.freeze
 
+    # Parsed configuration and model metadata catalog.
     attr_reader :configuration, :catalog
 
+    # Builds a resolver from explicit collaborators or a LittleGhost YAML
+    # +directory+. With neither, conventional credentials select GPT-5.6 Luna.
     def initialize(configuration: nil, directory: nil, provider_registry: ProviderRegistry.new,
       catalog: nil, catalog_sources: [], provider_adapters: {}, credential_resolver: nil)
-      @configuration = configuration || (directory && ModelConfiguration.new(directory:))
+      @configuration = configuration || (directory && Models::Configuration.new(directory:))
       @providers = @configuration&.providers || {}
       @profiles = @configuration&.models || {}
       @default_model = @configuration&.default_model || "default"
@@ -26,14 +31,16 @@ module LittleGhost
       @credential_resolver = credential_resolver
       configure_zero_default unless @configuration
       sources = catalog_sources.empty? ? built_in_catalog_sources : catalog_sources
-      @catalog = catalog || ModelCatalog.new(
+      @catalog = catalog || Models::Catalog.new(
         overrides: @configuration&.model_overrides || {},
         sources:
       )
     end
 
+    # Logical role used when an agent does not declare one.
     attr_reader :default_model
 
+    # Resolves a logical role or canonical target into an executable Model.
     def resolve(name, invocation: nil, override: nil, run: nil, context: nil, profiles: nil, **options)
       role = name.to_s
       base = role.include?(":") ? {target: role, settings: {}, request: {}} : resolved_role(role)
@@ -41,7 +48,7 @@ module LittleGhost
       invocation_profiles = profiles || invocation_configuration["profiles"] || invocation_configuration[:profiles] || {}
       override_names(role).each { |profile| base = merge(base, invocation_profiles[profile] || invocation_profiles[profile.to_sym]) }
       base = merge(base, override)
-      target = ModelTarget.parse(base.fetch(:target))
+      target = Models::Target.parse(base.fetch(:target))
       provider_config = @providers.fetch(target.provider) do
         raise ConfigurationError, "Model target references unknown provider #{target.provider}"
       end
@@ -63,7 +70,9 @@ module LittleGhost
       Model.new(provider:, target:, settings: base.fetch(:settings), details:, role:)
     end
 
+    # Returns normalized metadata for +target+ without constructing a provider.
     def details(target) = catalog.details(target)
+    # Refreshes configured metadata sources, retaining stale data on failure.
     def refresh!(target: nil) = catalog.refresh!(target:)
 
     private
@@ -83,10 +92,10 @@ module LittleGhost
       return catalog.details(target) unless snapshot
 
       values = snapshot.to_h.transform_keys(&:to_sym)
-      snapshot_target = ModelTarget.parse(values.delete(:target) || target)
+      snapshot_target = Models::Target.parse(values.delete(:target) || target)
       raise ConfigurationError, "Model details target must match #{target}" unless snapshot_target == target
 
-      ModelDetails.new(
+      Models::Details.new(
         target:,
         attributes: values.except(:provenance, :observed_at),
         provenance: values[:provenance] || {},
@@ -96,19 +105,19 @@ module LittleGhost
 
     def built_in_catalog_sources
       adapters = @providers.to_h { |name, values| [name, values["adapter"].to_s] }
-      sources = [CatalogSources::ModelsDev.new(provider_adapters: adapters)]
+      sources = [Models::Catalog::ModelsDevSource.new(provider_adapters: adapters)]
       @providers.each do |name, values|
         case values["adapter"].to_s
         when "openrouter"
-          sources << CatalogSources::OpenRouter.new(provider: name, api_key: values["api_key"])
+          sources << Providers::OpenRouter::CatalogSource.new(provider: name, api_key: values["api_key"])
         when "anthropic"
-          sources << CatalogSources::Anthropic.new(provider: name, api_key: values["api_key"])
+          sources << Providers::Anthropic::CatalogSource.new(provider: name, api_key: values["api_key"])
         when "gemini"
-          sources << CatalogSources::Gemini.new(provider: name, api_key: values["api_key"])
+          sources << Providers::Gemini::CatalogSource.new(provider: name, api_key: values["api_key"])
         when "bedrock"
-          resolver = values["credential_resolver"] || Providers::AwsCredentialResolver.new
-          region = values["region"] || (resolver.region if resolver.respond_to?(:region))
-          sources << CatalogSources::Bedrock.new(provider: name, region:, credential_resolver: resolver) if region
+          resolver = values["credential_resolver"] || Providers::Bedrock::CredentialResolver.new
+          region = values["region"] || (resolver.region if resolver.is_a?(Providers::Bedrock::CredentialResolver))
+          sources << Providers::Bedrock::CatalogSource.new(provider: name, region:, credential_resolver: resolver) if region
         end
       end
       sources

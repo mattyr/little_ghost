@@ -2,32 +2,33 @@
 
 require "base64"
 require "json"
-require_relative "http_transport"
-require_relative "sse_parser"
+require_relative "../support/http_client"
+require_relative "../support/sse_parser"
+require_relative "anthropic/catalog_source"
 
 module LittleGhost
   module Providers
     # Zero-dependency Anthropic Messages API adapter.
-    class Anthropic
+    class Anthropic < Base
       DEFAULT_BASE_URL = "https://api.anthropic.com/v1/"
 
       attr_reader :model
 
       def initialize(api_key:, model:, base_url: DEFAULT_BASE_URL, api_version: "2023-06-01",
-        open_timeout: 10, read_timeout: 120, max_response_bytes: HTTPTransport::DEFAULT_MAX_RESPONSE_BYTES,
+        open_timeout: 10, read_timeout: 120, max_response_bytes: Support::HTTPClient::DEFAULT_MAX_RESPONSE_BYTES,
         transport: nil, **)
         raise CredentialError, "Anthropic api_key is required" if api_key.to_s.empty?
 
         @api_key = api_key
         @api_version = api_version
         @model = model
-        @transport = transport || HTTPTransport.new(base_url:, open_timeout:, read_timeout:, max_response_bytes:)
+        @transport = transport || Support::HTTPClient.new(base_url:, open_timeout:, read_timeout:, max_response_bytes:)
       end
 
       def stream(request)
         return enum_for(__method__, request) unless block_given?
 
-        parser = SSEParser.new
+        parser = Support::SSEParser.new
         normalizer = Normalizer.new(model:)
         @transport.stream(
           path: "messages",

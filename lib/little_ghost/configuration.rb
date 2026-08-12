@@ -73,9 +73,9 @@ module LittleGhost
 
     ##
     # Replaces the model resolver declaration for subsequently built runtimes.
-    # :method: models=
+    # :method: model_resolver=
     # :call-seq:
-    #   models=(value) -> value
+    #   model_resolver=(value) -> value
 
     ##
     # Replaces the fallback logical model role and normalizes it to a String.
@@ -146,12 +146,33 @@ module LittleGhost
 
     # Installs a complete resolver override for subsequently built runtimes.
     def model_resolver(value = :__read__)
-      return configuration_values[:model_resolver] if value == :__read__
+      if value != :__read__
+        validate_model_resolver!(value)
 
-      raise ArgumentError, "model_resolver must respond to resolve" unless value.respond_to?(:resolve)
+        configuration_values[:model_resolver] = value
+        @resolved_model_resolver = nil
+        return value
+      end
 
-      configuration_values[:model_resolver] = value
-      @models = nil
+      configured = configuration_values[:model_resolver]
+      if configured
+        validate_model_resolver!(configured)
+        return configured
+      end
+
+      @model_resolver_mutex ||= Mutex.new
+      @model_resolver_mutex.synchronize do
+        @resolved_model_resolver ||= begin
+          directory = Pathname(configuration_path)
+          model_configuration = Models::Configuration.new(directory:) if Models::Configuration.present?(directory)
+          ModelResolver.new(
+            configuration: model_configuration,
+            provider_adapters: configuration_values[:provider_adapters],
+            catalog_sources: configuration_values[:catalog_sources],
+            credential_resolver: configuration_values[:provider_credentials]
+          )
+        end
+      end
     end
 
     def model_resolver=(value)
@@ -161,20 +182,26 @@ module LittleGhost
     # Registers a provider adapter factory under +name+.
     def provider_adapter(name, callable = nil, &factory)
       implementation = factory || callable
-      raise ArgumentError, "provider adapter must be callable or a Class" unless implementation.is_a?(Class) || implementation.respond_to?(:call)
+      if implementation.is_a?(Class)
+        unless implementation <= Providers::Base
+          raise ArgumentError, "provider adapter class must inherit LittleGhost::Providers::Base"
+        end
+      elsif !implementation.respond_to?(:call)
+        raise ArgumentError, "provider adapter must be a Providers::Base class or callable factory"
+      end
 
       configuration_values[:provider_adapters][name.to_s] = implementation
-      @models = nil
+      @resolved_model_resolver = nil
       implementation
     end
 
     # Adds an explicit catalog source. Sources refresh only when callers invoke
-    # Models#refresh!.
+    # ModelResolver#refresh!.
     def catalog_source(source)
-      raise ArgumentError, "catalog source must respond to refresh" unless source.respond_to?(:refresh)
+      raise ArgumentError, "catalog source must be a Models::Catalog::Source" unless source.is_a?(Models::Catalog::Source)
 
       configuration_values[:catalog_sources] << source
-      @models = nil
+      @resolved_model_resolver = nil
       source
     end
 
@@ -186,28 +213,8 @@ module LittleGhost
       raise ArgumentError, "provider credential resolver must be callable" unless value.respond_to?(:call)
 
       configuration_values[:provider_credentials] = value
-      @models = nil
+      @resolved_model_resolver = nil
       value
-    end
-
-    # Returns the process configuration's lazily built model resolver.
-    def models
-      configured = configuration_values[:model_resolver]
-      return configured if configured
-
-      @models_mutex ||= Mutex.new
-      @models_mutex.synchronize do
-        @models ||= begin
-          directory = Pathname(configuration_path)
-          model_configuration = ModelConfiguration.new(directory:) if ModelConfiguration.present?(directory)
-          Models.new(
-            configuration: model_configuration,
-            provider_adapters: configuration_values[:provider_adapters],
-            catalog_sources: configuration_values[:catalog_sources],
-            credential_resolver: configuration_values[:provider_credentials]
-          )
-        end
-      end
     end
 
     # Selects the Workspace subclass instantiated for each run.
@@ -357,8 +364,8 @@ module LittleGhost
       values[:skill_paths] = Array(values[:skill_paths]).dup
       values[:instrumentation_subscribers] = Array(values[:instrumentation_subscribers]).dup
       values[:runtime_hooks] = Array(values[:runtime_hooks]).dup
-      values[:models] = models
-      values[:default_model] ||= models.respond_to?(:default_model) ? models.default_model : "default"
+      values[:model_resolver] = model_resolver
+      values[:default_model] ||= model_resolver.default_model
       values[:root] = requested_root || values[:root] || self.root
       values
     end
@@ -385,6 +392,12 @@ module LittleGhost
     private
 
     attr_reader :configuration_values
+
+    def validate_model_resolver!(value)
+      return if value.is_a?(ModelResolver)
+
+      raise ArgumentError, "model_resolver must be a ModelResolver"
+    end
 
     def component_class(value, base_class, name)
       unless value.is_a?(Class) && value <= base_class

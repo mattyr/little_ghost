@@ -1,6 +1,15 @@
 # frozen_string_literal: true
 
 module LittleGhost
+  # Interface for executable model implementations accepted by agents.
+  module ModelInterface
+    def target = Models::Target.parse("custom:#{self.class.name || "anonymous"}")
+    def model_id = target.model_id
+    def role = nil
+    def details = Models::Details.new(target:)
+    def capabilities = ModelCapabilities.legacy
+  end
+
   # Model is the configured connection between an agent role and a provider. It
   # keeps provider choice and defaults out of the agent class that uses them.
   #
@@ -8,19 +17,21 @@ module LittleGhost
   # modalities declared in metadata, lets providers prepare capability-sensitive
   # requests, and delegates the normalized stream to the provider.
   class Model
+    include ModelInterface
+
     # Provider object, canonical target, default settings, normalized model
     # details, and logical application role.
     attr_reader :provider, :target, :settings, :details, :role
 
     # Wraps an object that responds to +stream+.
     def initialize(provider:, target:, settings: {}, details: nil, role: nil)
-      raise ArgumentError, "provider must respond to stream" unless provider.respond_to?(:stream)
+      raise ArgumentError, "provider must be a LittleGhost::Providers::Base" unless provider.is_a?(Providers::Base)
 
       @provider = provider
-      @target = ModelTarget.parse(target)
+      @target = Models::Target.parse(target)
       @settings = settings.to_h.transform_keys(&:to_sym).freeze
       @role = role&.to_s
-      @details = details || ModelDetails.new(target: @target)
+      @details = details || Models::Details.new(target: @target)
     end
 
     def model_id = target.model_id
@@ -39,20 +50,14 @@ module LittleGhost
         cancellation_token: request.cancellation_token,
         deadline: request.deadline
       )
-      if provider.respond_to?(:prepare_request)
-        configured_request = provider.prepare_request(configured_request, capabilities:)
-      end
+      configured_request = provider.prepare_request(configured_request, capabilities:)
       provider.stream(configured_request, &block)
     end
 
     # Uses advertised provider capabilities, falling back to the permissive legacy
     # contract for providers that do not advertise them.
     def capabilities
-      @capabilities ||= if provider.respond_to?(:capabilities)
-        provider.capabilities(metadata: details.attributes)
-      else
-        ModelCapabilities.legacy
-      end
+      @capabilities ||= provider.capabilities(metadata: details.attributes)
     end
   end
 end

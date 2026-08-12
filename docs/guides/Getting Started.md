@@ -175,4 +175,4 @@ The enumerator yields `LittleGhost::StreamEvent` objects. Text, tool activity, u
 
 ## Where to go next
 
-Read [Core Concepts](Core%20Concepts.md) for the distinction between model-directed subagents and application-directed workflows, how sessions and runs divide ownership, and when `ResponseWorkflow` is a better fit than delegation. The API reference covers exact signatures for `LittleGhost::Agent`, `LittleGhost::Tool`, `LittleGhost::Models`, and `LittleGhost::Run`.
+Read [Core Concepts](Core%20Concepts.md) for the distinction between model-directed subagents and application-directed workflows, how sessions and runs divide ownership, and when `ResponseWorkflow` is a better fit than delegation. The API reference covers exact signatures for `LittleGhost::Agent`, `LittleGhost::Tool`, `LittleGhost::ModelResolver`, and `LittleGhost::Run`.

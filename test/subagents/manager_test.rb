@@ -771,6 +771,7 @@ class SubagentManagerTest < Minitest::Test
     requests = []
     responses = ["first response", "second response"]
     model = Object.new
+    model.extend(LittleGhost::ModelInterface)
     model.define_singleton_method(:stream) do |request|
       requests << request
       message = LittleGhost::Message.new(role: :assistant, content: responses.shift)
@@ -816,6 +817,7 @@ class SubagentManagerTest < Minitest::Test
     responses = ["first response", "second response"]
     factory = lambda do |id|
       model = Object.new
+      model.extend(LittleGhost::ModelInterface)
       model.define_singleton_method(:stream) do |request|
         requests << request
         response = LittleGhost::ModelResponse.new(
@@ -948,6 +950,7 @@ class SubagentManagerTest < Minitest::Test
     factory = lambda do |id|
       calls = 0
       model = Object.new
+      model.extend(LittleGhost::ModelInterface)
       model.define_singleton_method(:stream) do |_request|
         calls += 1
         message = if calls.odd?

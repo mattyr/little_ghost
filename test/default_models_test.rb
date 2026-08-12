@@ -7,16 +7,16 @@ class DefaultModelsTest < Minitest::Test
 
   def test_prefers_prefixed_openrouter_and_uses_terra
     with_credentials("LITTLEGHOST_OPENROUTER_API_KEY" => "key", "OPENAI_API_KEY" => "other") do
-      model = LittleGhost::Models.new.resolve("default")
+      model = LittleGhost::ModelResolver.new.resolve("default")
 
-      assert_equal "openrouter:openai/gpt-5.6-terra", model.target.to_s
+      assert_equal "openrouter:openai/gpt-5.6-luna", model.target.to_s
       assert_instance_of LittleGhost::Providers::OpenRouter, model.provider
     end
   end
 
   def test_missing_credentials_fail_when_resolved
     with_credentials do
-      error = assert_raises(LittleGhost::CredentialError) { LittleGhost::Models.new.resolve("default") }
+      error = assert_raises(LittleGhost::CredentialError) { LittleGhost::ModelResolver.new.resolve("default") }
 
       KEYS.each { |key| assert_includes error.message, key }
       assert_includes error.message, "config/little_ghost/providers.yml"

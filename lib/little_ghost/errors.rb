@@ -5,6 +5,8 @@ module LittleGhost
   class Error < StandardError; end
   # Raised for invalid framework or application configuration.
   class ConfigurationError < Error; end
+  # Raised when an abstract framework method has no concrete implementation.
+  class AbstractMethodError < Error; end
   # Raised when a configured provider adapter cannot be constructed.
   class AdapterLoadError < ConfigurationError; end
   # Raised when no usable credentials can be resolved for a provider.

@@ -4,6 +4,8 @@ require "test_helper"
 
 class AgentContextManagementTest < Minitest::Test
   class ScriptedModel
+    include LittleGhost::ModelInterface
+
     attr_reader :requests
 
     def initialize(*responses, metadata: {})
@@ -24,6 +26,8 @@ class AgentContextManagementTest < Minitest::Test
   end
 
   class CancellingSummaryModel
+    include LittleGhost::ModelInterface
+
     attr_reader :requests
 
     def initialize

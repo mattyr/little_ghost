@@ -3,34 +3,35 @@
 require "base64"
 require "json"
 require "uri"
-require_relative "http_transport"
-require_relative "sse_parser"
+require_relative "../support/http_client"
+require_relative "../support/sse_parser"
+require_relative "gemini/catalog_source"
 
 module LittleGhost
   module Providers
     # Zero-dependency Gemini generateContent adapter.
-    class Gemini
+    class Gemini < Base
       DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/"
 
       attr_reader :model
 
       def initialize(api_key:, model:, base_url: DEFAULT_BASE_URL, open_timeout: 10, read_timeout: 120,
-        max_response_bytes: HTTPTransport::DEFAULT_MAX_RESPONSE_BYTES, transport: nil, **)
+        max_response_bytes: Support::HTTPClient::DEFAULT_MAX_RESPONSE_BYTES, transport: nil, **)
         raise CredentialError, "Gemini api_key is required" if api_key.to_s.empty?
 
         @api_key = api_key
         @model = model
-        @transport = transport || HTTPTransport.new(base_url:, open_timeout:, read_timeout:, max_response_bytes:)
+        @transport = transport || Support::HTTPClient.new(base_url:, open_timeout:, read_timeout:, max_response_bytes:)
       end
 
       def stream(request)
         return enum_for(__method__, request) unless block_given?
 
-        parser = SSEParser.new
+        parser = Support::SSEParser.new
         normalizer = Normalizer.new(model:)
         @transport.stream(
           path: endpoint,
-          headers: request_headers,
+          headers: request_headers(request),
           body: JSON.generate(request_body(request)),
           cancellation_token: request.cancellation_token,
           deadline: request.deadline
@@ -54,7 +55,7 @@ module LittleGhost
         "models/#{URI.encode_www_form_component(model)}:streamGenerateContent?alt=sse&key=#{URI.encode_www_form_component(@api_key)}"
       end
 
-      def request_headers = {"content-type" => "application/json", "accept" => "text/event-stream"}
+      def request_headers(_request) = {"content-type" => "application/json", "accept" => "text/event-stream"}
 
       private
 

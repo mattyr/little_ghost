@@ -10,7 +10,7 @@ module LittleGhost
   #
   #   configuration = LittleGhost::Configuration.new(
   #     root: Dir.pwd,
-  #     model_resolver: LittleGhost::Models.new,
+  #     model_resolver: LittleGhost::ModelResolver.new,
   #     default_model: "customer_support",
   #     service_name: "support-api"
   #   )
@@ -38,7 +38,7 @@ module LittleGhost
   class Runtime
     # The snapshotted setup and materialized services used by new runs.
     attr_reader :configuration, :settings, :root, :loader, :prompt_paths, :skill_paths,
-      :skill_resource_root, :models, :session_store, :workspace_class, :sandbox_class,
+      :skill_resource_root, :model_resolver, :session_store, :workspace_class, :sandbox_class,
       :runtime_hooks
 
     # Starts a runtime from +configuration+ or an existing settings snapshot.
@@ -75,9 +75,9 @@ module LittleGhost
         loader.setup
         loader.eager_load
 
-        @startup_phase = "models"
+        @startup_phase = "model_resolver"
         @invocation_class = @settings[:invocation] || Invocation
-        @models = @settings.fetch(:models)
+        @model_resolver = @settings.fetch(:model_resolver)
         @default_model = @settings.fetch(:default_model, "default").to_s
 
         @startup_phase = "session_store"
@@ -190,7 +190,7 @@ module LittleGhost
 
     def model_for(agent_class, run) # :nodoc:
       role = agent_class.model_role(run.invocation) || @default_model
-      models.resolve(role, invocation: run.invocation, run:)
+      model_resolver.resolve(role, invocation: run.invocation, run:)
     end
 
     def open_session(run) # :nodoc:

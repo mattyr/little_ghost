@@ -36,19 +36,19 @@ module LittleGhost
 
     # Finds the snapshot for +id+, or returns nil when it does not exist.
     def load(_id, actor_id: nil)
-      raise NotImplementedError
+      raise AbstractMethodError, "#{self.class} must implement #load"
     end
 
     # Atomically appends sanitized messages and stores state and metadata.
     # Implementations raise ProtocolError if the persisted message count differs
     # from +expected_count+.
     def append(_id, messages:, state:, metadata:, expected_count:, actor_id: nil)
-      raise NotImplementedError
+      raise AbstractMethodError, "#{self.class} must implement #append"
     end
 
     # Replaces the complete snapshot for +id+ atomically.
     def replace(_id, messages:, state:, metadata:, actor_id: nil)
-      raise NotImplementedError
+      raise AbstractMethodError, "#{self.class} must implement #replace"
     end
 
     # Stores may expose a clean conversational view without changing the stored

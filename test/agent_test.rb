@@ -6,6 +6,8 @@ require "tmpdir"
 
 class AgentTest < Minitest::Test
   class ScriptedModel
+    include LittleGhost::ModelInterface
+
     attr_reader :requests
 
     def initialize(*responses)
@@ -27,6 +29,8 @@ class AgentTest < Minitest::Test
   end
 
   class EventModel
+    include LittleGhost::ModelInterface
+
     attr_reader :requests
 
     def initialize(*streams)
