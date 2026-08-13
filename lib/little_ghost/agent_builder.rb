@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 module LittleGhost
-  class AgentBuilder # :nodoc: all
+  class AgentFactory # :nodoc: all
     class ActivityRelay
       def initialize
         @mutex = Mutex.new
@@ -92,8 +92,8 @@ module LittleGhost
 
     def agent_tools(agent_class, run)
       tools = []
-      agent_class.agent_tool_declarations.each do |declaration|
-        child = declared_agent(declaration, run)
+      agent_class.assembly_tool_declarations.each do |declaration|
+        child = declared_assembly(declaration, run)
         begin
           tools << child.as_tool(
             name: declaration.fetch(:name),
@@ -109,6 +109,17 @@ module LittleGhost
     rescue
       close_tools(tools)
       raise
+    end
+
+    def declared_assembly(declaration, run)
+      assembly_class = declaration.fetch(:assembly)
+      if assembly_class.is_a?(AssemblyDefinition) && assembly_class.kind == :agent
+        declared_agent(declaration.merge(agent: assembly_class.implementation), run)
+      elsif assembly_class <= Agent
+        declared_agent(declaration.merge(agent: assembly_class), run)
+      else
+        runtime.build_assembly(assembly_class, run:)
+      end
     end
 
     def subagent_tools(agent_class, run, conversation_id:, delegation_activity:, agent_path:)
@@ -159,7 +170,12 @@ module LittleGhost
     end
 
     def declared_agent(declaration, run, conversation_id: nil, agent_path: Subagents::AgentPath::ROOT)
-      agent_class = @resolve_agent.call(declaration.fetch(:agent))
+      reference = declaration.fetch(:agent)
+      agent_class = if reference.is_a?(AssemblyDefinition)
+        reference.implementation
+      else
+        @resolve_agent.call(reference)
+      end
       build_agent(
         agent_class, run:,
         model: resolve(declaration[:model], run),

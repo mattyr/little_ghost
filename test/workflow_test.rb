@@ -58,7 +58,7 @@ class WorkflowTest < Minitest::Test
       @built = []
     end
 
-    def build_agent(agent_class_or_name, run:)
+    def build_assembly(agent_class_or_name, run:)
       built << [agent_class_or_name, run]
       @agents.fetch(agent_class_or_name).shift ||
         raise("No fake #{agent_class_or_name} configured")
@@ -81,6 +81,36 @@ class WorkflowTest < Minitest::Test
       @note = invoke(:note).output
       invoke :main, input: "#{input.text}\n\nResearch:\n#{note}"
     end
+  end
+
+  class ParallelWorkflow < LittleGhost::Workflow
+    attr_reader :parallel_outputs
+
+    private
+
+    def perform
+      @parallel_outputs = parallel(
+        invoke(:first, as: :first),
+        invoke(:second, as: :second),
+        max_concurrency: 2
+      )
+      invoke :main, input: parallel_outputs.join(" + ")
+    end
+  end
+
+  class RetryingWorkflow < LittleGhost::Workflow
+    private
+
+    def perform
+      evidence = invoke(:research, retries: 1, retry_on: [RuntimeError]).output
+      invoke :main, input: evidence
+    end
+  end
+
+  class TimedWorkflow < LittleGhost::Workflow
+    private
+
+    def perform = invoke(:main, timeout: 0.01)
   end
 
   def test_composes_structured_and_text_agents_then_streams_the_responder
@@ -194,7 +224,11 @@ class WorkflowTest < Minitest::Test
     end
 
     assert_same cleanup_error, caught
-    assert_equal %i[invocation_stop invocation_error], events.map(&:type)
+    assert_equal %i[
+      assembly_step_start assembly_step_stop
+      assembly_step_start assembly_step_stop
+      assembly_step_start assembly_step_error invocation_error
+    ], events.map(&:type)
     assert_equal 10, events.last.data.fetch(:usage).input_tokens
   end
 
@@ -223,14 +257,139 @@ class WorkflowTest < Minitest::Test
 
     events = workflow.stream("question").to_a
 
-    assert_equal %i[tool_stop invocation_stop], events.map(&:type)
-    assert_same tool_result, events.first.data.fetch(:result)
+    assert_equal %i[assembly_step_start assembly_step_stop tool_stop invocation_stop], events.map(&:type)
+    assert_same tool_result, events.find { |event| event.type == :tool_stop }.data.fetch(:result)
     assert_equal 5, events.last.data.fetch(:result).usage.input_tokens
+  end
+
+  def test_runs_parallel_invocations_and_records_their_steps_in_order
+    started = Queue.new
+    release = Queue.new
+    parallel_agent = lambda do |text|
+      agent = FakeAgent.new(result(text:, usage: LittleGhost::Usage.new(input_tokens: 2)))
+      agent.define_singleton_method(:stream) do |input, **options|
+        calls << [:stream, input, options]
+        started << true
+        release.pop
+        [LittleGhost::StreamEvent.build(:invocation_stop, result: @result)].each
+      end
+      agent
+    end
+    first = parallel_agent.call("one")
+    second = parallel_agent.call("two")
+    main = FakeAgent.new(result(text: "done", usage: LittleGhost::Usage.new(input_tokens: 1)))
+    workflow = ParallelWorkflow.new(
+      run: Run.new(Application.new(first: [first], second: [second], main: [main]))
+    )
+
+    live_events = Queue.new
+    worker = Thread.new do
+      workflow.stream("request").each_with_object([]) do |event, collected|
+        live_events << event
+        collected << event
+      end
+    end
+    2.times { started.pop }
+    live_types = 2.times.map { live_events.pop.type }
+    assert_equal [:assembly_step_start, :assembly_step_start], live_types
+    2.times { release << true }
+    events = worker.value
+    result = events.find { |event| event.type == :invocation_stop }.data.fetch(:result)
+
+    assert_equal %w[one two], workflow.parallel_outputs
+    assert_equal "one + two", main.calls.first.fetch(1)
+    assert_equal %w[first second main], result.steps.map(&:participant)
+    assert result.trajectory.concurrent?(result.steps[0].id, result.steps[1].id)
+    assert_equal 5, result.usage.input_tokens
+  end
+
+  def test_retries_only_explicit_errors_and_records_each_attempt
+    failed = FakeAgent.new(
+      RuntimeError.new("temporary"),
+      failure_usage: LittleGhost::Usage.new(input_tokens: 3)
+    )
+    recovered = FakeAgent.new(result(text: "evidence", usage: LittleGhost::Usage.new(input_tokens: 2)))
+    main = FakeAgent.new(result(text: "done", usage: LittleGhost::Usage.new(input_tokens: 1)))
+    workflow = RetryingWorkflow.new(
+      run: Run.new(Application.new(research: [failed, recovered], main: [main]))
+    )
+
+    events = workflow.stream("request").to_a
+    final = events.find { |event| event.type == :invocation_stop }.data.fetch(:result)
+
+    assert_includes events.map(&:type), :assembly_step_retry
+    assert_equal %i[failed completed], final.steps.first.attempts.map(&:status)
+    assert_equal "RuntimeError", final.steps.first.attempts.first.error
+    refute_includes final.steps.first.attempts.first.error, "temporary"
+    assert_equal 5, final.steps.first.usage.input_tokens
+    assert_equal 6, final.usage.input_tokens
+    assert failed.closed?
+    assert recovered.closed?
+  end
+
+  def test_requires_explicit_retry_error_classes
+    workflow_class = Class.new(LittleGhost::Workflow) do
+      private
+
+      def perform = invoke(:main, retries: 1)
+    end
+    workflow = workflow_class.new(run: Run.new(Application.new(main: [FakeAgent.new(result(text: "done"))])))
+
+    error = assert_raises(ArgumentError) { workflow.stream("request").to_a }
+
+    assert_includes error.message, "retry_on"
+  end
+
+  def test_translates_a_child_deadline_into_a_step_timeout
+    child = FakeAgent.new(LittleGhost::DeadlineExceededError.new("deadline"))
+    workflow = TimedWorkflow.new(run: Run.new(Application.new(main: [child])))
+    events = []
+
+    error = assert_raises(LittleGhost::AssemblyStepTimeoutError) do
+      workflow.stream("request").each { |event| events << event }
+    end
+
+    assert_includes error.message, "main"
+    step_error = events.find { |event| event.type == :assembly_step_error }
+    assert_equal "LittleGhost::AssemblyStepTimeoutError", step_error.data.fetch(:error_type)
+    assert child.closed?
+  end
+
+  def test_preserves_nested_assembly_steps_and_their_parent_relationship
+    nested = LittleGhost::Assembly::Step.new(
+      id: "nested",
+      participant: "child",
+      assembly_id: "child",
+      assembly_kind: :agent,
+      status: :completed,
+      attempts: [],
+      usage: LittleGhost::Usage.new(input_tokens: 1),
+      output: "evidence"
+    )
+    composite = FakeAgent.new(result(text: "evidence", usage: LittleGhost::Usage.new(input_tokens: 2), steps: [nested]))
+    main = FakeAgent.new(result(text: "done", usage: LittleGhost::Usage.new(input_tokens: 1)))
+    workflow_class = Class.new(LittleGhost::Workflow) do
+      private
+
+      def perform
+        invoke(:composite).output
+        invoke(:main)
+      end
+    end
+    workflow = workflow_class.new(run: Run.new(Application.new(composite: [composite], main: [main])))
+
+    final = workflow.stream("request").to_a.last.data.fetch(:result)
+    outer, child, terminal = final.steps
+
+    assert_equal %w[composite child main], final.steps.map(&:participant)
+    assert_equal outer.id, child.parent_id
+    assert_equal [outer.id], terminal.predecessor_ids
+    assert_equal [[outer.id, terminal.id]], final.trajectory.transitions
   end
 
   private
 
-  def result(text: nil, structured: nil, usage: LittleGhost::Usage.new)
+  def result(text: nil, structured: nil, usage: LittleGhost::Usage.new, steps: [])
     LittleGhost::RunResult.new(
       message: LittleGhost::Message.new(role: :assistant, content: text || "structured"),
       stop_reason: structured ? :structured_result : :end_turn,
@@ -240,7 +399,8 @@ class WorkflowTest < Minitest::Test
       structured_result: structured && LittleGhost::StructuredResult.new(
         schema_name: "test",
         value: structured
-      )
+      ),
+      steps:
     )
   end
 end

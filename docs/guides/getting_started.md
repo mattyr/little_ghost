@@ -120,7 +120,7 @@ Both calls use the same agent definition and active LittleGhost configuration. C
 
 ## Add a model role when the application grows
 
-Direct targets keep a small application easy to read. A larger application can give the same selection a stable role, then change the underlying provider, model, and defaults without editing each agent class:
+Direct targets keep a small application's model choice beside its behavior. A larger application can give the same selection a stable role, then change the underlying provider, model, and defaults without editing each agent class:
 
 ```ruby
 LittleGhost.configure do |config|
@@ -155,10 +155,14 @@ end
 
 Here, `provider` names a configured connection and every other key after `model` is a trusted model setting. Provider connections and model profiles may instead come from independent YAML files under `config/little_ghost`, or from paths selected in `LittleGhost.configure`. Inline declarations take precedence over explicit paths, which take precedence over conventional files; environment-based selection and the built-in default are the final fallback. `LittleGhost::Agent` and `LittleGhost::Configuration` document the complete shapes and precedence.
 
-## Fit LittleGhost into your application
+## Fit the agent into your application
 
-LittleGhost does not require an application layout. Keep agents and tools beside related application code when your framework or loader already has a home for them. If you want LittleGhost to eager-load these definitions, `app/agents` and `app/tools` are available conventions, and every lookup path is configurable.
+LittleGhost does not require an application layout. Keep agents and tools beside related application code when your framework or loader already has a home for them. If you want LittleGhost to eager-load definitions, use `app/agents` for agents and `app/tools` for tools.
+
+The agent in this guide owns one model loop. A larger feature may coordinate several participants while preserving the same `ask` and `stream_ask` entrypoints. LittleGhost calls any such callable unit an **assembly**. Workflows, swarms, and graphs are three kinds of coordinated assembly, and they conventionally live in `app/assemblies`. Their class names should state the coordination style, such as `DevelopmentWorkflow`, `ProblemSolverSwarm`, or `SupportFlowGraph`.
+
+Classes are the default way to organize reusable definitions. Core Concepts first explains when to choose each assembly type, then introduces builders for definitions discovered at runtime.
 
 Hosting remains the surrounding application's responsibility. A Rails controller, Rack endpoint, background job, CLI, or another Ruby entrypoint can call the same agent APIs shown above.
 
-Read [Core Concepts](core_concepts.md) next for model selection, reusable runtimes, subagents, workflows, sessions, and the boundaries between them. The API reference covers exact signatures for `LittleGhost::Agent`, `LittleGhost::Tool`, `LittleGhost::Configuration`, and `LittleGhost::Run`.
+Read [Core Concepts](core_concepts.md) next. It begins with the agent you built here, then adds model selection, runs, assemblies, subagents, workflows, swarms, graphs, builders, sessions, and the boundaries between them. The API reference covers exact signatures for `LittleGhost::Agent`, `LittleGhost::Tool`, `LittleGhost::Run`, and the coordination classes.

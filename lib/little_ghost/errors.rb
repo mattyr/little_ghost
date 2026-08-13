@@ -13,6 +13,14 @@ module LittleGhost
   class CredentialError < ConfigurationError; end
   # Raised when an invocation payload or operation is invalid.
   class InvocationError < Error; end
+  # Base class for failures coordinating one or more assemblies.
+  class AssemblyError < Error; end
+  # Raised when an assembly exceeds its configured execution bound.
+  class AssemblyLimitError < AssemblyError; end
+  # Raised when an assembly cannot choose one valid next participant.
+  class AssemblyRoutingError < AssemblyError; end
+  # Raised when one assembly step exceeds its local timeout.
+  class AssemblyStepTimeoutError < AssemblyError; end
   # Raised when an invocation contains an unsupported input form.
   class UnsupportedInputError < InvocationError; end
   # Base class for provider response and protocol failures.

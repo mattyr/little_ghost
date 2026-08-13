@@ -1,15 +1,17 @@
 # frozen_string_literal: true
 
 require "securerandom"
+require_relative "assembly"
 require_relative "support/output_truncation"
 require_relative "tool_execution"
 
 module LittleGhost
-  # Define reusable agents that can answer, stream, call tools, and delegate work.
-  # Each subclass describes one application role with an inheritable Ruby DSL.
+  # Defines one reusable model-driven behavior with prompts, tools, and limits.
+  # Each Agent subclass describes one application role with an inheritable Ruby
+  # DSL. It can answer, stream, call tools, and delegate work.
   #
-  # A customer support agent can look up an account itself and give longer investigations
-  # to a research specialist:
+  # A customer support agent can look up an account itself and give longer
+  # investigations to a research specialist:
   #
   #   class ResearchAgent < LittleGhost::Agent
   #     description "Researches transfer failures"
@@ -48,7 +50,7 @@ module LittleGhost
   # Tool failures are sanitized before returning to the model, diagnostic
   # capture can be disabled for sensitive agents, and cancellation, deadlines,
   # and cleanup failures remain framework control flow.
-  class Agent
+  class Agent < Assembly
     DEFAULT_SYSTEM_PROMPT = "You are a helpful agent." # :nodoc:
     DEFAULT_MAX_TOOL_RESULT_TOKENS = 10_000 # :nodoc:
     MAX_STRUCTURED_RESULT_BYTES = 1_000_000 # :nodoc:
@@ -71,8 +73,6 @@ module LittleGhost
 
     extend Support::ClassAttributes
 
-    class_attribute :agent_id_value
-    class_attribute :description_value
     class_attribute :model_value
     class_attribute :limits_value, default: {}
     class_attribute :result_schema_value
@@ -85,27 +85,6 @@ module LittleGhost
     class_attribute :callback_values, default: Support::Callbacks.new(*CALLBACKS)
 
     class << self
-      # Executes +message+ through a fresh standalone entrypoint and returns the
-      # completed LittleGhost::Run. Invocation +options+ are forwarded to #ask.
-      #
-      # Create an instance explicitly when reusing a Runtime or streaming events.
-      def ask(message, **options)
-        new.ask(message, **options)
-      end
-
-      # Streams +message+ through a fresh standalone entrypoint and returns an
-      # Enumerator of LittleGhost::StreamEvent objects. Invocation +options+
-      # are forwarded to #stream_ask.
-      #
-      # Create an instance explicitly when reusing one Runtime across calls.
-      def stream_ask(message, **options)
-        stream = nil
-        Enumerator.new do |events|
-          stream ||= new.stream_ask(message, **options)
-          stream.each { |event| events << event }
-        end
-      end
-
       # :call-seq:
       #   agent_id() -> String
       #   agent_id(value) -> String
@@ -114,9 +93,9 @@ module LittleGhost
       # Named subclasses derive it from their underscored class name without an
       # +Agent+ suffix; passing +value+ replaces that default.
       def agent_id(*values)
-        return agent_id_value || default_agent_id if values.empty?
+        return assembly_id if values.empty?
 
-        self.agent_id_value = values.fetch(0).to_s
+        assembly_id(values.fetch(0))
       end
 
       # The underscored, namespace-aware path used for conventional prompt lookup.
@@ -124,17 +103,6 @@ module LittleGhost
         parts = name.to_s.split("::")
         parts[-1] = parts.last.sub(/Agent\z/, "") if parts.any?
         parts.reject(&:empty?).map { |part| underscore(part) }.join("/")
-      end
-
-      # :call-seq:
-      #   description() -> String
-      #   description(value) -> String
-      #
-      # The human-readable description shown when this agent is delegated.
-      def description(*values)
-        return description_value.to_s if values.empty?
-
-        self.description_value = values.fetch(0).to_s
       end
 
       # :call-seq:
@@ -493,11 +461,6 @@ module LittleGhost
         end
       end
 
-      def default_agent_id
-        value = name.to_s.split("::").last.to_s.gsub(/Agent\z/, "").gsub(/([a-z\d])([A-Z])/, "\\1_\\2").downcase
-        (value.empty? ? "agent" : value).freeze
-      end
-
       def underscore(value)
         value.gsub(/([a-z\d])([A-Z])/, "\\1_\\2").downcase
       end
@@ -530,11 +493,9 @@ module LittleGhost
       workspace: nil,
       sandbox: nil
     )
-      if model.nil? && run.nil?
-        @standalone = true
-        @runtime = runtime || Runtime.new(configuration: LittleGhost.configuration)
-        @workspace = workspace
-        @sandbox = sandbox
+      standalone = model.nil? && run.nil?
+      super(run:, runtime:, workspace:, sandbox:, standalone:)
+      if standalone
         @owns_resources = true
         @closed = false
         @close_mutex = Mutex.new
@@ -576,6 +537,10 @@ module LittleGhost
       @exclusive_tools_mutex = Mutex.new
       @interruptions_mutex = Mutex.new
       @active_interruptions = []
+      @assembly_transitions_mutex = Mutex.new
+      @assembly_transitions = {}
+      @assembly_tool_batch_sizes = {}
+      @assembly_transition = nil
       raise ArgumentError, "max_turns must be at least 1" if @max_turns < 1
       raise ArgumentError, "max_tool_calls must be at least 1" if @max_tool_calls < 1
       raise ArgumentError, "max_tool_result_tokens must be at least 1" if @max_tool_result_tokens < 1
@@ -594,46 +559,21 @@ module LittleGhost
       execute_tools(tool_uses, context, events, parent_operation_id:, parent_trace_context:)
     end
 
-    def build_run(payload) # :nodoc:
-      options = {
-        agent_class: self.class,
-        entrypoint_class: self.class
-      }
-      options[:workspace] = workspace if workspace
-      options[:sandbox] = sandbox if sandbox
-      runtime.build_run(payload, **options)
-    end
+    def request_assembly_transition(value, context:) # :nodoc:
+      @assembly_transitions_mutex.synchronize do
+        unless @assembly_tool_batch_sizes[context] == 1
+          raise ToolError, "An assembly transition must be the only tool call in a model response"
+        end
+        if @assembly_transitions.key?(context)
+          raise ProtocolError, "Multiple assembly transitions were requested in one agent turn"
+        end
 
-    # Starts +payload+ through this standalone entrypoint on a supervised worker
-    # and returns a LittleGhost::Execution.
-    #
-    # The optional block receives StreamEvent objects on the worker thread. The
-    # execution owns worker coordination and interruption delivery; the Run it
-    # exposes continues to own agent resources and terminal outcome.
-    def start_execution(payload, &event_consumer)
-      raise Error, "Only a standalone agent can start an execution" unless @standalone
-
-      Execution.start(build_run(payload), &event_consumer)
-    end
-
-    # Runs +input+ to completion.
-    #
-    # A standalone agent returns a LittleGhost::Run. An agent built inside a run
-    # returns its LittleGhost::RunResult.
-    def call(input = nil, **options)
-      return build_run(entrypoint_payload(input, options)).call if @standalone
-
-      result = nil
-      stream(input, **options).each do |event|
-        result = event.data[:result] if event.type == :invocation_stop
+        @assembly_transitions[context] = value
       end
-      result
+      value
     end
 
-    # Runs +message+ to completion through the standalone or run-scoped agent.
-    def ask(message, **options)
-      call(message, **options)
-    end
+    attr_reader :assembly_transition # :nodoc:
 
     # Adds +message+ to one active invocation and waits for its ordinary text reply.
     #
@@ -754,7 +694,7 @@ module LittleGhost
       interruption_ids: [],
       interrupt_ready: nil
     )
-      if @standalone
+      if standalone?
         raise ArgumentError, "input is required" if input.nil?
 
         return build_run(entrypoint_payload(input, {
@@ -762,7 +702,8 @@ module LittleGhost
           context:,
           settings:,
           template_paths:,
-          deadline_at: deadline
+          deadline_at: deadline,
+          cancellation_token:
         }.compact)).each
       end
 
@@ -815,69 +756,6 @@ module LittleGhost
           unregister_interruptions(interruptions)
         end
       end
-    end
-
-    # Streams +message+ through the standalone or run-scoped agent.
-    # Standalone +options+ become Invocation fields; run-scoped options are
-    # forwarded to #stream.
-    def stream_ask(message, **options)
-      if @standalone
-        options[:deadline_at] = options.delete(:deadline) if options.key?(:deadline)
-        stream = nil
-        return Enumerator.new do |events|
-          stream ||= build_run(entrypoint_payload(message, options)).each
-          stream.each { |event| events << event }
-        end
-      end
-
-      stream(message, **options)
-    end
-
-    # Exposes this agent as a Tool instance.
-    #
-    # By default, each call starts with empty conversational history. Set
-    # <tt>preserve_context: true</tt> to retain history serially between calls.
-    def as_tool(name: self.class.agent_id, description: self.class.description, preserve_context: false)
-      agent = self
-      description = "Delegate a task to #{name}." if description.to_s.empty?
-      mutex = Mutex.new
-      retained_history = []
-      tool_class = Tool.define(
-        name: name,
-        description: description,
-        input_schema: {
-          type: "object",
-          properties: {input: {type: "string"}},
-          required: ["input"],
-          additionalProperties: false
-        }
-      ) do |input, context: nil|
-        invocation = lambda do
-          result = agent.call(
-            input.fetch("input"),
-            history: preserve_context ? retained_history : [],
-            context: context&.state || {},
-            cancellation_token: context&.cancellation_token || Support::CancellationToken.new,
-            interruption_metadata: context&.interruption_metadata,
-            interruption_ids: context&.interruption_ids || [],
-            deadline: context&.deadline,
-            parent_operation_id: run&.operation_id
-          )
-          retained_history.replace(result.messages.reject { |message| message.role == :system }) if preserve_context
-          result.structured? ? result.structured_result.value : result.text
-        end
-        preserve_context ? mutex.synchronize(&invocation) : invocation.call
-      end
-      tool_class.define_method(:close) { agent.close }
-      binding = Tool::Binding.new(
-        agent: self,
-        run:,
-        runtime:,
-        model:,
-        workspace:,
-        sandbox:
-      )
-      tool_class.new(binding:)
     end
 
     # Materializes and freezes the prompt locals declared on the agent class.
@@ -1008,6 +886,17 @@ module LittleGhost
       end
     end
 
+    def consume_assembly_transition(context)
+      @assembly_transitions_mutex.synchronize { @assembly_transitions.delete(context) }
+    end
+
+    def with_assembly_tool_batch(context, size)
+      @assembly_transitions_mutex.synchronize { @assembly_tool_batch_sizes[context] = size }
+      yield
+    ensure
+      @assembly_transitions_mutex.synchronize { @assembly_tool_batch_sizes.delete(context) }
+    end
+
     def execute(
       input,
       history:,
@@ -1023,6 +912,7 @@ module LittleGhost
       started_at = monotonic_time
       operation_id = SecureRandom.uuid
       context.bind_agent_operation_id(operation_id)
+      @assembly_transitions_mutex.synchronize { @assembly_transition = nil }
       interruptions.bind(operation_id, target_operation_id: parent_operation_id)
       register_interruptions(interruptions)
       interrupt_ready&.call
@@ -1258,12 +1148,14 @@ module LittleGhost
           tool_call_count += tool_uses.length
           raise ProtocolError, "The agent reached its maximum tool calls" if tool_call_count > @max_tool_calls
 
-          executed_tools = dispatch_tools(
-            tool_uses,
-            context:,
-            events:,
-            parent_operation_id: turn_operation_id
-          )
+          executed_tools = with_assembly_tool_batch(context, tool_uses.length) do
+            dispatch_tools(
+              tool_uses,
+              context:,
+              events:,
+              parent_operation_id: turn_operation_id
+            )
+          end
           messages << Message.new(
             role: :tool,
             content: executed_tools.map(&:result)
@@ -1278,6 +1170,39 @@ module LittleGhost
             )
           end
           context.checkpoint(messages)
+          transition = consume_assembly_transition(context)
+          if transition
+            result = RunResult.new(
+              message: response.message,
+              stop_reason: :assembly_transition,
+              usage: context.usage,
+              messages: messages.freeze,
+              state: context.state
+            )
+            decision = run_callbacks(:after_invocation, {result:}, context:)
+            apply_cancellation_decision!(decision)
+            result = replacement_value(decision, :result, result)
+            @assembly_transition = transition
+            context.checkpoint(result.messages)
+            finish_instrumentation(
+              turn_handle,
+              operation_id: turn_operation_id,
+              outcome: :completed,
+              turn: turn + 1
+            )
+            metadata = model.details.to_h.merge(model_role: model.role)
+            finish_instrumentation(
+              agent_handle,
+              outcome: :completed,
+              duration_ms: duration_ms(started_at),
+              stop_reason: result.stop_reason,
+              operation_id:,
+              diagnostic: {output: diagnostic_message(result.message)},
+              **usage_attributes(result.usage)
+            )
+            emit(events, :invocation_stop, result:, metadata:)
+            return result
+          end
           finish_instrumentation(
             turn_handle,
             operation_id: turn_operation_id,
@@ -1313,6 +1238,10 @@ module LittleGhost
       end
       raise ProtocolError, "The agent reached its maximum model turns"
     rescue => error
+      @assembly_transitions_mutex.synchronize do
+        @assembly_transitions.delete(context)
+        @assembly_tool_batch_sizes.delete(context)
+      end
       finish_instrumentation(
         agent_handle,
         operation_id:,

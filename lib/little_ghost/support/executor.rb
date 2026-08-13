@@ -31,6 +31,8 @@ module LittleGhost
         items.each_index { |index| queue << index }
         results = Array.new(items.length)
         errors = Array.new(items.length)
+        error_mutex = Mutex.new
+        first_worker_error = nil
         worker_count = [@max_concurrency, items.length].min
         execution_state = ExecutionState.capture
 
@@ -49,6 +51,8 @@ module LittleGhost
                   results[index] = block.call(items[index])
                 rescue => error
                   errors[index] = error
+                  error_mutex.synchronize { first_worker_error ||= error }
+                  cancellation_token.cancel
                 ensure
                   completions << index
                 end
@@ -56,16 +60,24 @@ module LittleGhost
             end
           end
         end
+        callback_error = nil
         begin
           items.length.times do
             index = completions.pop
-            on_result.call(index, results[index]) if on_result && !errors[index]
+            begin
+              on_result.call(index, results[index]) if on_result && !errors[index]
+            rescue => error
+              callback_error = error
+              cancellation_token.cancel
+              break
+            end
           end
         ensure
           workers.each(&:join)
         end
 
-        first_error = errors.compact.find { |error| error.is_a?(CleanupError) } || errors.compact.first
+        raise callback_error if callback_error
+        first_error = errors.compact.find { |error| error.is_a?(CleanupError) } || first_worker_error
         raise first_error if first_error
 
         results

@@ -947,6 +947,69 @@ class AgentTest < Minitest::Test
     assert_equal "delegated", result.content
   end
 
+  def test_a_tool_can_finish_an_agent_with_an_assembly_transition
+    transition_tool = Class.new(LittleGhost::Tool) do
+      tool_name "handoff"
+      description "Hand off work"
+      input_schema type: "object", properties: {target: {type: "string"}},
+        required: ["target"], additionalProperties: false
+
+      def call(input)
+        agent.request_assembly_transition(input, context: context)
+        "Handoff accepted"
+      end
+    end
+    tool_use = LittleGhost::Content::ToolUse.new(
+      id: "handoff-1",
+      name: "handoff",
+      input: {"target" => "reviewer"}
+    )
+    agent = LittleGhost::Agent.new(
+      model: ScriptedModel.new(response([tool_use], stop_reason: :tool_use)),
+      tools: [transition_tool]
+    )
+
+    result = agent.call("solve")
+
+    assert_equal :assembly_transition, result.stop_reason
+    assert_equal({"target" => "reviewer"}, agent.assembly_transition)
+    assert_equal %i[user assistant tool], result.messages.map(&:role)
+    assert_operator result.usage.total_tokens, :>=, 0
+  ensure
+    agent&.close
+  end
+
+  def test_an_assembly_transition_in_a_mixed_tool_batch_is_a_recoverable_tool_error
+    transition_tool = Class.new(LittleGhost::Tool) do
+      tool_name "handoff"
+      description "Hand off work"
+
+      def call(input)
+        agent.request_assembly_transition(input, context: context)
+        "Handoff accepted"
+      end
+    end
+    echo_tool = LittleGhost::Tool.define(name: "echo", description: "Echo") { "echoed" }
+    handoff = LittleGhost::Content::ToolUse.new(id: "handoff-1", name: "handoff", input: {})
+    echo = LittleGhost::Content::ToolUse.new(id: "echo-1", name: "echo", input: {})
+    model = ScriptedModel.new(
+      response([handoff, echo], stop_reason: :tool_use),
+      response("recovered")
+    )
+    agent = LittleGhost::Agent.new(model:, tools: [transition_tool, echo_tool])
+
+    result = agent.call("solve")
+
+    assert_equal "recovered", result.text
+    assert_nil agent.assembly_transition
+    tool_results = model.requests.last.messages.last.content
+    handoff_result = tool_results.find { |item| item.tool_use_id == "handoff-1" }
+    assert_equal :error, handoff_result.status
+    assert_includes handoff_result.content, "only tool call"
+  ensure
+    agent&.close
+  end
+
   def test_agent_tool_closes_the_child_agent
     child_tool = Class.new(LittleGhost::Tool) do
       tool_name "child_resource"

@@ -9,17 +9,29 @@ module LittleGhost
 
     # Recursively duplicates hashes, arrays, and strings while preserving other
     # values. Cyclic containers are not supported.
-    def deep_dup(value)
+    def deep_dup(value, ancestors = {})
+      if value.is_a?(Hash) || value.is_a?(Array) || value.is_a?(Data)
+        identity = value.object_id
+        raise ArgumentError, "cyclic values cannot be duplicated" if ancestors.key?(identity)
+
+        ancestors[identity] = true
+      end
       case value
       when Hash
-        value.each_with_object({}) { |(key, child), copy| copy[deep_dup(key)] = deep_dup(child) }
+        value.each_with_object({}) do |(key, child), copy|
+          copy[deep_dup(key, ancestors)] = deep_dup(child, ancestors)
+        end
       when Array
-        value.map { |child| deep_dup(child) }
+        value.map { |child| deep_dup(child, ancestors) }
       when String
         value.dup
+      when Data
+        value.class.new(**value.to_h.transform_values { |child| deep_dup(child, ancestors) })
       else
         value
       end
+    ensure
+      ancestors.delete(identity) if identity
     end
   end
 end

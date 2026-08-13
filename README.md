@@ -6,7 +6,7 @@
 
 <hr>
 
-Bring agents and agentic workflows into an existing Ruby system, or use them as the core of a dedicated AI service. LittleGhost connects model providers, tools, streaming, sessions, delegation, deterministic workflows, and observability through Ruby APIs.
+Build an agent inside an existing Ruby system, or use LittleGhost as the core of a dedicated AI service. An agent is a reusable Ruby class that gives one model a prompt, tools, limits, and a model selection. LittleGhost connects that class to providers, streaming, sessions, delegation, and observability.
 
 Set `OPENAI_API_KEY`, then paste this customer support agent into a Ruby console or file. It selects a model directly and exposes one validated application tool:
 
@@ -51,19 +51,33 @@ end
 
 ## How the pieces fit
 
+One agent is the smallest useful LittleGhost application. A request creates a run, the agent may call a tool or delegate to a subagent, and the run records the outcome:
+
 ```text
 provider connections + model selections ──> ModelResolver ──> provider
                                                │
 request ──> CustomerSupportAgent ──> HelpCenterLookupTool
                   │
                   └────────> ResearchAgent subagent
-
-request ──> ResponseWorkflow ──> ResearchAgent ──> CustomerSupportAgent
 ```
 
-Configuration owns shared services such as model resolution, sessions, lookup paths, workspaces, sandboxes, and instrumentation. Agent classes own behavior: their model selection, prompt, tools, limits, result schema, and delegation policy. Tools expose narrow application operations. A subagent lets the model delegate within configured limits; a workflow uses ordinary Ruby when the application must control ordering.
+When one model loop is not enough, LittleGhost calls the larger callable unit an **assembly**. An assembly may be one agent or a coordinated group that still looks like one agent to its caller:
 
-Each top-level execution owns a run lifecycle. The run checkpoints session state, closes its resources, aggregates usage, and emits framework events whether the entrypoint is an agent or a workflow.
+```text
+request ──> CustomerSupportAgent
+
+request ──> ResponseWorkflow ──> ResearchAgent ──> CustomerSupportAgent
+
+request ──> ProblemSolverSwarm ──> TriageAgent ──handoff──> BillingAgent
+
+request ──> SupportFlowGraph ──> TriageAgent ──edge──> ResponseAgent
+```
+
+A `Workflow` uses ordinary Ruby to enforce ordering and branching. A `Swarm` lets configured agents hand the request directly to one another. A `Graph` follows application-declared nodes and edges when the allowed paths should be visible in advance. These types share `ask` and `stream_ask`, so callers can depend on one entrypoint contract while the implementation grows.
+
+Class definitions are the default way to organize agents and assemblies. Builder objects support definitions whose participants or topology are discovered at runtime; the Core Concepts guide introduces them after the class-based forms.
+
+Each top-level execution owns one run lifecycle. The run checkpoints session state, closes its resources, aggregates usage, and emits framework events regardless of which assembly type is the entrypoint.
 
 ## Installation and configuration
 
@@ -104,12 +118,12 @@ By default, LittleGhost maps `default` to GPT-5.6 Luna. It configures convention
 
 Applications that need custom routing can subclass `LittleGhost::ModelResolver` and install the class with `config.model_resolver`. A custom resolver owns its profiles and default role; configuring `models`, `models_path`, or `default_model` at the same time is an error. Provider configuration remains available to the resolver.
 
-LittleGhost runs inside the surrounding Ruby process; it does not prescribe an HTTP server, CLI, job system, or application layout. `config/little_ghost`, `app/agents`, `app/prompts`, `app/tools`, and `app/skills` are optional conventions. Every path can be configured, and agents, prompts, and tools may live wherever the application loads them.
+LittleGhost runs inside the surrounding Ruby process; it does not prescribe an HTTP server, CLI, job system, or application layout. `config/little_ghost`, `app/agents`, `app/assemblies`, `app/prompts`, `app/tools`, and `app/skills` are optional conventions. Keep agent classes in `app/agents`; workflow, swarm, and graph classes conventionally live in `app/assemblies`. Names should reveal the type, such as `DevelopmentWorkflow`, `ProblemSolverSwarm`, or `SupportFlowGraph`.
 
 ## Documentation
 
 - [Getting Started](docs/guides/getting_started.md) builds and streams the customer support example.
-- [Core Concepts](docs/guides/core_concepts.md) explains models, agents, tools, runs, delegation, workflows, and sessions.
+- [Core Concepts](docs/guides/core_concepts.md) starts with one agent, then introduces assemblies, delegation, workflows, swarms, graphs, and dynamic builders.
 - [API reference](rdoc-ref:LittleGhost) covers exact signatures, options, and lifecycle behavior.
 
 ## Contributing

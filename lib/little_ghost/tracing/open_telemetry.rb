@@ -42,6 +42,8 @@ module LittleGhost
         tool_type: "gen_ai.tool.type",
         tool_call_id: "gen_ai.tool.call.id",
         workflow_name: "gen_ai.workflow.name",
+        assembly_id: "little_ghost.assembly.id",
+        assembly_kind: "little_ghost.assembly.kind",
         http_response_status_code: "http.response.status_code",
         error_class: "error.type",
         error_type: "error.type"
@@ -54,8 +56,12 @@ module LittleGhost
         runtime: "runtime_startup",
         session_store: "session_store",
         subagent: "invoke_agent",
+        assembly_step: "execute_assembly_step",
         tool: "execute_tool",
-        workflow: "invoke_workflow"
+        workflow: "invoke_workflow",
+        swarm: "invoke_swarm",
+        graph: "invoke_graph",
+        assembly: "invoke_assembly"
       }.freeze # :nodoc:
       REQUEST_SETTING_ATTRIBUTES = {
         frequency_penalty: "gen_ai.request.frequency_penalty",
@@ -151,7 +157,10 @@ module LittleGhost
 
       def start_span(name, attributes)
         kind = name.to_sym
-        kind = :workflow if kind == :run && attributes[:entrypoint_kind]&.to_sym == :workflow
+        if kind == :run
+          entrypoint_kind = attributes[:entrypoint_kind]&.to_sym
+          kind = entrypoint_kind if %i[workflow swarm graph assembly].include?(entrypoint_kind)
+        end
         parent = @mutex.synchronize { @entries[attributes[:parent_operation_id]] }
         if kind == :agent && parent&.fetch(:kind) == :run &&
             parent[:agent_id].to_s == attributes[:agent_id].to_s
@@ -258,6 +267,8 @@ module LittleGhost
         detail = case kind
         when :agent, :run then attributes[:agent_name] || attributes[:agent_id]
         when :workflow then attributes[:workflow_name]
+        when :swarm, :graph, :assembly then attributes[:assembly_id]
+        when :assembly_step then attributes[:participant]
         when :agent_turn then attributes[:turn]
         when :model then attributes[:model_id]
         when :subagent then attributes[:subagent_id] || attributes[:kind]
