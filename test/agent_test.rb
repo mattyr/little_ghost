@@ -394,6 +394,56 @@ class AgentTest < Minitest::Test
     assert_equal :success, result_block.status
   end
 
+  def test_appends_callback_companion_content_as_transient_user_messages
+    first = LittleGhost::Content::Document.new(
+      data: "first",
+      media_type: "text/plain",
+      name: "first.txt"
+    )
+    second = LittleGhost::Content::Image.new(data: "second", media_type: "image/png")
+    tools = %w[first second].map do |name|
+      LittleGhost::Tool.define(name:, description: "Returns #{name}") { "#{name} result" }
+    end
+    uses = tools.each_with_index.map do |tool, index|
+      LittleGhost::Content::ToolUse.new(id: "call-#{index}", name: tool.tool_name, input: {})
+    end
+    companions = {"first" => first, "second" => second}
+    agent_class = Class.new(LittleGhost::Agent) do
+      after_tool do |payload|
+        result = payload.fetch(:result)
+        LittleGhost::Support::Callbacks.replace(
+          payload.merge(
+            result: LittleGhost::Tool::ExecutionResult.new(
+              content: result.content,
+              status: result.status,
+              error: result.error,
+              companion_content: [companions.fetch(payload.fetch(:tool).tool_name)]
+            )
+          )
+        )
+      end
+    end
+    model = ScriptedModel.new(response(uses, stop_reason: :tool_use), response("done"))
+    agent = agent_class.new(model:, tools:)
+
+    result = agent.call("go")
+
+    request_messages = model.requests.last.messages.last(3)
+    assert_equal %i[tool user user], request_messages.map(&:role)
+    assert_equal [first], request_messages.fetch(1).content
+    assert_equal [second], request_messages.fetch(2).content
+    assert request_messages.drop(1).all? { |message| message.metadata[:transient] }
+    refute result.messages.any? { |message| message.metadata[:little_ghost_tool_companion] }
+    session = LittleGhost::Session.new(
+      id: "session-1",
+      store: LittleGhost::SessionStores::Memory.new
+    )
+    session.replace(messages: request_messages)
+    refute session.history.any? { |message| message.metadata[:transient] }
+  ensure
+    agent&.close
+  end
+
   def test_truncates_tool_results_after_callbacks_using_the_configured_token_budget
     raw_content = nil
     telemetry = []

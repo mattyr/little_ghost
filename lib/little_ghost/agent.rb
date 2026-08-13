@@ -64,6 +64,10 @@ module LittleGhost
       before_model after_model after_model_error
       before_tool after_tool
     ].freeze # :nodoc:
+    ExecutedTool = Data.define(:result, :companion_content) do # :nodoc:
+      def status = result.status
+      def content = result.content
+    end
 
     extend Support::ClassAttributes
 
@@ -600,6 +604,18 @@ module LittleGhost
       runtime.build_run(payload, **options)
     end
 
+    # Starts +payload+ through this standalone entrypoint on a supervised worker
+    # and returns a LittleGhost::Execution.
+    #
+    # The optional block receives StreamEvent objects on the worker thread. The
+    # execution owns worker coordination and interruption delivery; the Run it
+    # exposes continues to own agent resources and terminal outcome.
+    def start_execution(payload, &event_consumer)
+      raise Error, "Only a standalone agent can start an execution" unless @standalone
+
+      Execution.start(build_run(payload), &event_consumer)
+    end
+
     # Runs +input+ to completion.
     #
     # A standalone agent returns a LittleGhost::Run. An agent built inside a run
@@ -1050,6 +1066,7 @@ module LittleGhost
             structured_result_repair_due:,
             interruptions:
           )
+          messages.reject! { |message| tool_companion_message?(message) }
           messages << response.message
           tool_uses = response.message.content.grep(Content::ToolUse)
           result_tool_uses = structured_result_tool_uses(tool_uses)
@@ -1241,7 +1258,7 @@ module LittleGhost
           tool_call_count += tool_uses.length
           raise ProtocolError, "The agent reached its maximum tool calls" if tool_call_count > @max_tool_calls
 
-          tool_results = dispatch_tools(
+          executed_tools = dispatch_tools(
             tool_uses,
             context:,
             events:,
@@ -1249,8 +1266,17 @@ module LittleGhost
           )
           messages << Message.new(
             role: :tool,
-            content: tool_results
+            content: executed_tools.map(&:result)
           )
+          executed_tools.each do |executed_tool|
+            next if executed_tool.companion_content.empty?
+
+            messages << Message.new(
+              role: :user,
+              content: executed_tool.companion_content,
+              metadata: {transient: true, little_ghost_tool_companion: true}
+            )
+          end
           context.checkpoint(messages)
           finish_instrumentation(
             turn_handle,
@@ -1560,7 +1586,7 @@ module LittleGhost
               exception: diagnostic_tool_exception(tool, tool:)
             }
           )
-          next result
+          next ExecutedTool.new(result:, companion_content: [])
         end
 
         context.check!
@@ -1592,7 +1618,7 @@ module LittleGhost
               exception: diagnostic_tool_exception(rejection, tool:)
             }
           )
-          next result
+          next ExecutedTool.new(result:, companion_content: [])
         end
 
         execution_context = ToolExecution.new(
@@ -1639,7 +1665,7 @@ module LittleGhost
             exception: tool_error && diagnostic_tool_exception(tool_error, tool:)
           }.compact
         )
-        result
+        ExecutedTool.new(result:, companion_content: tool_result.companion_content)
       rescue ToolError => error
         result = build_tool_result(tool_use_id: tool_use.id, content: error.message, status: :error)
         finish_instrumentation(
@@ -1655,7 +1681,7 @@ module LittleGhost
             exception: diagnostic_tool_exception(error, tool:)
           }
         )
-        result
+        ExecutedTool.new(result:, companion_content: [])
       rescue => error
         finish_instrumentation(
           tool_handle,
@@ -1671,16 +1697,16 @@ module LittleGhost
       end
       if tools.any?(&:exclusive?)
         pairs.map do |tool_use, tool|
-          result = execution.call(tool_use, tool)
-          emit(events, :tool_stop, tool_use:, result:)
-          result
+          executed_tool = execution.call(tool_use, tool)
+          emit(events, :tool_stop, tool_use:, result: executed_tool.result)
+          executed_tool
         end
       else
         @executor.map(
           pairs,
           cancellation_token: context.cancellation_token,
-          on_result: lambda do |index, result|
-            emit(events, :tool_stop, tool_use: tool_uses.fetch(index), result:)
+          on_result: lambda do |index, executed_tool|
+            emit(events, :tool_stop, tool_use: tool_uses.fetch(index), result: executed_tool.result)
           end
         ) do |tool_use, tool|
           execution.call(tool_use, tool)
@@ -2134,6 +2160,10 @@ module LittleGhost
       return value.map { |block| block.respond_to?(:role) ? diagnostic_message(block) : block.to_s } if value.is_a?(Array)
 
       value.respond_to?(:role) ? diagnostic_message(value) : value.to_s
+    end
+
+    def tool_companion_message?(message)
+      message.metadata[:little_ghost_tool_companion] || message.metadata["little_ghost_tool_companion"]
     end
 
     def diagnostic_tool_exception(error, tool:)

@@ -76,9 +76,16 @@ module LittleGhost
     # Report the caller-safe outcome of one tool execution.
     # The result retains model-facing content, status, and the original exception
     # for application-side inspection.
-    ExecutionResult = Data.define(:content, :status, :error) do # :nodoc:
-      def initialize(content:, status:, error: nil)
-        super
+    ExecutionResult = Data.define(:content, :status, :error, :companion_content) do # :nodoc:
+      def initialize(content:, status:, error: nil, companion_content: [])
+        companions = Array(companion_content)
+        unless companions.all? do |block|
+          block.is_a?(Content::Text) || block.is_a?(Content::Image) || block.is_a?(Content::Document)
+        end
+          raise ArgumentError, "companion content must contain only text, images, or documents"
+        end
+
+        super(content:, status:, error:, companion_content: companions.dup.freeze)
       end
 
       def success?
@@ -92,12 +99,14 @@ module LittleGhost
 
     # Reports the caller-safe outcome of one tool execution. It keeps
     # model-facing content and status beside the original exception retained for
-    # application-side inspection.
+    # application-side inspection. Companion content lets a tool place trusted
+    # text, images, or documents in the next model request without putting those
+    # blocks inside a provider-specific tool-result shape.
     class ExecutionResult < Data # :doc:
       ##
       # :singleton-method: new
       # :call-seq:
-      #   new(content:, status:, error: nil) -> ExecutionResult
+      #   new(content:, status:, error: nil, companion_content: []) -> ExecutionResult
       #
       # Collects the model-facing and application-facing parts of one result.
 
@@ -112,6 +121,11 @@ module LittleGhost
       ##
       # :attr_reader: error
       # The original exception for application-side inspection, when present.
+
+      ##
+      # :attr_reader: companion_content
+      # Frozen Text, Image, and Document blocks appended as a transient user
+      # message after the ordinary tool result.
 
       ##
       # :method: success?
@@ -292,7 +306,10 @@ module LittleGhost
         return failure(message, error: ToolError.new(message))
       end
 
-      success(sanitize(bound_for(context).call(input)))
+      value = bound_for(context).call(input)
+      return normalize_execution_result(value) if value.is_a?(ExecutionResult)
+
+      success(sanitize(value))
     rescue CancelledError, DeadlineExceededError, CleanupError
       raise
     rescue ToolError => error
@@ -343,6 +360,15 @@ module LittleGhost
 
     def failure(content, error:)
       ExecutionResult.new(content: content.freeze, status: :error, error:)
+    end
+
+    def normalize_execution_result(result)
+      ExecutionResult.new(
+        content: sanitize(result.content).freeze,
+        status: result.status,
+        error: result.error,
+        companion_content: result.companion_content
+      )
     end
 
     class SchemaValidator # :nodoc:

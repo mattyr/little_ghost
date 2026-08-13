@@ -59,7 +59,9 @@ module LittleGhost
       @once_mutex = Mutex.new
       @once_keys = {}
       @interruption_mutex = Mutex.new
+      @interruption_condition = ConditionVariable.new
       @interruption_state = :not_started
+      @active_interruptions = 0
       @entrypoint = nil
       @usage = Usage.new
     end
@@ -118,6 +120,7 @@ module LittleGhost
           raise AgentInterruptError, "Run has already finished"
         end
 
+        @active_interruptions += 1
         @entrypoint
       end
       unless entrypoint.is_a?(Agent)
@@ -132,6 +135,13 @@ module LittleGhost
         cancellation_token:,
         deadline:
       )
+    ensure
+      if entrypoint
+        @interruption_mutex.synchronize do
+          @active_interruptions -= 1
+          @interruption_condition.broadcast
+        end
+      end
     end
 
     # Creates a RunContext with this run's cancellation token and deadline.
@@ -333,9 +343,10 @@ module LittleGhost
       ]
     ensure
       @interruption_mutex.synchronize do
+        @interruption_state = :terminal
+        @interruption_condition.wait(@interruption_mutex) while @active_interruptions.positive?
         @last_entrypoint = @entrypoint
         @entrypoint = nil
-        @interruption_state = :terminal
       end
       resource_cleanup_error = nil
       begin

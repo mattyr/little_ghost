@@ -92,6 +92,21 @@ A `LittleGhost::Run` owns one top-level agent or workflow execution. It opens th
 
 The run is both executable and enumerable. `#call` consumes it; `#each` streams `LittleGhost::StreamEvent` objects. After termination, the run reports one outcome: completed, failed, partial at a deadline, or cancelled. It also exposes the final response, result, usage, and error.
 
+Long-lived services can supervise a run without making their request thread own its execution:
+
+```ruby
+execution = CustomerSupportAgent.new.start_execution(
+  message: "Investigate transfer 481"
+) do |event|
+  event_buffer << event
+end
+
+execution.interrupt_response(message: "Include the latest ledger entry")
+run = execution.wait(deadline: Time.now + 30)
+```
+
+`LittleGhost::Execution` owns the worker, preserves request-scoped execution state, and coordinates cancellation, interruptions, waiting, and bounded shutdown. The underlying run still owns agent resources and its terminal outcome. Event consumers run on the worker thread. Applications should keep them thread-safe and avoid blocking indefinitely.
+
 An `Invocation` is the request envelope. It normalizes the current message and history, generates missing identifiers, and retains application-specific fields with indifferent string and symbol keys. Caller identity remains explicit. If session persistence needs tenant isolation, derive its actor from trusted authentication state; never trust a model-supplied or unverified request field.
 
 ## Tools are validated application boundaries
@@ -115,6 +130,8 @@ end
 ```
 
 LittleGhost validates the model's input before invoking `#call`. Hashes and arrays returned by a tool are JSON-encoded; other values become text. Expected application failures can raise `LittleGhost::ToolError`; unexpected exception messages are sanitized before they reach model context.
+
+A tool can return a `LittleGhost::Tool::ExecutionResult` with `companion_content` when the next model request also needs text, images, or documents. LittleGhost keeps the ordinary tool result intact, then appends each tool's companion blocks as a transient user message in tool-call order. Session persistence omits those transient messages. Tool-use, tool-result, and reasoning blocks are rejected as companion content.
 
 Validation is not authorization. A tool that reads customer records, writes files, executes processes, or calls a network service must enforce the application's trust rules itself. The built-in unrestricted sandbox executes with the Ruby process's permissions and is not a security boundary. Configure an isolated sandbox before exposing filesystem or shell tools to untrusted work.
 
@@ -220,4 +237,4 @@ The core design can be summarized as four choices:
 - Put privileged application operations behind narrow, authorized tools.
 - Put mandatory ordering in workflows; leave optional delegation to subagents.
 
-Return to [Getting Started](getting_started.md) for the complete first-run setup. The API reference covers exact signatures and lifecycle details for `LittleGhost::Runtime`, `LittleGhost::Run`, `LittleGhost::Agent`, `LittleGhost::Tool`, `LittleGhost::Workflow`, and `LittleGhost::ModelResolver`.
+Return to [Getting Started](getting_started.md) for the complete first-run setup. The API reference covers exact signatures and lifecycle details for `LittleGhost::Runtime`, `LittleGhost::Run`, `LittleGhost::Execution`, `LittleGhost::Agent`, `LittleGhost::Tool`, `LittleGhost::Workflow`, and `LittleGhost::ModelResolver`.

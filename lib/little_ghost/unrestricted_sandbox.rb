@@ -146,7 +146,7 @@ module LittleGhost
         environment:,
         inherit_environment:
       )
-      Execution.new(stdout:, stderr:, exit_code: status.exitstatus)
+      Sandbox::Execution.new(stdout:, stderr:, exit_code: status.exitstatus)
     end
 
     private

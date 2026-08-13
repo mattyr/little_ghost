@@ -176,7 +176,8 @@ module LittleGhost
         replacement = Tool::ExecutionResult.new(
           content: "#{warning}\n\n#{result.content}",
           status: result.status,
-          error: result.error
+          error: result.error,
+          companion_content: result.companion_content
         )
         Support::Callbacks.replace(payload.merge(result: replacement))
       end

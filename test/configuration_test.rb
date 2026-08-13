@@ -446,6 +446,8 @@ class ConfigurationTest < Minitest::Test
     provider = Class.new(LittleGhost::Providers::Base).new
     started = Queue.new
     release = Queue.new
+    interruption_started = Queue.new
+    release_interruption = Queue.new
     requests = []
     response = lambda do |text|
       LittleGhost::ModelResponse.new(
@@ -460,6 +462,8 @@ class ConfigurationTest < Minitest::Test
         release.pop
         value = response.call("would finish")
       else
+        interruption_started << true
+        release_interruption.pop
         value = response.call("steered")
       end
       [LittleGhost::StreamEvent.build(:message_stop, response: value)].each
@@ -487,7 +491,11 @@ class ConfigurationTest < Minitest::Test
         )
       end
       release << true
+      interruption_started.pop
 
+      assert_predicate runner, :alive?
+
+      release_interruption << true
       assert_equal "steered", interrupted.value.text
       assert_equal ["slack-1"], interrupted.value.interruption_ids
       assert_equal "channel", interrupted.value.batch_key
@@ -499,6 +507,7 @@ class ConfigurationTest < Minitest::Test
       assert_equal "Run has already finished", terminal.message
     ensure
       release << true if runner&.alive?
+      release_interruption << true if interrupted&.alive?
       runner&.kill
       interrupted&.kill
     end
