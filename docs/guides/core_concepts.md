@@ -226,6 +226,8 @@ Use structured results when code consumes fields. Keep ordinary text when a huma
 
 The default session store is in-memory. A configured `SessionStore` can load history and state before an agent runs and checkpoint coherent turns as work progresses. The application must supply stable session and actor identifiers when it wants continuity and isolation.
 
+Applications that need to reconcile persisted messages with invocation history can register a `LittleGhost::Runtime::Hook` and implement `session_history`. The hook receives the run plus `stored:` and `fallback:` message collections. Return the history to use, or `nil` to defer to the next hook and ultimately the session default. This keeps application-specific reconciliation policy outside the framework session type.
+
 Streams expose generic framework events rather than provider wire formats. Consumers can render text deltas, observe tool or subagent activity, collect usage, and react to terminal outcomes without coupling to OpenAI, OpenRouter, or Bedrock. The optional AG-UI adapter translates the same events at an interface boundary.
 
 ## Keep the boundary visible

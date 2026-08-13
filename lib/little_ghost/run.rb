@@ -112,6 +112,21 @@ module LittleGhost
       cancellation_token: Support::CancellationToken.new,
       deadline: nil
     )
+      interrupt_response_with do
+        [
+          message,
+          {
+            interruption_id:,
+            batch_key:,
+            metadata:,
+            cancellation_token:,
+            deadline:
+          }
+        ]
+      end
+    end
+
+    def interrupt_response_with # :nodoc:
       entrypoint = @interruption_mutex.synchronize do
         case @interruption_state
         when :not_started, :starting
@@ -127,14 +142,8 @@ module LittleGhost
         raise AgentInterruptError, "Run entrypoint does not support interruptions"
       end
 
-      entrypoint.interrupt_response(
-        message,
-        interruption_id:,
-        batch_key:,
-        metadata:,
-        cancellation_token:,
-        deadline:
-      )
+      message, options = yield
+      entrypoint.interrupt_response(message, **options)
     ensure
       if entrypoint
         @interruption_mutex.synchronize do
@@ -261,7 +270,7 @@ module LittleGhost
       end
       register(agent)
       invoke = lambda do
-        history = session ? session.history(fallback: invocation.history) : invocation.history
+        history = session ? runtime.session_history(self, session, fallback: invocation.history) : invocation.history
         context = session ? session.state.merge(invocation.context) : invocation.context.dup
         options = {
           history:,

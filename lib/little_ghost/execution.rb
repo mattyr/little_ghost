@@ -84,9 +84,10 @@ module LittleGhost
       interruption_started = false
       begin_interruption!
       interruption_started = true
-      prepared = run.prepare_interruption(interruption_payload(payload, options))
-      message, arguments = interruption_arguments(prepared, options)
-      run.interrupt_response(message, **arguments)
+      run.interrupt_response_with do
+        prepared = run.prepare_interruption(interruption_payload(payload, options))
+        interruption_arguments(prepared, options)
+      end
     ensure
       finish_interruption! if interruption_started
     end

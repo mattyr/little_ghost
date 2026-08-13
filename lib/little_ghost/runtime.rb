@@ -205,6 +205,16 @@ module LittleGhost
       )
     end
 
+    def session_history(run, session, fallback:) # :nodoc:
+      stored = session.history
+      runtime_hooks.each do |hook|
+        history = hook.session_history(run, stored:, fallback:)
+        return normalize_history(history) unless history.nil?
+      end
+
+      session.history(fallback:)
+    end
+
     def prepare_run(run) # :nodoc:
       runtime_hooks.each { |hook| hook.prepare_run(run) }
       run
@@ -280,6 +290,10 @@ module LittleGhost
 
     def build_runtime_hooks(hook_classes)
       Array(hook_classes).map(&:new)
+    end
+
+    def normalize_history(history)
+      Array(history).map { |message| Message.coerce(message) }.freeze
     end
 
     def build_session_store(definition)

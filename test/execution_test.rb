@@ -29,6 +29,11 @@ class ExecutionTest < Minitest::Test
       payload.merge(message: "prepared: #{payload.fetch(:message)}")
     end
 
+    def interrupt_response_with
+      message, options = yield
+      interrupt_response(message, **options)
+    end
+
     def interrupt_response(message, **options)
       interruptions << [message, options]
       @interrupt_release&.pop
