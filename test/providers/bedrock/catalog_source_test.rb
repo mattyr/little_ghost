@@ -33,6 +33,7 @@ class BedrockCatalogSourceTest < Minitest::Test
     details = catalog.details("aws:anthropic.claude-test")
 
     assert_empty result.fetch(:errors)
+    assert_equal({input_modalities: :union}, source.attribute_merge_strategies)
     assert_equal({input: 3.0, output: 15.0}, details.pricing)
     assert_equal ["text"], details.input_modalities
     assert_equal "aws_pricing", details.provenance.fetch(:pricing)

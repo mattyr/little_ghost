@@ -12,6 +12,7 @@ module LittleGhost
         MAX_RESULTS = 100 # :nodoc:
         FOUNDATION_MODEL_OFFER = "AmazonBedrockFoundationModels" # :nodoc:
         BEDROCK_OFFER = "AmazonBedrock" # :nodoc:
+        ATTRIBUTE_MERGE_STRATEGIES = {input_modalities: :union}.freeze # :nodoc:
 
         # Creates a source for one Bedrock provider connection and AWS region.
         def initialize(provider:, region:, credential_resolver: nil, clock: -> { Time.now.utc }, http_client: nil)
@@ -26,6 +27,10 @@ module LittleGhost
             max_response_bytes: 25 * 1024 * 1024
           )
         end
+
+        # AWS reports a coarse subset of Converse input capabilities, so live
+        # modalities augment richer facts supplied by another catalog source.
+        def attribute_merge_strategies = ATTRIBUTE_MERGE_STRATEGIES
 
         def refresh(target: nil)
           credentials = @credential_resolver.call

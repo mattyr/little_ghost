@@ -334,7 +334,7 @@ class ModelResolverTest < Minitest::Test
     assert_equal 3.15, capable.pricing.fetch(:output)
   end
 
-  def test_bedrock_refresh_preserves_richer_bundled_input_modalities
+  def test_source_declared_union_preserves_richer_bundled_input_modalities
     Tempfile.create(["model-catalog", ".json"]) do |snapshot|
       snapshot.write(JSON.generate(
         "bedrock:anthropic.claude-test" => {
@@ -343,11 +343,17 @@ class ModelResolverTest < Minitest::Test
         }
       ))
       snapshot.flush
-      source = Class.new(LittleGhost::Models::Catalog::Source).new(name: "bedrock")
+      source = Class.new(LittleGhost::Models::Catalog::Source) do
+        def attribute_merge_strategies = {input_modalities: :union}
+      end.new(name: "provider-catalog")
       source.define_singleton_method(:refresh) do |target:|
         {target.to_s => {available: true, input_modalities: %w[text image], output_modalities: ["text"]}}
       end
-      catalog = LittleGhost::Models::Catalog.new(sources: [source], snapshot_path: snapshot.path)
+      later_source = Class.new(LittleGhost::Models::Catalog::Source).new(name: "availability-catalog")
+      later_source.define_singleton_method(:refresh) do |target:|
+        {target.to_s => {available: false}}
+      end
+      catalog = LittleGhost::Models::Catalog.new(sources: [source, later_source], snapshot_path: snapshot.path)
 
       catalog.refresh!(target: "bedrock:anthropic.claude-test")
       details = catalog.details("bedrock:anthropic.claude-test")
@@ -361,7 +367,7 @@ class ModelResolverTest < Minitest::Test
       model.stream(request).to_a
 
       assert_equal %w[text image pdf], details.input_modalities
-      assert_equal "bundled:models.dev+bedrock", details.provenance.fetch(:input_modalities)
+      assert_equal "bundled:models.dev+provider-catalog", details.provenance.fetch(:input_modalities)
       assert_equal request.messages, provider.request.messages
     end
   end
@@ -378,6 +384,74 @@ class ModelResolverTest < Minitest::Test
 
     assert_equal %w[text image], details.input_modalities
     assert_equal "bedrock", details.provenance.fetch(:input_modalities)
+  end
+
+  def test_later_source_replaces_an_attribute_instead_of_inheriting_its_union
+    union_source = Class.new(LittleGhost::Models::Catalog::Source) do
+      def attribute_merge_strategies = {input_modalities: :union}
+    end.new(name: "additive")
+    union_source.define_singleton_method(:refresh) do |target:|
+      {target.to_s => {input_modalities: %w[text image]}}
+    end
+    replacement = Class.new(LittleGhost::Models::Catalog::Source).new(name: "application")
+    replacement.define_singleton_method(:refresh) do |target:|
+      {target.to_s => {input_modalities: ["text"]}}
+    end
+    catalog = LittleGhost::Models::Catalog.new(
+      sources: [union_source, replacement],
+      snapshot_path: "/missing/catalog.json"
+    )
+
+    catalog.refresh!(target: "provider:model")
+    details = catalog.details("provider:model")
+
+    assert_equal ["text"], details.input_modalities
+    assert_equal "application", details.provenance.fetch(:input_modalities)
+  end
+
+  def test_invalid_union_value_preserves_bundled_catalog_data
+    Tempfile.create(["model-catalog", ".json"]) do |snapshot|
+      snapshot.write(JSON.generate("provider:model" => {input_modalities: %w[text pdf]}))
+      snapshot.flush
+      source = Class.new(LittleGhost::Models::Catalog::Source) do
+        def attribute_merge_strategies = {input_modalities: :union}
+      end.new(name: "invalid")
+      source.define_singleton_method(:refresh) do |target:|
+        {target.to_s => {input_modalities: "text"}}
+      end
+      catalog = LittleGhost::Models::Catalog.new(sources: [source], snapshot_path: snapshot.path)
+
+      result = catalog.refresh!(target: "provider:model")
+
+      assert_empty result.fetch(:updated)
+      assert_instance_of LittleGhost::ConfigurationError, result.fetch(:errors).first
+      assert_equal %w[text pdf], catalog.details("provider:model").input_modalities
+    end
+  end
+
+  def test_invalid_older_union_operand_does_not_commit_partial_refresh_data
+    Tempfile.create(["model-catalog", ".json"]) do |snapshot|
+      snapshot.write(JSON.generate("provider:model" => {input_modalities: %w[text pdf]}))
+      snapshot.flush
+      invalid = Class.new(LittleGhost::Models::Catalog::Source).new(name: "invalid")
+      invalid.define_singleton_method(:refresh) do |target:|
+        {target.to_s => {input_modalities: "text"}}
+      end
+      additive = Class.new(LittleGhost::Models::Catalog::Source) do
+        def attribute_merge_strategies = {input_modalities: :union}
+      end.new(name: "additive")
+      additive.define_singleton_method(:refresh) do |target:|
+        {target.to_s => {input_modalities: %w[text image]}}
+      end
+      catalog = LittleGhost::Models::Catalog.new(sources: [invalid, additive], snapshot_path: snapshot.path)
+
+      result = catalog.refresh!(target: "provider:model")
+
+      assert_equal ["provider:model"], result.fetch(:updated)
+      assert_instance_of LittleGhost::ConfigurationError, result.fetch(:errors).first
+      assert_equal %w[text pdf image], catalog.details("provider:model").input_modalities
+      assert_equal "bundled+additive", catalog.details("provider:model").provenance.fetch(:input_modalities)
+    end
   end
 
   def test_models_dev_source_targets_named_provider_connection
