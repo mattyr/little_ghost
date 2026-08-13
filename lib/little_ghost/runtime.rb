@@ -10,7 +10,10 @@ module LittleGhost
   #
   #   configuration = LittleGhost::Configuration.new(
   #     root: Dir.pwd,
-  #     models: CustomerSupportModels,
+  #     providers: {
+  #       openai: {adapter: :openai, api_key: ENV.fetch("OPENAI_API_KEY")}
+  #     },
+  #     models: {customer_support: {target: "openai:gpt-5.6-luna"}},
   #     default_model: "customer_support",
   #     service_name: "support-api"
   #   )
@@ -22,7 +25,7 @@ module LittleGhost
   # Without explicit +settings+, construction canonicalizes the root, loads
   # +config/little_ghost.rb+ once through the Configuration, snapshots settings,
   # configures instrumentation, eager-loads application constants, and builds the
-  # selected model registry and session store. Supplying +settings+ is the
+  # selected model resolver and session store. Supplying +settings+ is the
   # lower-level path used to create a sibling runtime from an existing snapshot.
   #
   # Reuse a runtime across runs. +build_run+ creates any missing workspace and
@@ -38,7 +41,7 @@ module LittleGhost
   class Runtime
     # The snapshotted setup and materialized services used by new runs.
     attr_reader :configuration, :settings, :root, :loader, :prompt_paths, :skill_paths,
-      :skill_resource_root, :models, :session_store, :workspace_class, :sandbox_class,
+      :skill_resource_root, :model_resolver, :session_store, :workspace_class, :sandbox_class,
       :runtime_hooks
 
     # Starts a runtime from +configuration+ or an existing settings snapshot.
@@ -75,9 +78,9 @@ module LittleGhost
         loader.setup
         loader.eager_load
 
-        @startup_phase = "models"
+        @startup_phase = "model_resolver"
         @invocation_class = @settings[:invocation] || Invocation
-        @models = build_service(@settings[:models], default: -> { DefaultModelRegistry.new })
+        @model_resolver = @settings.fetch(:model_resolver)
         @default_model = @settings.fetch(:default_model, "default").to_s
 
         @startup_phase = "session_store"
@@ -189,8 +192,8 @@ module LittleGhost
     end
 
     def model_for(agent_class, run) # :nodoc:
-      role = agent_class.model_role(run.invocation) || @default_model
-      models.resolve(role, invocation: run.invocation, run:)
+      selection = agent_class.model_selection(run.invocation) || @default_model
+      model_resolver.resolve(selection, invocation: run.invocation, context: run)
     end
 
     def open_session(run) # :nodoc:

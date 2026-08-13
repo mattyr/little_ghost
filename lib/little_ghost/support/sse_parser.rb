@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 module LittleGhost
-  module Providers
+  module Support
     class SSEParser # :nodoc:
       def initialize
         @buffer = +""

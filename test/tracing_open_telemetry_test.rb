@@ -60,7 +60,7 @@ class TracingOpenTelemetryTest < Minitest::Test
         run_id: "run-1",
         session_id: "session-1",
         agent_id: "main",
-        agent_name: "Atlas Main",
+        agent_name: "Support Agent",
         diagnostic_input: JSON.generate("hello")
       }
     )
@@ -70,7 +70,7 @@ class TracingOpenTelemetryTest < Minitest::Test
         operation_id: "agent",
         parent_operation_id: "run",
         agent_id: "main",
-        agent_name: "Atlas Main",
+        agent_name: "Support Agent",
         available_tools: %w[lookup fetch],
         diagnostic_input: JSON.generate("hello")
       }
@@ -141,7 +141,7 @@ class TracingOpenTelemetryTest < Minitest::Test
     root_name, root_context, root_span = tracer.started.fetch(0)
     turn_name, turn_context, turn_span = tracer.started.fetch(1)
     model_name, model_context, model_span = tracer.started.fetch(2)
-    assert_equal "invoke_agent Atlas Main", root_name
+    assert_equal "invoke_agent Support Agent", root_name
     assert_nil root_context
     assert_equal :internal, root_span.kind
     assert_equal "session-1", root_span.attributes.fetch("gen_ai.conversation.id")
@@ -221,7 +221,7 @@ class TracingOpenTelemetryTest < Minitest::Test
         operation_id: "agent",
         parent_operation_id: "run",
         agent_id: "main",
-        agent_name: "Atlas Main"
+        agent_name: "Support Agent"
       }
     )
     tracing.finish(:agent, {operation_id: "agent", outcome: :completed})
@@ -234,7 +234,7 @@ class TracingOpenTelemetryTest < Minitest::Test
     assert_equal "invoke_workflow", workflow_span.attributes.fetch("gen_ai.operation.name")
     assert_equal "MainResponseWorkflow", workflow_span.attributes.fetch("gen_ai.workflow.name")
     refute workflow_span.attributes.key?("gen_ai.agent.id")
-    assert_equal "invoke_agent Atlas Main", agent_name
+    assert_equal "invoke_agent Support Agent", agent_name
     refute_nil agent_context
     assert_equal "invoke_agent", agent_span.attributes.fetch("gen_ai.operation.name")
     assert_equal "main", agent_span.attributes.fetch("gen_ai.agent.id")
@@ -335,7 +335,7 @@ class TracingOpenTelemetryTest < Minitest::Test
         diagnostic_tool_definitions: JSON.generate([
           {name: "lookup", description: "Look up a value", input_schema: {type: "object"}}
         ]),
-        "tag.tags": ["atlas", "main-agent"]
+        "tag.tags": ["customer-support", "primary-agent"]
       }
     )
     tracing.finish(:tool, {operation_id: "tool", diagnostic_output: JSON.generate(result: "found")})
@@ -352,7 +352,7 @@ class TracingOpenTelemetryTest < Minitest::Test
     assert_equal JSON.generate(result: "found"), span.attributes.fetch("output.value")
     assert_equal "application/json", span.attributes.fetch("output.mime_type")
     assert_equal JSON.generate(result: "found"), span.attributes.fetch("gen_ai.tool.call.result")
-    assert_equal ["atlas", "main-agent"], span.attributes.fetch("tag.tags")
+    assert_equal ["customer-support", "primary-agent"], span.attributes.fetch("tag.tags")
     assert_equal OpenTelemetry::Trace::Status::OK, span.status.code
   ensure
     tracing&.shutdown
@@ -663,7 +663,7 @@ class TracingOpenTelemetryTest < Minitest::Test
       :agent,
       operation_id: "caller",
       agent_id: "main",
-      agent_name: "Atlas Main"
+      agent_name: "Support Agent"
     )
     event = {
       subagent_id: "/root/research",
@@ -685,7 +685,7 @@ class TracingOpenTelemetryTest < Minitest::Test
         parent: "turn",
         operation_id: "delegated",
         agent_id: "deep-research",
-        agent_name: "Atlas Deep Research"
+        agent_name: "Research Agent"
       )
       delegated.finish(outcome: :completed)
       run.publish(:subagent, event: event.merge(event: "turn_finished"))
@@ -694,9 +694,9 @@ class TracingOpenTelemetryTest < Minitest::Test
     caller_name, _caller_parent, caller_span = tracer.started.fetch(0)
     subagent_name, subagent_parent, subagent_span = tracer.started.fetch(1)
     delegated_name, delegated_parent, delegated_span = tracer.started.fetch(2)
-    assert_equal "invoke_agent Atlas Main", caller_name
+    assert_equal "invoke_agent Support Agent", caller_name
     assert_equal "invoke_agent /root/research", subagent_name
-    assert_equal "invoke_agent Atlas Deep Research", delegated_name
+    assert_equal "invoke_agent Research Agent", delegated_name
     assert_equal caller_span.context, OpenTelemetry::Trace.current_span(subagent_parent).context
     assert_equal subagent_span.context, OpenTelemetry::Trace.current_span(delegated_parent).context
     assert_equal %w[

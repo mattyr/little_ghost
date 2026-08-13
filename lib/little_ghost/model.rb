@@ -1,84 +1,104 @@
 # frozen_string_literal: true
 
 module LittleGhost
-  # Model is the configured connection between an agent role and a provider. It
-  # keeps provider choice and defaults out of the agent class that uses them.
+  # Interface for executable model implementations accepted by agents.
+  module ModelInterface
+    # Canonical physical provider and model identifier.
+    def target = Models::Target.parse("custom:#{self.class.name || "anonymous"}")
+    # Provider-owned model identifier without the connection name.
+    def model_id = target.model_id
+    # Logical application role that selected this model, when available.
+    def role = nil
+    # Immutable capabilities, limits, modalities, and pricing facts.
+    def details = Models::Details.new(target:)
+    # Normalized feature support used for request strategy selection.
+    def capabilities = ModelCapabilities.permissive
+  end
+
+  # Model is the resolved connection between an agent selection and a provider.
+  # It keeps provider behavior behind one executable interface whether an agent
+  # selected a role, canonical target, or inline configuration.
   #
   # It merges profile settings into every ModelRequest, validates attachment
   # modalities declared in metadata, lets providers prepare capability-sensitive
   # requests, and delegates the normalized stream to the provider.
   class Model
-    IDENTITY_METADATA_KEYS = %w[provider model_id model_role].freeze # :nodoc:
+    include ModelInterface
 
-    # Provider object and name, provider model ID, default settings, normalized
-    # metadata, and logical application role.
-    attr_reader :provider, :provider_name, :id, :settings, :metadata, :role
+    # Provider object, canonical target, default settings, normalized model
+    # details, and logical application role.
+    attr_reader :provider, :target, :settings, :details, :role
 
-    # Wraps an object that responds to +stream+.
-    def initialize(provider:, provider_name:, id: nil, model: nil, settings: {}, metadata: {}, role: nil)
-      raise ArgumentError, "provider must respond to stream" unless provider.respond_to?(:stream)
-      raise ArgumentError, "provider_name is required" if provider_name.nil? || provider_name.to_s.empty?
-      raise ArgumentError, "model is required" if (id || model).nil? || (id || model).to_s.empty?
+    # Connects a provider adapter to its canonical +target+, profile +settings+,
+    # optional model +details+, and logical +role+.
+    def initialize(provider:, target:, settings: {}, details: nil, role: nil)
+      raise ArgumentError, "provider must be a LittleGhost::Providers::Base" unless provider.is_a?(Providers::Base)
 
       @provider = provider
-      @provider_name = provider_name.to_sym
-      @id = (id || model)&.to_s
+      @target = Models::Target.parse(target)
       @settings = settings.to_h.transform_keys(&:to_sym).freeze
       @role = role&.to_s
-      profile_metadata = metadata.to_h.reject { |key, _value| IDENTITY_METADATA_KEYS.include?(key.to_s) }
-      @metadata = profile_metadata.merge(
-        provider: @provider_name,
-        model_id: @id,
-        model_role: @role
-      ).freeze
+      @details = details || Models::Details.new(target: @target)
     end
+
+    # Provider-owned identifier from the canonical target.
+    def model_id = target.model_id
 
     # Streams +request+ through the configured provider.
     #
     # Profile settings are defaults; settings on +request+ take precedence.
     def stream(request, &block)
       validate_input_modalities!(request)
+      configured_settings = settings.merge(request.settings)
+      configured_max_tokens = if request.settings.key?(:max_tokens)
+        request.settings[:max_tokens]
+      elsif request.settings.key?("max_tokens")
+        request.settings["max_tokens"]
+      else
+        settings[:max_tokens] || settings["max_tokens"]
+      end
+      if configured_max_tokens && details.max_output_tokens
+        configured_settings.delete(:max_tokens)
+        configured_settings.delete("max_tokens")
+        configured_settings[:max_tokens] = [configured_max_tokens, details.max_output_tokens].min
+      end
       configured_request = ModelRequest.new(
         messages: request.messages,
         tools: request.tools,
-        settings: settings.merge(request.settings),
+        settings: configured_settings,
         output_schema: request.output_schema,
         tool_choice: request.tool_choice,
         required_capabilities: request.required_capabilities,
         cancellation_token: request.cancellation_token,
         deadline: request.deadline
       )
-      if provider.respond_to?(:prepare_request)
-        configured_request = provider.prepare_request(configured_request, capabilities:)
-      end
+      configured_request = provider.prepare_request(configured_request, capabilities:)
       provider.stream(configured_request, &block)
     end
 
-    # Uses advertised provider capabilities, falling back to the permissive legacy
-    # contract for providers that do not advertise them.
+    # Uses advertised provider capabilities.
     def capabilities
-      @capabilities ||= if provider.respond_to?(:capabilities)
-        provider.capabilities(metadata:)
-      else
-        ModelCapabilities.legacy
-      end
+      @capabilities ||= provider.capabilities(metadata: details.attributes)
     end
 
     private
 
     def validate_input_modalities!(request)
-      supported = metadata[:input_modalities] || metadata["input_modalities"]
+      supported = details.input_modalities
       return unless supported
 
       required = request.messages.flat_map do |message|
         message.content.filter_map do |block|
           case block
           when Content::Image then "image"
-          when Content::Document then "file"
+          when Content::Document then (block.media_type == "application/pdf") ? "pdf" : "file"
           end
         end
       end.uniq
-      missing = required - Array(supported).map { |value| value.to_s.downcase }
+      available = Array(supported).map { |value| value.to_s.downcase }
+      missing = required.reject do |modality|
+        available.include?(modality) || (modality == "pdf" && available.include?("file"))
+      end
       return if missing.empty?
 
       raise UnsupportedInputError,

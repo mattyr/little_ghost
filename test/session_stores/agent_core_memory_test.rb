@@ -326,7 +326,7 @@ class AgentCoreMemoryTest < Minitest::Test
       metadata: {}
     )
     events = events_from(seed_client.created)
-    events.first.payload.first.conversational.content.text = "legacy message"
+    events.first.payload.first.conversational.content.text = "foreign message"
     store = LittleGhost::SessionStores::AgentCoreMemory.new(memory_id: "memory", client: Client.new(events))
 
     error = assert_raises(LittleGhost::ProtocolError) do
@@ -340,21 +340,6 @@ class AgentCoreMemoryTest < Minitest::Test
     store = LittleGhost::SessionStores::AgentCoreMemory.new(memory_id: "memory", client: Client.new)
 
     assert_nil store.load("new", actor_id: "actor")
-  end
-
-  def test_ignores_events_from_older_wire_protocols
-    old_event = Event.new(
-      Time.at(1),
-      [Payload.new(nil, "little_ghost:checkpoint:v3:{}")],
-      {
-        LittleGhost::SessionStores::AgentCoreMemory::EVENT_TYPE_METADATA_KEY => {
-          string_value: "checkpoint"
-        }
-      }
-    )
-    store = store_for(Client.new([old_event]))
-
-    assert_nil store.load("session", actor_id: "actor")
   end
 
   def test_hashes_all_transport_identifiers_into_one_non_colliding_namespace

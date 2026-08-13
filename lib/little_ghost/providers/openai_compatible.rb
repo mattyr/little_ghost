@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 
 require "json"
-require_relative "sse_parser"
-require_relative "http_transport"
+require_relative "../support/sse_parser"
+require_relative "../support/http_client"
 
 module LittleGhost
   module Providers
@@ -25,7 +25,12 @@ module LittleGhost
     # A +:model_retry+ event reports each retry and whether text had already been
     # emitted. Partial text may repeat after a retry, so consumers that assemble
     # streams must use that event to discard or replace superseded output.
-    class OpenAICompatible
+    class OpenAICompatible < Base
+      # Request policy supported by OpenAI-compatible HTTP clients.
+      def self.request_options
+        %i[max_response_bytes max_retries max_retry_delay open_timeout read_timeout].freeze
+      end
+
       # The OpenAI API endpoint used when +base_url+ is omitted.
       DEFAULT_BASE_URL = "https://api.openai.com/v1/"
       INITIAL_RETRY_DELAY = 1 # :nodoc:
@@ -89,7 +94,7 @@ module LittleGhost
         open_timeout: 10,
         read_timeout: 120,
         allow_insecure_http: false,
-        max_response_bytes: HTTPTransport::DEFAULT_MAX_RESPONSE_BYTES,
+        max_response_bytes: Support::HTTPClient::DEFAULT_MAX_RESPONSE_BYTES,
         max_retries: 2,
         max_retry_delay: MAX_RETRY_DELAY,
         transport: nil,
@@ -104,7 +109,7 @@ module LittleGhost
         @headers = headers.transform_keys(&:to_s).freeze
         @max_retries = Integer(max_retries)
         @max_retry_delay = Integer(max_retry_delay)
-        @transport = transport || HTTPTransport.new(
+        @transport = transport || Support::HTTPClient.new(
           base_url:,
           open_timeout:,
           read_timeout:,
@@ -155,10 +160,10 @@ module LittleGhost
         end
       end
 
-      # Returns the legacy capability contract expected from compatible APIs.
+      # Returns the permissive capability contract expected from compatible APIs.
       # Subclasses can override this when the endpoint advertises precise support.
       def capabilities(metadata: {})
-        ModelCapabilities.legacy
+        ModelCapabilities.permissive
       end
 
       private
@@ -186,14 +191,14 @@ module LittleGhost
 
       def context_window_overflow?(error)
         values = [error.message]
-        values << error.body if error.respond_to?(:body)
+        values << error.body if error.is_a?(HTTPError)
         values << error.error_type << error.code if error.is_a?(StreamError)
         text = values.compact.join(" ").downcase
         CONTEXT_OVERFLOW_MARKERS.any? { |marker| text.include?(marker) }
       end
 
       def stream_once(request)
-        parser = SSEParser.new
+        parser = Support::SSEParser.new
         normalizer = normalizer_for(request)
 
         @transport.stream(
@@ -382,21 +387,12 @@ module LittleGhost
       end
 
       def tool_definition(tool)
-        if tool.is_a?(Hash)
-          definition = tool.transform_keys(&:to_sym)
-          return {
-            name: definition.fetch(:name),
-            description: definition[:description],
-            input_schema: definition[:input_schema] || {},
-            strict: definition[:strict]
-          }
-        end
-
+        definition = tool.to_h.transform_keys(&:to_sym)
         {
-          name: tool.public_send(:name),
-          description: tool.public_send(:description),
-          input_schema: tool.public_send(:input_schema),
-          strict: tool.respond_to?(:strict) ? tool.public_send(:strict) : nil
+          name: definition.fetch(:name),
+          description: definition[:description],
+          input_schema: definition[:input_schema] || {},
+          strict: definition[:strict]
         }
       end
 

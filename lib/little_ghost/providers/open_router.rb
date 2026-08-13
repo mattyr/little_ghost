@@ -1,12 +1,13 @@
 # frozen_string_literal: true
 
 require_relative "openai_compatible"
+require_relative "open_router/catalog_source"
 
 module LittleGhost
   module Providers
     # OpenRouter gives one LittleGhost provider access to models routed through
-    # OpenRouter. Agents keep their model roles while the registry selects an
-    # OpenRouter model for each role.
+    # OpenRouter. Agents may select an OpenRouter target directly or keep a
+    # logical role while shared configuration selects its physical model.
     #
     #   provider = LittleGhost::Providers::OpenRouter.new(
     #     api_key: ENV.fetch("OPENROUTER_API_KEY"),
@@ -19,6 +20,9 @@ module LittleGhost
     # Requests that need a capability ask OpenRouter to route only to providers
     # that advertise it.
     class OpenRouter < OpenAICompatible
+      # Adds OpenRouter attribution to the shared OpenAI-compatible policy.
+      def self.request_options = (super + [:app_name]).freeze
+
       # The OpenRouter API endpoint used when +base_url+ is omitted.
       DEFAULT_BASE_URL = "https://openrouter.ai/api/v1/"
       TOP_LEVEL_CACHE_MODELS = ["anthropic/", "~anthropic/"].freeze # :nodoc:

@@ -1,0 +1,695 @@
+# frozen_string_literal: true
+
+require "fileutils"
+require "json"
+require "tempfile"
+require "tmpdir"
+require "test_helper"
+
+class ModelResolverTest < Minitest::Test
+  class RecordingProvider < LittleGhost::Providers::Base
+    attr_reader :request
+
+    def stream(request)
+      @request = request
+      [].each
+    end
+  end
+
+  def test_loads_separate_provider_and_model_files_and_resolves_inheritance
+    with_configuration(
+      providers: <<~YAML,
+        providers:
+          primary:
+            adapter: test
+            api_key: <%= ENV.fetch("MODELS_TEST_KEY") %>
+      YAML
+      models: <<~YAML
+        default_model: main
+        models:
+          main:
+            target: primary:vendor/model:version
+            settings:
+              temperature: 0.1
+          main.research:
+            inherits: main
+            settings:
+              max_tokens: 100
+      YAML
+    ) do |directory|
+      provider = RecordingProvider.new
+      previous = ENV["MODELS_TEST_KEY"]
+      ENV["MODELS_TEST_KEY"] = "secret"
+      models = resolver_from(directory, provider_adapters: {"test" => ->(**) { provider }})
+
+      model = models.resolve("main.research.review")
+
+      assert_equal "primary:vendor/model:version", model.target.to_s
+      assert_equal "vendor/model:version", model.model_id
+      assert_equal({temperature: 0.1, max_tokens: 100}, model.settings)
+      assert_equal "main.research.review", model.role
+      assert_same provider, model.provider
+    ensure
+      previous ? ENV["MODELS_TEST_KEY"] = previous : ENV.delete("MODELS_TEST_KEY")
+    end
+  end
+
+  def test_explicit_profiles_overlay_settings
+    with_configuration(
+      providers: "providers:\n  test:\n    adapter: test\n",
+      models: <<~YAML
+        models:
+          main:
+            target: test:model
+            settings:
+              temperature: 0.1
+      YAML
+    ) do |directory|
+      models = resolver_from(directory, provider_adapters: {"test" => ->(**) { RecordingProvider.new }})
+      invocation = LittleGhost::Invocation.new(
+        message: "hello",
+        model_configuration: {"profiles" => {"main" => {"settings" => {"temperature" => 0.9}}}}
+      )
+
+      model = models.resolve("main", invocation:, profiles: {"main" => {"settings" => {"temperature" => 0.4}}})
+
+      assert_equal({temperature: 0.4}, model.settings)
+    end
+  end
+
+  def test_canonical_target_bypasses_profiles
+    providers = LittleGhost::Providers::Configuration.new(openai: {adapter: :test})
+    resolver = LittleGhost::ModelResolver.new(
+      providers:,
+      profiles: {main: {target: "openai:profile-model"}},
+      provider_adapters: {"test" => ->(**) { RecordingProvider.new }}
+    )
+
+    model = resolver.resolve(
+      "openai:gpt-5.6-luna",
+      profiles: {"openai:gpt-5.6-luna" => {target: "openai:overridden", settings: {temperature: 1.0}}}
+    )
+
+    assert_equal "openai:gpt-5.6-luna", model.target.to_s
+    assert_empty model.settings
+    assert_nil model.role
+  end
+
+  def test_inline_configuration_uses_flat_model_settings
+    providers = LittleGhost::Providers::Configuration.new(openai: {adapter: :test})
+    resolver = LittleGhost::ModelResolver.new(
+      providers:,
+      profiles: {},
+      provider_adapters: {"test" => ->(**) { RecordingProvider.new }}
+    )
+
+    model = resolver.resolve({"provider" => "openai", "model" => "gpt-5.6-luna", "reasoning_effort" => "high"})
+
+    assert_equal "openai:gpt-5.6-luna", model.target.to_s
+    assert_equal({reasoning_effort: "high"}, model.settings)
+    assert_nil model.role
+  end
+
+  def test_inline_configuration_snapshots_nested_settings
+    providers = LittleGhost::Providers::Configuration.new(openai: {adapter: :test})
+    resolver = LittleGhost::ModelResolver.new(
+      providers:,
+      profiles: {},
+      provider_adapters: {"test" => ->(**) { RecordingProvider.new }}
+    )
+    selection = {provider: "openai", model: "gpt-5.6-luna", reasoning: {effort: "low"}}
+
+    model = resolver.resolve(selection)
+    selection.fetch(:reasoning)[:effort] = "max"
+
+    assert_equal "low", model.settings.dig(:reasoning, :effort)
+    assert_predicate model.settings.fetch(:reasoning), :frozen?
+  end
+
+  def test_inline_configuration_requires_provider_and_model
+    providers = LittleGhost::Providers::Configuration.new(openai: {adapter: :test})
+    resolver = LittleGhost::ModelResolver.new(providers:, profiles: {})
+
+    provider_error = assert_raises(LittleGhost::ConfigurationError) { resolver.resolve({model: "gpt-5.6-luna"}) }
+    model_error = assert_raises(LittleGhost::ConfigurationError) { resolver.resolve({provider: "openai"}) }
+
+    assert_equal "Inline model configuration requires provider", provider_error.message
+    assert_equal "Inline model configuration requires model", model_error.message
+  end
+
+  def test_rejects_an_unsupported_model_selection
+    resolver = LittleGhost::ModelResolver.new(profiles: {})
+
+    error = assert_raises(LittleGhost::ConfigurationError) { resolver.resolve(123) }
+
+    assert_equal "Model selection must be a role, provider:model target, or configuration mapping", error.message
+  end
+
+  def test_model_roles_and_inheritance_references_cannot_contain_colons
+    providers = LittleGhost::Providers::Configuration.new(openai: {adapter: :test})
+
+    name_error = assert_raises(LittleGhost::ConfigurationError) do
+      LittleGhost::ModelResolver.new(providers:, profiles: {"openai:model" => {target: "openai:model"}})
+    end
+    parent_error = assert_raises(LittleGhost::ConfigurationError) do
+      LittleGhost::ModelResolver.new(
+        providers:,
+        profiles: {main: {target: "openai:model"}, child: {inherits: "openai:model"}}
+      )
+    end
+
+    assert_equal "Model role names cannot contain ':' (openai:model)", name_error.message
+    assert_equal "Model role names cannot contain ':' (openai:model)", parent_error.message
+  end
+
+  def test_explicit_profile_request_options_cannot_replace_provider_connections
+    with_configuration(
+      providers: "providers:\n  test:\n    adapter: test\n    api_key: trusted-secret\n",
+      models: "models:\n  main:\n    target: test:model\n"
+    ) do |directory|
+      models = resolver_from(directory, provider_adapters: {"test" => ->(**) { RecordingProvider.new }})
+      invocation = LittleGhost::Invocation.new(
+        message: "hello",
+        model_configuration: {"profiles" => {"main" => {"request" => {"base_url" => "https://attacker.example/"}}}}
+      )
+
+      profiles = {"main" => {"request" => {"base_url" => "https://attacker.example/"}}}
+      error = assert_raises(LittleGhost::ConfigurationError) { models.resolve("main", invocation:, profiles:) }
+
+      assert_includes error.message, "base_url"
+    end
+  end
+
+  def test_explicit_profile_details_replace_local_catalog_facts
+    with_configuration(
+      providers: "providers:\n  test:\n    adapter: test\n",
+      models: "models:\n  main:\n    target: test:model\n"
+    ) do |directory|
+      models = resolver_from(directory, provider_adapters: {"test" => ->(**) { RecordingProvider.new }})
+      invocation = LittleGhost::Invocation.new(
+        message: "hello",
+        model_configuration: {"profiles" => {"main" => {"details" => {
+          "target" => "test:model", "context_window" => 321, "provenance" => {"context_window" => "run-snapshot"}
+        }}}}
+      )
+
+      profiles = {"main" => {"details" => {
+        "target" => "test:model", "context_window" => 321, "provenance" => {"context_window" => "run-snapshot"}
+      }}}
+      model = models.resolve("main", invocation:, profiles:)
+
+      assert_equal 321, model.details.context_window
+      assert_equal "run-snapshot", model.details.provenance.fetch(:context_window)
+    end
+  end
+
+  def test_resolve_uses_overridable_details_interface_and_clamps_output_tokens
+    providers = LittleGhost::Providers::Configuration.new(test: {adapter: :test})
+    resolver = Class.new(LittleGhost::ModelResolver) do
+      def details(target)
+        LittleGhost::Models::Details.new(target:, attributes: {max_output_tokens: 200})
+      end
+    end.new(
+      providers:,
+      profiles: {main: {target: "test:model", settings: {max_tokens: 500}}},
+      provider_adapters: {"test" => ->(**) { RecordingProvider.new }}
+    )
+
+    model = resolver.resolve("main")
+
+    assert_equal 200, model.settings.fetch(:max_tokens)
+  end
+
+  def test_request_settings_cannot_exceed_advertised_output_limit
+    provider = RecordingProvider.new
+    details = LittleGhost::Models::Details.new(target: "test:model", attributes: {max_output_tokens: 200})
+    model = LittleGhost::Model.new(provider:, target: "test:model", settings: {max_tokens: 50}, details:)
+    request = LittleGhost::ModelRequest.new(
+      messages: [LittleGhost::Message.new(role: :user, content: "hello")],
+      settings: {max_tokens: 500}
+    )
+
+    model.stream(request).to_a
+
+    assert_equal 200, provider.request.settings.fetch(:max_tokens)
+  end
+
+  def test_string_request_settings_cannot_exceed_advertised_output_limit
+    provider = RecordingProvider.new
+    details = LittleGhost::Models::Details.new(target: "test:model", attributes: {max_output_tokens: 200})
+    model = LittleGhost::Model.new(provider:, target: "test:model", settings: {max_tokens: 50}, details:)
+    request = LittleGhost::ModelRequest.new(
+      messages: [LittleGhost::Message.new(role: :user, content: "hello")],
+      settings: {"max_tokens" => 100}
+    )
+
+    model.stream(request).to_a
+
+    assert_equal 100, provider.request.settings.fetch(:max_tokens)
+    refute provider.request.settings.key?("max_tokens")
+  end
+
+  def test_conventional_retries_request_option_maps_to_provider_max_retries
+    with_configuration(
+      providers: "providers:\n  test:\n    adapter: test\n",
+      models: "models:\n  main:\n    target: test:model\n    request:\n      retries: 4\n"
+    ) do |directory|
+      received = nil
+      models = resolver_from(
+        directory,
+        provider_adapters: {"test" => lambda { |configuration:, **|
+          received = configuration
+          RecordingProvider.new
+        }}
+      )
+
+      models.resolve("main")
+
+      assert_equal 4, received.fetch(:max_retries)
+      refute received.key?(:retries)
+    end
+  end
+
+  def test_built_in_providers_receive_only_the_request_options_they_support
+    provider = LittleGhost::ProviderRegistry.new.build(
+      adapter: "bedrock",
+      model: "anthropic.claude-test",
+      configuration: {region: "us-east-2", client: Object.new},
+      request: {
+        app_name: "Support",
+        max_retry_delay: 60,
+        read_timeout: 300,
+        retries: 7
+      }
+    )
+
+    assert_instance_of LittleGhost::Providers::Bedrock, provider
+  end
+
+  def test_arbitrary_canonical_target_resolves_with_unknown_details
+    with_configuration(
+      providers: "providers:\n  gateway:\n    adapter: test\n",
+      models: "models:\n  main:\n    target: gateway:known\n"
+    ) do |directory|
+      models = resolver_from(directory, provider_adapters: {"test" => ->(**) { RecordingProvider.new }})
+
+      model = models.resolve("gateway:released-today")
+
+      refute model.details.known?
+      assert_equal "released-today", model.model_id
+    end
+  end
+
+  def test_failed_refresh_preserves_last_good_data
+    source = Class.new(LittleGhost::Models::Catalog::Source).new(name: "test")
+    calls = 0
+    source.define_singleton_method(:refresh) do |target:|
+      calls += 1
+      raise "offline" if calls == 2
+
+      {target.to_s => {context_window: 200, pricing: {input: 1.0}, observed_at: "2026-08-12T00:00:00Z"}}
+    end
+    catalog = LittleGhost::Models::Catalog.new(sources: [source])
+
+    result = catalog.refresh!(target: "openai:gpt-5.6-terra")
+    details = catalog.details("openai:gpt-5.6-terra")
+    failed = catalog.refresh!(target: "openai:gpt-5.6-terra")
+
+    assert_empty result.fetch(:errors)
+    assert_equal 200, details.context_window
+    assert_equal({input: 1.0}, details.pricing)
+    assert_equal 1, failed.fetch(:errors).length
+    assert_equal({input: 1.0}, catalog.details("openai:gpt-5.6-terra").pricing)
+  end
+
+  def test_bundled_catalog_has_normalized_pricing_for_representative_models
+    catalog = LittleGhost::Models::Catalog.new
+
+    fast = catalog.details("openrouter:google/gemini-3.5-flash")
+    capable = catalog.details("openrouter:z-ai/glm-5.2")
+
+    assert_equal 1.5, fast.pricing.fetch(:input)
+    assert_equal 9, fast.pricing.fetch(:output)
+    assert_equal 0.5, capable.pricing.fetch(:input)
+    assert_equal 3.15, capable.pricing.fetch(:output)
+  end
+
+  def test_source_declared_union_preserves_richer_bundled_input_modalities
+    Tempfile.create(["model-catalog", ".json"]) do |snapshot|
+      snapshot.write(JSON.generate(
+        "bedrock:anthropic.claude-test" => {
+          input_modalities: %w[text image pdf],
+          provenance: {input_modalities: "bundled:models.dev"}
+        }
+      ))
+      snapshot.flush
+      source = Class.new(LittleGhost::Models::Catalog::Source) do
+        def attribute_merge_strategies = {input_modalities: :union}
+      end.new(name: "provider-catalog")
+      source.define_singleton_method(:refresh) do |target:|
+        {target.to_s => {available: true, input_modalities: %w[text image], output_modalities: ["text"]}}
+      end
+      later_source = Class.new(LittleGhost::Models::Catalog::Source).new(name: "availability-catalog")
+      later_source.define_singleton_method(:refresh) do |target:|
+        {target.to_s => {available: false}}
+      end
+      catalog = LittleGhost::Models::Catalog.new(sources: [source, later_source], snapshot_path: snapshot.path)
+
+      catalog.refresh!(target: "bedrock:anthropic.claude-test")
+      details = catalog.details("bedrock:anthropic.claude-test")
+      provider = RecordingProvider.new
+      model = LittleGhost::Model.new(provider:, target: details.target, details:)
+      request = LittleGhost::ModelRequest.new(messages: [
+        LittleGhost::Message.new(role: :user, content: [
+          LittleGhost::Content::Document.new(data: "pdf", media_type: "application/pdf", name: "guide.pdf")
+        ])
+      ])
+      model.stream(request).to_a
+
+      assert_equal %w[text image pdf], details.input_modalities
+      assert_equal "bundled:models.dev+provider-catalog", details.provenance.fetch(:input_modalities)
+      assert_equal request.messages, provider.request.messages
+    end
+  end
+
+  def test_bedrock_refresh_keeps_input_modalities_for_live_only_models
+    source = Class.new(LittleGhost::Models::Catalog::Source).new(name: "bedrock")
+    source.define_singleton_method(:refresh) do |target:|
+      {target.to_s => {available: true, input_modalities: %w[text image]}}
+    end
+    catalog = LittleGhost::Models::Catalog.new(sources: [source], snapshot_path: "/missing/catalog.json")
+
+    catalog.refresh!(target: "bedrock:vendor.released-today")
+    details = catalog.details("bedrock:vendor.released-today")
+
+    assert_equal %w[text image], details.input_modalities
+    assert_equal "bedrock", details.provenance.fetch(:input_modalities)
+  end
+
+  def test_later_source_replaces_an_attribute_instead_of_inheriting_its_union
+    union_source = Class.new(LittleGhost::Models::Catalog::Source) do
+      def attribute_merge_strategies = {input_modalities: :union}
+    end.new(name: "additive")
+    union_source.define_singleton_method(:refresh) do |target:|
+      {target.to_s => {input_modalities: %w[text image]}}
+    end
+    replacement = Class.new(LittleGhost::Models::Catalog::Source).new(name: "application")
+    replacement.define_singleton_method(:refresh) do |target:|
+      {target.to_s => {input_modalities: ["text"]}}
+    end
+    catalog = LittleGhost::Models::Catalog.new(
+      sources: [union_source, replacement],
+      snapshot_path: "/missing/catalog.json"
+    )
+
+    catalog.refresh!(target: "provider:model")
+    details = catalog.details("provider:model")
+
+    assert_equal ["text"], details.input_modalities
+    assert_equal "application", details.provenance.fetch(:input_modalities)
+  end
+
+  def test_invalid_union_value_preserves_bundled_catalog_data
+    Tempfile.create(["model-catalog", ".json"]) do |snapshot|
+      snapshot.write(JSON.generate("provider:model" => {input_modalities: %w[text pdf]}))
+      snapshot.flush
+      source = Class.new(LittleGhost::Models::Catalog::Source) do
+        def attribute_merge_strategies = {input_modalities: :union}
+      end.new(name: "invalid")
+      source.define_singleton_method(:refresh) do |target:|
+        {target.to_s => {input_modalities: "text"}}
+      end
+      catalog = LittleGhost::Models::Catalog.new(sources: [source], snapshot_path: snapshot.path)
+
+      result = catalog.refresh!(target: "provider:model")
+
+      assert_empty result.fetch(:updated)
+      assert_instance_of LittleGhost::ConfigurationError, result.fetch(:errors).first
+      assert_equal %w[text pdf], catalog.details("provider:model").input_modalities
+    end
+  end
+
+  def test_invalid_older_union_operand_does_not_commit_partial_refresh_data
+    Tempfile.create(["model-catalog", ".json"]) do |snapshot|
+      snapshot.write(JSON.generate("provider:model" => {input_modalities: %w[text pdf]}))
+      snapshot.flush
+      invalid = Class.new(LittleGhost::Models::Catalog::Source).new(name: "invalid")
+      invalid.define_singleton_method(:refresh) do |target:|
+        {target.to_s => {input_modalities: "text"}}
+      end
+      additive = Class.new(LittleGhost::Models::Catalog::Source) do
+        def attribute_merge_strategies = {input_modalities: :union}
+      end.new(name: "additive")
+      additive.define_singleton_method(:refresh) do |target:|
+        {target.to_s => {input_modalities: %w[text image]}}
+      end
+      catalog = LittleGhost::Models::Catalog.new(sources: [invalid, additive], snapshot_path: snapshot.path)
+
+      result = catalog.refresh!(target: "provider:model")
+
+      assert_equal ["provider:model"], result.fetch(:updated)
+      assert_instance_of LittleGhost::ConfigurationError, result.fetch(:errors).first
+      assert_equal %w[text pdf image], catalog.details("provider:model").input_modalities
+      assert_equal "bundled+additive", catalog.details("provider:model").provenance.fetch(:input_modalities)
+    end
+  end
+
+  def test_models_dev_source_targets_named_provider_connection
+    response = JSON.generate(
+      "openrouter" => {
+        "models" => {
+          "new/model" => {
+            "limit" => {"context" => 123, "output" => 45},
+            "cost" => {"input" => 1.25, "output" => 2.5},
+            "modalities" => {"input" => ["text"], "output" => ["text"]}
+          }
+        }
+      }
+    )
+    source = LittleGhost::Models::Catalog::ModelsDevSource.new(provider_adapters: {"router" => "openrouter"})
+    records = stub_http_client(->(**) { response }) do
+      source.refresh(target: LittleGhost::Models::Target.parse("router:new/model"))
+    end
+
+    assert_equal 123, records.dig("router:new/model", :context_window)
+    assert_equal 1.25, records.dig("router:new/model", :pricing, "input")
+  end
+
+  def test_provider_configuration_is_independent_of_models
+    Dir.mktmpdir do |root|
+      directory = File.join(root, "config/little_ghost")
+      FileUtils.mkdir_p(directory)
+      File.write(File.join(directory, "providers.yml"), "providers: {}\n")
+
+      providers = LittleGhost::Models::Configuration.providers(File.join(directory, "providers.yml"))
+
+      assert_empty providers.connections
+    end
+  end
+
+  def test_model_details_preflight_reject_unsupported_attachments
+    provider = RecordingProvider.new
+    details = LittleGhost::Models::Details.new(target: "test:text", attributes: {input_modalities: ["text"]})
+    model = LittleGhost::Model.new(provider:, target: "test:text", details:)
+    request = LittleGhost::ModelRequest.new(messages: [
+      LittleGhost::Message.new(role: :user, content: [LittleGhost::Content::Image.new(data: "image", media_type: "image/png")])
+    ])
+
+    error = assert_raises(LittleGhost::UnsupportedInputError) { model.stream(request).to_a }
+
+    assert_includes error.message, "image attachments"
+    assert_nil provider.request
+  end
+
+  def test_model_details_preflight_accepts_pdf_documents_for_pdf_models
+    provider = RecordingProvider.new
+    details = LittleGhost::Models::Details.new(target: "test:documents", attributes: {input_modalities: %w[text pdf]})
+    model = LittleGhost::Model.new(provider:, target: "test:documents", details:)
+    request = LittleGhost::ModelRequest.new(messages: [
+      LittleGhost::Message.new(role: :user, content: [
+        LittleGhost::Content::Document.new(data: "pdf", media_type: "application/pdf", name: "guide.pdf")
+      ])
+    ])
+
+    model.stream(request).to_a
+
+    assert_equal request.messages, provider.request.messages
+  end
+
+  def test_model_details_preflight_accepts_pdf_documents_for_generic_file_models
+    provider = RecordingProvider.new
+    details = LittleGhost::Models::Details.new(target: "test:documents", attributes: {input_modalities: %w[text file]})
+    model = LittleGhost::Model.new(provider:, target: "test:documents", details:)
+    request = LittleGhost::ModelRequest.new(messages: [
+      LittleGhost::Message.new(role: :user, content: [
+        LittleGhost::Content::Document.new(data: "pdf", media_type: "application/pdf", name: "guide.pdf")
+      ])
+    ])
+
+    model.stream(request).to_a
+
+    assert_equal request.messages, provider.request.messages
+  end
+
+  def test_model_details_preflight_rejects_non_pdf_documents_for_pdf_models
+    provider = RecordingProvider.new
+    details = LittleGhost::Models::Details.new(target: "test:documents", attributes: {input_modalities: %w[text pdf]})
+    model = LittleGhost::Model.new(provider:, target: "test:documents", details:)
+    request = LittleGhost::ModelRequest.new(messages: [
+      LittleGhost::Message.new(role: :user, content: [
+        LittleGhost::Content::Document.new(data: "text", media_type: "text/plain", name: "notes.txt")
+      ])
+    ])
+
+    error = assert_raises(LittleGhost::UnsupportedInputError) { model.stream(request).to_a }
+
+    assert_includes error.message, "file attachments"
+    assert_nil provider.request
+  end
+
+  def test_provider_credentials_are_resolved_at_model_construction
+    with_configuration(
+      providers: "providers:\n  router:\n    adapter: test\n",
+      models: "models:\n  main:\n    target: router:model\n"
+    ) do |directory|
+      received = nil
+      models = resolver_from(
+        directory,
+        credential_resolver: ->(provider:, **_context) { {api_key: "resolved-#{provider}"} },
+        provider_adapters: {"test" => lambda { |configuration:, **|
+          received = configuration
+          RecordingProvider.new
+        }}
+      )
+
+      models.resolve("main")
+
+      assert_equal "resolved-router", received.fetch(:api_key)
+    end
+  end
+
+  def test_catalog_credentials_are_resolved_only_when_the_catalog_refreshes
+    calls = []
+    providers = LittleGhost::Providers::Configuration.new(router: {adapter: :openrouter})
+    resolver = LittleGhost::ModelResolver.new(
+      providers:,
+      profiles: {main: {target: "router:new/model"}},
+      credential_resolver: lambda { |provider:, **|
+        calls << provider
+        {api_key: "refreshed-secret"}
+      }
+    )
+
+    assert_empty calls
+
+    requested_headers = nil
+    response = JSON.generate(data: [{id: "new/model", pricing: {prompt: "0.000001"}}])
+    stub_http_client(lambda { |uri:, headers: {}, **|
+      if uri.host == "openrouter.ai"
+        requested_headers = headers
+        response
+      else
+        raise "offline"
+      end
+    }) do
+      resolver.refresh!(target: "router:new/model")
+    end
+
+    assert_equal ["router"], calls
+    assert_equal "Bearer refreshed-secret", requested_headers.fetch("Authorization")
+    assert_equal 1.0, resolver.details("router:new/model").pricing.fetch(:input)
+  end
+
+  def test_bedrock_catalog_uses_lazy_provider_credentials
+    credentials = LittleGhost::Providers::Bedrock::Credentials.new(
+      access_key_id: "key",
+      secret_access_key: "secret"
+    )
+    calls = []
+    providers = Class.new(LittleGhost::Providers::Configuration) do
+      define_method(:credentials) do |provider:, **|
+        calls << provider
+        {credentials: credentials}
+      end
+    end.new(aws: {adapter: :bedrock, region: "us-west-2"})
+    pricing = %w[Input Output].map do |kind|
+      JSON.generate(
+        product: {attributes: {
+          model: "Amazon Test", regionCode: "us-west-2",
+          usagetype: "#{kind} tokens", inferenceType: "On Demand"
+        }},
+        terms: {OnDemand: {term: {priceDimensions: {dimension: {
+          description: "#{kind} tokens", unit: "1M tokens", pricePerUnit: {USD: (kind == "Input") ? "1.25" : "2.50"}
+        }}}}}
+      )
+    end
+    stub_http_client(lambda { |uri:, **|
+      if uri.host.start_with?("bedrock.")
+        JSON.generate(modelSummaries: [{modelId: "amazon.test", modelName: "Amazon Test"}])
+      elsif uri.host == "api.pricing.us-east-1.amazonaws.com"
+        JSON.generate(PriceList: pricing)
+      else
+        raise "offline"
+      end
+    }) do
+      resolver = LittleGhost::ModelResolver.new(
+        providers:,
+        profiles: {main: {target: "aws:amazon.test"}},
+        credential_resolver: providers.method(:credentials)
+      )
+
+      assert_empty calls
+      resolver.refresh!(target: "aws:amazon.test")
+      assert_equal 1.25, resolver.details("aws:amazon.test").pricing.fetch(:input)
+      assert_equal "aws_pricing", resolver.details("aws:amazon.test").provenance.fetch(:pricing)
+    end
+
+    assert_equal ["aws"], calls
+  end
+
+  def test_bedrock_catalog_uses_the_aws_credential_chain_when_provider_credentials_are_empty
+    keys = %w[AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN]
+    original = keys.to_h { |key| [key, ENV[key]] }
+    ENV["AWS_ACCESS_KEY_ID"] = "chain-key"
+    ENV["AWS_SECRET_ACCESS_KEY"] = "chain-secret"
+    ENV.delete("AWS_SESSION_TOKEN")
+    providers = LittleGhost::Providers::Configuration.new(aws: {adapter: :bedrock, region: "us-west-2"})
+    authorization = nil
+
+    stub_http_client(lambda { |uri:, headers: {}, **|
+      raise "offline" unless uri.host.start_with?("bedrock.")
+
+      authorization = headers.fetch("authorization")
+      JSON.generate(modelSummaries: [])
+    }) do
+      resolver = LittleGhost::ModelResolver.new(
+        providers:,
+        profiles: {main: {target: "aws:amazon.test"}},
+        credential_resolver: providers.method(:credentials)
+      )
+      resolver.refresh!(target: "aws:amazon.test")
+    end
+
+    assert_includes authorization, "Credential=chain-key/"
+  ensure
+    original&.each { |key, value| value ? ENV[key] = value : ENV.delete(key) }
+  end
+
+  private
+
+  def with_configuration(providers:, models:)
+    Dir.mktmpdir do |root|
+      directory = File.join(root, "config/little_ghost")
+      FileUtils.mkdir_p(directory)
+      File.write(File.join(directory, "providers.yml"), providers)
+      File.write(File.join(directory, "models.yml"), models)
+      yield directory
+    end
+  end
+
+  def resolver_from(directory, **options)
+    providers = LittleGhost::Models::Configuration.providers(File.join(directory, "providers.yml"))
+    profiles, default_model = LittleGhost::Models::Configuration.models(File.join(directory, "models.yml"))
+    LittleGhost::ModelResolver.new(providers:, profiles:, default_model:, **options)
+  end
+end

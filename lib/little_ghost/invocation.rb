@@ -33,12 +33,11 @@ module LittleGhost
       "history" => -> { [] },
       "settings" => -> { {} },
       "context" => -> { {} },
-      "metadata" => -> { {} },
-      "model_profiles" => -> { {} }
+      "metadata" => -> { {} }
     }.freeze # :nodoc:
 
     ACCESSORS = %i[
-      message history settings context metadata model_profiles
+      message history settings context metadata
       run_id invocation_id session_id actor_id
     ].freeze # :nodoc:
 
@@ -89,14 +88,6 @@ module LittleGhost
     #   metadata() -> Hash
 
     ##
-    # Per-request overrides for logical model profiles. Overrides can select a
-    # provider and model, so applications must construct or allowlist them at a
-    # trusted control-plane boundary.
-    # :method: model_profiles
-    # :call-seq:
-    #   model_profiles() -> Hash
-
-    ##
     # The caller-supplied or generated top-level run identifier.
     # :method: run_id
     # :call-seq:
@@ -137,12 +128,6 @@ module LittleGhost
     # :method: metadata=
     # :call-seq:
     #   metadata=(value) -> value
-
-    ##
-    # Replaces the trusted per-request model profile overrides.
-    # :method: model_profiles=
-    # :call-seq:
-    #   model_profiles=(value) -> value
 
     ##
     # Replaces the top-level run identifier.

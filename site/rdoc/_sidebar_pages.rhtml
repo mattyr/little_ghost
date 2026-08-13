@@ -26,7 +26,7 @@
         <%- pages.each do |page| %>
           <li>
             <a href="<%= rel_prefix %>/<%= h page.path %>">
-              <%= h page.page_name %>
+              <%= h page.page_name.split("_").map(&:capitalize).join(" ") %>
             </a>
           </li>
         <%- end %>

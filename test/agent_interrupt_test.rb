@@ -4,6 +4,8 @@ require "test_helper"
 
 class AgentInterruptTest < Minitest::Test
   class SequencedModel
+    include LittleGhost::ModelInterface
+
     attr_reader :requests
 
     def initialize(*responses)
@@ -244,7 +246,7 @@ class AgentInterruptTest < Minitest::Test
     agent&.close
   end
 
-  def test_unkeyed_interruptions_retain_legacy_one_per_boundary_behavior
+  def test_unkeyed_interruptions_are_delivered_one_per_boundary
     interruptions = LittleGhost::AgentInterruptions.new
     message = LittleGhost::Message.new(role: :user, content: "steer")
     first_ticket = interruptions.enqueue(message, id: "one")
@@ -498,6 +500,8 @@ class AgentInterruptTest < Minitest::Test
     first_started = Queue.new
     releases = Queue.new
     blocking_model = Class.new do
+      include LittleGhost::ModelInterface
+
       define_method(:initialize) { @started, @releases = first_started, releases }
       define_method(:stream) do |_request|
         @started << true

@@ -12,10 +12,11 @@ module LittleGhost
   #   run.outcome    # => "completed"
   #   run.response   # => "Transfer 481 is waiting for the receiving bank."
   #
-  # Agent.ask[rdoc-ref:LittleGhost::Agent.ask] or standalone
-  # ask[rdoc-ref:LittleGhost::Agent#ask] consumes the event stream and returns
-  # the Run. For a live interface,
-  # stream_ask[rdoc-ref:LittleGhost::Agent#stream_ask] yields StreamEvent objects
+  # The class-level ask helper[rdoc-ref:LittleGhost::Agent.ask] or standalone
+  # ask method[rdoc-ref:LittleGhost::Agent#ask] consumes the event stream and
+  # returns the Run. For a live interface, the class-level streaming
+  # helper[rdoc-ref:LittleGhost::Agent.stream_ask] or standalone streaming
+  # method[rdoc-ref:LittleGhost::Agent#stream_ask] yields StreamEvent objects
   # and returns the same run after enumeration. A run can execute only once.
   #
   # Completion, failure, deadline, and cancellation become the +completed+,
@@ -119,7 +120,7 @@ module LittleGhost
 
         @entrypoint
       end
-      unless entrypoint.respond_to?(:interrupt_response)
+      unless entrypoint.is_a?(Agent)
         raise AgentInterruptError, "Run entrypoint does not support interruptions"
       end
 
@@ -417,7 +418,7 @@ module LittleGhost
     def entrypoint_name
       return entrypoint_class.name.to_s if workflow_run?
 
-      return @entrypoint.entrypoint_name if @entrypoint&.respond_to?(:entrypoint_name)
+      return @entrypoint.entrypoint_name if @entrypoint.is_a?(Agent)
 
       entrypoint_class.agent_id
     end
@@ -563,7 +564,6 @@ module LittleGhost
 
     def diagnostic_invocation_message
       message = invocation.message
-      return message unless message.respond_to?(:text)
       return message.text unless message.text.empty?
 
       {

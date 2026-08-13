@@ -4,7 +4,7 @@ require "test_helper"
 require "openssl"
 require "socket"
 
-class HTTPTransportTest < Minitest::Test
+class HTTPClientTest < Minitest::Test
   class FakeHTTP
     attr_accessor :use_ssl, :open_timeout, :read_timeout, :write_timeout
 
@@ -22,16 +22,16 @@ class HTTPTransportTest < Minitest::Test
 
   def test_requires_explicit_opt_in_for_cleartext_endpoints
     assert_raises(LittleGhost::ConfigurationError) do
-      LittleGhost::Providers::HTTPTransport.new(base_url: "http://localhost:1234", open_timeout: 1, read_timeout: 1)
+      LittleGhost::Support::HTTPClient.new(base_url: "http://localhost:1234", open_timeout: 1, read_timeout: 1)
     end
 
-    transport = LittleGhost::Providers::HTTPTransport.new(
+    transport = LittleGhost::Support::HTTPClient.new(
       base_url: "http://localhost:1234",
       open_timeout: 1,
       read_timeout: 1,
       allow_insecure_http: true
     )
-    assert_instance_of LittleGhost::Providers::HTTPTransport, transport
+    assert_instance_of LittleGhost::Support::HTTPClient, transport
   end
 
   def test_cancellation_interrupts_a_stalled_read
@@ -96,10 +96,48 @@ class HTTPTransportTest < Minitest::Test
     assert_equal "Provider response exceeded 2 bytes", error.message
   end
 
+  def test_request_rejects_oversized_success_body
+    response = Net::HTTPOK.new("1.1", "200", "OK")
+    response.define_singleton_method(:read_body) do |&block|
+      block.call("a" * 6)
+      block.call("b" * 6)
+    end
+    client = LittleGhost::Support::HTTPClient.new(max_response_bytes: 10)
+
+    Net::HTTP.stub(:new, FakeHTTP.new(response:)) do
+      error = assert_raises(LittleGhost::ProtocolError) do
+        client.request(uri: URI("https://catalog.example/models"))
+      end
+
+      assert_includes error.message, "exceeded"
+    end
+  end
+
+  def test_error_reader_stops_at_the_bounded_body
+    chunks_read = 0
+    response = Net::HTTPInternalServerError.new("1.1", "500", "Error")
+    response.define_singleton_method(:read_body) do |&block|
+      ["a" * 4096, "must not be read"].each do |chunk|
+        chunks_read += 1
+        block.call(chunk)
+      end
+    end
+    client = LittleGhost::Support::HTTPClient.new
+
+    Net::HTTP.stub(:new, FakeHTTP.new(response:)) do
+      error = assert_raises(LittleGhost::Providers::HTTPError) do
+        client.request(uri: URI("https://catalog.example/models"))
+      end
+
+      assert_equal 4096, error.body.bytesize
+      assert_equal 1, chunks_read
+    end
+  end
+
   private
 
-  def run_stream_with(http:, max_response_bytes: LittleGhost::Providers::HTTPTransport::DEFAULT_MAX_RESPONSE_BYTES)
-    transport = LittleGhost::Providers::HTTPTransport.new(
+  def run_stream_with(http:, max_response_bytes: LittleGhost::Support::HTTPClient::DEFAULT_MAX_RESPONSE_BYTES)
+    transport = LittleGhost::Support::HTTPClient.new(
       base_url: "https://provider.example",
       open_timeout: 1,
       read_timeout: 1,
@@ -114,7 +152,7 @@ class HTTPTransportTest < Minitest::Test
 
   def stalled_request(cancellation_token:, deadline: nil)
     server = TCPServer.new("127.0.0.1", 0)
-    transport = LittleGhost::Providers::HTTPTransport.new(
+    transport = LittleGhost::Support::HTTPClient.new(
       base_url: "http://127.0.0.1:#{server.local_address.ip_port}",
       open_timeout: 1,
       read_timeout: 60,

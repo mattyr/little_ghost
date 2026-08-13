@@ -9,7 +9,7 @@ module LittleGhost
     # Adapter turns a LittleGhost stream into AG-UI event hashes. It lets a Ruby
     # agent drive compatible chat interfaces without changing the agent itself.
     #
-    #   events = CustomerSupportAgent.new.stream_ask("Where is my order?")
+    #   events = CustomerSupportAgent.stream_ask("Where is my order?")
     #   adapter = LittleGhost::AGUI::Adapter.new
     #   adapter.stream(events, thread_id: "thread-1", run_id: "run-1").each do |event|
     #     websocket.write(JSON.generate(event))

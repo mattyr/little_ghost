@@ -306,7 +306,11 @@ module LittleGhost
     # Subclasses must override this method. The current RunContext is available
     # through +context+ while the call executes.
     def call(_input)
-      raise NotImplementedError, "#{self.class} must implement #call"
+      raise AbstractMethodError, "#{self.class} must implement #call"
+    end
+
+    # Releases resources owned by this tool. Subclasses may override it.
+    def close
     end
 
     protected

@@ -1,10 +1,14 @@
 # frozen_string_literal: true
 
 require "json"
+require_relative "bedrock/credential_resolver"
+require_relative "bedrock/aws_protocol"
+require_relative "bedrock/http_client"
+require_relative "bedrock/catalog_source"
 
 module LittleGhost
   # Provider adapters translate model APIs into LittleGhost's shared streaming
-  # request and response types. Agents select them through a ModelRegistry rather
+  # request and response types. Agents select them through model configuration rather
   # than depending on a provider class directly.
   module Providers
     # Bedrock lets LittleGhost agents use models available through Amazon Bedrock
@@ -16,14 +20,18 @@ module LittleGhost
     #     region: ENV.fetch("AWS_REGION")
     #   )
     #
-    # The default client requires the optional +aws-sdk-bedrockruntime+ gem and
-    # uses the AWS SDK credential chain. Applications may inject +client+
-    # instead.
+    # The default client uses LittleGhost's standard-library SigV4 and AWS
+    # EventStream implementations. Applications may inject +client+ instead.
     #
     # Transient service and stream failures retry with exponential backoff. Each
     # retry emits +:model_retry+ and reports whether partial text was already
     # emitted, allowing stream consumers to handle repeated output deliberately.
-    class Bedrock
+    class Bedrock < Base
+      # Request policy supported by Bedrock retries and its built-in HTTP client.
+      def self.request_options
+        %i[max_response_bytes max_retries open_timeout read_timeout].freeze
+      end
+
       INITIAL_RETRY_DELAY = 1 # :nodoc:
       MAX_RETRY_DELAY = 16 # :nodoc:
       TRANSIENT_STREAM_ERRORS = %w[
@@ -54,9 +62,9 @@ module LittleGhost
 
       # Configures Bedrock for +model+.
       #
-      # +region+ and remaining +client_options+ configure the default AWS client.
+      # +region+ and remaining +client_options+ configure the built-in HTTP client.
       # +max_retries+, +sleeper+, and +on_retry+ control retry behavior. Injecting
-      # +client+ bypasses creation of the optional SDK client.
+      # +client+ bypasses creation of the built-in HTTP client.
       def initialize(model:, region: nil, client: nil, max_retries: 2, sleeper: nil,
         on_retry: ->(*) {}, **client_options)
         @model = model
@@ -142,11 +150,10 @@ module LittleGhost
       private
 
       def build_client(region:, **options)
-        require "aws-sdk-bedrockruntime"
-        Aws::BedrockRuntime::Client.new(**options, **({region:} if region))
-      rescue LoadError
-        raise ConfigurationError,
-          "Bedrock requires the optional aws-sdk-bedrockruntime gem; add it to your application's Gemfile"
+        resolver = options.delete(:credential_resolver)
+        resolver ||= CredentialResolver.new
+        region ||= resolver.region if resolver.is_a?(CredentialResolver)
+        HTTPClient.new(region:, credential_resolver: resolver, **options)
       end
 
       def request_parameters(request)
@@ -234,7 +241,9 @@ module LittleGhost
           {
             tool_result: {
               tool_use_id: block.tool_use_id,
-              content: Array(block.content).map { |content| {text: content.respond_to?(:text) ? content.text : content.to_s} },
+              content: Array(block.content).map do |content|
+                {text: content.is_a?(Content::Text) ? content.text : content.to_s}
+              end,
               status: block.status.to_s
             }
           }
@@ -301,8 +310,7 @@ module LittleGhost
       end
 
       def event_hash(event)
-        value = event.respond_to?(:to_h) ? event.to_h : event
-        deep_stringify(value)
+        deep_stringify(event.to_h)
       end
 
       def deep_stringify(value)

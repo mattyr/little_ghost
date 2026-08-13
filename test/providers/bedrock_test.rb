@@ -67,17 +67,12 @@ class BedrockTest < Minitest::Test
     assert_equal "lookup", client.parameters.dig(:tool_config, :tools, 0, :tool_spec, :name)
   end
 
-  def test_missing_sdk_has_actionable_error
-    provider_class = Class.new(LittleGhost::Providers::Bedrock) do
-      private
-
-      def require(_name)
-        raise LoadError
-      end
+  def test_default_client_is_zero_dependency_and_requires_a_region
+    error = assert_raises(LittleGhost::ConfigurationError) do
+      LittleGhost::Providers::Bedrock.new(model: "test", credential_resolver: -> { flunk })
     end
 
-    error = assert_raises(LittleGhost::ConfigurationError) { provider_class.new(model: "test") }
-    assert_includes error.message, "aws-sdk-bedrockruntime"
+    assert_includes error.message, "region"
   end
 
   def test_capabilities_are_derived_from_model_metadata

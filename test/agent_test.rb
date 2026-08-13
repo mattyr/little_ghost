@@ -6,6 +6,8 @@ require "tmpdir"
 
 class AgentTest < Minitest::Test
   class ScriptedModel
+    include LittleGhost::ModelInterface
+
     attr_reader :requests
 
     def initialize(*responses)
@@ -27,6 +29,8 @@ class AgentTest < Minitest::Test
   end
 
   class EventModel
+    include LittleGhost::ModelInterface
+
     attr_reader :requests
 
     def initialize(*streams)
@@ -70,6 +74,41 @@ class AgentTest < Minitest::Test
     end
   end
 
+  def test_model_dsl_preserves_roles_targets_and_inline_configuration
+    role_agent = Class.new(LittleGhost::Agent) { model :customer_support }
+    target_agent = Class.new(LittleGhost::Agent) { model "openai:gpt-5.6-luna" }
+    inline_agent = Class.new(LittleGhost::Agent) do
+      model(provider: "openai", model: "gpt-5.6-luna", reasoning_effort: "high")
+    end
+
+    assert_equal :customer_support, role_agent.model
+    assert_equal "openai:gpt-5.6-luna", target_agent.model
+    assert_equal({provider: "openai", model: "gpt-5.6-luna", reasoning_effort: "high"}, inline_agent.model)
+    assert_predicate inline_agent.model, :frozen?
+  end
+
+  def test_dynamic_model_dsl_can_return_any_model_selection
+    agent = Class.new(LittleGhost::Agent) do
+      model do |invocation|
+        invocation[:direct] ? {provider: "openai", model: "gpt-5.6-luna"} : :customer_support
+      end
+    end
+
+    role = agent.model_selection(LittleGhost::Invocation.new(message: "hello"))
+    direct = agent.model_selection(LittleGhost::Invocation.new(message: "hello", direct: true))
+
+    assert_equal :customer_support, role
+    assert_equal({provider: "openai", model: "gpt-5.6-luna"}, direct)
+  end
+
+  def test_model_dsl_rejects_unsupported_declarations
+    error = assert_raises(LittleGhost::ConfigurationError) do
+      Class.new(LittleGhost::Agent) { model 123 }
+    end
+
+    assert_equal "model must be a role, provider:model target, or configuration mapping", error.message
+  end
+
   def test_ask_and_stream_ask_wrap_a_raw_message
     agent = Class.new(LittleGhost::Agent)
     calls = []
@@ -85,7 +124,7 @@ class AgentTest < Minitest::Test
     LittleGhost::Runtime.stub(:new, ->(**) { runtime }) do
       entrypoint = agent.new
       entrypoint.ask("hello")
-      entrypoint.stream_ask("goodbye")
+      entrypoint.stream_ask("goodbye").each { |_event| }
     end
 
     assert_equal [[:build_run, {message: "hello"}], [:call], [:build_run, {message: "goodbye"}], [:each]], calls
@@ -114,6 +153,67 @@ class AgentTest < Minitest::Test
     assert_equal [[:build_run, {message: "hello", channel: "console"}], [:call]], calls
   end
 
+  def test_class_stream_ask_uses_a_fresh_standalone_entrypoint
+    agent = Class.new(LittleGhost::Agent)
+    calls = []
+    completed_run = Object.new
+    events = Enumerator.new do |output|
+      output << LittleGhost::StreamEvent.build(:text_delta, text: "hello")
+      completed_run
+    end
+    runtime = Object.new
+    executions = 0
+    runtime.define_singleton_method(:build_run) do |payload, **|
+      calls << [:build_run, payload]
+      completed_run.tap do |run|
+        run.define_singleton_method(:each) do |&block|
+          next enum_for(:each) unless block
+
+          executions += 1
+          raise LittleGhost::Error, "Run can only be executed once" if executions > 1
+
+          calls << [:each]
+          events.each(&block)
+        end
+      end
+    end
+
+    runtime_constructions = 0
+    runtime_factory = lambda do |**|
+      runtime_constructions += 1
+      runtime
+    end
+    deadline = Time.utc(2026, 8, 12, 12)
+    stream = LittleGhost::Runtime.stub(:new, runtime_factory) do
+      agent.stream_ask("hello", history: ["earlier"], channel: "console", deadline:)
+    end
+
+    assert_empty calls
+    assert_equal 0, runtime_constructions
+
+    types = []
+    result = LittleGhost::Runtime.stub(:new, runtime_factory) do
+      stream.each { |event| types << event.type }
+    end
+
+    assert_equal [:text_delta], types
+    assert_same completed_run, result
+    assert_equal 1, runtime_constructions
+    assert_equal [
+      [:build_run, {message: "hello", history: ["earlier"], channel: "console", deadline_at: deadline}],
+      [:each]
+    ], calls
+
+    stream.rewind
+    error = assert_raises(LittleGhost::Error) do
+      LittleGhost::Runtime.stub(:new, runtime_factory) { stream.each { |_event| } }
+    end
+
+    assert_includes error.message, "only be executed once"
+    assert_equal 1, runtime_constructions
+    assert_equal 1, calls.count { |call| call.first == :build_run }
+  end
+
   def test_an_entrypoint_instance_delegates_manual_calls_to_its_runtime
     agent = Class.new(LittleGhost::Agent)
     calls = []
@@ -130,7 +230,7 @@ class AgentTest < Minitest::Test
       entrypoint = agent.new
 
       entrypoint.ask("hello")
-      entrypoint.stream_ask("goodbye")
+      entrypoint.stream_ask("goodbye").each { |_event| }
 
       assert_same runtime, entrypoint.runtime
     end

@@ -16,8 +16,8 @@ module LittleGhostRelease
   REQUIRED_FILES = %w[
     LICENSE.txt
     README.md
-    docs/guides/Core\ Concepts.md
-    docs/guides/Getting\ Started.md
+    docs/guides/core_concepts.md
+    docs/guides/getting_started.md
     lib/little_ghost.rb
     lib/little_ghost/version.rb
   ].freeze

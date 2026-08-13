@@ -1,10 +1,10 @@
 # Core Concepts
 
-LittleGhost gives Ruby software two ways to compose AI behavior. Agents can choose among validated tools and delegated specialists, while agentic workflows keep required ordering and branching under application control. The customer support example makes that boundary visible: CustomerSupportModels chooses provider-backed models, CustomerSupportAgent owns behavior, HelpCenterLookupTool exposes a narrow help center lookup, ResearchAgent handles delegated investigation, and ResponseWorkflow imposes a deterministic sequence when the surrounding system requires one.
+LittleGhost gives Ruby software two ways to compose AI behavior. Agents can choose among validated tools and delegated specialists, while agentic workflows keep required ordering and branching under application control. The customer support example makes that boundary visible: ModelResolver chooses provider-backed models, CustomerSupportAgent owns behavior, HelpCenterLookupTool exposes a narrow help center lookup, ResearchAgent handles delegated investigation, and ResponseWorkflow imposes a deterministic sequence when the surrounding system requires one.
 
 ```text
 shared configuration
-└── CustomerSupportModels ── resolves logical roles ──> provider clients
+└── ModelResolver ── resolves model selections ──> provider clients
 
 one request
 └── Run
@@ -17,28 +17,48 @@ one deterministic request
 └── Run ──> ResponseWorkflow ──> ResearchAgent ──> CustomerSupportAgent
 ```
 
-## Models are selected by role
+## Models can be selected directly or by role
 
-An agent names a logical role such as `customer_support`, not a vendor model. `CustomerSupportModels` maps that stable application vocabulary to a provider and model identifier:
+An agent can name a canonical target directly when the choice belongs beside its behavior:
 
 ```ruby
-class CustomerSupportModels < LittleGhost::ModelRegistry
-  def initialize
-    super
-    provider(:openai) do |model:, **|
-      LittleGhost::Providers::OpenAI.new(
-        api_key: ENV.fetch("OPENAI_API_KEY"),
-        model:
-      )
-    end
-    profile "customer_support", provider: :openai, model: "gpt-5"
-  end
+class CustomerSupportAgent < LittleGhost::Agent
+  model "openai:gpt-5.6-luna"
 end
 ```
 
-Dotted roles inherit from the nearest registered parent. `ResearchAgent` can request `customer_support.research` and initially use the `customer_support` profile; registering `customer_support.research` later specializes it. Per-invocation profile overrides can vary a request without mutating the registry or agent class. Because an override can select a different registered provider, model, and settings, it is trusted application configuration and must be constructed or allowlisted by the application rather than copied from unchecked request data.
+It can also attach trusted model settings without defining a shared profile:
 
-The provider performs model I/O. The registry resolves application intent into a `LittleGhost::Model`, which carries the provider, settings, metadata, model identifier, and role for a run.
+```ruby
+class DeliberateSupportAgent < LittleGhost::Agent
+  model(provider: "openai", model: "gpt-5.6-luna", reasoning_effort: "high")
+end
+```
+
+In both forms, `provider` is the name of a configured connection. A role such as `customer_support` adds stable application vocabulary when several agents or deployments should share routing policy:
+
+```ruby
+LittleGhost.configure do |config|
+  config.providers = {
+    openai: {adapter: :openai, api_key: ENV.fetch("OPENAI_API_KEY")}
+  }
+  config.models = {
+    customer_support: {target: "openai:gpt-5.6-luna"}
+  }
+end
+```
+
+```ruby
+class CustomerSupportAgent < LittleGhost::Agent
+  model :customer_support
+end
+```
+
+Strings and symbols without a colon are roles; strings containing a colon are canonical targets; mappings require `provider` and `model`, with remaining keys treated as model settings. Role names cannot contain a colon. Direct targets and mappings bypass role inheritance and overlays.
+
+Dotted roles inherit from the nearest registered parent. `ResearchAgent` can request `customer_support.research` and initially use the `customer_support` profile; registering `customer_support.research` later specializes it. A resolver caller may pass an explicit `profiles:` overlay without mutating the configured profiles or agent class. Because an overlay can select a different registered provider, model, and settings, it is trusted application configuration and must be constructed or allowlisted by the application rather than copied from unchecked request data. The base resolver does not inspect application-specific invocation fields.
+
+The provider performs model I/O. `LittleGhost::ModelResolver` resolves application intent into a `LittleGhost::Model`, which carries the provider, target, settings, details, and role for a run.
 
 ## Agents declare behavior
 
@@ -56,7 +76,7 @@ end
 
 The class-level DSL is inheritable. It can declare prompts, limits, callbacks, tool classes, structured results, context management, skills, and delegation. A capability mixin may be included in `LittleGhost::Agent`, but its behavior remains inactive until the corresponding DSL is called.
 
-`CustomerSupportAgent.ask` creates a standalone, console-friendly entrypoint, builds and consumes a `LittleGhost::Run`, and returns that run. Create `CustomerSupportAgent.new` explicitly to reuse a runtime or call `#stream_ask` for the run's events. Agents built by a runtime are instead scoped to their owning run and return a `LittleGhost::RunResult` from `#call`.
+`CustomerSupportAgent.ask` creates a standalone entrypoint, builds and consumes a `LittleGhost::Run`, and returns that run. `CustomerSupportAgent.stream_ask` creates the same kind of entrypoint and yields the run's events. Create `CustomerSupportAgent.new(runtime:)` explicitly when several calls should reuse one runtime. Agents built by a runtime are instead scoped to their owning run and return a `LittleGhost::RunResult` from `#call`.
 
 That distinction explains two useful return paths:
 
@@ -195,9 +215,9 @@ Streams expose generic framework events rather than provider wire formats. Consu
 
 The core design can be summarized as four choices:
 
-- Put shared construction and provider policy in configuration and model registries.
+- Put shared construction and provider policy in configuration; use inline declarations or independent YAML files according to the application's needs.
 - Put model behavior and available capabilities on agent classes.
 - Put privileged application operations behind narrow, authorized tools.
 - Put mandatory ordering in workflows; leave optional delegation to subagents.
 
-Return to [Getting Started](Getting%20Started.md) for the complete first-run setup. The API reference covers exact signatures and lifecycle details for `LittleGhost::Runtime`, `LittleGhost::Run`, `LittleGhost::Agent`, `LittleGhost::Tool`, `LittleGhost::Workflow`, and `LittleGhost::ModelRegistry`.
+Return to [Getting Started](getting_started.md) for the complete first-run setup. The API reference covers exact signatures and lifecycle details for `LittleGhost::Runtime`, `LittleGhost::Run`, `LittleGhost::Agent`, `LittleGhost::Tool`, `LittleGhost::Workflow`, and `LittleGhost::ModelResolver`.

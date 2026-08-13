@@ -67,7 +67,7 @@ Keep each page responsible for one level. The README should not become a complet
 
 Use the same customer support story across introductory documentation so readers learn LittleGhost rather than a new domain on every page:
 
-- `CustomerSupportModels` maps the logical `customer_support` role to a provider.
+- `LittleGhost::ModelResolver` maps the logical `customer_support` role to a provider.
 - `CustomerSupportAgent` answers the customer.
 - `HelpCenterLookupTool` reads help center information through a narrow, validated lookup.
 - `ResearchAgent` handles open-ended investigation.
@@ -97,13 +97,15 @@ Place a comment immediately before the definition. Start with the object's purpo
 # Profiles use application-level names so agents do not depend on provider
 # model identifiers.
 #
-#   class CustomerSupportModels < LittleGhost::ModelRegistry
-#     def initialize
-#       super
-#       profile "customer_support", provider: :openai, model: "gpt-5"
-#     end
-#   end
-class ModelRegistry
+#   providers = LittleGhost::Providers::Configuration.new(
+#     openai: {adapter: :openai, api_key: ENV.fetch("OPENAI_API_KEY")}
+#   )
+#   resolver = LittleGhost::ModelResolver.new(
+#     providers:,
+#     profiles: {customer_support: {target: "openai:gpt-5.6-luna"}}
+#   )
+#   resolver.resolve("customer_support")
+class ModelResolver
 end
 ```
 
@@ -164,7 +166,7 @@ For predicates and flags, describe the boolean meaning instead of promising an
 exact `true` or `false` object unless callers genuinely depend on that exact
 return value.
 
-Use LittleGhost's own vocabulary consistently. A **model role** is the application-facing name resolved by a `ModelRegistry`; a **provider** performs model requests; a **run** owns one top-level execution; a **subagent** is model-directed delegation; and a **workflow** is application-directed composition. Do not switch casually between “agent,” “assistant,” “bot,” “worker,” and “model.”
+Use LittleGhost's own vocabulary consistently. A **model role** is the application-facing name resolved by `ModelResolver`; a **provider** performs model requests; a **run** owns one top-level execution; a **subagent** is model-directed delegation; and a **workflow** is application-directed composition. Do not switch casually between “agent,” “assistant,” “bot,” “worker,” and “model.”
 
 Warnings are for plausible harm or surprising irreversible behavior, not emphasis. Start with **Warning:**, name the risk, then give the safe action. Examples that grant filesystem, process, network, credential, or cross-tenant data access must put the trust boundary next to the enabling code. Use **Note:** for useful, non-hazardous context. If ordinary prose is clear enough, use ordinary prose.
 
@@ -186,8 +188,8 @@ After, the reader can predict the observable contract:
 # Executes +message+ to completion and returns the owning LittleGhost::Run.
 #
 # The run checkpoints its session and closes registered resources before
-# returning. Use #stream_ask when the caller needs LittleGhost::StreamEvent
-# objects as work progresses.
+# returning. Use Agent.stream_ask when the caller needs
+# LittleGhost::StreamEvent objects as work progresses.
 def ask(message, **options)
 end
 ```

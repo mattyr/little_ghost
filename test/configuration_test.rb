@@ -148,7 +148,7 @@ class ConfigurationTest < Minitest::Test
     end
   end
 
-  class ScriptedProvider
+  class ScriptedProvider < LittleGhost::Providers::Base
     attr_reader :requests
 
     def initialize(text = "Done")
@@ -172,7 +172,7 @@ class ConfigurationTest < Minitest::Test
     end
   end
 
-  class ProgressThenDeadlineProvider
+  class ProgressThenDeadlineProvider < LittleGhost::Providers::Base
     def initialize(error = LittleGhost::DeadlineExceededError.new("deadline"))
       @turn = 0
       @error = error
@@ -201,7 +201,7 @@ class ConfigurationTest < Minitest::Test
     end
   end
 
-  class ProgressThenRetryDeadlineProvider
+  class ProgressThenRetryDeadlineProvider < LittleGhost::Providers::Base
     def initialize(complete_failed_attempt:)
       @complete_failed_attempt = complete_failed_attempt
       @turn = 0
@@ -242,7 +242,7 @@ class ConfigurationTest < Minitest::Test
     end
   end
 
-  class FailingProvider
+  class FailingProvider < LittleGhost::Providers::Base
     def initialize(error)
       @error = error
     end
@@ -252,7 +252,7 @@ class ConfigurationTest < Minitest::Test
     end
   end
 
-  class StubbornProvider
+  class StubbornProvider < LittleGhost::Providers::Base
     attr_reader :cleanup_started, :producer_started, :release
 
     def initialize
@@ -278,7 +278,7 @@ class ConfigurationTest < Minitest::Test
     end
   end
 
-  class ReasoningThenAnswerProvider
+  class ReasoningThenAnswerProvider < LittleGhost::Providers::Base
     attr_reader :requests
 
     def initialize
@@ -443,7 +443,7 @@ class ConfigurationTest < Minitest::Test
   end
 
   def test_run_interrupt_response_forwards_to_active_entrypoint_and_rejects_terminal_states
-    provider = Object.new
+    provider = Class.new(LittleGhost::Providers::Base).new
     started = Queue.new
     release = Queue.new
     requests = []
@@ -679,6 +679,18 @@ class ConfigurationTest < Minitest::Test
     assert_equal "support", harness.default_model
   end
 
+  def test_custom_model_resolver_cannot_be_combined_with_default_resolver_configuration
+    resolver = Class.new(LittleGhost::ModelResolver)
+    harness = TestHarness.new
+    harness.model_resolver resolver
+    harness.models(main: {target: "test:model"})
+    harness.default_model :main
+
+    error = assert_raises(LittleGhost::ConfigurationError) { harness.model_resolver }
+
+    assert_equal "custom model_resolver cannot be combined with models, default_model", error.message
+  end
+
   def test_instrument_dsl_subscribes_configured_objects
     events = []
     subscriber = TestTelemetryRecorder.new(events)
@@ -792,11 +804,11 @@ class ConfigurationTest < Minitest::Test
     end
   end
 
-  def test_invocation_model_profile_overrides_are_applied_by_models
+  def test_custom_model_resolver_can_apply_invocation_profiles
     with_runtime(settings: {temperature: 0.1}) do |harness, provider|
       harness.agent_instance.call(
         message: "hello",
-        model_profiles: {"main" => {"parameters" => {"temperature" => 0.7, "max_tokens" => 50}}}
+        model_configuration: {"profiles" => {"main" => {"settings" => {"temperature" => 0.7, "max_tokens" => 50}}}}
       )
 
       assert_equal({temperature: 0.7, max_tokens: 50}, provider.requests.first.settings)
@@ -1156,13 +1168,14 @@ class ConfigurationTest < Minitest::Test
     with_runtime do |harness|
       replacement_provider = ScriptedProvider.new("Replacement")
       replacement_models = models_for(replacement_provider)
-      isolated = harness.build(models: replacement_models)
+      isolated = harness.build(model_resolver: replacement_models)
 
       result = isolated.agent_instance.call(message: "hello")
 
       assert_equal "Replacement", result.response
       refute harness.settings.frozen?
-      refute_same harness.models, isolated.models
+      assert_same replacement_models, isolated.runtime_instance.model_resolver
+      refute_same harness.runtime_instance.model_resolver, isolated.runtime_instance.model_resolver
     end
   end
 
@@ -1186,7 +1199,7 @@ class ConfigurationTest < Minitest::Test
       }
 
       harness = configuration.build(
-        models: models_for(ScriptedProvider.new),
+        model_resolver: models_for(ScriptedProvider.new),
         session_store: {provider: LittleGhost::SessionStores::Memory},
         instrumentation_subscribers: []
       )
@@ -1371,7 +1384,7 @@ class ConfigurationTest < Minitest::Test
       subagent child, kind: "child"
     end
     parent_turn = 0
-    provider = Object.new
+    provider = Class.new(LittleGhost::Providers::Base).new
     provider.define_singleton_method(:stream) do |request|
       system = request.messages.find { |message| message.role == :system }&.text
       parent_turn += 1 if system == "Parent"
@@ -1414,7 +1427,7 @@ class ConfigurationTest < Minitest::Test
   end
 
   def test_application_restores_nested_async_subagent_conversations
-    provider = Object.new
+    provider = Class.new(LittleGhost::Providers::Base).new
     counts = Hash.new(0)
     tool_id = 0
     child_id = nil
@@ -1572,7 +1585,7 @@ class ConfigurationTest < Minitest::Test
       File.write(config, "# harness fixture\n")
       configuration = TestHarness.new
       configuration.select_agent agent
-      configuration.models models_for(provider, settings:)
+      configuration.instance_variable_set(:@resolved_model_resolver, models_for(provider, settings:))
       configuration.session_store = {provider: session_store_provider(session_store)} if session_store
       configure&.call(configuration)
       harness = configuration.runtime(root:)
@@ -1581,9 +1594,14 @@ class ConfigurationTest < Minitest::Test
   end
 
   def models_for(provider, settings: {})
-    LittleGhost::ModelRegistry.new
-      .provider(:test) { |**| provider }
-      .profile("main", provider: :test, model: "test", settings:)
+    resolver = LittleGhost::ModelResolver.allocate
+    resolver.define_singleton_method(:default_model) { "default" }
+    resolver.define_singleton_method(:resolve) do |role, invocation: nil, **|
+      profiles = invocation&.[](:model_configuration)&.fetch("profiles", {}) || {}
+      overrides = profiles.fetch(role.to_s, {}).fetch("settings", {})
+      LittleGhost::Model.new(provider:, target: "test:test", settings: settings.merge(overrides.transform_keys(&:to_sym)), role:)
+    end
+    resolver
   end
 
   def session_store_provider(store)

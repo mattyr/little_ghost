@@ -18,15 +18,27 @@ require_relative "little_ghost/model_request"
 require_relative "little_ghost/model_response"
 require_relative "little_ghost/run_result"
 require_relative "little_ghost/model_capabilities"
+require_relative "little_ghost/models/target"
+require_relative "little_ghost/models/details"
 require_relative "little_ghost/model"
-require_relative "little_ghost/model_registry"
-require_relative "little_ghost/providers/sse_parser"
-require_relative "little_ghost/providers/http_transport"
+require_relative "little_ghost/support/sse_parser"
+require_relative "little_ghost/support/http_client"
+require_relative "little_ghost/providers/base"
+require_relative "little_ghost/providers/configuration"
+require_relative "little_ghost/models/catalog/source"
+require_relative "little_ghost/models/catalog/models_dev_source"
 require_relative "little_ghost/providers/openai_compatible"
 require_relative "little_ghost/providers/openai"
 require_relative "little_ghost/providers/open_router"
 require_relative "little_ghost/providers/bedrock"
-require_relative "little_ghost/default_model_registry"
+require_relative "little_ghost/providers/anthropic"
+require_relative "little_ghost/providers/gemini"
+require_relative "little_ghost/providers/vertex_ai"
+require_relative "little_ghost/models/catalog"
+require_relative "little_ghost/models/catalog_snapshot"
+require_relative "little_ghost/models/configuration"
+require_relative "little_ghost/provider_registry"
+require_relative "little_ghost/model_resolver"
 require_relative "little_ghost/run_context"
 require_relative "little_ghost/workspace"
 require_relative "little_ghost/sandbox"
@@ -60,19 +72,14 @@ require_relative "little_ghost/runtime"
 # A customer support agent can answer directly, use an application tool, or ask a
 # specialist for research while the caller observes one run:
 #
-#   LittleGhost.configure do |config|
-#     config.models CustomerSupportModels
-#     config.default_model :customer_support
-#   end
-#
 #   class ResearchAgent < LittleGhost::Agent
 #     description "Researches difficult support questions"
-#     model "customer_support.research"
+#     model "openai:gpt-5.6-luna"
 #   end
 #
 #   class CustomerSupportAgent < LittleGhost::Agent
 #     description "Handles support requests"
-#     model :customer_support
+#     model "openai:gpt-5.6-luna"
 #     tools AccountTool
 #     subagent ResearchAgent, kind: "research"
 #   end
@@ -97,10 +104,6 @@ module LittleGhost
       ExecutionState[:configuration] || (@configuration ||= Configuration.new)
     end
 
-    # Alias for .configuration. Without an execution-scoped override, this is the
-    # process-wide default Configuration.
-    alias_method :default_configuration, :configuration
-
     # Opens the active Configuration for application setup and returns it.
     #
     # Configuration files are loaded lazily when a runtime is first built, so
@@ -108,6 +111,9 @@ module LittleGhost
     def configure(&block)
       configuration.configure(&block)
     end
+
+    # Returns the model resolver owned by the active process configuration.
+    def model_resolver = configuration.model_resolver
 
     # Makes +configuration+ current only while the block runs.
     #

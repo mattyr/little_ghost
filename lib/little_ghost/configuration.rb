@@ -8,7 +8,6 @@ module LittleGhost
   # instrumentation, and runtime hooks for an application.
   #
   #   LittleGhost.configure do |config|
-  #     config.models CustomerSupportModels
   #     config.default_model :customer_support
   #     config.service_name "support-api"
   #   end
@@ -30,7 +29,7 @@ module LittleGhost
   # not from an unverified request field.
   class Configuration
     FILE_LOAD_MUTEX = Mutex.new # :nodoc:
-    CONFIGURATION_KEYS = %i[invocation models default_model service_name].freeze # :nodoc:
+    CONFIGURATION_KEYS = %i[invocation service_name].freeze # :nodoc:
     DEFAULT_PROMPT_PATHS = ["app/prompts"].freeze # :nodoc:
     DEFAULT_SKILL_PATHS = ["app/skills"].freeze # :nodoc:
 
@@ -43,24 +42,6 @@ module LittleGhost
     #   invocation(value) -> value
 
     ##
-    # The model registry class or instance used to resolve logical roles. By
-    # default, +DefaultModelRegistry+ selects a built-in provider from supported
-    # environment variables.
-    #
-    # :method: models
-    # :call-seq:
-    #   models() -> value
-    #   models(value) -> value
-
-    ##
-    # The fallback logical model role for agents without an explicit role.
-    # Values are normalized to strings.
-    #
-    # :method: default_model
-    # :call-seq:
-    #   default_model() -> String, nil
-    #   default_model(value) -> String
-
     ##
     # The low-cardinality service name attached to instrumentation.
     #
@@ -72,7 +53,7 @@ module LittleGhost
       define_method(name) do |value = :__read__|
         return configuration_values[name] if value == :__read__
 
-        configuration_values[name] = (name == :default_model) ? value.to_s : value
+        configuration_values[name] = value
       end
     end
 
@@ -83,17 +64,12 @@ module LittleGhost
     #   invocation=(value) -> value
 
     ##
-    # Replaces the model registry declaration for subsequently built runtimes.
-    # :method: models=
+    # Replaces the model resolver declaration for subsequently built runtimes.
+    # :method: model_resolver=
     # :call-seq:
-    #   models=(value) -> value
+    #   model_resolver=(value) -> value
 
     ##
-    # Replaces the fallback logical model role and normalizes it to a String.
-    # :method: default_model=
-    # :call-seq:
-    #   default_model=(value) -> String
-
     ##
     # Replaces the service name attached to telemetry from new runtimes.
     # :method: service_name=
@@ -124,6 +100,9 @@ module LittleGhost
         @configuration_values[:instrumentation_subscribers]
       ).dup
       @configuration_values[:runtime_hooks] = Array(@configuration_values[:runtime_hooks]).dup
+      @configuration_values[:provider_adapters] = @configuration_values.fetch(:provider_adapters, {}).dup
+      @configuration_values[:catalog_sources] = Array(@configuration_values[:catalog_sources]).dup
+      @configuration_values[:provider_credentials] ||= nil
     end
 
     # Yields this builder for setup and returns the same instance.
@@ -138,6 +117,153 @@ module LittleGhost
     def sandbox = configuration_values[:sandbox]
     # Session-store declaration used for subsequently built runtimes.
     def session_store = configuration_values[:session_store]
+
+    # Trusted provider connections for the default or custom resolver.
+    def providers(value = :__read__)
+      return configuration_values[:providers] if value == :__read__
+
+      unless value.is_a?(Hash) || value.is_a?(Providers::Configuration)
+        raise ArgumentError, "providers must be a Hash or LittleGhost::Providers::Configuration"
+      end
+
+      configuration_values[:providers] = value
+      reset_model_resolver
+      value
+    end
+
+    # Replaces trusted provider connections for subsequently built runtimes.
+    def providers=(value)
+      providers(value)
+    end
+
+    # Logical model profiles for the default resolver. Role names cannot contain
+    # a colon because that syntax identifies a canonical model target.
+    def models(value = :__read__)
+      return configuration_values[:models] if value == :__read__
+      raise ArgumentError, "models must be a Hash" unless value.is_a?(Hash)
+
+      configuration_values[:models] = value
+      reset_model_resolver
+      value
+    end
+
+    # Replaces logical model profiles for subsequently built runtimes.
+    def models=(value)
+      models(value)
+    end
+
+    # Fallback logical role for the default resolver.
+    def default_model(value = :__read__)
+      return configuration_values[:default_model] if value == :__read__
+
+      configuration_values[:default_model] = value.to_s
+      reset_model_resolver
+      value.to_s
+    end
+
+    # Replaces the fallback logical role and normalizes it to a String.
+    def default_model=(value)
+      default_model(value)
+    end
+
+    # Provider YAML path. The conventional path is optional; an explicitly set
+    # path must exist when a runtime is built.
+    def providers_path(value = :__read__) = configuration_path(:providers_path, "providers.yml", value)
+
+    # Replaces the provider YAML path for subsequently built runtimes.
+    def providers_path=(value)
+      providers_path(value)
+    end
+
+    # Model YAML path. The conventional path is optional; an explicitly set
+    # path must exist when a runtime is built.
+    def models_path(value = :__read__) = configuration_path(:models_path, "models.yml", value)
+
+    # Replaces the model YAML path for subsequently built runtimes.
+    def models_path=(value)
+      models_path(value)
+    end
+
+    # Installs a complete resolver override for subsequently built runtimes.
+    def model_resolver(value = :__read__)
+      if value != :__read__
+        validate_model_resolver_class!(value)
+
+        configuration_values[:model_resolver] = value
+        @resolved_model_resolver = nil
+        return value
+      end
+
+      @model_resolver_mutex ||= Mutex.new
+      @model_resolver_mutex.synchronize do
+        @resolved_model_resolver ||= begin
+          providers = resolved_providers
+          credential_resolver = configuration_values[:provider_credentials] || providers&.method(:credentials)
+          configured = configuration_values[:model_resolver]
+          if configured
+            validate_model_resolver_configuration!
+            configured.new(
+              providers:,
+              provider_adapters: configuration_values[:provider_adapters],
+              catalog_sources: configuration_values[:catalog_sources],
+              credential_resolver:
+            )
+          else
+            profiles, file_default = resolved_models
+            ModelResolver.new(
+              providers:,
+              profiles:,
+              default_model: configuration_values.fetch(:default_model, file_default),
+              provider_adapters: configuration_values[:provider_adapters],
+              catalog_sources: configuration_values[:catalog_sources],
+              credential_resolver:
+            )
+          end
+        end
+      end
+    end
+
+    def model_resolver=(value)
+      model_resolver(value)
+    end
+
+    # Registers a provider adapter factory under +name+.
+    def provider_adapter(name, callable = nil, &factory)
+      implementation = factory || callable
+      if implementation.is_a?(Class)
+        unless implementation <= Providers::Base
+          raise ArgumentError, "provider adapter class must inherit LittleGhost::Providers::Base"
+        end
+      elsif !implementation.respond_to?(:call)
+        raise ArgumentError, "provider adapter must be a Providers::Base class or callable factory"
+      end
+
+      configuration_values[:provider_adapters][name.to_s] = implementation
+      @resolved_model_resolver = nil
+      implementation
+    end
+
+    # Adds an explicit catalog source. Sources refresh only when callers invoke
+    # ModelResolver#refresh!.
+    def catalog_source(source)
+      raise ArgumentError, "catalog source must be a Models::Catalog::Source" unless source.is_a?(Models::Catalog::Source)
+
+      configuration_values[:catalog_sources] << source
+      @resolved_model_resolver = nil
+      source
+    end
+
+    # Installs a trusted callable that returns credential options for a named
+    # provider connection when each executable model is constructed.
+    def provider_credentials(callable = nil, &resolver)
+      value = resolver || callable
+      return configuration_values[:provider_credentials] unless value
+      raise ArgumentError, "provider credential resolver must be callable" unless value.respond_to?(:call)
+
+      configuration_values[:provider_credentials] = value
+      @resolved_model_resolver = nil
+      value
+    end
 
     # Selects the Workspace subclass instantiated for each run.
     def workspace=(value)
@@ -286,6 +412,8 @@ module LittleGhost
       values[:skill_paths] = Array(values[:skill_paths]).dup
       values[:instrumentation_subscribers] = Array(values[:instrumentation_subscribers]).dup
       values[:runtime_hooks] = Array(values[:runtime_hooks]).dup
+      values[:model_resolver] = model_resolver
+      values[:default_model] = values[:model_resolver].default_model
       values[:root] = requested_root || values[:root] || self.root
       values
     end
@@ -312,6 +440,59 @@ module LittleGhost
     private
 
     attr_reader :configuration_values
+
+    def validate_model_resolver_class!(value)
+      return if value.is_a?(Class) && value <= ModelResolver
+
+      raise ArgumentError, "model_resolver must be a LittleGhost::ModelResolver subclass"
+    end
+
+    def configuration_path(key, filename, value)
+      if value != :__read__
+        configuration_values[key] = value
+        reset_model_resolver
+        return value
+      end
+
+      configuration_values.fetch(key) { root.join("config/little_ghost", filename) }
+    end
+
+    def resolved_providers
+      return unless configuration_values.key?(:providers) || (path = resolved_configuration_file(:providers_path, "providers.yml"))
+
+      configured = configuration_values[:providers]
+      return configured if configured.is_a?(Providers::Configuration)
+      return Providers::Configuration.new(configured) if configuration_values.key?(:providers)
+
+      Models::Configuration.providers(path)
+    end
+
+    def resolved_models
+      return [configuration_values[:models], nil] if configuration_values.key?(:models)
+
+      path = resolved_configuration_file(:models_path, "models.yml")
+      path ? Models::Configuration.models(path) : [nil, nil]
+    end
+
+    def resolved_configuration_file(key, filename)
+      explicit = configuration_values.key?(key)
+      path = Pathname(configuration_values.fetch(key) { root.join("config/little_ghost", filename) })
+      path = root.join(path) unless path.absolute?
+      return path if path.file?
+      raise ConfigurationError, "LittleGhost configuration file does not exist: #{path}" if explicit
+    end
+
+    def validate_model_resolver_configuration!
+      conflicting = %i[models models_path default_model].select { |key| configuration_values.key?(key) }
+      return if conflicting.empty?
+
+      raise ConfigurationError,
+        "custom model_resolver cannot be combined with #{conflicting.join(", ")}"
+    end
+
+    def reset_model_resolver
+      @resolved_model_resolver = nil
+    end
 
     def component_class(value, base_class, name)
       unless value.is_a?(Class) && value <= base_class

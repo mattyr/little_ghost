@@ -171,7 +171,7 @@ module LittleGhost
 
     def close_tools(tools)
       Array(tools).reverse_each do |tool|
-        tool.close if tool.is_a?(Tool) && tool.respond_to?(:close)
+        tool.close if tool.is_a?(Tool)
       rescue
         nil
       end

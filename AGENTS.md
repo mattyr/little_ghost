@@ -135,7 +135,7 @@ before pushing; do not rely on CI to discover known failures.
 ## Documentation
 
 Every change to public behavior must update its adjacent RDoc in the same
-change. Follow `docs/RDOC_GUIDELINES.md` for voice, page depth, markup,
+change. Follow `docs/rdoc_guidelines.md` for voice, page depth, markup,
 examples, Data-defined value pages, and the review rubric.
 
 - Lead with the useful outcome, then explain the object and its lifecycle.
