@@ -4,16 +4,16 @@ module LittleGhost
   # Associates a validated structured value with its declared schema name.
   StructuredResult = Data.define(:schema_name, :value) # :nodoc:
 
-  # RunResult gives callers one final view of an agent or workflow invocation.
-  # It includes the response, usage, updated conversation, state, and any
-  # validated structured value.
+  # RunResult gives callers one final view of an assembly invocation.
+  # It includes the response, usage, updated conversation, state, coordination
+  # steps, and any validated structured value.
   #
   # Use #output when the caller should accept either structured or textual
   # agents. It returns the validated structured value when present and #text
   # otherwise.
-  RunResult = Data.define(:message, :stop_reason, :usage, :messages, :state, :structured_result) do # :nodoc:
-    def initialize(message:, stop_reason:, usage:, messages:, state:, structured_result: nil)
-      super
+  RunResult = Data.define(:message, :stop_reason, :usage, :messages, :state, :structured_result, :steps) do # :nodoc:
+    def initialize(message:, stop_reason:, usage:, messages:, state:, structured_result: nil, steps: [])
+      super(message:, stop_reason:, usage:, messages:, state:, structured_result:, steps: Array(steps).freeze)
     end
 
     # Reads the final message text, or an empty string when no message exists.
@@ -30,6 +30,9 @@ module LittleGhost
     def output
       structured? ? structured_result.value : text
     end
+
+    # Returns immutable coordination queries for this result.
+    def trajectory = Assembly::Trajectory.new(steps)
   end
 
   # Associates a validated structured value with its declared schema name.
@@ -56,9 +59,9 @@ module LittleGhost
     # The locally validated application value.
   end
 
-  # RunResult gives callers one final view of an agent or workflow invocation.
-  # It includes the response, usage, updated conversation, state, and any
-  # validated structured value.
+  # RunResult gives callers one final view of an Assembly invocation.
+  # It includes the response, usage, updated conversation, state, coordination
+  # steps, and any validated structured value.
   #
   # Use #output when the caller should accept either structured or textual
   # agents. It returns the validated structured value when present and #text
@@ -68,9 +71,9 @@ module LittleGhost
     # :singleton-method: new
     # :call-seq:
     #   new(message:, stop_reason:, usage:, messages:, state:,
-    #       structured_result: nil) -> RunResult
+    #       structured_result: nil, steps: []) -> RunResult
     #
-    # Creates the terminal value for one agent or workflow invocation.
+    # Creates the terminal value for one Assembly invocation.
 
     ##
     # :attr_reader: message
@@ -97,6 +100,10 @@ module LittleGhost
     # The validated StructuredResult, or +nil+ for a textual result.
 
     ##
+    # :attr_reader: steps
+    # Immutable Assembly::Step records for composite invocations.
+
+    ##
     # :method: text
     # Reads the final message text, or an empty string when no message exists.
 
@@ -107,5 +114,9 @@ module LittleGhost
     ##
     # :method: output
     # Uses the structured value when present and otherwise #text.
+
+    ##
+    # :method: trajectory
+    # Returns an Assembly::Trajectory for querying immutable coordination steps.
   end
 end

@@ -26,7 +26,7 @@ end
 Rake::Task["release"].clear_comments
 Rake::Task["release"].add_description("Publish through the trusted tag-triggered GitHub Actions workflow")
 
-RDOC_TITLE = "LittleGhost Docs"
+RDOC_TITLE = "LittleGhost API Documentation"
 RDOC_GENERATOR = "littleghost"
 RDOC_MAIN = "README.md"
 RDOC_FILES = ["README.md", "docs/guides/*.md", "lib/**/*.rb"].freeze
@@ -45,6 +45,10 @@ class RDoc::Generator::LittleGhost < RDoc::Generator::Aliki
   GUIDE_PATHS = {
     "docs/guides/core_concepts.md" => "core_concepts.html",
     "docs/guides/getting_started.md" => "getting_started.html"
+  }.freeze
+  GUIDE_TITLES = {
+    "docs/guides/core_concepts.md" => "Core Concepts",
+    "docs/guides/getting_started.md" => "Getting Started"
   }.freeze
   LEGACY_GUIDE_LINKS = {
     %r{(?:docs/guides/)?core_concepts_md\.html} => "core_concepts.html",
@@ -79,7 +83,11 @@ class RDoc::Generator::LittleGhost < RDoc::Generator::Aliki
 
     @files.each do |file|
       path = GUIDE_PATHS[file.full_name]
-      file.define_singleton_method(:http_url) { path } if path
+      next unless path
+
+      title = GUIDE_TITLES.fetch(file.full_name)
+      file.define_singleton_method(:http_url) { path }
+      file.define_singleton_method(:page_name) { title }
     end
   end
 

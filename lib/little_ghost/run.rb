@@ -3,7 +3,7 @@
 require "securerandom"
 
 module LittleGhost
-  # Observe one top-level agent or workflow execution from start to finish.
+  # Observe one top-level assembly execution from start to finish.
   # A run records its response, outcome, usage, error, and owned resources.
   #
   #   run = CustomerSupportAgent.ask("Why is transfer 481 pending?")
@@ -12,11 +12,11 @@ module LittleGhost
   #   run.outcome    # => "completed"
   #   run.response   # => "Transfer 481 is waiting for the receiving bank."
   #
-  # The class-level ask helper[rdoc-ref:LittleGhost::Agent.ask] or standalone
-  # ask method[rdoc-ref:LittleGhost::Agent#ask] consumes the event stream and
+  # The class-level ask helper[rdoc-ref:LittleGhost::Assembly.ask] or standalone
+  # ask method[rdoc-ref:LittleGhost::Assembly#ask] consumes the event stream and
   # returns the Run. For a live interface, the class-level streaming
-  # helper[rdoc-ref:LittleGhost::Agent.stream_ask] or standalone streaming
-  # method[rdoc-ref:LittleGhost::Agent#stream_ask] yields StreamEvent objects
+  # helper[rdoc-ref:LittleGhost::Assembly.stream_ask] or standalone streaming
+  # method[rdoc-ref:LittleGhost::Assembly#stream_ask] yields StreamEvent objects
   # and returns the same run after enumeration. A run can execute only once.
   #
   # Completion, failure, deadline, and cancellation become the +completed+,
@@ -25,7 +25,7 @@ module LittleGhost
   # delivery, or instrumentation failures may still raise because the framework
   # cannot safely report a clean stop.
   #
-  # The run opens its workspace, sandbox, session, and entrypoint, then closes
+  # The run opens its workspace, sandbox, session, and assembly entrypoint, then closes
   # registered resources in reverse order. +register+ extends that lifecycle for
   # application resources. Interruption is available only while an agent
   # entrypoint is active and unambiguous.
@@ -38,11 +38,17 @@ module LittleGhost
       :outcome, :response, :error, :session, :usage, :workspace, :sandbox
 
     # Creates a dormant run for +invocation+.
-    def initialize(invocation:, agent_class:, runtime:, entrypoint_class: agent_class,
+    def initialize(invocation:, runtime:, agent_class: nil, assembly_class: nil, entrypoint_class: nil,
+      execution_class: nil,
       cancellation_token: Support::CancellationToken.new, workspace: nil, sandbox: nil)
+      entrypoint_class ||= assembly_class || agent_class
+      raise ArgumentError, "entrypoint_class is required" unless entrypoint_class
+      execution_class ||= assembly_class || entrypoint_class
+
       @runtime = runtime
       @agent_class = agent_class
       @entrypoint_class = entrypoint_class
+      @execution_class = execution_class
       @invocation = invocation
       @cancellation_token = cancellation_token
       @workspace = workspace
@@ -55,6 +61,8 @@ module LittleGhost
       @event_mutex = Mutex.new
       @subagent_instrumentation_mutex = Mutex.new
       @subagent_instrumentation = {}
+      @assembly_step_instrumentation_mutex = Mutex.new
+      @assembly_step_instrumentation = {}
       @exclusive_tools_mutex = Mutex.new
       @once_mutex = Mutex.new
       @once_keys = {}
@@ -138,7 +146,7 @@ module LittleGhost
         @active_interruptions += 1
         @entrypoint
       end
-      unless entrypoint.is_a?(Agent)
+      unless entrypoint.respond_to?(:interrupt_response)
         raise AgentInterruptError, "Run entrypoint does not support interruptions"
       end
 
@@ -228,6 +236,10 @@ module LittleGhost
           outcome: cleanup_error ? :error : :cancelled,
           error_type: cleanup_error&.class&.name
         )
+        finish_remaining_assembly_step_instrumentation(
+          outcome: cleanup_error ? :error : :cancelled,
+          error_type: cleanup_error&.class&.name
+        )
       rescue => error
         errors << error
       end
@@ -248,7 +260,7 @@ module LittleGhost
         :run,
         parent: nil,
         **correlation_attributes,
-        entrypoint_kind: workflow_run? ? :workflow : :agent,
+        entrypoint_kind:,
         workflow_name: workflow_run? ? entrypoint_name : nil,
         trace_context: invocation[:parent_trace_context],
         trace_links: invocation[:trace_links],
@@ -260,11 +272,7 @@ module LittleGhost
       workspace&.open(run: self)
       sandbox&.open(run: self)
       @session = runtime.open_session(self)
-      agent = if entrypoint_class <= Agent
-        runtime.build_agent(entrypoint_class, run: self)
-      else
-        entrypoint_class.new(run: self, runtime:)
-      end
+      agent = runtime.build_assembly(@execution_class, run: self)
       @interruption_mutex.synchronize do
         @entrypoint = agent
       end
@@ -422,25 +430,39 @@ module LittleGhost
     end
 
     def correlation_attributes
-      {
+      attributes = {
         operation_id:,
         run_id: invocation.run_id,
         invocation_id: invocation.invocation_id,
         session_id: invocation.session_id,
-        service_name: runtime.service_name,
-        agent_id: workflow_run? ? nil : entrypoint_name,
-        workflow_name: workflow_run? ? entrypoint_name : nil
-      }.compact
+        service_name: runtime.service_name
+      }
+      case entrypoint_kind
+      when :agent
+        attributes[:agent_id] = entrypoint_name
+      when :workflow
+        attributes[:workflow_name] = entrypoint_name
+      else
+        attributes[:assembly_id] = entrypoint_name
+        attributes[:assembly_kind] = entrypoint_kind
+      end
+      attributes
     end
 
-    def workflow_run? = entrypoint_class <= Workflow
+    def workflow_run? = defined?(Workflow) && entrypoint_class <= Workflow
+
+    def entrypoint_kind
+      return entrypoint_class.assembly_kind if entrypoint_class.respond_to?(:assembly_kind)
+
+      workflow_run? ? :workflow : :agent
+    end
 
     def entrypoint_name
       return entrypoint_class.name.to_s if workflow_run?
 
-      return @entrypoint.entrypoint_name if @entrypoint.is_a?(Agent)
+      return @entrypoint.entrypoint_name if @entrypoint&.respond_to?(:entrypoint_name)
 
-      entrypoint_class.agent_id
+      entrypoint_class.respond_to?(:assembly_id) ? entrypoint_class.assembly_id : entrypoint_class.name.to_s
     end
 
     def instrument_subagent(data)
@@ -505,7 +527,53 @@ module LittleGhost
         error_class ||= error if error.is_a?(String) && error.match?(/\A[A-Z]\w*(?:::[A-Z]\w*)*\z/)
         attributes = data.slice(:attempt, :delay, :error_code, :http_status, :partial_text)
         instrument(:model_retry, attributes.merge(error_class:).compact)
+      when :assembly_step_start
+        start_assembly_step_instrumentation(data)
+      when :assembly_step_stop
+        finish_assembly_step_instrumentation(data.fetch(:step_id), data.merge(outcome: :completed))
+      when :assembly_step_error
+        return unless data[:terminal]
+
+        finish_assembly_step_instrumentation(data.fetch(:step_id), data.merge(outcome: :error))
+      when :assembly_step_retry, :assembly_fork, :assembly_join, :assembly_transition, :assembly_handoff_loop
+        instrument(type, data.except(:usage))
       end
+    end
+
+    def start_assembly_step_instrumentation(attributes)
+      step_id = attributes.fetch(:step_id)
+      handle = Instrumentation.start(
+        :assembly_step,
+        parent: attributes[:parent_operation_id] || operation_id,
+        operation_id: step_id,
+        detached: true,
+        assembly_id: attributes[:assembly_id],
+        assembly_kind: attributes[:assembly_kind],
+        participant: attributes[:participant],
+        branch_id: attributes[:branch_id]
+      )
+      @assembly_step_instrumentation_mutex.synchronize { @assembly_step_instrumentation[step_id] = handle }
+    end
+
+    def finish_assembly_step_instrumentation(step_id, attributes)
+      handle = @assembly_step_instrumentation_mutex.synchronize do
+        @assembly_step_instrumentation.delete(step_id)
+      end
+      return unless handle
+
+      usage = attributes[:usage]
+      handle.finish(
+        outcome: attributes[:outcome],
+        error_type: attributes[:error_type],
+        **(usage ? usage_attributes(usage) : {})
+      )
+    end
+
+    def finish_remaining_assembly_step_instrumentation(outcome:, error_type: nil)
+      handles = @assembly_step_instrumentation_mutex.synchronize do
+        @assembly_step_instrumentation.values.tap { @assembly_step_instrumentation.clear }
+      end
+      handles.reverse_each { |handle| handle.finish(outcome:, error_type:) }
     end
 
     def start_subagent_instrumentation(attributes)

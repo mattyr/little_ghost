@@ -5,7 +5,7 @@ require "monitor"
 
 module LittleGhost
   module Support
-    # Loader finds agents and tools from a conventional application layout. Ruby
+    # Loader finds agents, assemblies, and tools from a conventional application layout. Ruby
     # files map to constants by path, so applications can add extension classes
     # without maintaining a manual require list.
     #
@@ -16,7 +16,7 @@ module LittleGhost
     # checked for symbolic-link escapes. Application load roots are trusted code,
     # not a sandbox for untrusted files.
     class Loader
-      DEFAULT_DIRECTORIES = %w[app/agents app/tools].freeze # :nodoc:
+      DEFAULT_DIRECTORIES = %w[app/agents app/assemblies app/tools].freeze # :nodoc:
       PROCESS_LOCK = Monitor.new # :nodoc:
 
       # Application root and configured relative load directories.

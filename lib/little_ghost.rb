@@ -59,13 +59,18 @@ require_relative "little_ghost/subagents/definition"
 require_relative "little_ghost/subagents/agent_path"
 require_relative "little_ghost/subagents/manager"
 require_relative "little_ghost/agent_interruptions"
+require_relative "little_ghost/assembly"
+require_relative "little_ghost/assembly_execution"
 require_relative "little_ghost/agent"
-require_relative "little_ghost/agent_builder"
 require_relative "little_ghost/workflow"
+require_relative "little_ghost/swarm"
+require_relative "little_ghost/graph"
+require_relative "little_ghost/assembly_builder"
+require_relative "little_ghost/agent_factory"
 require_relative "little_ghost/runtime/hook"
 require_relative "little_ghost/runtime"
 
-# Build AI features with reusable agents and agentic workflows. LittleGhost can
+# Build AI features with reusable agents and composable assemblies. LittleGhost can
 # sit inside an existing Ruby system or support a dedicated AI service, keeping
 # models, prompts, tools, sessions, streaming, and instrumentation behind a
 # cohesive set of Ruby conventions.
@@ -90,8 +95,9 @@ require_relative "little_ghost/runtime"
 #   run.response   # => "Transfer 481 is waiting for the receiving bank."
 #
 # Agent subclasses hold reusable behavior; Invocation objects carry one request,
-# and Run objects own execution and cleanup. Workflow subclasses can compose
-# several agents when ordinary Ruby branching is clearer than one agent loop.
+# and Run objects own execution and cleanup. Assembly gives Agent, Workflow,
+# Swarm, and Graph the same caller interface while each type owns a different
+# coordination policy.
 #
 # LittleGhost.configuration is process-wide unless LittleGhost.with_configuration
 # supplies an execution-scoped replacement. Configuration is loaded lazily and

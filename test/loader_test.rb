@@ -5,15 +5,17 @@ require "tmpdir"
 require "test_helper"
 
 class LoaderTest < Minitest::Test
-  def test_eager_loads_agents_and_tools_with_namespaces
+  def test_eager_loads_agents_assemblies_and_tools_with_namespaces
     Dir.mktmpdir do |root|
       write(root, "app/agents/loader_fixture/main_agent.rb", "module LoaderFixture; class MainAgent < LittleGhost::Agent; end; end")
+      write(root, "app/assemblies/loader_fixture/support_flow_graph.rb", "module LoaderFixture; class SupportFlowGraph < LittleGhost::Graph; end; end")
       write(root, "app/tools/loader_fixture/echo_tool.rb", "module LoaderFixture; class EchoTool; end; end")
 
       loader = LittleGhost::Support::Loader.new(root:)
       loader.eager_load
 
       assert_equal LoaderFixture::MainAgent, loader.constant("LoaderFixture::MainAgent")
+      assert_equal LoaderFixture::SupportFlowGraph, loader.constant("LoaderFixture::SupportFlowGraph")
       assert_equal LoaderFixture::EchoTool, loader.constant("LoaderFixture::EchoTool")
     ensure
       Object.send(:remove_const, :LoaderFixture) if Object.const_defined?(:LoaderFixture, false)

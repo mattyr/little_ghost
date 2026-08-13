@@ -1038,6 +1038,23 @@ class ConfigurationTest < Minitest::Test
     EntrypointWorkflow.agent_class = nil
   end
 
+  def test_graph_has_the_same_standalone_interface_as_an_agent
+    with_runtime do |harness|
+      agent_class = harness.agent_class
+      graph_class = Class.new(LittleGhost::Graph) do
+        node :answer, agent_class
+        start :answer
+        finish :answer
+      end
+
+      run = graph_class.new(runtime: harness.runtime_instance).ask("hello")
+
+      assert run.completed?
+      assert_equal "Done", run.response
+      assert_equal :graph, graph_class.assembly_kind
+    end
+  end
+
   def test_run_closes_agent_tools
     tool = Class.new(LittleGhost::Tool) do
       tool_name "closable"
@@ -1170,15 +1187,12 @@ class ConfigurationTest < Minitest::Test
   end
 
   def test_delegated_agents_own_separate_declared_tools
+    closes = 0
     tool_class = Class.new(LittleGhost::Tool) do
       tool_name "shared"
       description "Shared tool"
 
-      class << self
-        attr_accessor :closes
-      end
-
-      def close = self.class.closes = self.class.closes.to_i + 1
+      define_method(:close) { closes += 1 }
     end
     child = Class.new(LittleGhost::Agent) do
       model "main"
@@ -1195,10 +1209,11 @@ class ConfigurationTest < Minitest::Test
 
     with_runtime(agent: parent) { |harness| harness.agent_instance.call(message: "hello") }
 
-    assert_equal 2, tool_class.closes
+    assert_equal 2, closes
   end
 
   def test_run_owns_an_agent_tool_child_when_its_wrapper_name_collides
+    closes = 0
     collision = LittleGhost::Tool.define(name: "delegate", description: "Existing tool") { "existing" }
     child = Class.new(LittleGhost::Agent) do
       agent_id "delegate"
@@ -1206,12 +1221,8 @@ class ConfigurationTest < Minitest::Test
       description "Child"
       system_prompt "Child"
 
-      class << self
-        attr_accessor :closes
-      end
-
-      def close
-        self.class.closes = self.class.closes.to_i + 1
+      define_method(:close) do
+        closes += 1
         super
       end
     end
@@ -1224,7 +1235,7 @@ class ConfigurationTest < Minitest::Test
 
     with_runtime(agent: parent) { |harness| harness.agent_instance.call(message: "hello") }
 
-    assert_equal 1, child.closes
+    assert_equal 1, closes
   end
 
   def test_sessions_restore_history_and_persist_the_result

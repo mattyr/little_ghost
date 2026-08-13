@@ -30,7 +30,7 @@ module LittleGhost
           default: Subagents::Manager::DEFAULT_WAIT_TIMEOUT
         base.class_attribute :subagent_declarations_value, default: []
         base.class_attribute :subagent_resolvers_value, default: []
-        base.class_attribute :agent_tool_declarations_value, default: []
+        base.class_attribute :assembly_tool_declarations_value, default: []
       end
 
       # Exposes delegation declarations on agent classes.
@@ -95,25 +95,52 @@ module LittleGhost
         # conversational history between calls to that tool instance.
         def agent_as_tool(agent_class, name: nil, description: nil, model: nil, tools: nil,
           preserve_context: false)
+          assembly_as_tool(
+            agent_class,
+            name:,
+            description:,
+            model:,
+            tools:,
+            preserve_context:
+          )
+        end
+
+        # Exposes an Agent, Workflow, Swarm, or Graph as one ordinary tool.
+        # Agent-only +model+ and +tools+ overrides are rejected for composites.
+        def assembly_as_tool(assembly_class, name: nil, description: nil, model: nil, tools: nil,
+          preserve_context: false)
+          unless assembly_class.is_a?(Class) && assembly_class <= Assembly
+            raise ConfigurationError, "Delegated assemblies must inherit from LittleGhost::Assembly"
+          end
           validate_delegated_tools!(tools)
+          if !(assembly_class <= Agent) && (model || tools)
+            raise ConfigurationError, "Composite assemblies do not accept delegated model or tool overrides"
+          end
           declaration = {
-            agent: agent_class,
-            name: (name || agent_class.agent_id).to_s,
-            description: description || agent_class.description,
+            assembly: assembly_class,
+            name: (name || assembly_class.assembly_id).to_s,
+            description: description || assembly_class.description,
             model:,
             tools:,
             preserve_context:
           }
-          self.agent_tool_declarations_value = [*agent_tool_declarations, declaration]
+          self.assembly_tool_declarations_value = [*assembly_tool_declarations, declaration]
         end
 
         # Exposes several agent classes as ordinary tools with shared options.
         def agents_as_tools(*agent_classes, **options)
           agent_classes.each { |agent_class| agent_as_tool(agent_class, **options) }
-          agent_tool_declarations
+          assembly_tool_declarations
         end
 
-        def agent_tool_declarations = agent_tool_declarations_value # :nodoc:
+        # Exposes several assembly classes as ordinary tools with shared options.
+        def assemblies_as_tools(*assembly_classes, **options)
+          assembly_classes.each { |assembly_class| assembly_as_tool(assembly_class, **options) }
+          assembly_tool_declarations
+        end
+
+        def assembly_tool_declarations = assembly_tool_declarations_value # :nodoc:
+        def agent_tool_declarations = assembly_tool_declarations # :nodoc:
 
         private
 

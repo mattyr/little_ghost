@@ -244,6 +244,30 @@ class TracingOpenTelemetryTest < Minitest::Test
     tracing&.shutdown
   end
 
+  def test_names_swarm_root_separately_from_its_member_agent
+    tracer = Tracer.new
+    tracing = LittleGhost::Tracing::OpenTelemetry.new(tracer:)
+
+    tracing.start(
+      :run,
+      {
+        operation_id: "run",
+        entrypoint_kind: :swarm,
+        assembly_id: "problem_solver",
+        assembly_kind: :swarm
+      }
+    )
+    tracing.finish(:run, {operation_id: "run", outcome: :completed})
+
+    name, _context, span = tracer.started.fetch(0)
+    assert_equal "invoke_swarm problem_solver", name
+    assert_equal "invoke_swarm", span.attributes.fetch("gen_ai.operation.name")
+    assert_equal "problem_solver", span.attributes.fetch("little_ghost.assembly.id")
+    assert_equal "swarm", span.attributes.fetch("little_ghost.assembly.kind")
+  ensure
+    tracing&.shutdown
+  end
+
   def test_records_scrubbed_exception_details
     tracer = Tracer.new
     tracing = LittleGhost::Tracing::OpenTelemetry.new(tracer:)

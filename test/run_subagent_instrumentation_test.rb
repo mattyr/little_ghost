@@ -66,6 +66,36 @@ class RunSubagentInstrumentationTest < Minitest::Test
     refute instrumentation.active?
   end
 
+  def test_correlates_assembly_step_lifecycle_with_usage
+    recorder = TestInstrumentationSubscriber.new
+    instrumentation = LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new(
+      subscribers: [recorder]
+    )
+    run = build_run
+
+    run.publish(
+      :assembly_step_start,
+      step_id: "step-1",
+      assembly_id: "support",
+      assembly_kind: :workflow,
+      participant: "research"
+    )
+    run.publish(
+      :assembly_step_stop,
+      step_id: "step-1",
+      usage: LittleGhost::Usage.new(input_tokens: 3, output_tokens: 2)
+    )
+
+    start = recorder.events.find { |phase, name, _| phase == :start && name == :assembly_step }.last
+    finish = recorder.events.find { |phase, name, _| phase == :finish && name == :assembly_step }.last
+    assert_equal "step-1", start.fetch(:operation_id)
+    assert_equal "research", start.fetch(:participant)
+    assert_equal :completed, finish.fetch(:outcome)
+    assert_equal 3, finish.fetch(:input_tokens)
+    assert_equal 2, finish.fetch(:output_tokens)
+    refute instrumentation.active?
+  end
+
   private
 
   def build_run

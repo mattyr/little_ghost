@@ -4,7 +4,7 @@ require "json"
 require_relative "configuration"
 
 module LittleGhost
-  # Prepare the shared services that agents and workflows use across many runs.
+  # Prepare the shared services that assemblies use across many runs.
   # A runtime owns model resolution, loading, persistence, lookup paths, hooks,
   # and resource factories for one Ruby setup.
   #
@@ -91,8 +91,8 @@ module LittleGhost
         @prompt_paths = build_lookup_paths(:prompt_paths)
         @skill_paths = build_lookup_paths(:skill_paths)
 
-        @startup_phase = "agent_builder"
-        @agent_builder = AgentBuilder.new(
+        @startup_phase = "agent_factory"
+        @agent_factory = AgentFactory.new(
           runtime: self,
           prompt_paths: @prompt_paths,
           resolve_agent: method(:resolve_agent_class)
@@ -133,11 +133,19 @@ module LittleGhost
     # sandbox resources to it.
     def build_run(
       payload,
-      agent_class:,
-      entrypoint_class: agent_class,
+      agent_class: nil,
+      assembly_class: nil,
+      entrypoint_class: nil,
+      execution_class: nil,
+      cancellation_token: Support::CancellationToken.new,
       workspace: nil,
       sandbox: nil
     )
+      entrypoint_class ||= assembly_class || agent_class
+      raise ArgumentError, "entrypoint_class is required" unless entrypoint_class
+
+      execution_class ||= assembly_class || entrypoint_class
+      agent_class ||= entrypoint_class if entrypoint_class <= Agent
       owned_resources = []
       workspace ||= build_workspace.tap { |resource| owned_resources << resource }
       sandbox ||= build_sandbox(workspace:).tap { |resource| owned_resources << resource }
@@ -146,6 +154,8 @@ module LittleGhost
         runtime: self,
         agent_class:,
         entrypoint_class:,
+        execution_class:,
+        cancellation_token:,
         workspace:,
         sandbox:
       )
@@ -183,7 +193,41 @@ module LittleGhost
       tools: [],
       agent_path: Subagents::AgentPath::ROOT
     )
-      @agent_builder.build(agent_class_or_name, run:, model:, tools:, agent_path:)
+      agent_class_or_name = agent_class_or_name.definition if agent_class_or_name.is_a?(AgentBuilder)
+      if agent_class_or_name.is_a?(AssemblyDefinition)
+        unless agent_class_or_name.kind == :agent
+          raise ConfigurationError, "agent definition must have kind :agent"
+        end
+        agent_class_or_name = agent_class_or_name.implementation
+      end
+      @agent_factory.build(agent_class_or_name, run:, model:, tools:, agent_path:)
+    end
+
+    # Builds an Agent through AgentFactory or constructs another Assembly for +run+.
+    def build_assembly(assembly_class_or_name, run:, **options) # :nodoc:
+      if assembly_class_or_name.is_a?(AssemblyBuilder)
+        assembly_class_or_name = assembly_class_or_name.definition
+      end
+      if assembly_class_or_name.is_a?(Class) && assembly_class_or_name <= Assembly
+        assembly_class_or_name = assembly_class_or_name.definition
+      end
+      if assembly_class_or_name.is_a?(AssemblyDefinition)
+        return build_agent(assembly_class_or_name, run:, **options) if assembly_class_or_name.kind == :agent
+        raise ArgumentError, "composite assembly definitions do not accept agent build options" unless options.empty?
+
+        return assembly_class_or_name.implementation.new(run:, runtime: self)
+      end
+      if !assembly_class_or_name.is_a?(Class) || assembly_class_or_name <= Agent
+        return build_agent(assembly_class_or_name, run:, **options)
+      end
+      unless assembly_class_or_name <= Assembly
+        raise ConfigurationError, "assembly must inherit from LittleGhost::Assembly"
+      end
+      unless options.empty?
+        raise ArgumentError, "composite assemblies do not accept agent build options"
+      end
+
+      assembly_class_or_name.new(run:, runtime: self)
     end
 
     # The low-cardinality service name attached to runtime telemetry.

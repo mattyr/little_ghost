@@ -1,9 +1,14 @@
 # frozen_string_literal: true
 
+require_relative "assembly"
+
 module LittleGhost
-  # Build agentic workflows with ordinary Ruby branching and local variables.
-  # A workflow composes several agents, consumes intermediate answers, and
-  # streams one final agent response.
+  # Coordinates Assembly participants with ordinary Ruby control flow.
+  #
+  # A workflow is an Assembly whose +perform+ method controls ordering,
+  # branching, parallel work, and local variables. Each participant may be an
+  # Agent or another coordinated Assembly. The workflow consumes intermediate
+  # answers and streams one final participant response.
   #
   # A support workflow can route a difficult request through research before the
   # responder writes the caller-visible answer:
@@ -25,11 +30,7 @@ module LittleGhost
   #     end
   #   end
   #
-  #   run = runtime.build_run(
-  #     {message: "Why is transfer 481 pending?"},
-  #     agent_class: CustomerSupportAgent,
-  #     entrypoint_class: ResponseWorkflow
-  #   ).call
+  #   run = ResponseWorkflow.ask("Why is transfer 481 pending?")
   #   run.response # => "Transfer 481 is waiting for the receiving bank."
   #
   # +invoke+ returns a lazy Workflow::Invocation. Reading +output+ consumes an
@@ -45,22 +46,25 @@ module LittleGhost
   #
   # A workflow instance streams once. Returning the wrong value, returning an
   # already consumed invocation, or consuming an invocation twice raises
-  # ProtocolError. Built agents close in reverse order, and the first cleanup
-  # failure is re-raised after every invocation has been given a chance to close.
-  # Composition errors emit an +invocation_error+ event and then re-raise.
-  class Workflow
+  # ProtocolError. Each child assembly closes after its execution attempt;
+  # cleanup failures surface from that attempt. Closing the Workflow closes its
+  # lightweight invocation wrappers in reverse declaration order. Composition
+  # errors emit an +invocation_error+ event and then re-raise.
+  class Workflow < Assembly
     # Hold one lazy agent call inside a workflow composition.
     # Workflow implementations normally use only its output method or return the
     # object as the final invocation.
     class Invocation
       attr_reader :result # :nodoc:
 
-      def initialize(input:, history:, context:, build:, on_usage:) # :nodoc:
+      def initialize(reference:, participant:, input:, history:, context:, policies:, owner:) # :nodoc:
+        @reference = reference
+        @participant = participant
         @input = input
         @history = history
         @context = context
-        @build = build
-        @on_usage = on_usage
+        @policies = policies
+        @owner = owner
         @mutex = Mutex.new
         @consumed = false
         @closed = false
@@ -69,30 +73,29 @@ module LittleGhost
       def each(checkpoint: nil) # :nodoc:
         return enum_for(__method__, checkpoint:) unless block_given?
 
-        agent, options = @mutex.synchronize do
+        @mutex.synchronize do
           raise Error, "workflow invocation is already closed" if @closed
           raise ProtocolError, "workflow invocation was already consumed" if @consumed
 
           @consumed = true
-          @agent, options = @build.call
-          [@agent, options]
         end
-        begin
-          agent.stream(
-            @input,
-            history: @history,
-            context: @context,
-            **options,
-            checkpoint:
-          ).each do |event|
-            @result = event.data[:result] if event.type == :invocation_stop
-            @usage = event.data[:usage] if event.type == :invocation_error
-            yield event
-          end
-        ensure
-          report_usage if @intermediate
-          close
+        execution = @owner.send(
+          :execute_workflow_invocation,
+          reference: @reference,
+          participant: @participant,
+          input: @input,
+          history: @history,
+          context: @context,
+          policies: @policies,
+          checkpoint:
+        ) { |event| yield event }
+        @result = execution.result
+        @step = execution.step
+        @steps = execution.result.steps
+        execution.events.each do |event|
+          yield event
         end
+        @result
       end
 
       # Consumes this invocation when necessary and returns RunResult#output.
@@ -101,7 +104,12 @@ module LittleGhost
       # response text. Intermediate usage is recorded for the workflow total.
       def output
         @intermediate = true
-        each {} unless consumed?
+        unless consumed?
+          each do |event|
+            @owner.send(:emit_workflow_event, event) if event.type.to_s.start_with?("assembly_")
+          end
+          @owner.send(:record_workflow_steps, @steps)
+        end
         result&.output
       end
 
@@ -110,29 +118,19 @@ module LittleGhost
       end
 
       def close # :nodoc:
-        agent = @mutex.synchronize do
+        @mutex.synchronize do
           return if @closed
 
           @closed = true
-          @agent
         end
-        agent&.close
-      end
-
-      private
-
-      def report_usage
-        usage = result&.usage || @usage
-        @on_usage.call(usage) if usage
       end
     end
 
     # Owning run and the runtime used to resolve workflow agents.
     attr_reader :run, :runtime
 
-    def initialize(run:, runtime: run.runtime) # :nodoc:
-      @run = run
-      @runtime = runtime
+    def initialize(run: nil, runtime: nil) # :nodoc:
+      super(run:, runtime:, standalone: run.nil?)
       @mutex = Mutex.new
       @closed = false
       @started = false
@@ -162,6 +160,17 @@ module LittleGhost
     )
       raise ArgumentError, "input is required" if input.nil?
 
+      if standalone?
+        return build_run(entrypoint_payload(input, {
+          history:,
+          context:,
+          settings:,
+          template_paths:,
+          deadline_at: deadline,
+          cancellation_token:
+        }.compact)).each
+      end
+
       @mutex.synchronize do
         raise Error, "workflow is already closed" if @closed
         raise Error, "workflow instances can only be streamed once" if @started
@@ -178,11 +187,14 @@ module LittleGhost
         @parent_operation_id = parent_operation_id
         @checkpoint = checkpoint
         @intermediate_usage = Usage.new
+        @workflow_steps = []
+        @workflow_events = nil
       end
 
       Enumerator.new do |events|
         error_emitted = false
         observed_usage = nil
+        @workflow_events = events
         ensure_open!
         final_invocation = perform
         unless final_invocation.is_a?(Invocation) && !final_invocation.consumed?
@@ -196,6 +208,8 @@ module LittleGhost
           when :invocation_stop
             event.data.fetch(:result).usage
           when :invocation_error
+            event.data[:usage] || observed_usage
+          when :assembly_step_error
             event.data[:usage] || observed_usage
           else
             observed_usage
@@ -212,10 +226,12 @@ module LittleGhost
           )
         end
         raise
+      ensure
+        @workflow_events = nil
       end
     end
 
-    # Closes all built agent invocations in reverse order.
+    # Closes all declared invocations in reverse order.
     #
     # The operation is idempotent, attempts every close, and raises the first
     # cleanup failure.
@@ -250,35 +266,30 @@ module LittleGhost
     end
 
     # :doc:
-    # Creates a lazy invocation for +agent_class_or_name+.
+    # Creates a lazy invocation for +assembly+.
     #
     # Intermediate calls may use +output+; the final call must be returned from
     # +perform+ without being consumed.
-    def invoke(agent_class_or_name, input: self.input, history: self.history, context: self.context)
+    def invoke(
+      assembly,
+      as: nil,
+      input: self.input,
+      history: self.history,
+      context: self.context,
+      timeout: nil,
+      retries: 0,
+      retry_on: nil,
+      retry_delay: 0
+    )
+      participant = as || assembly_identity(assembly)
       invocation = Invocation.new(
+        reference: assembly,
+        participant:,
         input:,
         history:,
         context: isolated_state(context),
-        build: lambda {
-          agent = runtime.build_agent(agent_class_or_name, run:)
-          begin
-            [
-              agent,
-              {
-                cancellation_token: @cancellation_token,
-                deadline: @deadline,
-                settings: @settings,
-                template_locals: template_locals_for(agent),
-                template_paths: @template_paths,
-                parent_operation_id: @parent_operation_id
-              }
-            ]
-          rescue
-            agent.close
-            raise
-          end
-        },
-        on_usage: ->(usage) { record_intermediate_usage(usage) }
+        policies: {timeout:, retries:, retry_on:, retry_delay:},
+        owner: self
       )
       @mutex.synchronize do
         raise Error, "workflow is already closed" if @closed
@@ -288,8 +299,112 @@ module LittleGhost
       invocation
     end
 
-    def record_intermediate_usage(usage)
-      @mutex.synchronize { @intermediate_usage += usage }
+    # Consumes independent invocations concurrently and returns their outputs in
+    # declaration order.
+    def parallel(*invocations, max_concurrency: 8)
+      raise ArgumentError, "parallel requires at least one invocation" if invocations.empty?
+      unless invocations.all? { |invocation| invocation.is_a?(Invocation) && !invocation.consumed? }
+        raise ArgumentError, "parallel accepts unconsumed workflow invocations"
+      end
+
+      token = @cancellation_token.child
+      queue = SizedQueue.new(1_000)
+      worker = Thread.new do
+        results = Support::Executor.new(max_concurrency:).map(
+          invocations,
+          cancellation_token: token,
+          on_result: ->(_index, execution) { record_workflow_steps(execution.fetch(:steps)) }
+        ) do |invocation|
+          invocation.each do |event|
+            if event.type.to_s.start_with?("assembly_")
+              enqueue_assembly_event(queue, [:event, event], token)
+            end
+          end
+          {output: invocation.result&.output, steps: invocation.instance_variable_get(:@steps)}
+        end
+        enqueue_assembly_event(queue, [:done, results], token)
+      rescue => error
+        token.cancel
+        enqueue_assembly_terminal(queue, [:error, error])
+      end
+      executions = loop do
+        type, value = queue.pop
+        emit_workflow_event(value) if type == :event
+        raise value if type == :error
+        break value if type == :done
+      end
+      executions.map { |execution| execution.fetch(:output) }
+    ensure
+      token&.cancel
+      worker&.join
+    end
+
+    def execute_workflow_invocation(reference:, participant:, input:, history:, context:, policies:, checkpoint:)
+      step_id = SecureRandom.uuid
+      predecessor_id = @mutex.synchronize do
+        @workflow_steps.reverse.find { |step| step.parent_id.nil? }&.id
+      end
+      yield StreamEvent.build(
+        :assembly_step_start,
+        assembly_id: self.class.assembly_id,
+        assembly_kind: :workflow,
+        participant: participant.to_s,
+        step_id:
+      )
+      execution = execute_assembly_step(
+        reference:,
+        participant:,
+        input:,
+        history:,
+        context:,
+        cancellation_token: @cancellation_token,
+        deadline: @deadline,
+        settings: @settings,
+        template_locals: @template_locals,
+        template_paths: @template_paths,
+        parent_operation_id: @parent_operation_id,
+        policies:,
+        predecessor_ids: Array(predecessor_id),
+        checkpoint:,
+        step_id:
+      ) { |event| yield event }
+      yield StreamEvent.build(
+        :assembly_step_stop,
+        assembly_id: self.class.assembly_id,
+        assembly_kind: :workflow,
+        participant: participant.to_s,
+        step_id: execution.step.id,
+        usage: execution.step.usage
+      )
+      execution
+    end
+
+    def record_workflow_steps(steps)
+      @mutex.synchronize do
+        @workflow_steps.concat(steps)
+        @intermediate_usage += steps.first.usage
+      end
+    end
+
+    def emit_workflow_event(event)
+      sink = @mutex.synchronize do
+        if event.type == :assembly_step_error && event.data[:terminal] && event.data[:usage]
+          @intermediate_usage += event.data.fetch(:usage)
+        end
+        @workflow_events
+      end
+      sink << event if sink
+    end
+
+    def assembly_identity(reference)
+      case reference
+      when AssemblyBuilder, AssemblyDefinition
+        reference.assembly_id
+      when Class
+        (reference <= Assembly) ? reference.assembly_id : reference.to_s
+      else
+        reference.to_s
+      end
     end
 
     def aggregate_usage(event)
@@ -302,10 +417,16 @@ module LittleGhost
           usage: workflow_usage + result.usage,
           messages: result.messages,
           state: result.state,
-          structured_result: result.structured_result
+          structured_result: result.structured_result,
+          steps: workflow_steps + result.steps
         )
         StreamEvent.build(event.type, **event.data.merge(result: combined))
       when :invocation_error
+        usage = event.data[:usage]
+        return event unless usage
+
+        StreamEvent.build(event.type, **event.data.merge(usage: workflow_usage + usage))
+      when :assembly_step_error
         usage = event.data[:usage]
         return event unless usage
 
@@ -336,6 +457,10 @@ module LittleGhost
 
     def workflow_usage
       @mutex.synchronize { @intermediate_usage }
+    end
+
+    def workflow_steps
+      @mutex.synchronize { @workflow_steps.dup.freeze }
     end
 
     def ensure_open!

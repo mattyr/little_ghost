@@ -8,8 +8,8 @@ Gem::Specification.new do |spec|
   spec.authors = ["Matt Robinson"]
   spec.email = ["robinson.matty@gmail.com"]
 
-  spec.summary = "A Ruby framework for AI features with agents and agentic workflows"
-  spec.description = "Add agents, tools, and agentic workflows to existing Ruby systems or dedicated AI services."
+  spec.summary = "A Ruby framework for AI features with agents and composable assemblies"
+  spec.description = "Add agents, tools, workflows, swarms, and graphs to existing Ruby systems or dedicated AI services."
   spec.homepage = "https://github.com/mattyr/little_ghost"
   spec.license = "MIT"
   spec.required_ruby_version = ">= 3.3"

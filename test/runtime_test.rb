@@ -199,6 +199,19 @@ class RuntimeTest < Minitest::Test
     end
   end
 
+  def test_runtime_builds_a_composite_assembly_directly
+    runtime = LittleGhost::Runtime.allocate
+    assembly_class = Class.new(LittleGhost::Assembly)
+    run = Struct.new(:runtime, :workspace, :sandbox).new(runtime, nil, nil)
+
+    assembly = runtime.build_assembly(assembly_class, run:)
+
+    assert_kind_of LittleGhost::Assembly, assembly
+    assert_equal assembly_class.assembly_id, assembly.class.assembly_id
+    assert_same run, assembly.run
+    assert_same runtime, assembly.runtime
+  end
+
   private
 
   def write(root, relative_path, content)

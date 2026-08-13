@@ -9,7 +9,7 @@ Write directly to the reader in plain language. Begin with what they can accompl
 Warmth comes from orientation, useful transitions, and examples that respect the reader's time. It does not come from jokes, marketing claims, or conversational filler. Precision comes from source-backed names, signatures, return values, lifecycle facts, and limitations. Do not trade one for the other.
 
 Describe LittleGhost first as a framework for building AI features with agents
-and agentic workflows. Make it clear that those features can live inside an
+and composable assemblies. Make it clear that those features can live inside an
 existing Ruby system or support a dedicated AI service. Streaming, tools,
 provider adapters, and the dependency profile are important supporting
 capabilities, but no one of them is the project's purpose. Examples should show
@@ -72,6 +72,8 @@ Use the same customer support story across introductory documentation so readers
 - `HelpCenterLookupTool` reads help center information through a narrow, validated lookup.
 - `ResearchAgent` handles open-ended investigation.
 - `ResponseWorkflow` composes deterministic research and response steps.
+- `ProblemSolverSwarm` lets configured specialists hand work directly to one another.
+- `SupportFlowGraph` follows application-declared nodes and edges.
 
 Other examples are welcome when a feature cannot be explained honestly through this story.
 
@@ -166,7 +168,7 @@ For predicates and flags, describe the boolean meaning instead of promising an
 exact `true` or `false` object unless callers genuinely depend on that exact
 return value.
 
-Use LittleGhost's own vocabulary consistently. A **model role** is the application-facing name resolved by `ModelResolver`; a **provider** performs model requests; a **run** owns one top-level execution; a **subagent** is model-directed delegation; and a **workflow** is application-directed composition. Do not switch casually between “agent,” “assistant,” “bot,” “worker,” and “model.”
+Use LittleGhost's own vocabulary consistently. A **model role** is the application-facing name resolved by `ModelResolver`; a **provider** performs model requests; a **run** owns one top-level execution; an **assembly** is any agent-compatible coordination; a **subagent** is model-directed delegation; a **workflow** is Ruby-directed composition; a **swarm** uses direct agent handoffs; and a **graph** follows declared nodes and edges. Do not switch casually between “agent,” “assistant,” “bot,” “worker,” and “model.”
 
 Warnings are for plausible harm or surprising irreversible behavior, not emphasis. Start with **Warning:**, name the risk, then give the safe action. Examples that grant filesystem, process, network, credential, or cross-tenant data access must put the trust boundary next to the enabling code. Use **Note:** for useful, non-hazardous context. If ordinary prose is clear enough, use ordinary prose.
 
