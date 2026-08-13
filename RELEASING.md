@@ -35,38 +35,25 @@ authenticated GitHub user's public SSH signing keys before creating a tag.
 
 ## Publish a version
 
-1. Prepare the version on a clean pull-request branch. This updates `LittleGhost::VERSION`, its public assertion, and `Gemfile.lock` together:
+From a clean, current `main` branch, prepare and merge the version pull request:
 
-   ```sh
-   bundle exec rake "release:prepare[0.1.1]"
-   ```
+```sh
+bundle exec rake "release:prepare_pr[0.2.0]"
+```
 
-2. Run the local gate:
+The task creates `release-0.2.0`, updates `LittleGhost::VERSION`, its public assertion, and `Gemfile.lock`, and then runs the complete local release gate. It commits and pushes those files, opens a draft pull request labeled `enhancement`, waits for its checks, verifies the exact release commit and file set, marks it ready, and squash-merges that commit. Finally, it confirms the merge, returns to `main`, fast-forwards the checkout, and deletes the local release branch.
 
-   ```sh
-   bundle exec rake test
-   bundle exec standardrb --no-fix
-   bundle exec rake site:check
-   bundle exec rake package:check
-   git diff --check
-   ```
+If any command fails, the task stops at that point and leaves the branch and working tree intact for inspection. It never bypasses branch protection.
 
-3. Merge the version pull request and update the local `main` branch.
-4. Fetch the remote state and run the release doctor. It fails when the worktree is dirty, `HEAD` differs from `origin/main`, the tag exists, RubyGems already contains the version, or the configured SSH signing key is not registered with GitHub:
+Publish the prepared version with a separate, deliberate command:
 
-   ```sh
-   git fetch origin main --tags
-   bundle exec rake release:doctor
-   ```
+```sh
+bundle exec rake release:publish
+```
 
-5. Create a signed tag whose name exactly matches `v#{LittleGhost::VERSION}`.
-   The task forces SSH signing and fails when Git cannot create the signature:
+The publish task validates that `origin` is this repository, fetches remote state, requires a clean `main` exactly matching `origin/main`, and runs the release doctor. It creates the required SSH-signed version tag, pushes that tag, verifies its exact object and commit with GitHub, finds the matching GitHub Actions release run, and watches it to completion. Keep this irreversible publication step separate from pull-request preparation.
 
-   ```sh
-   version="$(ruby -Ilib -rlittle_ghost/version -e 'print LittleGhost::VERSION')"
-   bundle exec rake release:tag
-   git push origin "v${version}"
-   ```
+If the tag push succeeds but workflow discovery or watching is interrupted, run `bundle exec rake release:publish` again. The task recognizes the same verified local and remote tag, does not recreate or push it, and resumes watching the workflow for that tag commit. It refuses mismatched, lightweight, unverified, or wrong-commit tags.
 
 The tag starts the release workflow. Repository permissions control who can push it, and the workflow requires GitHub to report a valid tag signature before verifying the version and membership in `main`. Immediately before trusted publishing, it confirms that the remote tag is still the exact verified tag object and commit. It then reruns the complete gate, publishes through RubyGems OIDC, verifies the served package, creates the GitHub Release, deploys the website and API documentation from that tag, and checks every public release surface. RubyGems checksum verification tolerates bounded API propagation delays while retaining complete package-equivalence checks.
 
