@@ -446,6 +446,8 @@ class ConfigurationTest < Minitest::Test
     provider = Class.new(LittleGhost::Providers::Base).new
     started = Queue.new
     release = Queue.new
+    interruption_started = Queue.new
+    release_interruption = Queue.new
     requests = []
     response = lambda do |text|
       LittleGhost::ModelResponse.new(
@@ -460,6 +462,8 @@ class ConfigurationTest < Minitest::Test
         release.pop
         value = response.call("would finish")
       else
+        interruption_started << true
+        release_interruption.pop
         value = response.call("steered")
       end
       [LittleGhost::StreamEvent.build(:message_stop, response: value)].each
@@ -487,7 +491,11 @@ class ConfigurationTest < Minitest::Test
         )
       end
       release << true
+      interruption_started.pop
 
+      assert_predicate runner, :alive?
+
+      release_interruption << true
       assert_equal "steered", interrupted.value.text
       assert_equal ["slack-1"], interrupted.value.interruption_ids
       assert_equal "channel", interrupted.value.batch_key
@@ -499,8 +507,75 @@ class ConfigurationTest < Minitest::Test
       assert_equal "Run has already finished", terminal.message
     ensure
       release << true if runner&.alive?
+      release_interruption << true if interrupted&.alive?
       runner&.kill
       interrupted&.kill
+    end
+  end
+
+  def test_terminal_cleanup_waits_for_runtime_hook_interruption_preparation
+    provider = Class.new(LittleGhost::Providers::Base).new
+    model_started = Queue.new
+    release_model = Queue.new
+    preparation_started = Queue.new
+    release_preparation = Queue.new
+    resource_closed = Queue.new
+    requests = []
+    response = lambda do |text|
+      LittleGhost::ModelResponse.new(
+        message: LittleGhost::Message.new(role: :assistant, content: text),
+        stop_reason: :end_turn
+      )
+    end
+    provider.define_singleton_method(:stream) do |request|
+      requests << request
+      if requests.one?
+        model_started << true
+        release_model.pop
+      end
+      value = response.call(requests.one? ? "would finish" : "steered")
+      [LittleGhost::StreamEvent.build(:message_stop, response: value)].each
+    end
+    hook = Class.new(LittleGhost::Runtime::Hook) do
+      define_method(:prepare_run) do |run|
+        run.register { resource_closed << true }
+      end
+      define_method(:prepare_interruption) do |_run, payload|
+        preparation_started << true
+        release_preparation.pop
+        payload
+      end
+    end
+    agent = Class.new(LittleGhost::Agent) do
+      model "main"
+      system_prompt "Test"
+    end
+
+    with_runtime(agent:, provider:, configure: ->(harness) { harness.runtime_hook hook }) do |harness|
+      execution = harness.agent_instance.start_execution(message: "work")
+      model_started.pop
+      interruption = Thread.new do
+        execution.interrupt_response(message: "steer")
+      rescue => error
+        error
+      end
+      preparation_started.pop
+      release_model << true
+
+      assert_raises(LittleGhost::DeadlineExceededError) do
+        execution.wait(deadline: Time.now + 0.01)
+      end
+      assert resource_closed.empty?, "run resources closed while interruption preparation was active"
+
+      release_preparation << true
+      assert_instance_of LittleGhost::AgentInterruptError, interruption.value
+      assert execution.wait(deadline: Time.now + 1).completed?
+      assert resource_closed.pop
+    ensure
+      release_model << true if execution&.active?
+      release_preparation << true if interruption&.alive?
+      interruption&.join
+      execution&.close(deadline: Time.now + 1) if execution&.active?
     end
   end
 
@@ -768,6 +843,86 @@ class ConfigurationTest < Minitest::Test
     with_runtime(configure: ->(harness) { harness.runtime_hook hook }) do |harness|
       assert_equal "Handled: RuntimeError", harness.runtime_instance.error_message(RuntimeError.new, nil)
       assert_equal "Agent failed: ArgumentError", harness.runtime_instance.error_message(ArgumentError.new, nil)
+    end
+  end
+
+  def test_runtime_history_hooks_select_and_normalize_session_history
+    calls = []
+    deferred = Class.new(LittleGhost::Runtime::Hook) do
+      define_method(:session_history) do |run, stored:, fallback:|
+        calls << [run, stored, fallback]
+        nil
+      end
+    end
+    selected = Class.new(LittleGhost::Runtime::Hook) do
+      define_method(:session_history) do |_run, stored:, fallback:|
+        [stored.first, {role: :user, content: fallback.first.text.upcase}]
+      end
+    end
+
+    with_runtime(configure: lambda { |harness|
+      harness.runtime_hook deferred
+      harness.runtime_hook selected
+    }) do |harness|
+      runtime = harness.runtime_instance
+      run = Object.new
+      stored = [LittleGhost::Message.new(role: :assistant, content: "Earlier")]
+      fallback = [LittleGhost::Message.new(role: :user, content: "continue")]
+      session = Struct.new(:messages) do
+        def history(fallback: []) = messages.empty? ? fallback : messages
+      end.new(stored)
+
+      history = runtime.session_history(run, session, fallback:)
+
+      assert_equal [[run, stored, fallback]], calls
+      assert_equal %i[assistant user], history.map(&:role)
+      assert_equal ["Earlier", "CONTINUE"], history.map(&:text)
+      assert history.frozen?
+    end
+  end
+
+  def test_runtime_uses_the_session_default_when_history_hooks_defer
+    hook = Class.new(LittleGhost::Runtime::Hook)
+
+    with_runtime(configure: ->(harness) { harness.runtime_hook hook }) do |harness|
+      fallback = [LittleGhost::Message.new(role: :user, content: "Start here")]
+      session = Struct.new(:messages) do
+        def history(fallback: []) = messages.empty? ? fallback : messages
+      end.new([])
+
+      assert_same fallback, harness.runtime_instance.session_history(Object.new, session, fallback:)
+    end
+  end
+
+  def test_runtime_history_hook_reconciles_a_persisted_session_for_an_agent_run
+    store = LittleGhost::SessionStores::Memory.new
+    stored = LittleGhost::Message.new(role: :assistant, content: "Persisted answer")
+    store.replace("conversation", actor_id: "actor", messages: [stored], state: {}, metadata: {})
+    calls = []
+    hook = Class.new(LittleGhost::Runtime::Hook) do
+      define_method(:session_history) do |run, stored:, fallback:|
+        calls << [run, stored, fallback]
+        [stored.first, fallback.first]
+      end
+    end
+
+    with_runtime(session_store: store, configure: ->(harness) { harness.runtime_hook hook }) do |harness, provider|
+      supplied = LittleGhost::Message.new(role: :user, content: "Supplied context")
+      run = harness.agent_instance.call(
+        message: "Continue",
+        history: [supplied],
+        session_id: "conversation",
+        actor_id: "actor"
+      )
+
+      assert_equal 1, calls.length
+      assert_same run, calls.first.fetch(0)
+      assert_equal [[:assistant, "Persisted answer"]], calls.first.fetch(1).map { |message| [message.role, message.text] }
+      assert_equal [[:user, "Supplied context"]], calls.first.fetch(2).map { |message| [message.role, message.text] }
+      request_texts = provider.requests.first.messages.map(&:text)
+      assert_includes request_texts, "Persisted answer"
+      assert_includes request_texts, "Supplied context"
+      assert_includes request_texts, "Continue"
     end
   end
 

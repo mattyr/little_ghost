@@ -59,7 +59,9 @@ module LittleGhost
       @once_mutex = Mutex.new
       @once_keys = {}
       @interruption_mutex = Mutex.new
+      @interruption_condition = ConditionVariable.new
       @interruption_state = :not_started
+      @active_interruptions = 0
       @entrypoint = nil
       @usage = Usage.new
     end
@@ -110,6 +112,21 @@ module LittleGhost
       cancellation_token: Support::CancellationToken.new,
       deadline: nil
     )
+      interrupt_response_with do
+        [
+          message,
+          {
+            interruption_id:,
+            batch_key:,
+            metadata:,
+            cancellation_token:,
+            deadline:
+          }
+        ]
+      end
+    end
+
+    def interrupt_response_with # :nodoc:
       entrypoint = @interruption_mutex.synchronize do
         case @interruption_state
         when :not_started, :starting
@@ -118,20 +135,22 @@ module LittleGhost
           raise AgentInterruptError, "Run has already finished"
         end
 
+        @active_interruptions += 1
         @entrypoint
       end
       unless entrypoint.is_a?(Agent)
         raise AgentInterruptError, "Run entrypoint does not support interruptions"
       end
 
-      entrypoint.interrupt_response(
-        message,
-        interruption_id:,
-        batch_key:,
-        metadata:,
-        cancellation_token:,
-        deadline:
-      )
+      message, options = yield
+      entrypoint.interrupt_response(message, **options)
+    ensure
+      if entrypoint
+        @interruption_mutex.synchronize do
+          @active_interruptions -= 1
+          @interruption_condition.broadcast
+        end
+      end
     end
 
     # Creates a RunContext with this run's cancellation token and deadline.
@@ -251,7 +270,7 @@ module LittleGhost
       end
       register(agent)
       invoke = lambda do
-        history = session ? session.history(fallback: invocation.history) : invocation.history
+        history = session ? runtime.session_history(self, session, fallback: invocation.history) : invocation.history
         context = session ? session.state.merge(invocation.context) : invocation.context.dup
         options = {
           history:,
@@ -333,9 +352,10 @@ module LittleGhost
       ]
     ensure
       @interruption_mutex.synchronize do
+        @interruption_state = :terminal
+        @interruption_condition.wait(@interruption_mutex) while @active_interruptions.positive?
         @last_entrypoint = @entrypoint
         @entrypoint = nil
-        @interruption_state = :terminal
       end
       resource_cleanup_error = nil
       begin

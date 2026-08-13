@@ -115,6 +115,38 @@ class ToolTest < Minitest::Test
     assert result.content.frozen?
   end
 
+  def test_execute_preserves_validated_companion_content
+    image = LittleGhost::Content::Image.new(data: "image", media_type: "image/png")
+    tool = LittleGhost::Tool.define(name: "chart", description: "Builds a chart") do
+      LittleGhost::Tool::ExecutionResult.new(
+        content: {status: "ready"},
+        status: :success,
+        companion_content: [image]
+      )
+    end
+
+    result = tool.new.execute({})
+
+    assert_equal({"status" => "ready"}, JSON.parse(result.content))
+    assert_equal [image], result.companion_content
+    assert_predicate result.companion_content, :frozen?
+  end
+
+  def test_execution_result_rejects_tool_and_reasoning_companions
+    tool_use = LittleGhost::Content::ToolUse.new(id: "call-1", name: "lookup", input: {})
+    reasoning = LittleGhost::Content::Reasoning.new(text: "private")
+
+    [tool_use, reasoning].each do |block|
+      assert_raises(ArgumentError) do
+        LittleGhost::Tool::ExecutionResult.new(
+          content: "result",
+          status: :success,
+          companion_content: [block]
+        )
+      end
+    end
+  end
+
   def test_tool_names_default_from_the_ruby_class_name
     klass = Class.new(LittleGhost::Tool)
     stub_const = Module.new

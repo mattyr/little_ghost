@@ -20,7 +20,7 @@ module LittleGhost
   #       result = @container.run(
   #         command, timeout:, cancellation: context&.cancellation_token
   #       )
-  #       Execution.new(**result)
+  #       LittleGhost::Sandbox::Execution.new(**result)
   #     end
   #   end
   #
