@@ -28,6 +28,21 @@ namespace :package do
 end
 
 namespace :release do
+  desc "Prepare, verify, merge, and clean up a version pull request"
+  task :prepare_pr, [:version] do |_, arguments|
+    version = arguments[:version]
+    abort 'Usage: bundle exec rake "release:prepare_pr[VERSION]"' unless version
+
+    LittleGhostRelease::Workflow.new.prepare_pull_request(version)
+    puts "Merged the LittleGhost #{version} release pull request and updated main."
+  end
+
+  desc "Create and push the signed version tag, then watch the release workflow"
+  task :publish do
+    LittleGhostRelease::Workflow.new.publish(LittleGhost::VERSION)
+    puts "Published LittleGhost #{LittleGhost::VERSION}."
+  end
+
   desc "Prepare a version bump and update its derived files"
   task :prepare, [:version] do |_, arguments|
     version = arguments[:version]

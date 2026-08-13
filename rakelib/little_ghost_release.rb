@@ -5,6 +5,7 @@ require "json"
 require "net/http"
 require "open3"
 require "rubygems/package"
+require "tempfile"
 require "tmpdir"
 require "uri"
 require "yaml"
@@ -12,6 +13,227 @@ require "zlib"
 
 module LittleGhostRelease
   class Error < StandardError; end
+
+  class Workflow
+    REPOSITORY = "mattyr/little_ghost"
+    PULL_REQUEST_URL_PATTERN = %r{\Ahttps://github\.com/mattyr/little_ghost/pull/(\d+)\z}
+    RELEASE_GATE = [
+      %w[bundle exec rake test],
+      %w[bundle exec standardrb --no-fix],
+      %w[bundle exec rake site:check],
+      %w[bundle exec rake package:check],
+      %w[git diff --check]
+    ].freeze
+    RELEASE_FILES = %w[Gemfile.lock lib/little_ghost/version.rb test/little_ghost_test.rb].freeze
+    PULL_REQUEST_CHECK_ATTEMPTS = 15
+    PULL_REQUEST_CHECK_DELAY = 2
+    RELEASE_WORKFLOW_ATTEMPTS = 60
+    RELEASE_WORKFLOW_DELAY = 5
+    TAG_VERIFICATION_ATTEMPTS = 12
+    TAG_VERIFICATION_DELAY = 2
+
+    def initialize(command_runner: Kernel.method(:system), capture_runner: Open3.method(:capture2e), sleeper: Kernel.method(:sleep))
+      @command_runner = command_runner
+      @capture_runner = capture_runner
+      @sleeper = sleeper
+    end
+
+    def prepare_pull_request(version)
+      version = validate_version(version)
+      branch = "release-#{version}"
+      require_clean_main
+      require_expected_origin
+      run!("git", "fetch", "origin", "main", "--tags")
+      require_current_origin_main
+      run!("git", "switch", "-c", branch)
+      run!("bundle", "exec", "rake", "release:prepare[#{version}]")
+      RELEASE_GATE.each { |command| run!(*command) }
+      run!("git", "add", *RELEASE_FILES)
+      run!("git", "commit", "-m", "Prepare version #{version}")
+      head = capture!("git", "rev-parse", "HEAD")
+      run!("git", "push", "-u", "origin", branch)
+      pull_request = create_pull_request(version)
+      wait_for_pull_request_checks(pull_request)
+      run!("gh", "pr", "checks", pull_request, "--repo", REPOSITORY, "--watch", "--interval", "10")
+      verify_pull_request(pull_request, head, state: "OPEN")
+      run!("gh", "pr", "ready", pull_request, "--repo", REPOSITORY)
+      run!(
+        "gh", "pr", "merge", pull_request, "--repo", REPOSITORY,
+        "--squash", "--match-head-commit", head
+      )
+      verify_pull_request(pull_request, head, state: "MERGED")
+      run!("git", "switch", "main")
+      run!("git", "pull", "--ff-only")
+      run!("git", "branch", "-D", branch)
+    end
+
+    def publish(version)
+      tag = LittleGhostRelease.expected_tag(version)
+      require_clean_main
+      require_expected_origin
+      run!("git", "fetch", "origin", "main", "--tags")
+      require_current_origin_main
+      tag_object, tag_commit = existing_tag(tag)
+      unless tag_object
+        run!("bundle", "exec", "rake", "release:tag")
+        run!("git", "push", "origin", tag)
+        tag_object = capture!("git", "rev-parse", "refs/tags/#{tag}")
+        tag_commit = capture!("git", "rev-parse", "refs/tags/#{tag}^{commit}")
+      end
+      verify_remote_tag(tag_object, tag_commit)
+      run!("gh", "run", "watch", release_workflow_id(tag, tag_commit), "--repo", REPOSITORY, "--exit-status")
+    end
+
+    private
+
+    def validate_version(version)
+      value = version.to_s
+      unless Gem::Version.correct?(value) && value.match?(/\A\d[0-9A-Za-z.-]*\z/)
+        raise Error, "Release version must be a valid RubyGems version, got #{version.inspect}"
+      end
+
+      value
+    end
+
+    def require_clean_main
+      branch = capture!("git", "branch", "--show-current")
+      raise Error, "Release workflow must start on main, got #{branch.inspect}" unless branch == "main"
+      raise Error, "Release workflow requires a clean worktree" unless capture!("git", "status", "--porcelain").empty?
+    end
+
+    def require_current_origin_main
+      head = capture!("git", "rev-parse", "HEAD")
+      main = capture!("git", "rev-parse", "origin/main")
+      raise Error, "HEAD must exactly match origin/main" unless head == main
+    end
+
+    def require_expected_origin
+      remote = capture!("git", "remote", "get-url", "origin")
+      repository = remote[%r{\Ahttps://github\.com/([^/]+/[^/]+?)(?:\.git)?\z}, 1] ||
+        remote[%r{\Agit@github\.com:([^/]+/[^/]+?)(?:\.git)?\z}, 1] ||
+        remote[%r{\Assh://git@github\.com/([^/]+/[^/]+?)(?:\.git)?\z}, 1]
+      raise Error, "origin must be #{REPOSITORY}, got #{remote.inspect}" unless repository == REPOSITORY
+    end
+
+    def create_pull_request(version)
+      Tempfile.create(["little-ghost-release", ".md"]) do |body|
+        body.write(<<~MARKDOWN)
+          ## Summary
+          - prepare LittleGhost #{version} for release
+          - update the public version assertion and locked local gem version
+
+          ## Verification
+          Automated: Tests, StandardRB, site validation, package verification, and `git diff --check` pass.
+          Manual: The generated package reports version #{version} and loads successfully.
+        MARKDOWN
+        body.flush
+        output = capture_command!(
+          "gh", "pr", "create", "--draft", "--label", "enhancement",
+          "--repo", REPOSITORY, "--title", "Prepare version #{version}", "--body-file", body.path
+        )
+        match = output.match(PULL_REQUEST_URL_PATTERN)
+        raise Error, "GitHub returned an unexpected pull request URL: #{output.inspect}" unless match
+
+        match[1]
+      end
+    end
+
+    def wait_for_pull_request_checks(pull_request)
+      reported = PULL_REQUEST_CHECK_ATTEMPTS.times.any? do |attempt|
+        output, status = @capture_runner.call(
+          "gh", "pr", "view", pull_request, "--repo", REPOSITORY,
+          "--json", "statusCheckRollup", "--jq", ".statusCheckRollup | length"
+        )
+        next true if status.success? && output.to_i.positive?
+
+        @sleeper.call(PULL_REQUEST_CHECK_DELAY) if attempt + 1 < PULL_REQUEST_CHECK_ATTEMPTS
+        false
+      end
+
+      raise Error, "GitHub did not report checks for the release pull request" unless reported
+    end
+
+    def verify_pull_request(pull_request, expected_head, state:)
+      output = capture!(
+        "gh", "pr", "view", pull_request, "--repo", REPOSITORY,
+        "--json", "state,headRefOid,files", "--jq", '[.state,.headRefOid,([.files[].path] | sort | join(","))] | @tsv'
+      )
+      actual_state, head, files = output.split("\t", 3)
+      expected_files = RELEASE_FILES.sort.join(",")
+      unless actual_state == state && head == expected_head && files == expected_files
+        raise Error, "Release pull request changed unexpectedly: #{output.inspect}"
+      end
+    end
+
+    def existing_tag(tag)
+      local_object, local_status = @capture_runner.call("git", "rev-parse", "--verify", "refs/tags/#{tag}")
+      remote, remote_status = @capture_runner.call("git", "ls-remote", "--tags", "origin", "refs/tags/#{tag}")
+      raise Error, "Could not inspect release tag #{tag}" unless remote_status.success?
+
+      remote_object = remote.split.first
+      return unless local_status.success? || remote_object
+      unless local_status.success? && local_object.strip == remote_object
+        raise Error, "Local and remote release tag #{tag} do not match"
+      end
+      unless capture!("git", "cat-file", "-t", "refs/tags/#{tag}") == "tag"
+        raise Error, "Release tag #{tag} must be an annotated tag"
+      end
+
+      commit = capture!("git", "rev-parse", "refs/tags/#{tag}^{commit}")
+      raise Error, "Release tag #{tag} must point to HEAD" unless commit == capture!("git", "rev-parse", "HEAD")
+
+      [local_object.strip, commit]
+    end
+
+    def verify_remote_tag(tag_object, tag_commit)
+      verified = TAG_VERIFICATION_ATTEMPTS.times.any? do |attempt|
+        output, status = @capture_runner.call(
+          "gh", "api", "repos/#{REPOSITORY}/git/tags/#{tag_object}",
+          "--jq", "[.verification.verified,.object.type,.object.sha] | @tsv"
+        )
+        next true if status.success? && output.strip == "true\tcommit\t#{tag_commit}"
+
+        @sleeper.call(TAG_VERIFICATION_DELAY) if attempt + 1 < TAG_VERIFICATION_ATTEMPTS
+        false
+      end
+      raise Error, "GitHub did not verify release tag #{tag_object}" unless verified
+    end
+
+    def release_workflow_id(tag, tag_commit)
+      RELEASE_WORKFLOW_ATTEMPTS.times do |attempt|
+        output, status = @capture_runner.call(
+          "gh", "run", "list", "--repo", REPOSITORY, "--workflow", "release.yml", "--branch", tag,
+          "--event", "push", "--limit", "10", "--json", "databaseId,headSha"
+        )
+        if status.success?
+          run = JSON.parse(output).find { |candidate| candidate["headSha"] == tag_commit }
+          return run.fetch("databaseId").to_s if run
+        end
+
+        @sleeper.call(RELEASE_WORKFLOW_DELAY) if attempt + 1 < RELEASE_WORKFLOW_ATTEMPTS
+      end
+
+      raise Error, "Could not find the GitHub release workflow for #{tag}"
+    end
+
+    def capture!(*command)
+      output, status = @capture_runner.call(*command)
+      raise Error, "Command failed: #{command.join(" ")}" unless status.success?
+
+      output.strip
+    end
+
+    def capture_command!(*command)
+      output, status = @capture_runner.call(*command)
+      raise Error, "Command failed: #{command.join(" ")}" unless status.success?
+
+      output.strip
+    end
+
+    def run!(*command)
+      raise Error, "Command failed: #{command.join(" ")}" unless @command_runner.call(*command)
+    end
+  end
 
   REQUIRED_FILES = %w[
     LICENSE.txt

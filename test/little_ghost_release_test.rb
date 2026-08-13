@@ -124,6 +124,153 @@ class LittleGhostReleaseTest < Minitest::Test
     assert_equal "Could not create signed release tag v1.2.3", error.message
   end
 
+  def test_release_workflow_prepares_checks_labels_and_merges_the_version_pull_request
+    captures = capture_runner(
+      [["git", "branch", "--show-current"], ["main\n", true]],
+      [["git", "status", "--porcelain"], ["", true]],
+      [["git", "remote", "get-url", "origin"], ["git@github.com:mattyr/little_ghost.git\n", true]],
+      [["git", "rev-parse", "HEAD"], ["commit\n", true]],
+      [["git", "rev-parse", "origin/main"], ["commit\n", true]],
+      [["git", "rev-parse", "HEAD"], ["release-head\n", true]],
+      [
+        lambda do |arguments|
+          next false unless arguments.take(3) == ["gh", "pr", "create"]
+
+          body_path = arguments.fetch(arguments.index("--body-file") + 1)
+          assert_includes File.read(body_path), "prepare LittleGhost 1.2.3 for release"
+          true
+        end,
+        ["https://github.com/mattyr/little_ghost/pull/123\n", true]
+      ],
+      [
+        [
+          "gh", "pr", "view", "123", "--repo", "mattyr/little_ghost",
+          "--json", "statusCheckRollup", "--jq", ".statusCheckRollup | length"
+        ],
+        ["3\n", true]
+      ],
+      [
+        [
+          "gh", "pr", "view", "123", "--repo", "mattyr/little_ghost",
+          "--json", "state,headRefOid,files", "--jq", '[.state,.headRefOid,([.files[].path] | sort | join(","))] | @tsv'
+        ],
+        ["OPEN\trelease-head\tGemfile.lock,lib/little_ghost/version.rb,test/little_ghost_test.rb\n", true]
+      ],
+      [
+        [
+          "gh", "pr", "view", "123", "--repo", "mattyr/little_ghost",
+          "--json", "state,headRefOid,files", "--jq", '[.state,.headRefOid,([.files[].path] | sort | join(","))] | @tsv'
+        ],
+        ["MERGED\trelease-head\tGemfile.lock,lib/little_ghost/version.rb,test/little_ghost_test.rb\n", true]
+      ]
+    )
+    commands = []
+    runner = ->(*command) { commands << command }
+
+    LittleGhostRelease::Workflow.new(command_runner: runner, capture_runner: captures).prepare_pull_request("1.2.3")
+
+    assert_includes commands, ["git", "switch", "-c", "release-1.2.3"]
+    assert_includes commands, ["bundle", "exec", "rake", "release:prepare[1.2.3]"]
+    assert_includes commands, ["gh", "pr", "checks", "123", "--repo", "mattyr/little_ghost", "--watch", "--interval", "10"]
+    assert_includes commands, [
+      "gh", "pr", "merge", "123", "--repo", "mattyr/little_ghost",
+      "--squash", "--match-head-commit", "release-head"
+    ]
+    assert_equal ["git", "branch", "-D", "release-1.2.3"], commands.last
+  end
+
+  def test_release_workflow_rejects_preparation_outside_main
+    captures = capture_runner(
+      [["git", "branch", "--show-current"], ["feature\n", true]]
+    )
+    error = assert_raises(LittleGhostRelease::Error) do
+      LittleGhostRelease::Workflow.new(command_runner: ->(*) { flunk }, capture_runner: captures)
+        .prepare_pull_request("1.2.3")
+    end
+
+    assert_equal 'Release workflow must start on main, got "feature"', error.message
+  end
+
+  def test_release_workflow_publishes_the_signed_tag_and_watches_github
+    captures = capture_runner(
+      [["git", "branch", "--show-current"], ["main\n", true]],
+      [["git", "status", "--porcelain"], ["", true]],
+      [["git", "remote", "get-url", "origin"], ["https://github.com/mattyr/little_ghost.git\n", true]],
+      [["git", "rev-parse", "HEAD"], ["commit\n", true]],
+      [["git", "rev-parse", "origin/main"], ["commit\n", true]],
+      [["git", "rev-parse", "--verify", "refs/tags/v1.2.3"], ["", false]],
+      [["git", "ls-remote", "--tags", "origin", "refs/tags/v1.2.3"], ["", true]],
+      [["git", "rev-parse", "refs/tags/v1.2.3"], ["tag-object\n", true]],
+      [["git", "rev-parse", "refs/tags/v1.2.3^{commit}"], ["commit\n", true]],
+      [
+        [
+          "gh", "api", "repos/mattyr/little_ghost/git/tags/tag-object",
+          "--jq", "[.verification.verified,.object.type,.object.sha] | @tsv"
+        ],
+        ["true\tcommit\tcommit\n", true]
+      ],
+      [
+        [
+          "gh", "run", "list", "--repo", "mattyr/little_ghost", "--workflow", "release.yml",
+          "--branch", "v1.2.3", "--event", "push", "--limit", "10", "--json", "databaseId,headSha"
+        ],
+        [JSON.generate([{"databaseId" => 12345, "headSha" => "commit"}]), true]
+      ]
+    )
+    commands = []
+
+    LittleGhostRelease::Workflow.new(
+      command_runner: ->(*command) { commands << command },
+      capture_runner: captures
+    ).publish("1.2.3")
+
+    assert_equal [
+      ["git", "fetch", "origin", "main", "--tags"],
+      ["bundle", "exec", "rake", "release:tag"],
+      ["git", "push", "origin", "v1.2.3"],
+      ["gh", "run", "watch", "12345", "--repo", "mattyr/little_ghost", "--exit-status"]
+    ], commands
+  end
+
+  def test_release_workflow_resumes_an_existing_verified_tag
+    captures = capture_runner(
+      [["git", "branch", "--show-current"], ["main\n", true]],
+      [["git", "status", "--porcelain"], ["", true]],
+      [["git", "remote", "get-url", "origin"], ["git@github.com:mattyr/little_ghost.git\n", true]],
+      [["git", "rev-parse", "HEAD"], ["commit\n", true]],
+      [["git", "rev-parse", "origin/main"], ["commit\n", true]],
+      [["git", "rev-parse", "--verify", "refs/tags/v1.2.3"], ["tag-object\n", true]],
+      [["git", "ls-remote", "--tags", "origin", "refs/tags/v1.2.3"], ["tag-object\trefs/tags/v1.2.3\n", true]],
+      [["git", "cat-file", "-t", "refs/tags/v1.2.3"], ["tag\n", true]],
+      [["git", "rev-parse", "refs/tags/v1.2.3^{commit}"], ["commit\n", true]],
+      [["git", "rev-parse", "HEAD"], ["commit\n", true]],
+      [
+        [
+          "gh", "api", "repos/mattyr/little_ghost/git/tags/tag-object",
+          "--jq", "[.verification.verified,.object.type,.object.sha] | @tsv"
+        ],
+        ["true\tcommit\tcommit\n", true]
+      ],
+      [
+        [
+          "gh", "run", "list", "--repo", "mattyr/little_ghost", "--workflow", "release.yml",
+          "--branch", "v1.2.3", "--event", "push", "--limit", "10", "--json", "databaseId,headSha"
+        ],
+        [JSON.generate([{"databaseId" => 12345, "headSha" => "commit"}]), true]
+      ]
+    )
+    commands = []
+
+    LittleGhostRelease::Workflow.new(
+      command_runner: ->(*command) { commands << command },
+      capture_runner: captures
+    ).publish("1.2.3")
+
+    refute_includes commands, ["bundle", "exec", "rake", "release:tag"]
+    refute_includes commands, ["git", "push", "origin", "v1.2.3"]
+    assert_equal ["gh", "run", "watch", "12345", "--repo", "mattyr/little_ghost", "--exit-status"], commands.last
+  end
+
   def test_current_gem_package_has_the_release_contract
     Dir.mktmpdir("little-ghost-release-test") do |directory|
       path = File.join(directory, "little_ghost-#{LittleGhost::VERSION}.gem")
@@ -184,10 +331,32 @@ class LittleGhostReleaseTest < Minitest::Test
   def command_runner(*expectations)
     lambda do |*arguments|
       expected_arguments, (output, success) = expectations.shift
-      assert_equal expected_arguments, arguments
+      if expected_arguments.respond_to?(:call)
+        assert expected_arguments.call(arguments), "Unexpected command: #{arguments.inspect}"
+      else
+        assert_equal expected_arguments, arguments
+      end
       status = Object.new
       status.define_singleton_method(:success?) { success }
       [output, status]
+    ensure
+      assert_empty expectations if expectations.empty?
+    end
+  end
+
+  def capture_runner(*expectations)
+    lambda do |*arguments|
+      expected_arguments, result = expectations.shift
+      if expected_arguments.respond_to?(:call)
+        assert expected_arguments.call(arguments), "Unexpected command: #{arguments.inspect}"
+      else
+        assert_equal expected_arguments, arguments
+      end
+      result.then do |output, success|
+        status = Object.new
+        status.define_singleton_method(:success?) { success }
+        [output, status]
+      end
     ensure
       assert_empty expectations if expectations.empty?
     end
