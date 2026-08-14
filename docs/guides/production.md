@@ -89,6 +89,19 @@ Take `actor_id` from authenticated application state. A session ID alone does no
 
 A session is checkpointed when its store write succeeds. The in-memory store lasts only as long as one process. Choose a durable `SessionStore` when conversations must survive a restart or continue on another process.
 
+`SessionStores::Filesystem` is a built-in durable choice for a trusted local or shared filesystem. Choose its root explicitly so application data does not end up in an unexpected directory:
+
+```ruby
+LittleGhost.configure do |config|
+  config.session_store = {
+    provider: LittleGhost::SessionStores::Filesystem,
+    root: "/var/lib/customer_support/sessions"
+  }
+end
+```
+
+It hashes actor and session IDs before using them as filenames, atomically replaces checkpoints, and locks each session while it writes. Session state and metadata must be JSON-compatible. The root remains a trust boundary: the store writes readable JSON and does not encrypt it, and anyone who can modify it can affect persisted session state. The store rejects a symlinked or group/world-accessible root. Configure it beneath an application-controlled path that untrusted users cannot rename or replace. Use a filesystem with reliable file locking and atomic rename support when several processes share the directory.
+
 Every Run has a session ID so LittleGhost can checkpoint its progress. If you do not supply one, LittleGhost generates a new ID for that call. Because your application does not reuse that generated ID, it does not create conversation continuity. A persistent SessionStore may still save working state under it before the Run finishes, so keep request context safe to store or filter sensitive fields in your store.
 
 ## Stream or supervise long-running work
