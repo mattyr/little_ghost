@@ -17,13 +17,7 @@ const showVersionNotice = (picker, catalog, versionsById) => {
   if (!notice) return;
 
   const current = picker.dataset.currentVersion;
-  if (current === "edge") {
-    notice.textContent = "Edge follows main and may describe features that have not shipped yet.";
-    notice.hidden = false;
-    return;
-  }
-
-  if (!catalog.latest_release || current === catalog.latest_release) return;
+  if (current === "edge" || !catalog.latest_release || current === catalog.latest_release) return;
 
   const latest = versionsById.get(catalog.latest_release);
   if (!latest) return;

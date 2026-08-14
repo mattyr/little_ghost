@@ -100,7 +100,6 @@ module LittleGhostDocs
       label = (id == EDGE_ID) ? "Edge" : "v#{id}"
       picker = <<~HTML.chomp
         <label class="#{match[:class]} docs-version-picker">
-          <span class="docs-version-picker-label">Documentation version</span>
           <select aria-label="Documentation version" data-docs-version-picker
                   data-current-version="#{id}" data-current-page="#{relative_page}"
                   data-versions-url="#{manifest_href}">
@@ -113,12 +112,20 @@ module LittleGhostDocs
       HTML
 
       html = html.sub(match[0], picker)
-      html = html.sub("</head>", %(  <link rel="stylesheet" href="#{stylesheet_href}">\n</head>))
+      html = add_stylesheet(html, stylesheet_href)
       html = html.sub(%r{</header>}, "</header>\n#{notice}")
       html = html.sub("</body>", %(  <script type="module" src="#{script_href}"></script>\n</body>))
       html = rewrite_public_urls(html) unless base_path.to_s.empty? || base_path.to_s == "."
       page.write(html)
       true
+    end
+
+    def add_stylesheet(html, stylesheet_href)
+      link = %(<link rel="stylesheet" href="#{stylesheet_href}">)
+      return html.sub("</head>", "  #{link}\n</head>") if html.include?("</head>")
+      return html.sub(%r{<body\b}, "  #{link}\n\n<body") if html.match?(%r{<body\b})
+
+      raise Error, "Documentation page has no head or body boundary"
     end
 
     def rewrite_public_urls(html)

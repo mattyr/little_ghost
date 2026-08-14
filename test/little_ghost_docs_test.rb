@@ -36,6 +36,20 @@ class LittleGhostDocsTest < Minitest::Test
     end
   end
 
+  def test_snapshot_adds_stylesheet_to_legacy_rdoc_without_a_closing_head
+    Dir.mktmpdir("little-ghost-docs") do |directory|
+      site = build_site(directory, "site", version: "0.2.0")
+      agent_path = File.join(site, "docs", "LittleGhost", "Agent.html")
+      File.write(agent_path, File.read(agent_path).sub("</head>", ""))
+
+      LittleGhostDocs::Snapshot.new(site, id: "0.2.0", base_path: "versions/0.2.0").decorate!
+
+      agent = File.read(agent_path)
+      assert_includes agent, '<link rel="stylesheet" href="../../assets/version-selector.css">'
+      assert_operator agent.index("version-selector.css"), :<, agent.index("<body")
+    end
+  end
+
   def test_archive_keeps_edge_mutable_and_release_snapshots_immutable
     Dir.mktmpdir("little-ghost-docs") do |directory|
       archive = File.join(directory, "archive")
