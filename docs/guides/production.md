@@ -15,6 +15,7 @@ end
 As an application grows, a **model role** gives that choice a stable application name:
 
 ```ruby
+# config/initializers/little_ghost.rb
 LittleGhost.configure do |config|
   config.providers = {
     openrouter: {
@@ -40,48 +41,16 @@ Provider connections and model roles can also live in YAML files under `config/l
 
 Prompts, caller input and history, tool results, and attachments may leave the application for the selected external provider. Select providers from trusted configuration and account for their retention and data-residency policies.
 
-## Reuse a Runtime for shared services
+## Configure once, call from anywhere
 
-Class-level `.ask` creates everything needed for one standalone call. A **Runtime** lets several calls reuse configuration and shared services.
+The `LittleGhost.configure` block above is the entire initializer. Controllers and jobs can call your Agent and Assembly classes directly.
 
-```ruby
-runtime = LittleGhost::Runtime.new(configuration: LittleGhost.configuration)
-agent = CustomerSupportAgent.new(runtime: runtime)
-
-first = agent.ask("Where is order 481?")
-second = agent.ask("Can I change the address on order 481?")
-```
-
-The Runtime is reused here, not conversation history. Each `.ask` still creates
-a new top-level Run. Add a stable session identity when one request should
-continue an earlier conversation.
-
-Build the Runtime after configuration is ready. Once created, it keeps that configuration snapshot.
-
-A constructed Runtime can serve independent calls from several threads. Each call gets a new Run and new bound participants and Tools. By default, the Runtime also creates a workspace and sandbox for that call. The same standalone Agent entrypoint can start independent calls concurrently. An Agent or Assembly built for one active Run must stay with that Run.
-
-Within one SessionStore instance, LittleGhost serializes calls that share a session. A multi-process deployment needs external coordination supported by its store.
-
-Objects you give the Runtime may still receive calls from several threads. Make custom session stores, identity and credential resolvers, model resolvers, hooks, instrumentation subscribers, providers, and resource factories thread-safe. The workspace and sandbox instances created for one Run still belong only to that Run.
-
-### Put the Runtime in a Rails application
-
-Build the shared Runtime once, after application configuration loads:
-
-```ruby
-# config/initializers/little_ghost.rb
-Rails.application.config.x.little_ghost.runtime =
-  LittleGhost::Runtime.new(configuration: LittleGhost.configuration)
-```
-
-Use it for a fresh top-level call in a controller or job:
+Then call the Agent directly from a controller or job:
 
 ```ruby
 class SupportQuestionsController < ApplicationController
   def create
-    runtime = Rails.application.config.x.little_ghost.runtime
-    agent = CustomerSupportAgent.new(runtime: runtime)
-    run = agent.ask(
+    run = CustomerSupportAgent.ask(
       params.require(:question),
       actor_id: current_user.id,
       context: {account_id: current_user.account_id}
@@ -96,7 +65,13 @@ class SupportQuestionsController < ApplicationController
 end
 ```
 
-The controller supplies identity and account access from authenticated application state. The model cannot replace those values through its prompt or tool arguments. Pass a stable `session_id` only when a later request should continue this conversation. A background job can use the same Runtime and calling pattern.
+On the first class-level call, LittleGhost prepares model resolution, loading, prompt lookup, persistence, hooks, and factories. Later calls reuse those application services automatically.
+
+Each `.ask` creates a fresh top-level Run with fresh bound participants and Tools. Reusing application services does not create conversation history. Pass a stable `session_id` only when a later request should continue an earlier conversation.
+
+The controller supplies identity and account access from authenticated application state. The model cannot replace those values through its prompt or tool arguments. A background job uses the same direct calling style.
+
+Configure LittleGhost before the first Agent or Assembly call. Once application services start successfully, the configuration is locked so every request sees one stable setup.
 
 ## Preserve conversation with Sessions
 
@@ -162,11 +137,11 @@ A Workspace gives one Run a place for files. A Sandbox decides how filesystem an
 
 `LittleGhost::UnrestrictedSandbox` uses the host machine with the Ruby process's permissions. It does not contain untrusted code. Expose only the tools the model needs, and use a real isolation boundary when untrusted code must run.
 
-The Run closes workspaces and sandboxes created for it by the Runtime. If your application passes an existing instance instead, your application keeps ownership and must close it when its own lifecycle ends.
+The Run closes workspaces and sandboxes that LittleGhost creates for it. If your application passes an existing instance instead, your application keeps ownership and must close it when its own lifecycle ends.
 
 ## Instrument without leaking the application
 
-LittleGhost emits events as a request starts, calls a model or tool, moves between assembly steps, retries, and finishes. Runtime hooks can prepare trusted request data. Instrumentation subscribers and OpenTelemetry exporters can send those events to your monitoring system.
+LittleGhost emits events as a request starts, calls a model or tool, moves between assembly steps, retries, and finishes. Instrumentation subscribers and OpenTelemetry exporters can send those events to your monitoring system.
 
 An external telemetry service may receive application identifiers and event data. Redact sensitive values before they leave your boundary. Avoid attributes with many unique values, such as raw order or request IDs. Replacing one identifier does not make the rest of the data anonymous.
 
@@ -174,10 +149,28 @@ A composite `RunResult` includes short step summaries and trajectory queries. Ke
 
 ## Keep ownership and failure visible
 
-One top-level Run owns the workspace and sandbox created for it by the Runtime, plus application resources registered with `run.register`. It closes those resources after success, failure, a partial response, or cancellation. Existing workspace or sandbox instances passed by the application remain caller-owned.
-
-Runtime itself has no shutdown step. Shared services supplied by the application keep their own lifecycle. Shut those services down with the rest of your application. If you installed process-wide instrumentation subscribers, flush or shut down `LittleGhost::Instrumentation` during application shutdown.
+One top-level Run owns the workspace and sandbox that LittleGhost creates for it, plus application resources registered with `run.register`. It closes those resources after success, failure, a partial response, or cancellation. Existing workspace or sandbox instances passed by the application remain caller-owned.
 
 Ordinary execution failures appear on the Run and its final event. Cleanup, event delivery, or instrumentation can still raise an exception: once those boundaries fail, LittleGhost cannot promise a clean ending.
+
+## Advanced: work with Runtime directly
+
+A Runtime is the internal home for shared model resolution, loading, persistence, hooks, and resource factories. Most applications never need to handle it: `LittleGhost.configure` and class-level `.ask` are enough.
+
+Use `LittleGhost.runtime` when an extension needs the shared object itself. Construct a separate Runtime only when one process deliberately hosts an isolated LittleGhost setup:
+
+```ruby
+configuration = LittleGhost::Configuration.new(root: isolated_root)
+runtime = LittleGhost::Runtime.new(configuration: configuration)
+agent = CustomerSupportAgent.new(runtime: runtime)
+```
+
+An explicit Runtime is an independent configuration snapshot. It does not replace LittleGhost's shared default.
+
+One Runtime can serve independent calls from several threads. Each call gets its own Run, participants, Tools, and Runtime-created workspace and sandbox. An Agent or Assembly already bound to an active Run must stay with that Run.
+
+Within one SessionStore instance, LittleGhost serializes calls sharing a Session. Multi-process deployments need coordination from their store. Custom stores, identity and credential resolvers, model resolvers, hooks, instrumentation subscribers, providers, and resource factories may receive concurrent calls and must be thread-safe.
+
+Runtime has no shutdown step. Shared services supplied by the application keep their own lifecycle. Shut those services down with the rest of your application. If you installed process-wide instrumentation subscribers, flush or shut down `LittleGhost::Instrumentation` during application shutdown.
 
 For exact constructors, options, events, extension contracts, and error behavior, continue into the API reference for `LittleGhost::Configuration`, `LittleGhost::Runtime`, `LittleGhost::Run`, `LittleGhost::Execution`, `LittleGhost::Session`, `LittleGhost::Tool`, and `LittleGhost::StreamEvent`.

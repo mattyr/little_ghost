@@ -1,4 +1,4 @@
-# Compose Agents with Assemblies
+# Compose Agents
 
 An Assembly lets several participants answer through the same familiar calls as one Agent. This guide grows the customer-support example through each coordination style, then shows how to nest and construct assemblies dynamically.
 
@@ -38,6 +38,8 @@ run.response
 ```
 
 Every participant passed to `invoke` can be an Agent or another Assembly. By default, each child receives the caller's history and application context. Pass `history: []`, `context: {}`, or redacted values when a child should see less.
+
+Each child Agent keeps its own [prompt view](prompt_views.md). The Workflow supplies request-specific input; it does not replace that Agent's reusable system instructions.
 
 The last child is special because its events become the Workflow's public stream. Return that `invoke` without consuming it:
 
@@ -159,7 +161,6 @@ class SupportFlowGraph < LittleGhost::Graph
 end
 
 SupportFlowGraph.validate!
-SupportFlowGraph.to_mermaid
 ```
 
 Conditions and input mappers read an immutable `Graph::State`. At most one conditional edge may match. If several match, LittleGhost raises `AssemblyRoutingError` instead of guessing which one wins. One unconditional edge can catch the request when none match.
@@ -194,7 +195,9 @@ class InvestigationGraph < LittleGhost::Graph
 end
 ```
 
-An error edge can send an expected failure to a recovery Assembly. Call `validate!` before the first run, and use `to_mermaid` to see the same routes as a diagram.
+An error edge can send an expected failure to a recovery Assembly. Call `validate!` before the first run.
+
+Once the topology grows, `InvestigationGraph.to_mermaid` returns Mermaid diagram source for the routes you declared. Render it in a Mermaid-aware editor or documentation page when a picture makes the graph easier to review.
 
 ## Make retries safe
 
@@ -260,7 +263,7 @@ The nested assembly receives the parent Tool's current working state. That state
 
 ## Reach for builders when definitions are dynamic
 
-Classes are the preferred form in application code. Use a builder when trusted runtime configuration decides the nodes or routes:
+Classes are the preferred form in application code. Use a builder when trusted application configuration decides the nodes or routes:
 
 ```ruby
 graph = LittleGhost::GraphBuilder.new(
@@ -280,4 +283,4 @@ run = graph.ask("Where is my order?")
 
 Each builder uses the same declarations as its matching class. The builder stays editable, but each run gets a fixed copy of its current definition. Later edits affect later runs. Ruby callbacks still see any application objects they captured.
 
-Continue with [Running in Production](production.md) to configure model roles, reuse runtimes, preserve sessions, supervise execution, and connect observability.
+Continue with [Prompts as Views](prompt_views.md) to give each Agent's growing instructions and shared prompt pieces a natural home.

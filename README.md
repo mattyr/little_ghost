@@ -34,7 +34,7 @@ $ export OPENROUTER_API_KEY="..."
 
 OpenRouter keeps the first setup to one credential. It is not required: LittleGhost also includes adapters for OpenAI-compatible APIs, Anthropic, Gemini, Vertex AI, and Bedrock. [Running in Production](docs/guides/production.md) shows how to configure providers and give model choices application-facing names.
 
-LittleGhost runs inside your Ruby process. Use it from a controller, job, CLI, or service. If you want a conventional layout, start with `app/agents`, `app/assemblies`, and `app/tools`.
+LittleGhost runs inside your Ruby process. Use it from a controller, job, CLI, or service. If you want a conventional layout, start with `app/agents`, `app/assemblies`, `app/prompts`, and `app/tools`.
 
 ## Give an agent real capabilities
 
@@ -105,7 +105,8 @@ participants ran. Use `.stream_ask` to watch the work as it happens.
 
 - [Getting Started](docs/guides/getting_started.md) takes you from installation to a tool-backed, streaming agent.
 - [Core Concepts](docs/guides/core_concepts.md) builds the mental model from Agent to Assembly.
-- [Compose Agents with Assemblies](docs/guides/assemblies.md) walks through workflows, swarms, graphs, nesting, and builders.
+- [Compose Agents](docs/guides/assemblies.md) walks through workflows, swarms, graphs, nesting, and builders.
+- [Prompts as Views](docs/guides/prompt_views.md) gives growing instructions, shared pieces, and application values a natural home.
 - [Running in Production](docs/guides/production.md) covers configuration, sessions, execution, observability, and trust boundaries.
 - [API reference](rdoc-ref:LittleGhost) provides exact signatures and lifecycle contracts.
 

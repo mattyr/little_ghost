@@ -33,15 +33,17 @@ module LittleGhost
   # the streaming entrypoint[rdoc-ref:LittleGhost::Assembly.stream_ask] when you
   # want events as the answer arrives.
   #
-  # Most applications call a named Agent class. Create
-  # <tt>CustomerSupportAgent.new(runtime: runtime)</tt> when several independent
-  # calls should share one Runtime. LittleGhost builds a fresh top-level Run for
-  # each call and closes the tools, workspace, and sandbox owned by that Run.
+  # Most applications call a named Agent class. LittleGhost automatically
+  # reuses the active Configuration's shared Runtime while building a fresh
+  # top-level Run for every call. Passing +runtime:+ is an advanced option for
+  # an explicitly isolated setup.
   #
-  # Agent declarations are inherited. Define a prompt inline, load one from the
-  # Agent's conventional path, or select prompt locals and tools for each run.
-  # Optional features such as skills, context management, loop detection, and
-  # delegation stay inactive until their DSL is used.
+  # Agent declarations are inherited. Define a short prompt inline, or place a
+  # growing prompt in <tt>app/prompts/customer_support/system.erb</tt> for
+  # +CustomerSupportAgent+. The {Prompts as Views guide}[rdoc-ref:docs/guides/prompt_views.md]
+  # explains conventional lookup, locals, and partials. Optional features such
+  # as skills, context management, loop detection, and delegation stay inactive
+  # until their DSL is used.
   #
   # Calling LittleGhost::Agent itself uses <tt>You are a helpful agent.</tt> as
   # the system prompt. Subclasses use the inline or conventional prompt they

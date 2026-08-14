@@ -1,4 +1,4 @@
-<%- essential_apis = %w[Agent Tool Run Assembly Workflow Swarm Graph Runtime] %>
+<%- essential_apis = %w[Agent Tool Run Assembly Workflow Swarm Graph] %>
 <%- current_name = current.full_name if defined?(current) && current.respond_to?(:full_name) %>
 
 <div id="essential-api-section" class="nav-section essential-api-section">
@@ -15,7 +15,7 @@
 </div>
 
 <div id="classindex-section" class="nav-section">
-  <details class="nav-section-collapsible">
+  <details class="nav-section-collapsible"<%= " open" if current_name %>>
     <summary class="nav-section-header">
       <span class="nav-section-icon">
         <svg><use href="#icon-layers"></use></svg>
@@ -29,3 +29,25 @@
     <%= generate_class_index_content(@classes, rel_prefix) %>
   </details>
 </div>
+
+<%- if current_name %>
+<script>
+  (() => {
+    const currentPath = window.location.pathname;
+    const currentLink = Array.from(document.querySelectorAll("#classindex-section a")).find((link) => {
+      return new URL(link.href, window.location.href).pathname === currentPath;
+    });
+
+    if (!currentLink) return;
+    currentLink.setAttribute("aria-current", "page");
+    currentLink.closest("li")?.querySelectorAll(":scope > details").forEach((details) => {
+      details.open = true;
+    });
+    let parent = currentLink.parentElement;
+    while (parent) {
+      if (parent.tagName === "DETAILS") parent.open = true;
+      parent = parent.parentElement;
+    }
+  })();
+</script>
+<%- end %>

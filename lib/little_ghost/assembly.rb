@@ -22,7 +22,8 @@ module LittleGhost
   # A standalone assembly owns a top-level Run. An assembly built by a Runtime
   # participates in the existing run and returns a RunResult. Applications
   # normally subclass Agent, Workflow, Swarm, or Graph rather than Assembly
-  # directly.
+  # directly. Standalone calls automatically reuse the active Configuration's
+  # shared Runtime while keeping each Run and its resources independent.
   #
   # == What each calling form returns
   #
@@ -146,7 +147,7 @@ module LittleGhost
 
     def initialize(run: nil, runtime: nil, workspace: nil, sandbox: nil, standalone: run.nil?) # :nodoc:
       @run = run
-      @runtime = runtime || run&.runtime || Runtime.new(configuration: LittleGhost.configuration)
+      @runtime = runtime || run&.runtime || LittleGhost.runtime
       @workspace = workspace || (run.workspace if run&.respond_to?(:workspace))
       @sandbox = sandbox || (run.sandbox if run&.respond_to?(:sandbox))
       @standalone = standalone

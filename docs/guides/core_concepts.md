@@ -85,7 +85,7 @@ An **Invocation** is the request in LittleGhost's standard shape. Its `context` 
 
 The **RunContext** carries mutable working state in `context.state`. At the top level, saved Session state is loaded first, then current Invocation context is added. Child Assemblies may receive a copy, a mapped value, or no context at all. Recheck saved values before using them for permission decisions.
 
-A Tool's **Binding** gives the Tool access to objects created for this run, including the Agent, Run, Runtime, workspace, and sandbox. These objects are separate from the arguments chosen by the model.
+A Tool's **Binding** gives the Tool access to objects created for this run, including the Agent, Run, workspace, and sandbox. These objects are separate from the arguments chosen by the model.
 
 The final **RunResult** keeps the complete assembly result. Its `text` is the final text answer. Its `output` returns structured data when the Agent declared a result schema, and text otherwise. The top-level `Run#response` is always the caller-facing text.
 
@@ -226,7 +226,7 @@ graph.validate!
 run = graph.ask("Review order 481")
 ```
 
-Use a builder when trusted runtime configuration decides the participants or routes. Each run gets a fixed copy of the builder as it looked when the run began, so later edits affect later runs. Ruby callbacks still see any application objects they captured.
+Use a builder when trusted application configuration decides the participants or routes. Each run gets a fixed copy of the builder as it looked when the run began, so later edits affect later runs. Ruby callbacks still see any application objects they captured.
 
 ## One result, including the journey
 
@@ -244,4 +244,4 @@ This shows callers which participants ran without including raw provider respons
 
 The pieces now fit together: Agents define behavior. Tools connect them to Ruby. Runs record one execution. Assemblies let the system grow without changing the caller.
 
-Continue with [Compose Agents with Assemblies](assemblies.md) to put several agents to work together. If you are ready to connect the feature to a real application, jump to [Running in Production](production.md).
+Continue with [Compose Agents](assemblies.md) to put several agents to work together. If you are ready to connect the feature to a real application, jump to [Running in Production](production.md).

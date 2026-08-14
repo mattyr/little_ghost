@@ -4,9 +4,16 @@ require "json"
 require_relative "configuration"
 
 module LittleGhost
-  # Reuse the shared services that assemblies need across many runs.
-  # A runtime owns model resolution, loading, persistence, lookup paths, hooks,
-  # and resource factories for one Ruby setup.
+  # Owns the shared services that assemblies reuse across many Runs.
+  #
+  # Most applications do not construct this class. Configure LittleGhost once
+  # and call a named Agent or Assembly; the first standalone call lazily builds
+  # +LittleGhost.runtime+, and later calls reuse it automatically. Each call
+  # still receives a fresh Run, bound participants, Tools, workspace, and
+  # sandbox.
+  #
+  # Construct Runtime directly when one process intentionally hosts an isolated
+  # LittleGhost setup:
   #
   #   configuration = LittleGhost::Configuration.new(
   #     root: Dir.pwd,
@@ -19,12 +26,12 @@ module LittleGhost
   #   )
   #   runtime = LittleGhost::Runtime.new(configuration: configuration)
   #
-  #   support = CustomerSupportAgent.new(runtime: runtime)
-  #   support.ask("Where is order 481?").response
+  #   CustomerSupportAgent.new(runtime: runtime)
+  #     .ask("Where is order 481?")
+  #     .response
   #
-  # Build one Runtime during application setup, then use it to construct Agents
-  # and coordinated Assemblies. Configuration is snapshotted at construction;
-  # later mutations do not alter the Runtime.
+  # Explicit construction snapshots the supplied Configuration but does not
+  # replace LittleGhost's shared default Runtime.
   #
   # A Runtime may build independent Runs concurrently. Each Run gets its own
   # bound participants and Tools. By default, Runtime also creates a workspace

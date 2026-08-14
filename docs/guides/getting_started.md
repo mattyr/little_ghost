@@ -48,6 +48,8 @@ $ ruby customer_support_agent.rb
 
 `CustomerSupportAgent.ask` creates a `LittleGhost::Run` for this request. When the work finishes, the Run holds the outcome and response.
 
+The inline prompt keeps this first example easy to see in one place. When the instructions grow, [Prompts as Views](prompt_views.md) moves them into a conventional ERB file without adding setup to the Agent.
+
 The selected external provider may receive system instructions, caller input, conversation history, tool results, and attachments. Model wording can vary, so use application code—not a prompt—when a rule must always hold.
 
 ## Connect the agent to your application
@@ -179,11 +181,15 @@ LittleGhost does not require an application layout. Keep definitions beside rela
 app/
 ├── agents/
 │   └── customer_support_agent.rb
-├── tools/
-│   └── help_center_lookup_tool.rb
-└── assemblies/
+├── assemblies/
+│   └── response_workflow.rb
+├── prompts/
+│   └── customer_support/
+│       └── system.erb
+└── tools/
+    └── help_center_lookup_tool.rb
 ```
 
 You now have the smallest useful LittleGhost application: one Agent, one Tool, and one familiar Ruby call.
 
-When the feature grows, the calling style stays the same. An **assembly** lets one or more agents work as a unit while keeping `.ask` and `.stream_ask`. Read [Core Concepts](core_concepts.md) next and grow this agent into a larger system.
+When the feature grows, the calling style stays the same. An **assembly** lets one or more agents work as a unit while keeping `.ask` and `.stream_ask`. Read [Core Concepts](core_concepts.md) next and grow this Agent into a larger system.

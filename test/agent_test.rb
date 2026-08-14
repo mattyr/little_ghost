@@ -121,7 +121,7 @@ class AgentTest < Minitest::Test
       end
     end
 
-    LittleGhost::Runtime.stub(:new, ->(**) { runtime }) do
+    LittleGhost.stub(:runtime, -> { runtime }) do
       entrypoint = agent.new
       entrypoint.ask("hello")
       entrypoint.stream_ask("goodbye").each { |_event| }
@@ -145,7 +145,7 @@ class AgentTest < Minitest::Test
       end
     end
 
-    result = LittleGhost::Runtime.stub(:new, ->(**) { runtime }) do
+    result = LittleGhost.stub(:runtime, -> { runtime }) do
       agent.ask("hello", channel: "console")
     end
 
@@ -179,12 +179,12 @@ class AgentTest < Minitest::Test
     end
 
     runtime_constructions = 0
-    runtime_factory = lambda do |**|
+    runtime_factory = lambda do
       runtime_constructions += 1
       runtime
     end
     deadline = Time.utc(2026, 8, 12, 12)
-    stream = LittleGhost::Runtime.stub(:new, runtime_factory) do
+    stream = LittleGhost.stub(:runtime, runtime_factory) do
       agent.stream_ask("hello", history: ["earlier"], channel: "console", deadline:)
     end
 
@@ -192,7 +192,7 @@ class AgentTest < Minitest::Test
     assert_equal 0, runtime_constructions
 
     types = []
-    result = LittleGhost::Runtime.stub(:new, runtime_factory) do
+    result = LittleGhost.stub(:runtime, runtime_factory) do
       stream.each { |event| types << event.type }
     end
 
@@ -206,7 +206,7 @@ class AgentTest < Minitest::Test
 
     stream.rewind
     error = assert_raises(LittleGhost::Error) do
-      LittleGhost::Runtime.stub(:new, runtime_factory) { stream.each { |_event| } }
+      LittleGhost.stub(:runtime, runtime_factory) { stream.each { |_event| } }
     end
 
     assert_includes error.message, "only be executed once"
@@ -226,7 +226,7 @@ class AgentTest < Minitest::Test
       end
     end
 
-    LittleGhost::Runtime.stub(:new, ->(**) { runtime }) do
+    LittleGhost.stub(:runtime, -> { runtime }) do
       entrypoint = agent.new
 
       entrypoint.ask("hello")

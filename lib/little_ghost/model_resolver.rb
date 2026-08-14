@@ -30,7 +30,7 @@ module LittleGhost
       @providers = providers
       @connections = providers&.connections || {}
       @profiles = normalize_profiles(profiles || {})
-      @default_model = default_model&.to_s || "default"
+      @default_model = (default_model&.to_s || "default").dup.freeze
       @provider_registry = provider_adapters.empty? ? provider_registry : ProviderRegistry.new(adapters: provider_adapters)
       @credential_resolver = credential_resolver
       configure_default_providers unless providers
@@ -254,7 +254,7 @@ module LittleGhost
 
         parent = profile["inherits"] || profile[:inherits]
         validate_role_name!(parent.to_s) if parent
-        [role, profile.to_h]
+        [role, immutable_selection_value(profile.to_h)]
       end
     end
 

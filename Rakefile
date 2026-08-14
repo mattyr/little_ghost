@@ -48,16 +48,19 @@ class RDoc::Generator::LittleGhost < RDoc::Generator::Aliki
     "docs/guides/getting_started.md" => "getting_started.html",
     "docs/guides/core_concepts.md" => "core_concepts.html",
     "docs/guides/assemblies.md" => "assemblies.html",
+    "docs/guides/prompt_views.md" => "prompt_views.html",
     "docs/guides/production.md" => "production.html"
   }.freeze
   GUIDE_TITLES = {
     "docs/guides/getting_started.md" => "Getting Started",
     "docs/guides/core_concepts.md" => "Core Concepts",
-    "docs/guides/assemblies.md" => "Compose Agents with Assemblies",
+    "docs/guides/assemblies.md" => "Compose Agents",
+    "docs/guides/prompt_views.md" => "Prompts as Views",
     "docs/guides/production.md" => "Running in Production"
   }.freeze
   LEGACY_GUIDE_LINKS = {
     %r{(?:docs/guides/)?getting_started_md\.html} => "getting_started.html",
+    %r{(?:docs/guides/)?prompt_views_md\.html} => "prompt_views.html",
     %r{(?:docs/guides/)?core_concepts_md\.html} => "core_concepts.html",
     %r{(?:docs/guides/)?assemblies_md\.html} => "assemblies.html",
     %r{(?:docs/guides/)?production_md\.html} => "production.html"
@@ -132,6 +135,7 @@ class LittleGhostSiteChecker
     "versions.json",
     "docs/index.html",
     "docs/getting_started.html",
+    "docs/prompt_views.html",
     "docs/core_concepts.html",
     "docs/assemblies.html",
     "docs/production.html"
@@ -140,16 +144,17 @@ class LittleGhostSiteChecker
   GUIDE_NAVIGATION_LABELS = [
     "Getting Started",
     "Core Concepts",
-    "Compose Agents with Assemblies",
+    "Compose Agents",
+    "Prompts as Views",
     "Running in Production"
   ].freeze
-  ESSENTIAL_API_LABELS = %w[Agent Tool Run Assembly Workflow Swarm Graph Runtime].freeze
+  ESSENTIAL_API_LABELS = %w[Agent Tool Run Assembly Workflow Swarm Graph].freeze
   RUBY_EXAMPLE_PATHS = [RDOC_MAIN, *RDoc::Generator::LittleGhost::GUIDE_PATHS.keys].freeze
   COMMON_NAVIGATION_PATTERN = /<nav\b[^>]*aria-label=["']Primary navigation["'][^>]*>(.*?)<\/nav>/mi
   NAVIGATION_LINK_PATTERN = /<a\b([^>]*)>(.*?)<\/a>/mi
   ATTRIBUTE_PATTERN = /\b(?:href|src)=["']([^"']+)["']/i
   ANCHOR_PATTERN = /\b(?:id|name)=["']([^"']+)["']/i
-  LEGACY_GUIDE_REFERENCE_PATTERN = /(?:Core%20Concepts|Getting%20Started|Compose%20Agents|Running%20in%20Production|_md\.html)/
+  LEGACY_GUIDE_REFERENCE_PATTERN = /(?:Core%20Concepts|Getting%20Started|Prompts%20as%20Views|Compose%20Agents|Running%20in%20Production|_md\.html)/
   MODIFIED_THEME_CREDIT = "using a modified version of the Aliki theme by"
 
   def initialize(root)
