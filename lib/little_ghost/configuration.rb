@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "pathname"
+require "monitor"
 
 module LittleGhost
   # Configure shared services and lookup rules before agents start.
@@ -19,10 +20,12 @@ module LittleGhost
   # under the application root. Applications may append shared roots or replace
   # the arrays entirely.
   #
-  # Configuration is a mutable builder, while each Runtime owns a settings
-  # snapshot. The first runtime for a root loads +config/little_ghost.rb+ once;
-  # later mutations do not alter that runtime, and one configuration cannot load
-  # files for two different roots.
+  # Configuration is a mutable application builder until its shared Runtime is
+  # first used. A successful #runtime call locks the builder so standalone
+  # Agents and Assemblies keep one stable setup. Configure the application
+  # before its first entrypoint call. Explicit Runtime construction remains an
+  # advanced way to take an independent snapshot without selecting the shared
+  # default.
   #
   # Session actor resolvers belong at an authentication boundary. Multi-tenant
   # applications should derive actor identity from trusted authenticated state,
@@ -32,7 +35,6 @@ module LittleGhost
     CONFIGURATION_KEYS = %i[invocation service_name].freeze # :nodoc:
     DEFAULT_PROMPT_PATHS = ["app/prompts"].freeze # :nodoc:
     DEFAULT_SKILL_PATHS = ["app/skills"].freeze # :nodoc:
-
     ##
     # The request envelope class used to parse application payloads.
     #
@@ -53,7 +55,7 @@ module LittleGhost
       define_method(name) do |value = :__read__|
         return configuration_values[name] if value == :__read__
 
-        configuration_values[name] = value
+        change_configuration { configuration_values[name] = value }
       end
     end
 
@@ -85,6 +87,8 @@ module LittleGhost
     # Collection settings are copied so callers can safely reuse their input
     # arrays after construction.
     def initialize(values = {})
+      @lifecycle_monitor = Monitor.new
+      @runtime_condition = @lifecycle_monitor.new_cond
       @configuration_values = {
         prompt_paths: DEFAULT_PROMPT_PATHS.dup,
         skill_paths: DEFAULT_SKILL_PATHS.dup,
@@ -107,8 +111,71 @@ module LittleGhost
 
     # Yields this builder for setup and returns the same instance.
     def configure
-      yield self if block_given?
+      change_configuration { yield self } if block_given?
       self
+    end
+
+    # Returns the shared Runtime for this configuration, building it on first
+    # use. Once construction succeeds, the configuration is locked so every
+    # standalone entrypoint continues to use one stable application setup. The
+    # conventional configuration file may finish loading during construction;
+    # other writes are rejected. A failed build leaves the configuration
+    # editable for a later attempt.
+    def runtime
+      build_generation = @lifecycle_monitor.synchronize do
+        loop do
+          return @default_runtime if @default_runtime
+          if @runtime_building
+            if @runtime_builder_thread.equal?(Thread.current)
+              raise ConfigurationError, "LittleGhost.runtime cannot be called while the shared Runtime is starting"
+            end
+
+            waiting_generation = @runtime_generation
+            @runtime_condition.wait
+            return @default_runtime if @default_runtime
+            if @runtime_failure_generation == waiting_generation
+              raise @runtime_failure
+            end
+          else
+            sealed_values = freeze_configuration_copy(@configuration_values)
+            @runtime_generation = @runtime_generation.to_i + 1
+            @runtime_building = true
+            @runtime_builder_thread = Thread.current
+            @configuration_values = sealed_values
+            break @runtime_generation
+          end
+        end
+      end
+
+      begin
+        runtime_root = root
+        load_file!(root: runtime_root)
+        runtime_settings = settings(root: runtime_root)
+        built = Runtime.new(configuration: self, settings: runtime_settings)
+        @lifecycle_monitor.synchronize do
+          configuration_values.freeze
+          @default_runtime = built
+        end
+        built
+      rescue => error
+        editable_values = if @configuration_values.frozen?
+          copy_configuration_value(@configuration_values)
+        else
+          @configuration_values
+        end
+        @lifecycle_monitor.synchronize do
+          @configuration_values = editable_values
+          @runtime_failure = error
+          @runtime_failure_generation = build_generation
+        end
+        raise
+      ensure
+        @lifecycle_monitor.synchronize do
+          @runtime_building = false
+          @runtime_builder_thread = nil
+          @runtime_condition.broadcast
+        end
+      end
     end
 
     # Workspace declaration used for subsequently built runtimes.
@@ -122,12 +189,15 @@ module LittleGhost
     def providers(value = :__read__)
       return configuration_values[:providers] if value == :__read__
 
+      ensure_configuration_open!
       unless value.is_a?(Hash) || value.is_a?(Providers::Configuration)
         raise ArgumentError, "providers must be a Hash or LittleGhost::Providers::Configuration"
       end
 
-      configuration_values[:providers] = value
-      reset_model_resolver
+      change_configuration do
+        configuration_values[:providers] = value
+        reset_model_resolver
+      end
       value
     end
 
@@ -140,10 +210,13 @@ module LittleGhost
     # a colon because that syntax identifies a canonical model target.
     def models(value = :__read__)
       return configuration_values[:models] if value == :__read__
+      ensure_configuration_open!
       raise ArgumentError, "models must be a Hash" unless value.is_a?(Hash)
 
-      configuration_values[:models] = value
-      reset_model_resolver
+      change_configuration do
+        configuration_values[:models] = value
+        reset_model_resolver
+      end
       value
     end
 
@@ -156,8 +229,10 @@ module LittleGhost
     def default_model(value = :__read__)
       return configuration_values[:default_model] if value == :__read__
 
-      configuration_values[:default_model] = value.to_s
-      reset_model_resolver
+      change_configuration do
+        configuration_values[:default_model] = value.to_s
+        reset_model_resolver
+      end
       value.to_s
     end
 
@@ -187,10 +262,13 @@ module LittleGhost
     # Installs a complete resolver override for subsequently built runtimes.
     def model_resolver(value = :__read__)
       if value != :__read__
+        ensure_configuration_open!
         validate_model_resolver_class!(value)
 
-        configuration_values[:model_resolver] = value
-        @resolved_model_resolver = nil
+        change_configuration do
+          configuration_values[:model_resolver] = value
+          @resolved_model_resolver = nil
+        end
         return value
       end
 
@@ -229,6 +307,7 @@ module LittleGhost
 
     # Registers a provider adapter factory under +name+.
     def provider_adapter(name, callable = nil, &factory)
+      ensure_configuration_open!
       implementation = factory || callable
       if implementation.is_a?(Class)
         unless implementation <= Providers::Base
@@ -238,18 +317,23 @@ module LittleGhost
         raise ArgumentError, "provider adapter must be a Providers::Base class or callable factory"
       end
 
-      configuration_values[:provider_adapters][name.to_s] = implementation
-      @resolved_model_resolver = nil
+      change_configuration do
+        configuration_values[:provider_adapters][name.to_s] = implementation
+        @resolved_model_resolver = nil
+      end
       implementation
     end
 
     # Adds an explicit catalog source. Sources refresh only when callers invoke
     # ModelResolver#refresh!.
     def catalog_source(source)
+      ensure_configuration_open!
       raise ArgumentError, "catalog source must be a Models::Catalog::Source" unless source.is_a?(Models::Catalog::Source)
 
-      configuration_values[:catalog_sources] << source
-      @resolved_model_resolver = nil
+      change_configuration do
+        configuration_values[:catalog_sources] << source
+        @resolved_model_resolver = nil
+      end
       source
     end
 
@@ -258,21 +342,28 @@ module LittleGhost
     def provider_credentials(callable = nil, &resolver)
       value = resolver || callable
       return configuration_values[:provider_credentials] unless value
+      ensure_configuration_open!
       raise ArgumentError, "provider credential resolver must be callable" unless value.respond_to?(:call)
 
-      configuration_values[:provider_credentials] = value
-      @resolved_model_resolver = nil
+      change_configuration do
+        configuration_values[:provider_credentials] = value
+        @resolved_model_resolver = nil
+      end
       value
     end
 
     # Selects the Workspace subclass instantiated for each run.
     def workspace=(value)
-      @configuration_values[:workspace] = component_class(value, Workspace, :workspace)
+      change_configuration do
+        @configuration_values[:workspace] = component_class(value, Workspace, :workspace)
+      end
     end
 
     # Selects the Sandbox subclass instantiated around each run's workspace.
     def sandbox=(value)
-      @configuration_values[:sandbox] = component_class(value, Sandbox, :sandbox)
+      change_configuration do
+        @configuration_values[:sandbox] = component_class(value, Sandbox, :sandbox)
+      end
     end
 
     # Selects session persistence with a +:provider+ and its constructor options.
@@ -280,12 +371,17 @@ module LittleGhost
     # The provider must be a SessionStore subclass. Runtime construction creates
     # and owns the store instance.
     def session_store=(value)
+      ensure_configuration_open!
       unless value.is_a?(Hash)
         raise ArgumentError, "session_store must be a hash with a provider"
       end
 
       provider = value[:provider]
-      @configuration_values[:session_store] = value.merge(provider: component_class(provider, SessionStore, :session_store))
+      change_configuration do
+        @configuration_values[:session_store] = value.merge(
+          provider: component_class(provider, SessionStore, :session_store)
+        )
+      end
     end
 
     # Looks up an arbitrary setting by symbol or string-compatible name.
@@ -295,7 +391,7 @@ module LittleGhost
 
     # Adds or replaces an arbitrary setting.
     def []=(name, value)
-      configuration_values[name.to_sym] = value
+      change_configuration { configuration_values[name.to_sym] = value }
     end
 
     # Replaces the application root after resolving it to a stable real path.
@@ -305,11 +401,12 @@ module LittleGhost
 
     # Adds an Instrumentation::Subscriber to each new runtime and returns it.
     def instrument(subscriber)
+      ensure_configuration_open!
       unless subscriber.is_a?(Instrumentation::Subscriber)
         raise ArgumentError, "instrumentation subscriber must be a LittleGhost::Instrumentation::Subscriber"
       end
 
-      configuration_values[:instrumentation_subscribers] << subscriber
+      change_configuration { configuration_values[:instrumentation_subscribers] << subscriber }
       subscriber
     end
 
@@ -326,7 +423,7 @@ module LittleGhost
     def log_events_to(destination = :__read__)
       return Events.console_output if destination == :__read__
 
-      Events.console_output = destination
+      change_configuration { Events.console_output = destination }
     end
 
     # Replaces the console destination for structured framework events.
@@ -336,11 +433,12 @@ module LittleGhost
 
     # Adds a Runtime::Hook subclass to each new runtime and returns it.
     def runtime_hook(hook_class)
+      ensure_configuration_open!
       unless hook_class.is_a?(Class) && hook_class <= Runtime::Hook
         raise ArgumentError, "runtime_hook must be a LittleGhost::Runtime::Hook class"
       end
 
-      configuration_values[:runtime_hooks] << hook_class
+      change_configuration { configuration_values[:runtime_hooks] << hook_class }
       hook_class
     end
 
@@ -356,12 +454,13 @@ module LittleGhost
     def session_actor(value = :__read__, &resolver)
       return configuration_values[:session_actor] if value == :__read__ && !resolver
 
+      ensure_configuration_open!
       raise ArgumentError, "Provide a session actor resolver or a block, not both" if value != :__read__ && resolver
 
       configured = resolver || value
       raise ArgumentError, "session_actor must be callable" unless configured.respond_to?(:call)
 
-      configuration_values[:session_actor] = configured
+      change_configuration { configuration_values[:session_actor] = configured }
     end
 
     # :call-seq:
@@ -374,27 +473,29 @@ module LittleGhost
     # resolved so runtimes and lookup paths share one stable boundary.
     def root(value = :__read__)
       if value != :__read__
-        return configuration_values[:root] = canonical_root(value)
+        return change_configuration { configuration_values[:root] = canonical_root(value) }
       end
 
       configured = configuration_values[:root]
       configured ? canonical_root(configured) : inferred_root
     end
 
-    # Mutable prompt lookup paths, in precedence order.
+    # Prompt lookup paths in precedence order. The Array is mutable until the
+    # shared Runtime is built.
     def prompt_paths = configuration_values[:prompt_paths]
 
     # Replaces prompt lookup paths with +value+ converted to an Array.
     def prompt_paths=(value)
-      configuration_values[:prompt_paths] = Array(value)
+      change_configuration { configuration_values[:prompt_paths] = Array(value) }
     end
 
-    # Mutable skill lookup paths, in precedence order.
+    # Skill lookup paths in precedence order. The Array is mutable until the
+    # shared Runtime is built.
     def skill_paths = configuration_values[:skill_paths]
 
     # Replaces skill lookup paths with +value+ converted to an Array.
     def skill_paths=(value)
-      configuration_values[:skill_paths] = Array(value)
+      change_configuration { configuration_values[:skill_paths] = Array(value) }
     end
 
     # Optional trusted root exposed to skills for resource lookup.
@@ -402,7 +503,7 @@ module LittleGhost
 
     # Replaces the trusted skill resource root for new runtimes.
     def skill_resource_root=(value)
-      configuration_values[:skill_resource_root] = value
+      change_configuration { configuration_values[:skill_resource_root] = value }
     end
 
     def settings(root: nil) # :nodoc:
@@ -429,7 +530,7 @@ module LittleGhost
           end
 
           path = File.join(requested_root, "config/little_ghost.rb")
-          LittleGhost.with_configuration(self) { Kernel.load(path) } if File.file?(path)
+          load_configuration_file(path) if File.file?(path)
           @configuration_file_root = requested_root
         end
       end
@@ -439,7 +540,15 @@ module LittleGhost
 
     private
 
-    attr_reader :configuration_values
+    def configuration_values
+      @lifecycle_monitor.synchronize do
+        if @runtime_building && !@runtime_builder_thread.equal?(Thread.current)
+          raise_locked_configuration!
+        end
+
+        @configuration_values
+      end
+    end
 
     def validate_model_resolver_class!(value)
       return if value.is_a?(Class) && value <= ModelResolver
@@ -449,8 +558,10 @@ module LittleGhost
 
     def configuration_path(key, filename, value)
       if value != :__read__
-        configuration_values[key] = value
-        reset_model_resolver
+        change_configuration do
+          configuration_values[key] = value
+          reset_model_resolver
+        end
         return value
       end
 
@@ -492,6 +603,119 @@ module LittleGhost
 
     def reset_model_resolver
       @resolved_model_resolver = nil
+    end
+
+    def change_configuration
+      @lifecycle_monitor.synchronize do
+        raise_locked_configuration! unless configuration_changes_allowed?
+
+        yield
+      end
+    end
+
+    def ensure_configuration_open!
+      @lifecycle_monitor.synchronize do
+        raise_locked_configuration! unless configuration_changes_allowed?
+      end
+    end
+
+    def raise_locked_configuration!
+      raise ConfigurationError,
+        "LittleGhost configuration is locked while its shared Runtime is starting or after it is ready; configure the application before its first Agent or Assembly call"
+    end
+
+    def configuration_changes_allowed?
+      return false if @default_runtime
+      return true unless @runtime_building
+
+      @configuration_file_loading && @runtime_builder_thread.equal?(Thread.current)
+    end
+
+    def load_configuration_file(path)
+      editable_values = copy_configuration_value(@configuration_values)
+      @lifecycle_monitor.synchronize do
+        @configuration_values = editable_values
+        @configuration_file_loading = true
+      end
+      LittleGhost.with_configuration(self) { Kernel.load(path) }
+    ensure
+      sealed_values = freeze_configuration_copy(@configuration_values)
+      @lifecycle_monitor.synchronize do
+        @configuration_values = sealed_values
+        @configuration_file_loading = false
+      end
+    end
+
+    def freeze_configuration_copy(value)
+      opaque_values = {}
+      copied = copy_configuration_value(value, {}, opaque_values)
+      freeze_configuration_value(copied, opaque_values)
+    end
+
+    def copy_configuration_value(value, ancestors = {}, opaque_values = {})
+      if value.is_a?(Hash) || value.is_a?(Array)
+        identity = value.object_id
+        raise ArgumentError, "cyclic values cannot be duplicated" if ancestors.key?(identity)
+
+        ancestors[identity] = true
+      end
+      case value
+      when Hash
+        supported_keys = true
+        Hash.instance_method(:each_key).bind_call(value) do |key|
+          supported_keys &&= configuration_declaration_key?(key)
+        end
+        unless supported_keys
+          opaque_values[value.object_id] = true
+          return value
+        end
+        copy = {}
+        Hash.instance_method(:each_pair).bind_call(value) do |key, child|
+          copy[copy_configuration_value(key, ancestors, opaque_values)] =
+            copy_configuration_value(child, ancestors, opaque_values)
+        end
+        copy
+      when Array
+        copy = []
+        Array.instance_method(:each).bind_call(value) do |child|
+          copy << copy_configuration_value(child, ancestors, opaque_values)
+        end
+        copy
+      when String
+        String.new(value)
+      else
+        value
+      end
+    ensure
+      ancestors.delete(identity) if identity
+    end
+
+    def configuration_declaration_key?(key)
+      key.instance_of?(String) ||
+        key.instance_of?(Symbol) ||
+        key.instance_of?(Integer) ||
+        key.instance_of?(Float) ||
+        key.instance_of?(Rational) ||
+        key.instance_of?(Complex) ||
+        key.nil? ||
+        key.equal?(true) ||
+        key.equal?(false)
+    end
+
+    def freeze_configuration_value(value, opaque_values = {})
+      return value if opaque_values.key?(value.object_id)
+
+      case value
+      when Hash
+        value.each do |key, child|
+          freeze_configuration_value(key, opaque_values)
+          freeze_configuration_value(child, opaque_values)
+        end
+      when Array
+        value.each { |child| freeze_configuration_value(child, opaque_values) }
+      end
+      value.freeze if value.is_a?(Hash) || value.is_a?(Array) || value.is_a?(String)
+      value
     end
 
     def component_class(value, base_class, name)

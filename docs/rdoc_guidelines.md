@@ -8,12 +8,13 @@ Write directly to the reader in plain language. Begin with what they can accompl
 
 Warmth comes from orientation, useful transitions, and examples that respect the reader's time. It does not come from jokes, marketing claims, or conversational filler. Precision comes from source-backed names, signatures, return values, lifecycle facts, and limitations. Do not trade one for the other.
 
-Describe LittleGhost first as a framework for building AI features with agents
-and composable assemblies. Make it clear that those features can live inside an
-existing Ruby system or support a dedicated AI service. Streaming, tools,
-provider adapters, and the dependency profile are important supporting
-capabilities, but no one of them is the project's purpose. Examples should show
-how those capabilities combine into a useful outcome.
+Describe LittleGhost first as a Ruby library for building AI features with
+agents and composable assemblies. Use “framework” only for a specific body of
+behavior, such as its lifecycle or event framework. Make it clear that those
+features can live inside an existing Ruby system or support a dedicated AI
+service. Streaming, tools, provider adapters, and the dependency profile are
+important supporting capabilities, but no one of them is the project's purpose.
+Examples should show how those capabilities combine into a useful outcome.
 
 - Use present tense and active voice.
 - Use American English and the Oxford comma.
@@ -51,13 +52,79 @@ Reader-facing pages should move down this ladder in order:
 
 Do not make a newcomer learn provider inheritance, event internals, or every DSL before seeing an agent answer a request. Do not make an experienced reader wade through a tutorial to find a method contract. The page's depth determines where it joins the ladder.
 
+Excitement comes from visible progress. Let the reader run one Agent before
+defining a Tool, then let that same calling style grow into an Assembly. Prefer
+short transitions such as “Now give it real application data” over claims that
+the library is effortless. Each page should earn the next click with a useful
+result or a newly unlocked capability.
+
+## Write for an interested Ruby engineer
+
+Picture a Ruby engineer who wants to add AI to an application and has never
+seen LittleGhost. They know Ruby, classes, blocks, initializers, and application
+boundaries. They do not know LittleGhost's vocabulary, its implementation, or
+what earlier versions of its documentation used to say.
+
+That reader should come away with a few steady impressions:
+
+- LittleGhost feels like Ruby. The smallest useful path uses familiar classes,
+  methods, and files rather than framework ceremony.
+- A feature can start with one Agent and grow without changing how application
+  code calls it.
+- Advanced control is available when the application needs it, but it does not
+  crowd the first path.
+- The documentation is candid about data flow, authorization, failures, and
+  ownership without turning every paragraph into a warning.
+- Each page answers the question raised by the page before it and makes the next
+  useful step feel within reach.
+
+Write from the reader's current knowledge, not the maintainer's memory. Never
+explain a new design by contrasting it with an old one the reader has not seen.
+For example, “you do not need to store a second object anymore” is confusing;
+“configure LittleGhost once during application startup” gives the reader a
+complete instruction. Introduce a name before depending on it. If a sentence
+needs three new terms, split the idea or move it later.
+
+Treat every sentence as part of a path of discovery. Lead with the result, then
+add the mechanism or boundary that helps the reader use it. Prefer two short
+sentences over one sentence that compresses setup, lifecycle, concurrency, and
+failure behavior. A useful technical term is welcome once it has a clear job;
+an abstract phrase that merely sounds precise is not.
+
+Reference pages are different entry points. Some repetition there is useful
+because a reader may arrive directly from search. Repeat the local contract,
+return type, ownership, or adjacent choice when it helps that page stand alone.
+Do not repeat whole guide narratives or unrelated architecture.
+
+### Run a cold-reader pass
+
+For a substantial documentation change, review the rendered Edge site in the
+same order a newcomer would encounter it: homepage, docs home, top-level guides,
+then a few central API pages. Use a reviewer with no LittleGhost context when
+possible. After each page, record:
+
+- What the reader believes LittleGhost is and what they now know how to do.
+- Which assumptions they made from everything read so far.
+- Any concept, sentence, or phrase that arrived before it had context.
+- Any wording that felt dense, abstract, clinical, repetitive, or unlike a
+  human explaining Ruby to another Ruby engineer.
+- Whether the page created visible progress and a natural reason to continue.
+
+Fix the journey, not only the isolated sentence. Move an explanation earlier
+when several later passages depend on it. Remove a detail when the introductory
+path does not need it. Keep a boundary beside the feature that creates it, but
+rewrite it in approachable language rather than hiding it in a late disclaimer.
+
 ## Page depth and purpose
 
 | Page | Reader's question | Expected depth |
 | --- | --- | --- |
 | `README.md` | “What can this do, and where do I start?” | Roughly 600–900 words. One compact end-to-end example, one architecture map, installation, documentation links, compatibility status, license, and essential contribution commands. |
 | Getting Started | “How do I make the first useful agent run?” | One complete path from installation through output and streaming. Explain only concepts used on that path. |
-| Concept guide | “How do these pieces relate, and when do I choose each one?” | A durable mental model, contrasting adjacent choices with connected examples. Link out instead of cataloguing every option. |
+| Core Concepts | “How do these pieces relate, and when do I choose each one?” | A durable mental model from Agent to Assembly, contrasting adjacent choices without cataloguing their options. |
+| Assembly guide | “How do I compose several participants?” | Connected, runnable examples of Workflow, Swarm, Graph, nesting, trajectories, and builders. |
+| Prompts as Views | “Where do growing instructions and shared prompt pieces live?” | Move one inline prompt into a conventional ERB view, then introduce locals, partials, lookup, and trust boundaries. |
+| Production guide | “How does this live in a real application?” | Configuration, runtime reuse, sessions, supervision, observability, ownership, and trust boundaries. |
 | Class or module comment | “What responsibility does this object own?” | A purpose sentence, lifecycle or extension contract, and a short canonical example for a core type. |
 | Method comment | “What happens if I call this?” | Usually one sentence plus non-obvious arguments, return value, side effects, exceptions, or constraints. |
 | Extension contract | “What must my implementation provide?” | The smallest valid implementation, ownership and concurrency expectations, accepted and returned shapes, and failures the framework handles. |
@@ -100,11 +167,11 @@ Place a comment immediately before the definition. Start with the object's purpo
 # model identifiers.
 #
 #   providers = LittleGhost::Providers::Configuration.new(
-#     openai: {adapter: :openai, api_key: ENV.fetch("OPENAI_API_KEY")}
+#     openrouter: {adapter: :open_router, api_key: ENV.fetch("OPENROUTER_API_KEY")}
 #   )
 #   resolver = LittleGhost::ModelResolver.new(
 #     providers:,
-#     profiles: {customer_support: {target: "openai:gpt-5.6-luna"}}
+#     profiles: {customer_support: {target: "openrouter:openai/gpt-5.6-luna"}}
 #   )
 #   resolver.resolve("customer_support")
 class ModelResolver
@@ -286,7 +353,7 @@ Check both content and generated metadata:
 
 - The landing-page browser title is “LittleGhost API Documentation”; guide and API page titles also include that configured project title.
 - The landing-page description begins with LittleGhost's capability, not project history or development status.
-- `README.md` is the landing page, Getting Started and Core Concepts appear under Pages, and this contributor guideline does not.
+- `README.md` is the landing page; Getting Started, Core Concepts, Compose Agents, Prompts as Views, and Running in Production appear under Pages in that order; and this contributor guideline does not.
 - Page titles, headings, code blocks, tables, navigation, and explicit cross-references render correctly.
 - Public method signatures match the source, with no duplicate generated entries.
 - Pages navigation contains the intended guides, and search data contains the expected public API names without exposing internal-only pages.

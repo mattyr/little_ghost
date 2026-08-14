@@ -10,46 +10,49 @@ module LittleGhost
   # Each Agent subclass describes one application role with an inheritable Ruby
   # DSL. It can answer, stream, call tools, and delegate work.
   #
-  # A customer support agent can look up an account itself and give longer
-  # investigations to a research specialist:
-  #
-  #   class ResearchAgent < LittleGhost::Agent
-  #     description "Researches transfer failures"
-  #     model "customer_support.research"
-  #     tools LedgerSearchTool
-  #   end
+  # Start with one role and add capabilities as its work grows:
   #
   #   class CustomerSupportAgent < LittleGhost::Agent
   #     description "Handles support requests"
-  #     model :customer_support
-  #     limits max_turns: 40
-  #     tools AccountLookupTool
-  #     subagent ResearchAgent, kind: "research"
+  #     model "openrouter:openai/gpt-5.6-luna"
+  #     system_prompt "Answer customer questions clearly."
   #   end
   #
   #   run = CustomerSupportAgent.ask("Why is transfer 481 pending?")
   #   run.completed? # => true
-  #   run.response   # => "Transfer 481 is waiting for the receiving bank."
+  #   run.response
+  #   # One possible response: Transfer 481 is waiting for the receiving bank.
   #
-  # Class declarations are inherited. Prompts resolve by the agent's logical
-  # path unless +system_prompt+ or +system_template+ supplies one explicitly;
-  # tools and prompt locals may also be selected dynamically for each run.
-  # Capabilities such as skills, context management, loop detection, and
-  # delegation remain inactive until their DSL methods are called.
+  # An Agent is the smallest Assembly: it owns one model loop while inheriting
+  # the same +ask+ and +stream_ask+ entrypoints as coordinated assemblies.
+  # Add tools for application operations and subagents for model-directed
+  # delegation.
   #
-  # The class-level +ask+ and +stream_ask+ helpers create fresh standalone
-  # entrypoints. Create an instance explicitly to reuse one Runtime across
-  # calls. Runtimes build bound instances internally; their +call+ method
-  # returns a RunResult and their +stream+ method follows the owning run's
-  # single-execution lifecycle. Closing an agent closes owned tools and any
-  # standalone workspace and sandbox.
-  # LittleGhost::Agent.ask uses <tt>You are a helpful agent.</tt> as its system
-  # prompt. Subclasses continue to use their inline or conventional prompts.
+  # Call a named Agent with
+  # ask[rdoc-ref:LittleGhost::Assembly.ask] when you need the final Run, or
+  # the streaming entrypoint[rdoc-ref:LittleGhost::Assembly.stream_ask] when you
+  # want events as the answer arrives.
   #
-  # Models can return ordinary text or a locally validated structured result.
-  # Tool failures are sanitized before returning to the model, diagnostic
-  # capture can be disabled for sensitive agents, and cancellation, deadlines,
-  # and cleanup failures remain framework control flow.
+  # Most applications call a named Agent class. LittleGhost automatically
+  # reuses the active Configuration's shared Runtime while building a fresh
+  # top-level Run for every call. Passing +runtime:+ is an advanced option for
+  # an explicitly isolated setup.
+  #
+  # Agent declarations are inherited. Define a short prompt inline, or place a
+  # growing prompt in <tt>app/prompts/customer_support/system.erb</tt> for
+  # +CustomerSupportAgent+. The {Prompts as Views guide}[rdoc-ref:docs/guides/prompt_views.md]
+  # explains conventional lookup, locals, and partials. Optional features such
+  # as skills, context management, loop detection, and delegation stay inactive
+  # until their DSL is used.
+  #
+  # Calling LittleGhost::Agent itself uses <tt>You are a helpful agent.</tt> as
+  # the system prompt. Subclasses use the inline or conventional prompt they
+  # declare.
+  #
+  # Models may return text or locally validated structured data. LittleGhost
+  # hides unexpected Tool exception messages from the model. See
+  # Run[rdoc-ref:LittleGhost::Run] for outcomes, cancellation, and cleanup, and
+  # Assembly[rdoc-ref:LittleGhost::Assembly] for the advanced run-scoped form.
   class Agent < Assembly
     DEFAULT_SYSTEM_PROMPT = "You are a helpful agent." # :nodoc:
     DEFAULT_MAX_TOOL_RESULT_TOKENS = 10_000 # :nodoc:
@@ -161,9 +164,10 @@ module LittleGhost
       # strategy selection prefers provider-native structured output and falls
       # back to a terminal tool when supported.
       #
-      # A missing or invalid result receives one repair attempt before
-      # LittleGhost::StructuredResultError is raised. Invalid schemas and
-      # strategies raise LittleGhost::ConfigurationError immediately.
+      # During execution, a missing or invalid result receives one repair attempt
+      # before LittleGhost::StructuredResultError is raised inside the owning Run.
+      # A top-level +ask+ records it on a failed Run. Invalid schemas and strategies
+      # raise LittleGhost::ConfigurationError before execution begins.
       def result_schema(schema = nil, name: nil, description: nil, strategy: :auto, **schema_keywords)
         return result_schema_value if schema.nil? && schema_keywords.empty? && name.nil? && description.nil? && strategy == :auto
 
@@ -466,16 +470,32 @@ module LittleGhost
       end
     end
 
-    # Run-scoped model, tools, lifecycle, delegation, and execution resources
-    # available to agent extensions.
-    attr_reader :model, :tool_registry, :run, :delegation_activity, :agent_path, :workspace, :sandbox,
-      :max_tool_calls
+    # The resolved model used by this run-scoped Agent.
+    attr_reader :model
+    # Tools created and bound for this Agent's owning Run.
+    attr_reader :tool_registry
+    # The owning Run, or +nil+ for a standalone entrypoint.
+    attr_reader :run
+    # Shared delegation tracker, when subagents are enabled.
+    attr_reader :delegation_activity
+    # This Agent's location in the bounded subagent tree.
+    attr_reader :agent_path
+    # Run-scoped workspace available to Tools and extensions.
+    attr_reader :workspace
+    # Run-scoped sandbox used for filesystem and process operations.
+    attr_reader :sandbox
+    # Maximum Tool calls allowed during one invocation.
+    attr_reader :max_tool_calls
 
     # Creates either a standalone entrypoint or a run-scoped agent.
+    # :call-seq:
+    #   new(runtime: nil) -> Agent
+    #   new(model:, runtime:, tools:, run:, ...) -> Agent
     #
-    # Calling <tt>new</tt> without +model+ and +run+ creates the standalone form
-    # used by +ask+ and +stream_ask+. Runtime builders supply the remaining
-    # dependencies and apply class-level limits and declarations.
+    # The first form is the application-facing entrypoint. It may be reused for
+    # independent concurrent calls and creates a fresh Run for each one. The
+    # second form is run-scoped; Runtime builders supply its dependencies and it
+    # must not outlive or be shared outside its owning Run.
     def initialize(
       model: nil,
       runtime: nil,

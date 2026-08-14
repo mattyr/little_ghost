@@ -1,0 +1,164 @@
+name: Documentation
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_release:
+        description: Release tag that must be visible before the build starts
+        required: false
+        type: string
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  resolve-source:
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == 'main' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      source_sha: ${{ steps.source.outputs.sha }}
+    steps:
+      - name: Resolve the newest successful main commit
+        id: source
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          GH_TOKEN: ${{ github.token }}
+          WORKFLOW_RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          if [[ "$EVENT_NAME" == "workflow_run" ]]; then
+            sha="$WORKFLOW_RUN_SHA"
+          else
+            sha="$(
+              gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?branch=main&event=push&status=success&per_page=20" \
+                --jq '.workflow_runs[] | select(.event == "push" and .head_branch == "main" and .head_repository.full_name == env.GITHUB_REPOSITORY) | .head_sha' |
+                head -n 1
+            )"
+          fi
+          if [[ -z "$sha" ]]; then
+            echo "No successful main CI run is available for Edge documentation" >&2
+            exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+  build-site:
+    needs: resolve-source
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out the successful main commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.resolve-source.outputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1
+        with:
+          ruby-version: 4.0.4
+          bundler-cache: true
+      - name: Build Edge and every released documentation version
+        env:
+          EXPECTED_RELEASE: ${{ inputs.expected_release || github.event.release.tag_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ -n "$EXPECTED_RELEASE" ]]; then
+            for attempt in $(seq 1 12); do
+              if gh release view "$EXPECTED_RELEASE" >/dev/null 2>&1; then
+                break
+              fi
+              if [[ "$attempt" == "12" ]]; then
+                echo "Release ${EXPECTED_RELEASE} was not visible before the documentation build" >&2
+                exit 1
+              fi
+              sleep 5
+            done
+          fi
+          bundle exec rake site:build_all
+      - name: Package the complete site
+        run: tar -czf "$RUNNER_TEMP/versioned-site.tgz" -C _site .
+      - name: Upload the complete site
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: edge-documentation
+          path: ${{ runner.temp }}/versioned-site.tgz
+          if-no-files-found: error
+          retention-days: 1
+
+  publish-site:
+    needs: [resolve-source, build-site]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: little-ghost-documentation-publish
+      cancel-in-progress: false
+    permissions:
+      actions: read
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Download the complete site
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: edge-documentation
+          path: _candidate
+      - name: Extract the complete site
+        run: |
+          mkdir _pages
+          tar -xzf _candidate/versioned-site.tgz -C _pages
+      - name: Require the current published release set
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/releases" \
+            --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name | ltrimstr("v")' |
+            sort > "$RUNNER_TEMP/published-versions"
+          jq --raw-output '.versions[] | select(.kind == "release") | .id' _pages/versions.json |
+            sort > "$RUNNER_TEMP/candidate-versions"
+          diff --unified "$RUNNER_TEMP/published-versions" "$RUNNER_TEMP/candidate-versions"
+      - name: Require the newest successful main commit
+        env:
+          EXPECTED_SHA: ${{ needs.resolve-source.outputs.source_sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for attempt in $(seq 1 12); do
+            current_sha="$(
+              gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?branch=main&event=push&status=success&per_page=20" \
+                --jq '.workflow_runs[] | select(.event == "push" and .head_branch == "main" and .head_repository.full_name == env.GITHUB_REPOSITORY) | .head_sha' |
+                head -n 1
+            )"
+            [[ "$current_sha" == "$EXPECTED_SHA" ]] && break
+            [[ "$attempt" == "12" ]] && break
+            sleep 5
+          done
+          if [[ "$current_sha" != "$EXPECTED_SHA" ]]; then
+            echo "A newer successful main build superseded this documentation" >&2
+            exit 1
+          fi
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+      - name: Upload GitHub Pages artifact
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: _pages
+          include-hidden-files: true
+      - name: Deploy documentation
+        id: deployment
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0

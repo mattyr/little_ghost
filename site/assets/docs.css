@@ -45,7 +45,7 @@
   --radius-sm: 0.45rem;
   --radius-md: 0.7rem;
   --radius-lg: 1rem;
-  --layout-sidebar-width: 285px;
+  --layout-sidebar-width: 315px;
   --layout-content-max-width: 860px;
   --layout-header-height: 84px;
   --layout-search-width: 480px;
@@ -323,12 +323,30 @@ header.top-navbar .theme-toggle:hover .theme-toggle-icon {
 #sidebar-navigation {
   border-right-color: var(--color-border-subtle);
   background: var(--color-nav-bg);
+  font-size: 0.92rem;
   -webkit-backdrop-filter: blur(20px);
   backdrop-filter: blur(20px);
 }
 
 #sidebar-navigation .nav-section {
   padding-inline: 1.15rem;
+}
+
+#sidebar-navigation .essential-api-section {
+  padding-top: 0.8rem;
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+#sidebar-navigation .essential-api-section .nav-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.08rem 0.35rem;
+}
+
+#sidebar-navigation .essential-api-section .nav-list a {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 #sidebar-navigation h2,
@@ -366,6 +384,25 @@ header.top-navbar .theme-toggle:hover .theme-toggle-icon {
   font-size: inherit;
 }
 
+#classindex-section .nav-section-collapsible .nav-list {
+  margin-left: 0;
+  padding-left: 0;
+  border-left: 0;
+  font-size: 0.8rem;
+}
+
+#classindex-section .nav-section-collapsible .nav-list .link-list {
+  margin-left: 0;
+  padding-left: 0.65rem;
+  border-left: 0;
+  font-size: inherit;
+}
+
+#classindex-section .nav-section-collapsible .nav-list a,
+#classindex-section .nav-section-collapsible .nav-list summary {
+  white-space: nowrap;
+}
+
 main {
   padding-top: 3.6rem;
   padding-bottom: 5rem;
@@ -383,7 +420,7 @@ main h6 {
 
 main h1,
 main h1.page-title .page-title-name {
-  font-size: clamp(2.35rem, 5vw, 3.6rem);
+  font-size: clamp(2.15rem, 4vw, 3.1rem);
   font-weight: 720;
   line-height: 1;
 }
@@ -555,6 +592,10 @@ footer.site-footer {
   background: transparent;
 }
 
+footer.site-footer .footer-bottom a {
+  font-size: inherit;
+}
+
 .search-modal-backdrop {
   -webkit-backdrop-filter: blur(10px);
   backdrop-filter: blur(10px);
@@ -660,7 +701,7 @@ footer.site-footer {
 
   main h1,
   main h1.page-title .page-title-name {
-    font-size: clamp(2rem, 11vw, 2.7rem);
+    font-size: clamp(1.9rem, 9vw, 2.4rem);
   }
 
   main h2 {

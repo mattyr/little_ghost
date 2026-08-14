@@ -70,39 +70,32 @@ require_relative "little_ghost/agent_factory"
 require_relative "little_ghost/runtime/hook"
 require_relative "little_ghost/runtime"
 
-# Build AI features with reusable agents and composable assemblies. LittleGhost can
-# sit inside an existing Ruby system or support a dedicated AI service, keeping
-# models, prompts, tools, sessions, streaming, and instrumentation behind a
-# cohesive set of Ruby conventions.
+# LittleGhost is a Ruby library for building AI features with reusable agents
+# and composable assemblies. It can sit inside an existing Ruby system or
+# support a dedicated AI service.
 #
-# A customer support agent can answer directly, use an application tool, or ask a
-# specialist for research while the caller observes one run:
-#
-#   class ResearchAgent < LittleGhost::Agent
-#     description "Researches difficult support questions"
-#     model "openai:gpt-5.6-luna"
-#   end
+# Start with one model-driven behavior:
 #
 #   class CustomerSupportAgent < LittleGhost::Agent
 #     description "Handles support requests"
-#     model "openai:gpt-5.6-luna"
-#     tools AccountTool
-#     subagent ResearchAgent, kind: "research"
+#     model "openrouter:openai/gpt-5.6-luna"
+#     system_prompt "Answer customer questions clearly."
 #   end
 #
 #   run = CustomerSupportAgent.ask("Why is transfer 481 still pending?")
 #   run.completed? # => true
-#   run.response   # => "Transfer 481 is waiting for the receiving bank."
+#   run.response
+#   # One possible response: Transfer 481 is waiting for the receiving bank.
 #
-# Agent subclasses hold reusable behavior; Invocation objects carry one request,
-# and Run objects own execution and cleanup. Assembly gives Agent, Workflow,
-# Swarm, and Graph the same caller interface while each type owns a different
-# coordination policy.
+# Agent subclasses hold reusable behavior, Invocation objects carry one request,
+# and Run objects own execution and cleanup. When one model loop is not enough,
+# Assembly gives Agent, Workflow, Swarm, and Graph the same caller interface
+# while each type owns a different coordination policy.
 #
 # LittleGhost.configuration is process-wide unless LittleGhost.with_configuration
-# supplies an execution-scoped replacement. Configuration is loaded lazily and
-# snapshotted into a Runtime, so make application changes before the first agent
-# runtime is built.
+# supplies an execution-scoped replacement. The first standalone call lazily
+# builds one shared Runtime from that configuration, so make application changes
+# before invoking an Agent or Assembly.
 module LittleGhost
   class << self
     # The configuration active in the current execution context, falling back to
@@ -114,15 +107,24 @@ module LittleGhost
     # Opens the active Configuration for application setup and returns it.
     #
     # Configuration files are loaded lazily when a runtime is first built, so
-    # make application-level changes before invoking an agent.
+    # make application-level changes before invoking an agent. Once the shared
+    # Runtime is ready, later mutations raise ConfigurationError.
     def configure(&block)
       configuration.configure(&block)
     end
 
+    # Returns the shared Runtime for the active Configuration.
+    #
+    # Most applications do not need to call this method. Standalone Agent and
+    # Assembly entrypoints use it automatically. Runtime construction is lazy,
+    # thread-safe, and locks the active Configuration after it succeeds.
+    def runtime = configuration.runtime
+
     # Returns the model resolver owned by the active process configuration.
     def model_resolver = configuration.model_resolver
 
-    # Makes +configuration+ current only while the block runs.
+    # Makes +configuration+ and its independent shared Runtime current only
+    # while the block runs.
     #
     # Execution state restores the previous configuration even when the block
     # raises. Other execution contexts continue to see their own configuration.

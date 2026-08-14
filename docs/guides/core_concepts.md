@@ -1,113 +1,39 @@
 # Core Concepts
 
-Start with one agent. In LittleGhost, an **agent** is a reusable Ruby definition for one model loop: it selects a model, supplies instructions, exposes tools, and decides when the model has finished answering one request.
-
-```text
-shared configuration
-└── ModelResolver ── resolves model selections ──> provider clients
-
-one request
-└── Run
-    ├── CustomerSupportAgent
-    │   ├── HelpCenterLookupTool
-    │   └── ResearchAgent subagent (model-directed)
-    └── sessions, resources, usage, events, and terminal result
-```
-
-The sections below build outward from that unit. After the agent, the guide introduces its model, tools, and run lifecycle. It then names an **assembly**: anything a caller can invoke like one agent, including coordinated workflows, swarms, and graphs.
-
-## Agents declare one model-driven behavior
-
-An agent class keeps the behavior for one application role together:
+Build one model-driven behavior in a Ruby class, then call it like Ruby. That is the idea LittleGhost grows from.
 
 ```ruby
 class CustomerSupportAgent < LittleGhost::Agent
-  description "Answers customer support questions."
-  model :customer_support
-  system_prompt "Answer clearly. Check the help center before stating company guidance."
+  model "openrouter:openai/gpt-5.6-luna"
+  system_prompt "Answer customer questions clearly."
   tools HelpCenterLookupTool
 end
+
+run = CustomerSupportAgent.ask("Where is my order?")
+run.response
 ```
 
-The class-level DSL is inheritable. It can declare prompts, limits, callbacks, tool classes, structured results, context management, skills, and delegation. Capabilities remain inactive until their corresponding DSL is called.
+From there, add only what the work needs. Give the agent a tool. Let it ask a specialist for help. Or coordinate several agents while the rest of your application keeps making the same call.
 
-`CustomerSupportAgent.ask` creates a standalone entrypoint, consumes one `LittleGhost::Run`, and returns that run. `CustomerSupportAgent.stream_ask` creates the same entrypoint and yields events while it works. Create `CustomerSupportAgent.new(runtime:)` explicitly when several calls should reuse one runtime.
+## An Agent owns one model loop
 
-```ruby
-run = CustomerSupportAgent.ask("Can I get a refund?")
-run.response       # final text from the top-level execution
-run.result.output  # text, or a validated structured value when declared
+An **Agent** defines one model-driven behavior. It chooses the model, supplies the instructions and tools, and carries one request through to an answer.
+
+The class holds the behavior you want to reuse. Each call brings its own input, history, context, settings, and attachments. Request data never needs to live on the class.
+
+```text
+CustomerSupportAgent
+├── model selection
+├── system prompt
+├── HelpCenterLookupTool
+└── limits and optional capabilities
 ```
 
-## Models can be selected directly or by role
+An Agent can return text or checked, structured data. Later, you can add streaming, sessions, or callbacks. None of them are required to begin.
 
-An agent can name a canonical target directly when the choice belongs beside its behavior:
+## A Tool connects the model to Ruby
 
-```ruby
-class CustomerSupportAgent < LittleGhost::Agent
-  model "openai:gpt-5.6-luna"
-end
-```
-
-It can also attach trusted model settings without defining a shared profile:
-
-```ruby
-class DeliberateSupportAgent < LittleGhost::Agent
-  model(provider: "openai", model: "gpt-5.6-luna", reasoning_effort: "high")
-end
-```
-
-In both forms, `provider` is the name of a configured connection. A role such as `customer_support` adds stable application vocabulary when several agents or deployments should share routing policy:
-
-```ruby
-LittleGhost.configure do |config|
-  config.providers = {
-    openai: {adapter: :openai, api_key: ENV.fetch("OPENAI_API_KEY")}
-  }
-  config.models = {
-    customer_support: {target: "openai:gpt-5.6-luna"}
-  }
-end
-```
-
-```ruby
-class CustomerSupportAgent < LittleGhost::Agent
-  model :customer_support
-end
-```
-
-Strings and symbols without a colon are roles; strings containing a colon are canonical targets; mappings require `provider` and `model`, with remaining keys treated as model settings. Role names cannot contain a colon. Direct targets and mappings bypass role inheritance and overlays.
-
-Dotted roles inherit from the nearest registered parent. `ResearchAgent` can request `customer_support.research` and initially use the `customer_support` profile; registering `customer_support.research` later specializes it. A resolver caller may pass an explicit `profiles:` overlay without mutating the configured profiles or agent class. Because an overlay can select a different registered provider, model, and settings, it is trusted application configuration and must be constructed or allowlisted by the application rather than copied from unchecked request data. The base resolver does not inspect application-specific invocation fields.
-
-The provider performs model I/O. `LittleGhost::ModelResolver` resolves application intent into a `LittleGhost::Model`, which carries the provider, target, settings, details, and role for a run.
-
-## Runs own top-level lifecycle
-
-A `LittleGhost::Run` owns one top-level execution. It opens the session, workspace, sandbox, agent entrypoint, and registered resources, then closes owned resources in reverse order. Later sections show how the same lifecycle can own a coordinated entrypoint.
-
-The run is both executable and enumerable. `#call` consumes it; `#each` streams `LittleGhost::StreamEvent` objects. After termination, the run reports one outcome: completed, failed, partial at a deadline, or cancelled. It also exposes the final response, result, usage, and error.
-
-Long-lived services can supervise a run without making their request thread own its execution:
-
-```ruby
-execution = CustomerSupportAgent.new.start_execution(
-  message: "Investigate transfer 481"
-) do |event|
-  event_buffer << event
-end
-
-execution.interrupt_response(message: "Include the latest ledger entry")
-run = execution.wait(deadline: Time.now + 30)
-```
-
-`LittleGhost::Execution` owns the worker, preserves request-scoped execution state, and coordinates cancellation, interruptions, waiting, and bounded shutdown. The underlying run still owns agent resources and its terminal outcome. Event consumers run on the worker thread. Applications should keep them thread-safe and avoid blocking indefinitely.
-
-An `Invocation` is the request envelope. It normalizes the current message and history, generates missing identifiers, and retains application-specific fields with indifferent string and symbol keys. Caller identity remains explicit. If session persistence needs tenant isolation, derive its actor from trusted authentication state; never trust a model-supplied or unverified request field.
-
-## Tools are validated application boundaries
-
-`HelpCenterLookupTool` exposes exactly one operation to the model:
+A **Tool** is one focused thing an agent can ask your application to do. It has a name, a description, an input schema, and the Ruby code that does the work.
 
 ```ruby
 class HelpCenterLookupTool < LittleGhost::Tool
@@ -120,63 +46,111 @@ class HelpCenterLookupTool < LittleGhost::Tool
   )
 
   def call(input)
-    HelpCenterRepository.fetch(input.fetch("topic"))
+    {"refunds" => "Refunds are available within 30 days."}
+      .fetch(input.fetch("topic"))
   end
 end
 ```
 
-LittleGhost validates the model's input before invoking `#call`. Hashes and arrays returned by a tool are JSON-encoded; other values become text. Expected application failures can raise `LittleGhost::ToolError`; unexpected exception messages are sanitized before they reach model context.
+LittleGhost checks the model's arguments, calls the tool, and gives the result back to the model. The schema checks shape, not permission. Authorize sensitive reads and actions inside the tool with trusted application context.
 
-A tool can return a `LittleGhost::Tool::ExecutionResult` with `companion_content` when the next model request also needs text, images, or documents. LittleGhost keeps the ordinary tool result intact, then appends each tool's companion blocks as a transient user message in tool-call order. Session persistence omits those transient messages. Tool-use, tool-result, and reasoning blocks are rejected as companion content.
+## A Run owns one top-level execution
 
-Validation is not authorization. A tool that reads customer records, writes files, executes processes, or calls a network service must enforce the application's trust rules itself. The built-in unrestricted sandbox executes with the Ruby process's permissions and is not a security boundary. Configure an isolated sandbox before exposing filesystem or shell tools to untrusted work.
-
-## Assemblies let coordination look like one agent
-
-An **assembly** is any LittleGhost entrypoint that a caller can use like one agent. `CustomerSupportAgent` is therefore the smallest assembly: it contains one agent and one model loop.
-
-When a feature needs several agents, three coordination classes preserve that same caller interface:
-
-- A `Workflow` uses Ruby code to enforce ordering, branching, and parallel work.
-- A `Swarm` lets configured agents choose direct handoffs to one another.
-- A `Graph` follows named nodes and application-declared edges.
+Every `.ask` or `.stream_ask` creates a **Run**. Think of it as the record of one trip through LittleGhost. It opens what the request needs, records how the work ended, and closes the resources it owns.
 
 ```ruby
-CustomerSupportAgent.ask("Can I get a refund?")
-ResponseWorkflow.ask("Can I get a refund?")
-ProblemSolverSwarm.ask("Can I get a refund?")
-SupportFlowGraph.ask("Can I get a refund?")
+run = CustomerSupportAgent.ask("Where is order 481?")
+
+run.completed? # => true
+run.response
+# One possible response: Order 481 is out for delivery.
+run.usage      # => normalized token usage
+run.result     # => the complete LittleGhost::RunResult
 ```
 
-Each call returns a top-level `LittleGhost::Run`, and each `stream_ask` yields the same event vocabulary. The caller chooses an entrypoint without needing to branch on its internal coordination style. Instances also share `call`, `stream`, `start_execution`, interruption, and `as_tool` behavior.
+The Agent defines reusable behavior; the Run records what happened this time.
 
-Keep agent definitions in `app/agents`. Put workflow, swarm, and graph definitions in `app/assemblies`, with class names ending in `Workflow`, `Swarm`, or `Graph`. The next sections explain when each form earns its name.
+### Follow one request
 
-## Subagents are model-directed delegation
+One Run owns the trip from request to result:
 
-Declaring `ResearchAgent` as a subagent gives `CustomerSupportAgent` a configured set of tools for spawning, messaging, interrupting, waiting for, and listing research work:
+```text
+Run
+├── Invocation: caller input, history, and application context
+├── RunContext: mutable working state for this execution
+└── Agent and Tools ──> RunResult
+```
+
+An **Invocation** is the request in LittleGhost's standard shape. Its `context` contains current request values supplied by your application. A Tool can read those values through `run.invocation.context` when it authorizes work.
+
+The **RunContext** carries mutable working state in `context.state`. At the top level, saved Session state is loaded first, then current Invocation context is added. Child Assemblies may receive a copy, a mapped value, or no context at all. Recheck saved values before using them for permission decisions.
+
+A Tool's **Binding** gives the Tool access to objects created for this run, including the Agent, Run, workspace, and sandbox. These objects are separate from the arguments chosen by the model.
+
+The final **RunResult** keeps the complete assembly result. Its `text` is the final text answer. Its `output` returns structured data when the Agent declared a result schema, and text otherwise. The top-level `Run#response` is always the caller-facing text.
+
+### See how a call ended
+
+Top-level calls normally return a Run, even when execution fails. The terminal event carries the same outcome when you stream:
+
+| What happened | Run outcome | Terminal event | What Ruby does |
+| --- | --- | --- | --- |
+| The assembly completed | `completed` | `:run_stop` | Returns the Run |
+| Model, provider, or assembly execution failed | `failed` | `:run_error` | Returns the Run; inspect `run.error` |
+| The deadline stopped work | `partial` | `:run_partial` | Returns the Run with any response produced so far |
+| Cancellation stopped work | `cancelled` | `:run_cancel` | Returns the Run without a response |
+| Tool input or a `ToolError` failed | The model may recover | No terminal event by itself | Gives a safe error result back to the model |
+| Input, configuration, or resources failed before a Run could start | No Run exists | None | Raises the exception |
+
+Unexpected Tool exception messages are hidden from the model. The original exception remains available to trusted application callbacks and diagnostics.
+
+Failures while closing resources, delivering events, or reporting instrumentation sit outside the normal result path. They raise a Ruby exception because LittleGhost can no longer promise that it delivered a clean ending. [Running in Production](production.md) covers that boundary where applications supervise and shut down work.
+
+## An Assembly can look like one Agent
+
+One model loop is not always enough. LittleGhost calls any unit that a caller can invoke like an Agent an **Assembly**.
+
+An Agent is the smallest Assembly. Workflow, Swarm, and Graph coordinate several participants while preserving the same entrypoints:
 
 ```ruby
-class ResearchAgent < LittleGhost::Agent
-  description "Investigates support questions that need broader research."
-  model "customer_support.research"
-  system_prompt "Return a concise evidence summary."
-end
+CustomerSupportAgent.ask(question)
+ResponseWorkflow.ask(question)
+ProblemSolverSwarm.ask(question)
+SupportFlowGraph.ask(question)
+```
 
+That shared calling style is what makes composition feel natural. A controller, job, or CLI does not need to know whether one Agent answered or a whole support process worked together.
+
+## Choose who controls the next step
+
+The coordination types differ mainly in who decides what happens next:
+
+| Need | Choose | Who controls the next step? |
+| --- | --- | --- |
+| One model-driven behavior | Agent | The active model loop |
+| A model should delegate a named task | Subagent | The parent model |
+| Ruby should enforce ordering or branching | Workflow | The workflow's Ruby code |
+| Specialists should choose permitted handoffs | Swarm | The active agent |
+| Allowed routes should be visible in advance | Graph | Declared nodes and edges |
+
+### Subagents bring in a specialist
+
+A **subagent** is a specialist that a parent Agent can call for help. The parent model chooses when to delegate, reads the result, and then continues its own answer.
+
+```ruby
 class CustomerSupportAgent < LittleGhost::Agent
-  model "customer_support"
-  tools HelpCenterLookupTool
+  model "openrouter:openai/gpt-5.6-luna"
   subagent ResearchAgent, kind: "research"
 end
 ```
 
-The model decides whether to delegate and how to use the returned research. Each child declares its own tools, so access remains visible at the class receiving it. Subagent work can run concurrently and respects the configured turn, concurrency, depth, and time limits. Conversations can persist when a session store exists; `persist: false` keeps a declaration invocation-local.
+Use a subagent when delegation is part of one model's decision-making. Use a Workflow when application code must guarantee that a step happens.
 
-Use an agent as an ordinary tool with `agent_as_tool` when one request and one result is enough. Use a subagent when the parent needs an addressable worker with follow-ups, progress, interruption, or durable conversation identity.
+### Workflows make Ruby the coordinator
 
-## Workflows are application-directed composition
+A **Workflow** coordinates work with ordinary Ruby. Its `perform` method can call an Agent or another Assembly, read a result, choose a branch, or run independent steps together.
 
-Some customer support requests must always be researched before a response is written. Put that invariant in Ruby rather than asking the model to remember it:
+`invoke` prepares a lazy child call. Reading `.output` runs an intermediate child. Return the final `invoke` itself, without reading its output, so that answer can stream to the caller.
 
 ```ruby
 class ResponseWorkflow < LittleGhost::Workflow
@@ -184,9 +158,7 @@ class ResponseWorkflow < LittleGhost::Workflow
 
   def perform
     research = invoke(ResearchAgent).output
-
     invoke CustomerSupportAgent, input: <<~PROMPT
-      Customer request:
       #{input.text}
 
       Research:
@@ -196,157 +168,80 @@ class ResponseWorkflow < LittleGhost::Workflow
 end
 ```
 
-`#invoke` builds a lazy Assembly invocation, so a workflow step may be an agent, workflow, swarm, or graph. Calling `#output` consumes an intermediate invocation; `#perform` must return its final invocation unconsumed so LittleGhost can stream it to the original caller. Input, history, state, settings, cancellation, deadline, template values, and trace parentage flow through the workflow, while intermediate usage is added to the terminal result.
+Workflow children receive the caller's history and application context by default. Pass `history: []`, `context: {}`, or redacted values when a participant should receive less.
 
-Unlike Graph nodes and Swarm members, each Workflow invocation receives the full caller history and application context by default. Isolated copies prevent one child from mutating a sibling's context; they do not prevent disclosure. Pass `history: []`, `context: {}`, or explicitly redacted values to `invoke` when participants use different providers or privileges.
+### Swarms let agents hand work to one another
 
-Independent invocations can run concurrently while ordinary Ruby still controls composition:
-
-```ruby
-research, verification = parallel(
-  invoke(ResearchGraph, as: :research),
-  invoke(VerificationWorkflow, as: :verification),
-  max_concurrency: 2
-)
-```
-
-Results preserve declaration order. Each branch receives isolated application context and cooperative cancellation. `timeout:`, `retries:`, `retry_on:`, and `retry_delay:` apply to `invoke`; retries require explicit exception classes because rerunning an Assembly may repeat tool side effects.
-
-Cancellation, deadlines, and step timeouts are cooperative. They do not forcibly stop provider or tool code, and they do not roll back external side effects. A participant must honor its cancellation token or deadline, and applications must decide whether an operation is safe to retry.
-
-A workflow has the same entrypoint API as an agent:
-
-```ruby
-run = ResponseWorkflow.ask("Review this unusual refund request")
-
-puts run.response
-```
-
-Choose a subagent when delegation is part of the model's judgment. Choose a workflow when ordering and branching are application invariants. They can coexist: `ResponseWorkflow` can always collect baseline research, while `CustomerSupportAgent` can still delegate a new question that arises while drafting the response.
-
-## Swarms use direct agent handoffs
-
-A swarm keeps one member active at a time and injects one reserved `handoff_to_agent` tool. A member either answers the caller or hands the request directly to another configured member:
+A **Swarm** is a group of Agents that can hand work to one another. One member is active at a time. It can answer the caller or choose one of its allowed specialists.
 
 ```ruby
 class ProblemSolverSwarm < LittleGhost::Swarm
   member TriageAgent
   member BillingAgent
   member AccountAgent
+
   start TriageAgent
   handoff TriageAgent, to: [BillingAgent, AccountAgent]
-  max_steps 12
-  max_handoff_repeats 3
 end
 ```
 
-Members are fresh Agent instances; unlike Workflow invocations and Graph nodes, Swarm members intentionally remain Agent-only so handoffs stay direct and local. A complete Swarm can still be used as a Workflow step, Graph node, or tool. A handoff names the next member and supplies a message plus optional JSON-like context. That context remains untrusted model-authored prompt content; it does not become trusted application state. A member cannot hand off to itself, hand off outside the allowed topology, or combine a handoff with another tool call. Without `handoff` declarations, routing remains all-to-all except self-handoffs. A member with no declared outgoing target receives no handoff tool. Invalid calls return an ordinary tool error so the model can recover. If no handoff occurs, the current member's response is final. Members receive only the current request or explicit handoff envelope by default; opt into original caller data with `history: true` or `context: true` on that member.
+A Swarm is intentionally agent-to-agent. Its members are Agents, not other kinds of Assembly. Caller history and application context stay hidden unless a member opts in. Treat every handoff message as untrusted model input.
 
-Potentially intermediate model text is omitted from the caller's ordinary response stream. Streams expose Assembly lifecycle events, then the final member's ordinary response events. `max_steps` bounds total work and `max_handoff_repeats` detects repeated directed transitions; either limit raises `AssemblyLimitError` when exhausted. Members also accept the shared cooperative retry and timeout options described for workflows.
+### Graphs make routes visible
 
-## Graphs guide serial and parallel paths
-
-A graph names Assembly nodes and directed edges. Ordinary edges select exactly one next node, while explicit forks and joins add bounded parallel work without shared mutable reducers:
+A **Graph** connects named Assembly nodes with declared edges. Nodes can contain Agents, Workflows, Swarms, or other Graphs.
 
 ```ruby
 class SupportFlowGraph < LittleGhost::Graph
   node :triage, TriageAgent
-  node :research, ResearchAgent
-  node :verify, VerificationWorkflow
+  node :billing, BillingAgent
+  node :general, CustomerSupportAgent
   node :respond, CustomerSupportAgent
 
   start :triage
-  fork :triage, to: [:research, :verify], max_concurrency: 2
-  join [:research, :verify], to: :respond
+  edge :triage, :billing do |state|
+    state.result(:triage).output == "billing"
+  end
+  edge :triage, :general
+  edge :billing, :respond
+  edge :general, :respond
   finish :respond
-  max_steps 12
 end
 ```
 
-An edge condition receives immutable `Graph::State`, including the original input, history, context, step, current and previous node names, predecessors, branch results, completed results, and a routed error when present. Exactly one matching conditional edge wins; otherwise one unconditional fallback is used. An `error_edge` can route selected application errors after retries are exhausted. Cancellation, parent deadlines, and cleanup failures always remain control flow.
+Graph nodes do not receive caller history or application context unless they opt in. They still receive the original request and the outputs routed to them. Use edge input mappers to choose or redact what moves forward.
 
-By default, a downstream node receives the original multimodal input plus labeled predecessor output. A join receives every branch output in declaration order. Pass `input: ->(state) { ... }` on an edge, error edge, or join to replace that mapping. Nodes receive no caller history or application context unless their declaration opts in with `history: true` or `context: true`. The original request and routed outputs still cross node and provider boundaries by default, and routing callbacks can inspect the original context through `Graph::State`; map or redact inputs explicitly when participants have different privileges. Nodes may name any Assembly type, class, builder, or immutable definition. Fork branches may follow ordinary edges before reaching their distinct declared join sources.
+## Class definitions first, builders when needed
 
-`validate!` catches invalid topology before model work begins, and `to_mermaid` renders a deterministic diagram. A graph suppresses intermediate ordinary model stream events, publishes lifecycle, transition, fork, join, retry, and error events, aggregates usage, and forwards only the finish node's ordinary response stream. Downstream nodes still receive routed outputs, and terminal step records retain bounded semantic outputs for callers to inspect.
+Named classes are the default way to organize reusable behavior. They are readable, load through normal Ruby conventions, and give the coordination style a visible name such as `ResponseWorkflow` or `SupportFlowGraph`.
 
-Composite `RunResult` objects expose immutable `steps` and a `trajectory`. Step records include participants, attempts, timing, usage, relationships, and bounded semantic outputs without retaining transcripts or tool payloads. Swarm handoffs retain only their explicit handoff envelope. These records support assertions such as `result.trajectory.concurrent?(first_id, second_id)` without coupling tests to a tracing backend.
-
-## Builders unlock definitions discovered at runtime
-
-Class definitions are the default because they keep behavior, names, and topology close together. Each agent or assembly class can produce an immutable `.definition` snapshot or an independent mutable `.to_builder` variant.
-
-Use a builder when application code discovers participants or routes at runtime. The builder records the same declaration that the class DSL would organize:
+Every assembly class can also produce a mutable builder:
 
 ```ruby
-graph = LittleGhost::GraphBuilder.new(id: "support_flow")
-graph.node :triage, TriageAgent
-graph.node :respond, CustomerSupportAgent
-graph.start :triage
-graph.edge :triage, :respond
-graph.finish :respond
+graph = SupportFlowGraph.to_builder
+graph.node :audit, AuditAgent
+graph.edge :respond, :audit
+graph.finish :audit
 graph.validate!
-
-run = graph.ask("Can I get a refund?")
+run = graph.ask("Review order 481")
 ```
 
-`AgentBuilder`, `WorkflowBuilder`, `SwarmBuilder`, and `GraphBuilder` share the Assembly execution API. Builders remain mutable; each build or invocation recursively snapshots declaration containers and referenced Assembly definitions, so later builder declarations affect only future executions. Definitions are Ruby objects rather than portable JSON because conditions, callbacks, workflow bodies, factories, and resolvers may contain executable Ruby. Those closures and their external dependencies remain live trusted application code; the snapshot does not freeze state they capture.
+Use a builder when trusted application configuration decides the participants or routes. Each run gets a fixed copy of the builder as it looked when the run began, so later edits affect later runs. Ruby callbacks still see any application objects they captured.
 
-## Assemblies can be tools
+## One result, including the journey
 
-Any assembly instance supports `as_tool`. Agent classes can also declare another assembly as a tool:
+Every assembly produces the same top-level `Run` and final `RunResult`. Composite assemblies also keep a size-limited record of the participants that ran:
 
 ```ruby
-class CustomerSupportAgent < LittleGhost::Agent
-  assembly_as_tool SupportFlowGraph, name: "investigate_support_case"
-end
+run = SupportFlowGraph.ask("Why was I charged twice?")
+
+run.response
+run.result.steps
+run.result.trajectory.transitions
 ```
 
-`assemblies_as_tools` declares several with shared options. Existing `agent_as_tool` and `agents_as_tools` remain agent-specific aliases. Composite assemblies do not accept agent-only model or tool overrides.
+This shows callers which participants ran without including raw provider responses. A Swarm or Graph may hide intermediate model events from the public stream so the response stays coherent. That is a presentation choice, not a privacy boundary: routed outputs and step summaries still exist.
 
-An assembly tool receives the invoking tool context's application state on every call. `preserve_context: false` prevents conversational history from carrying between calls; it does not suppress that application state. Nested tools must continue to authorize privileged work from trusted context rather than from model-authored input.
+The pieces now fit together: Agents define behavior. Tools connect them to Ruby. Runs record one execution. Assemblies let the system grow without changing the caller.
 
-## Structured results separate data from prose
-
-An agent that feeds application code can declare a strict JSON object schema:
-
-```ruby
-class ResearchAgent < LittleGhost::Agent
-  model "customer_support.research"
-  result_schema(
-    {
-      type: "object",
-      properties: {
-        summary: {type: "string"},
-        sources: {type: "array", items: {type: "string"}}
-      },
-      required: %w[summary sources],
-      additionalProperties: false
-    },
-    name: "support_research"
-  )
-end
-```
-
-LittleGhost selects provider-native structured output when the resolved model advertises it, or a strict terminal tool when supported. The locally validated value is available through `RunResult#structured_result` and `RunResult#output`. Invalid output receives one repair attempt, then raises `LittleGhost::StructuredResultError`.
-
-Use structured results when code consumes fields. Keep ordinary text when a human is the final consumer.
-
-## Sessions preserve conversation, streams expose progress
-
-The default session store is in-memory. A configured `SessionStore` can load history and state before an agent runs and checkpoint coherent turns as work progresses. The application must supply stable session and actor identifiers when it wants continuity and isolation.
-
-Applications that need to reconcile persisted messages with invocation history can register a `LittleGhost::Runtime::Hook` and implement `session_history`. The hook receives the run plus `stored:` and `fallback:` message collections. Return the history to use, or `nil` to defer to the next hook and ultimately the session default. This keeps application-specific reconciliation policy outside the framework session type.
-
-Streams expose generic framework events rather than provider wire formats. Consumers can render text deltas, observe tool or subagent activity, collect usage, and react to terminal outcomes without coupling to OpenAI, OpenRouter, or Bedrock. The optional AG-UI adapter translates the same events at an interface boundary.
-
-## Keep the boundary visible
-
-The core design can be summarized as five choices:
-
-- Put shared construction and provider policy in configuration; use inline declarations or independent YAML files according to the application's needs.
-- Put model behavior and available capabilities on agent classes.
-- Put privileged application operations behind narrow, authorized tools.
-- Put imperative ordering in workflows, dynamic peer routing in swarms, and guided routing in graphs.
-- Leave addressable background delegation to subagents.
-
-Return to [Getting Started](getting_started.md) for the complete first-run setup. The API reference covers exact signatures and lifecycle details for `LittleGhost::Runtime`, `LittleGhost::Run`, `LittleGhost::Execution`, `LittleGhost::Assembly`, `LittleGhost::Agent`, `LittleGhost::Tool`, `LittleGhost::Workflow`, `LittleGhost::Swarm`, `LittleGhost::Graph`, and `LittleGhost::ModelResolver`.
+Continue with [Compose Agents](assemblies.md) to put several agents to work together. If you are ready to connect the feature to a real application, jump to [Running in Production](production.md).

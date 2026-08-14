@@ -71,6 +71,8 @@ module LittleGhost
   #
   # Every configured root is trusted Ruby code because ERB executes inside the
   # current process. Keep roots application-controlled and non-user-writable.
+  # See the {Prompts as Views guide}[rdoc-ref:docs/guides/prompt_views.md] for the
+  # conventional Agent workflow.
   class PromptResolver
     DEFAULT_MAX_DEPTH = 20 # :nodoc:
 

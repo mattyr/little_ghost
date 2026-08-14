@@ -12,30 +12,68 @@ module LittleGhost
   #   run.outcome    # => "completed"
   #   run.response   # => "Transfer 481 is waiting for the receiving bank."
   #
-  # The class-level ask helper[rdoc-ref:LittleGhost::Assembly.ask] or standalone
-  # ask method[rdoc-ref:LittleGhost::Assembly#ask] consumes the event stream and
-  # returns the Run. For a live interface, the class-level streaming
+  # The class-level ask helper[rdoc-ref:LittleGhost::Assembly.ask] and standalone
+  # ask method[rdoc-ref:LittleGhost::Assembly#ask] return the Run after work
+  # finishes. For a live interface, use the class-level streaming
   # helper[rdoc-ref:LittleGhost::Assembly.stream_ask] or standalone streaming
-  # method[rdoc-ref:LittleGhost::Assembly#stream_ask] yields StreamEvent objects
-  # and returns the same run after enumeration. A run can execute only once.
+  # method[rdoc-ref:LittleGhost::Assembly#stream_ask]. The stream yields
+  # StreamEvent objects, and enumeration returns the same Run with its final
+  # outcome and response. A Run executes only once.
+  #
+  #   stream = CustomerSupportAgent.stream_ask("Where is transfer 481?")
+  #   run = stream.each do |event|
+  #     publish(event) if event.type == :text_delta
+  #   end
+  #
+  #   run.completed? # => true
+  #   run.response
   #
   # Completion, failure, deadline, and cancellation become the +completed+,
   # +failed+, +partial+, and +cancelled+ outcomes. Ordinary execution failures
-  # are available through +error+ and the terminal stream event; cleanup, event
-  # delivery, or instrumentation failures may still raise because the framework
-  # cannot safely report a clean stop.
+  # are available through +error+ and the terminal stream event. Failures while
+  # closing resources, delivering events, or reporting instrumentation may
+  # still raise because LittleGhost cannot report a reliable ending.
   #
-  # The run opens its workspace, sandbox, session, and assembly entrypoint, then closes
-  # registered resources in reverse order. +register+ extends that lifecycle for
-  # application resources. Interruption is available only while an agent
-  # entrypoint is active and unambiguous.
+  # Tool validation and ToolError failures return safe Tool results to the model,
+  # which may recover and complete the Run. Input, configuration, or resource
+  # construction can raise before a Run exists. Once execution begins, terminal
+  # events are +run_stop+, +run_error+, +run_partial+, and +run_cancel+.
+  #
+  # The Run opens its workspace, sandbox, Session, and Assembly entrypoint, then
+  # closes registered resources in reverse order. +register+ adds application
+  # resources to that lifecycle. Interruption is available only while one Agent
+  # entrypoint is active.
   class Run
     include Enumerable
 
-    # Runtime and declarations used to execute the run; its request, cancellation
-    # token, resources, terminal outcome, response, result, usage, and error.
-    attr_reader :runtime, :agent_class, :entrypoint_class, :invocation, :cancellation_token, :result, :operation_id,
-      :outcome, :response, :error, :session, :usage, :workspace, :sandbox
+    # Runtime that built and executes this Run.
+    attr_reader :runtime
+    # Agent class used for compatibility when the entrypoint is an Agent.
+    attr_reader :agent_class
+    # Public Agent, Workflow, Swarm, or Graph class selected by the caller.
+    attr_reader :entrypoint_class
+    # Normalized request carried by this Run.
+    attr_reader :invocation
+    # Token that cooperatively stops this Run and its children.
+    attr_reader :cancellation_token
+    # Final RunResult, when the Assembly produced one.
+    attr_reader :result
+    # Unique identifier for this top-level operation.
+    attr_reader :operation_id
+    # Terminal String: +completed+, +failed+, +partial+, or +cancelled+.
+    attr_reader :outcome
+    # Caller-facing final text, or the partial text preserved at a deadline.
+    attr_reader :response
+    # Exception that caused a failed, partial, or cancelled outcome.
+    attr_reader :error
+    # Session opened for this invocation, when persistence is configured.
+    attr_reader :session
+    # Normalized Usage accumulated by the Run.
+    attr_reader :usage
+    # Request-scoped workspace owned or supplied by the Run.
+    attr_reader :workspace
+    # Request-scoped sandbox owned or supplied by the Run.
+    attr_reader :sandbox
 
     # Creates a dormant run for +invocation+.
     def initialize(invocation:, runtime:, agent_class: nil, assembly_class: nil, entrypoint_class: nil,

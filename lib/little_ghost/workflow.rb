@@ -10,16 +10,13 @@ module LittleGhost
   # Agent or another coordinated Assembly. The workflow consumes intermediate
   # answers and streams one final participant response.
   #
-  # A support workflow can route a difficult request through research before the
-  # responder writes the caller-visible answer:
+  # A support workflow can guarantee that research happens before the responder
+  # writes the caller-visible answer:
   #
   #   class ResponseWorkflow < LittleGhost::Workflow
   #     private
   #
   #     def perform
-  #       route = invoke(RouterAgent).output
-  #       return invoke(CustomerSupportAgent) unless route["research"]
-  #
   #       evidence = invoke(ResearchAgent).output
   #       invoke CustomerSupportAgent, input: <<~PROMPT
   #         #{input.text}
@@ -31,27 +28,31 @@ module LittleGhost
   #   end
   #
   #   run = ResponseWorkflow.ask("Why is transfer 481 pending?")
-  #   run.response # => "Transfer 481 is waiting for the receiving bank."
+  #   run.response
+  #   # One possible response: Transfer 481 is waiting for the receiving bank.
+  #
+  # Call a named Workflow with
+  # ask[rdoc-ref:LittleGhost::Assembly.ask] for its final Run, or
+  # the streaming entrypoint[rdoc-ref:LittleGhost::Assembly.stream_ask] for live
+  # events.
   #
   # +invoke+ returns a lazy Workflow::Invocation. Reading +output+ consumes an
   # intermediate invocation and returns RunResult#output; +perform+ must return
   # its final invocation without consuming it so those events reach the caller.
   # Intermediate usage is added to the final result.
   #
-  # Every child inherits input, history, settings, cancellation, deadline,
-  # template paths, and trace parentage unless +invoke+ overrides its input.
-  # JSON-like context is copied for each child, preventing one intermediate agent
-  # from mutating a sibling's state. Non-JSON-like workflow context raises
-  # ArgumentError.
+  # A child receives the Workflow input unless +invoke+ supplies another one.
+  # It also inherits history, settings, cancellation, deadline, template paths,
+  # and the parent tracing relationship. JSON-like context is copied for each
+  # child, preventing one intermediate Agent from mutating a sibling's state.
+  # Non-JSON-like workflow context raises ArgumentError.
   #
-  # A workflow instance streams once. Returning the wrong value, returning an
-  # already consumed invocation, or consuming an invocation twice raises
-  # ProtocolError. Each child assembly closes after its execution attempt;
-  # cleanup failures surface from that attempt. Closing the Workflow closes its
-  # lightweight invocation wrappers in reverse declaration order. Composition
-  # errors emit an +invocation_error+ event and then re-raise.
+  # A Workflow instance streams once. Returning the wrong value, returning an
+  # already consumed invocation, or consuming one twice raises ProtocolError.
+  # A composition error fails the owning top-level Run. Each child Assembly
+  # closes after its attempt, and a cleanup failure raises from that attempt.
   class Workflow < Assembly
-    # Hold one lazy agent call inside a workflow composition.
+    # Hold one lazy Assembly call inside a workflow composition.
     # Workflow implementations normally use only its output method or return the
     # object as the final invocation.
     class Invocation
@@ -126,8 +127,10 @@ module LittleGhost
       end
     end
 
-    # Owning run and the runtime used to resolve workflow agents.
-    attr_reader :run, :runtime
+    # Run that owns this run-scoped Workflow.
+    attr_reader :run
+    # Runtime used to resolve child Assemblies.
+    attr_reader :runtime
 
     def initialize(run: nil, runtime: nil) # :nodoc:
       super(run:, runtime:, standalone: run.nil?)
@@ -269,7 +272,9 @@ module LittleGhost
     # Creates a lazy invocation for +assembly+.
     #
     # Intermediate calls may use +output+; the final call must be returned from
-    # +perform+ without being consumed.
+    # +perform+ without being consumed. +as+ supplies the participant name used
+    # in steps and telemetry. Retries default to zero; a positive +retries+
+    # value requires explicit exception classes in +retry_on+.
     def invoke(
       assembly,
       as: nil,
@@ -299,8 +304,12 @@ module LittleGhost
       invocation
     end
 
+    # :doc:
     # Consumes independent invocations concurrently and returns their outputs in
     # declaration order.
+    #
+    # +max_concurrency+ bounds active child executions. A child failure cancels
+    # siblings cooperatively before the error is raised.
     def parallel(*invocations, max_concurrency: 8)
       raise ArgumentError, "parallel requires at least one invocation" if invocations.empty?
       unless invocations.all? { |invocation| invocation.is_a?(Invocation) && !invocation.consumed? }

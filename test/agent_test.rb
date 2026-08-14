@@ -121,7 +121,7 @@ class AgentTest < Minitest::Test
       end
     end
 
-    LittleGhost::Runtime.stub(:new, ->(**) { runtime }) do
+    LittleGhost.stub(:runtime, -> { runtime }) do
       entrypoint = agent.new
       entrypoint.ask("hello")
       entrypoint.stream_ask("goodbye").each { |_event| }
@@ -145,7 +145,7 @@ class AgentTest < Minitest::Test
       end
     end
 
-    result = LittleGhost::Runtime.stub(:new, ->(**) { runtime }) do
+    result = LittleGhost.stub(:runtime, -> { runtime }) do
       agent.ask("hello", channel: "console")
     end
 
@@ -179,12 +179,12 @@ class AgentTest < Minitest::Test
     end
 
     runtime_constructions = 0
-    runtime_factory = lambda do |**|
+    runtime_factory = lambda do
       runtime_constructions += 1
       runtime
     end
     deadline = Time.utc(2026, 8, 12, 12)
-    stream = LittleGhost::Runtime.stub(:new, runtime_factory) do
+    stream = LittleGhost.stub(:runtime, runtime_factory) do
       agent.stream_ask("hello", history: ["earlier"], channel: "console", deadline:)
     end
 
@@ -192,7 +192,7 @@ class AgentTest < Minitest::Test
     assert_equal 0, runtime_constructions
 
     types = []
-    result = LittleGhost::Runtime.stub(:new, runtime_factory) do
+    result = LittleGhost.stub(:runtime, runtime_factory) do
       stream.each { |event| types << event.type }
     end
 
@@ -206,7 +206,7 @@ class AgentTest < Minitest::Test
 
     stream.rewind
     error = assert_raises(LittleGhost::Error) do
-      LittleGhost::Runtime.stub(:new, runtime_factory) { stream.each { |_event| } }
+      LittleGhost.stub(:runtime, runtime_factory) { stream.each { |_event| } }
     end
 
     assert_includes error.message, "only be executed once"
@@ -226,7 +226,7 @@ class AgentTest < Minitest::Test
       end
     end
 
-    LittleGhost::Runtime.stub(:new, ->(**) { runtime }) do
+    LittleGhost.stub(:runtime, -> { runtime }) do
       entrypoint = agent.new
 
       entrypoint.ask("hello")
@@ -236,6 +236,47 @@ class AgentTest < Minitest::Test
     end
 
     assert_equal [[:build_run, {message: "hello"}], [:call], [:build_run, {message: "goodbye"}], [:each]], calls
+  end
+
+  def test_an_entrypoint_instance_starts_independent_calls_concurrently
+    ready = Queue.new
+    release = Queue.new
+    built = Queue.new
+    runtime = Object.new
+    runtime.define_singleton_method(:build_run) do |payload, **|
+      run = Object.new
+      run.define_singleton_method(:call) do
+        ready << true
+        release.pop
+        self
+      end
+      built << [payload, run]
+      run
+    end
+    entrypoint = Class.new(LittleGhost::Agent).new(runtime:)
+
+    callers = %w[first second].map do |message|
+      Thread.new { entrypoint.ask(message) }
+    end
+    2.times do
+      assert ready.pop(timeout: 1), "concurrent agent call did not reach its run"
+    end
+    2.times { release << true }
+    callers.each do |thread|
+      assert thread.join(1), "concurrent agent call did not finish"
+    end
+    returned = callers.map(&:value)
+    constructed = 2.times.map do
+      built.pop(timeout: 1) || flunk("concurrent agent call did not build its run")
+    end
+
+    assert_equal %w[first second], constructed.map { |payload, _run| payload.fetch(:message) }.sort
+    assert_equal constructed.map(&:last).sort_by(&:object_id), returned.sort_by(&:object_id)
+    refute_same returned.fetch(0), returned.fetch(1)
+  ensure
+    2.times { release << true } if release
+    callers&.each { |thread| thread.join(1) }
+    callers&.each(&:kill)
   end
 
   def test_an_entrypoint_leaves_default_resources_to_its_runtime

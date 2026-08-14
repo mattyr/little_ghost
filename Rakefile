@@ -3,6 +3,7 @@
 require "cgi"
 require "erb"
 require "pathname"
+require "ripper"
 require "bundler/gem_tasks"
 require "rake/testtask"
 require "rdoc/rdoc"
@@ -11,6 +12,7 @@ require "uri"
 require "webrick"
 
 require_relative "lib/little_ghost/version"
+require_relative "rakelib/little_ghost_docs"
 
 task "release:trusted_publishing_guard" do
   expected_ref = "refs/tags/v#{LittleGhost::VERSION}"
@@ -43,22 +45,31 @@ SITE_TEMPLATE_ROOT = "#{SITE_SOURCE}/rdoc"
 class RDoc::Generator::LittleGhost < RDoc::Generator::Aliki
   DESCRIPTION = "Aliki with LittleGhost navigation"
   GUIDE_PATHS = {
+    "docs/guides/getting_started.md" => "getting_started.html",
     "docs/guides/core_concepts.md" => "core_concepts.html",
-    "docs/guides/getting_started.md" => "getting_started.html"
+    "docs/guides/assemblies.md" => "assemblies.html",
+    "docs/guides/prompt_views.md" => "prompt_views.html",
+    "docs/guides/production.md" => "production.html"
   }.freeze
   GUIDE_TITLES = {
+    "docs/guides/getting_started.md" => "Getting Started",
     "docs/guides/core_concepts.md" => "Core Concepts",
-    "docs/guides/getting_started.md" => "Getting Started"
+    "docs/guides/assemblies.md" => "Compose Agents",
+    "docs/guides/prompt_views.md" => "Prompts as Views",
+    "docs/guides/production.md" => "Running in Production"
   }.freeze
   LEGACY_GUIDE_LINKS = {
+    %r{(?:docs/guides/)?getting_started_md\.html} => "getting_started.html",
+    %r{(?:docs/guides/)?prompt_views_md\.html} => "prompt_views.html",
     %r{(?:docs/guides/)?core_concepts_md\.html} => "core_concepts.html",
-    %r{(?:docs/guides/)?getting_started_md\.html} => "getting_started.html"
+    %r{(?:docs/guides/)?assemblies_md\.html} => "assemblies.html",
+    %r{(?:docs/guides/)?production_md\.html} => "production.html"
   }.freeze
   ALIKI_TEMPLATE = Pathname.new(
     File.join(File.dirname(RDoc::Generator::Aliki.instance_method(:initialize).source_location.first), "template", "aliki")
   ).freeze
   TEMPLATE_ROOT = Pathname.new(File.expand_path("site/rdoc", __dir__)).freeze
-  CUSTOM_TEMPLATES = %w[_header.rhtml _sidebar_pages.rhtml].to_h do |file_name|
+  CUSTOM_TEMPLATES = %w[_footer.rhtml _header.rhtml _sidebar_classes.rhtml _sidebar_pages.rhtml].to_h do |file_name|
     [file_name, TEMPLATE_ROOT.join(file_name)]
   end.freeze
 
@@ -96,7 +107,39 @@ class RDoc::Generator::LittleGhost < RDoc::Generator::Aliki
     rewrite_guide_links
   end
 
+  def generate_ancestor_list(ancestors, klass)
+    return "" if ancestors.empty?
+
+    ancestor = ancestors.shift
+    target = little_ghost_ancestor(ancestor, klass)
+    label = CGI.escapeHTML(ancestor.respond_to?(:full_name) ? ancestor.full_name : ancestor.to_s)
+    content = +"<ul><li>"
+    content << if target
+      %(<a href="#{klass.aref_to(target.path)}">#{label}</a>)
+    else
+      label
+    end
+    content << generate_ancestor_list(ancestors, klass)
+    content << "</li></ul>"
+  end
+
   private
+
+  def little_ghost_ancestor(ancestor, klass)
+    if ancestor.respond_to?(:full_name) && ancestor.full_name.start_with?("LittleGhost::")
+      return ancestor
+    end
+
+    name = ancestor.to_s
+    namespaces = klass.full_name.split("::")[0...-1]
+    while namespaces.any?
+      candidate = @store.find_class_or_module("#{namespaces.join("::")}::#{name}")
+      return candidate if candidate&.full_name&.start_with?("LittleGhost::")
+
+      namespaces.pop
+    end
+    nil
+  end
 
   def rewrite_guide_links
     @outputdir.glob("**/*.html").each do |page|
@@ -117,19 +160,34 @@ class LittleGhostSiteChecker
     "404.html",
     "assets/site.css",
     "assets/site.js",
+    "assets/version-selector.css",
+    "assets/version-selector.js",
     "assets/favicon.svg",
     "assets/social-card.png",
+    "versions.json",
     "docs/index.html",
     "docs/getting_started.html",
-    "docs/core_concepts.html"
+    "docs/prompt_views.html",
+    "docs/core_concepts.html",
+    "docs/assemblies.html",
+    "docs/production.html"
   ].freeze
   COMMON_NAVIGATION_LABELS = %w[Home Docs GitHub].freeze
-  GUIDE_NAVIGATION_LABELS = ["Core Concepts", "Getting Started"].freeze
+  GUIDE_NAVIGATION_LABELS = [
+    "Getting Started",
+    "Core Concepts",
+    "Compose Agents",
+    "Prompts as Views",
+    "Running in Production"
+  ].freeze
+  ESSENTIAL_API_LABELS = %w[Agent Tool Run Assembly Workflow Swarm Graph].freeze
+  RUBY_EXAMPLE_PATHS = [RDOC_MAIN, *RDoc::Generator::LittleGhost::GUIDE_PATHS.keys].freeze
   COMMON_NAVIGATION_PATTERN = /<nav\b[^>]*aria-label=["']Primary navigation["'][^>]*>(.*?)<\/nav>/mi
   NAVIGATION_LINK_PATTERN = /<a\b([^>]*)>(.*?)<\/a>/mi
   ATTRIBUTE_PATTERN = /\b(?:href|src)=["']([^"']+)["']/i
   ANCHOR_PATTERN = /\b(?:id|name)=["']([^"']+)["']/i
-  LEGACY_GUIDE_REFERENCE_PATTERN = /(?:Core%20Concepts|Getting%20Started|_md\.html)/
+  LEGACY_GUIDE_REFERENCE_PATTERN = /(?:Core%20Concepts|Getting%20Started|Prompts%20as%20Views|Compose%20Agents|Running%20in%20Production|_md\.html)/
+  MODIFIED_THEME_CREDIT = "using a modified version of the Aliki theme by"
 
   def initialize(root)
     @site_root = Pathname(root).expand_path
@@ -142,6 +200,7 @@ class LittleGhostSiteChecker
     check_landing_page
     check_documentation_navigation
     check_local_links
+    check_ruby_examples
 
     abort errors.join("\n") unless errors.empty?
 
@@ -185,24 +244,45 @@ class LittleGhostSiteChecker
       check_version(page, html)
       check_navigation(page, html, "Docs")
       errors << "#{page.relative_path_from(site_root)} is missing Docs home navigation" unless html.include?(">Docs home</a>")
+      file_index = html[/<div id=["']fileindex-section["'].*?<\/div>/m]
+      if file_index&.match?(/<details\b|>\s*Pages\s*</m)
+        errors << "#{page.relative_path_from(site_root)} hides guide navigation behind a Pages section"
+      end
+      unless html.include?(MODIFIED_THEME_CREDIT)
+        errors << "#{page.relative_path_from(site_root)} is missing the modified Aliki theme credit"
+      end
       GUIDE_NAVIGATION_LABELS.each do |label|
         unless html.match?(/>\s*#{Regexp.escape(label)}\s*<\/a>/)
           errors << "#{page.relative_path_from(site_root)} is missing the #{label} guide navigation"
         end
       end
+      guide_positions = GUIDE_NAVIGATION_LABELS.filter_map do |label|
+        html.index(/>\s*#{Regexp.escape(label)}\s*<\/a>/)
+      end
+      if guide_positions.length == GUIDE_NAVIGATION_LABELS.length && guide_positions != guide_positions.sort
+        errors << "#{page.relative_path_from(site_root)} has guides in the wrong learning order"
+      end
       if html.match?(/<summary>\s*docs\s*(?:<|$)/mi)
         errors << "#{page.relative_path_from(site_root)} nests guides under docs navigation"
+      end
+      essential_api = html[/<div id=["']essential-api-section["'].*?<\/div>/m]
+      unless essential_api
+        errors << "#{page.relative_path_from(site_root)} is missing Essential API navigation"
+        next
+      end
+      ESSENTIAL_API_LABELS.each do |label|
+        unless essential_api.match?(/>\s*#{Regexp.escape(label)}\s*<\/a>/)
+          errors << "#{page.relative_path_from(site_root)} is missing the #{label} API shortcut"
+        end
       end
     end
   end
 
   def check_version(page, html)
     relative_page = page.relative_path_from(site_root)
-    version = LittleGhost::VERSION
-    expected_link = "https://rubygems.org/gems/little_ghost/versions/#{version}"
-
-    errors << "#{relative_page} is missing version v#{version}" unless html.include?(">v#{version}<")
-    errors << "#{relative_page} has the wrong RubyGems version link" unless html.include?(%(href="#{expected_link}"))
+    unless html.include?("data-docs-version-picker") && html.include?('data-current-version="edge"')
+      errors << "#{relative_page} is missing the Edge documentation selector"
+    end
   end
 
   def check_navigation(page, html, current_label)
@@ -299,6 +379,23 @@ class LittleGhostSiteChecker
     end
   end
 
+  def check_ruby_examples
+    RUBY_EXAMPLE_PATHS.each do |relative_path|
+      path = Pathname(__dir__).join(relative_path)
+      source = path.read
+      source.to_enum(:scan, /^```ruby[^\n]*\n(.*?)^```\s*$/m).each do
+        match = Regexp.last_match
+        code = match[1]
+        first_line = source.byteslice(0, match.begin(1)).count("\n") + 1
+        parser = RubyExampleParser.new(code, relative_path, first_line)
+        parser.parse
+        parser.errors.each do |line, column, message|
+          errors << "#{relative_path}:#{line}:#{column}: #{message}"
+        end
+      end
+    end
+  end
+
   def inside_site?(target)
     target == site_root || target.to_s.start_with?("#{site_root}#{File::SEPARATOR}")
   end
@@ -306,6 +403,19 @@ class LittleGhostSiteChecker
   def anchor_targets(page)
     anchors_by_page[page] ||= page.read.scan(ANCHOR_PATTERN).flatten.each_with_object({}) do |anchor, targets|
       targets[CGI.unescapeHTML(anchor)] = true
+    end
+  end
+
+  class RubyExampleParser < Ripper
+    attr_reader :errors
+
+    def initialize(*)
+      @errors = []
+      super
+    end
+
+    def on_parse_error(message)
+      errors << [lineno, column, message]
     end
   end
 end
@@ -322,6 +432,20 @@ class LittleGhostSiteFileHandler < WEBrick::HTTPServlet::FileHandler
     response.status = 404
     response["content-type"] = "text/html; charset=utf-8"
     response.body = @not_found_page.binread
+  end
+end
+
+class LittleGhostSiteServer
+  def self.start(root:, port:, label: root)
+    server = WEBrick::HTTPServer.new(
+      BindAddress: "127.0.0.1",
+      Port: port
+    )
+    server.mount "/", LittleGhostSiteFileHandler, root, FancyIndexing: false
+    %w[INT TERM].each { |signal| Signal.trap(signal) { server.shutdown } }
+
+    puts "Serving #{label} at http://127.0.0.1:#{port}/"
+    server.start
   end
 end
 
@@ -345,7 +469,11 @@ namespace :site do
   task :build do
     rm_rf SITE_OUTPUT
     mkdir_p SITE_OUTPUT
-    static_files = FileList["#{SITE_SOURCE}/*"].exclude(SITE_TEMPLATE_ROOT, "#{SITE_SOURCE}/index.html")
+    static_files = FileList["#{SITE_SOURCE}/*"].exclude(
+      SITE_TEMPLATE_ROOT,
+      "#{SITE_SOURCE}/index.html",
+      "#{SITE_SOURCE}/release-compat"
+    )
     cp_r static_files.to_a, SITE_OUTPUT
     homepage = ERB.new(File.read("#{SITE_SOURCE}/index.html"), trim_mode: "-")
     File.write("#{SITE_OUTPUT}/index.html", homepage.result)
@@ -359,26 +487,45 @@ namespace :site do
       *RDOC_OPTIONS,
       *FileList[*RDOC_FILES].to_a
     ])
+
+    docs_id = ENV.fetch("DOCS_VERSION_ID", LittleGhostDocs::EDGE_ID)
+    docs_base_path = ENV.fetch("DOCS_BASE_PATH", "")
+    LittleGhostDocs::Snapshot.new(SITE_OUTPUT, id: docs_id, base_path: docs_base_path).decorate!
+    LittleGhostDocs::Catalog.new(SITE_OUTPUT).write! if docs_id == LittleGhostDocs::EDGE_ID && docs_base_path.empty?
   end
 
   desc "Build and verify the complete GitHub Pages artifact"
   task check: :build do
+    LittleGhostDocs::VersionedSite.new(SITE_OUTPUT).verify!
     LittleGhostSiteChecker.new(SITE_OUTPUT).check
+  end
+
+  desc "Build Edge and every published documentation version"
+  task build_all: :build do
+    repository = File.expand_path(__dir__)
+    edge_site = File.expand_path(SITE_OUTPUT, __dir__)
+
+    Dir.mktmpdir("little-ghost-versioned-site") do |destination|
+      LittleGhostDocs::SiteBuilder.new(repository:, edge_site:).build!(destination)
+      LittleGhostSiteChecker.new(destination).check
+      rm_rf SITE_OUTPUT
+      mkdir_p SITE_OUTPUT
+      Pathname(destination).children.each { |child| cp_r child, SITE_OUTPUT }
+    end
   end
 
   desc "Build and serve the site locally"
   task serve: :build do
     port = Integer(ENV.fetch("PORT", "4000"), 10)
     root = File.expand_path(SITE_OUTPUT, __dir__)
-    server = WEBrick::HTTPServer.new(
-      BindAddress: "127.0.0.1",
-      Port: port
-    )
-    server.mount "/", LittleGhostSiteFileHandler, root, FancyIndexing: false
-    %w[INT TERM].each { |signal| Signal.trap(signal) { server.shutdown } }
+    LittleGhostSiteServer.start(root:, port:, label: SITE_OUTPUT)
+  end
 
-    puts "Serving #{SITE_OUTPUT} at http://127.0.0.1:#{port}/"
-    server.start
+  desc "Build Edge with every published documentation version and serve them locally"
+  task serve_all: :build_all do
+    port = Integer(ENV.fetch("PORT", "4000"), 10)
+    root = File.expand_path(SITE_OUTPUT, __dir__)
+    LittleGhostSiteServer.start(root:, port:, label: "Edge and all published versions")
   end
 end
 

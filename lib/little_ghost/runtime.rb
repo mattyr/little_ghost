@@ -4,45 +4,86 @@ require "json"
 require_relative "configuration"
 
 module LittleGhost
-  # Prepare the shared services that assemblies use across many runs.
-  # A runtime owns model resolution, loading, persistence, lookup paths, hooks,
-  # and resource factories for one Ruby setup.
+  # Owns the shared services that assemblies reuse across many Runs.
+  #
+  # Most applications do not construct this class. Configure LittleGhost once
+  # and call a named Agent or Assembly; the first standalone call lazily builds
+  # +LittleGhost.runtime+, and later calls reuse it automatically. Each call
+  # still receives a fresh Run, bound participants, Tools, workspace, and
+  # sandbox.
+  #
+  # Construct Runtime directly when one process intentionally hosts an isolated
+  # LittleGhost setup:
   #
   #   configuration = LittleGhost::Configuration.new(
   #     root: Dir.pwd,
   #     providers: {
-  #       openai: {adapter: :openai, api_key: ENV.fetch("OPENAI_API_KEY")}
+  #       openrouter: {adapter: :openrouter, api_key: ENV.fetch("OPENROUTER_API_KEY")}
   #     },
-  #     models: {customer_support: {target: "openai:gpt-5.6-luna"}},
-  #     default_model: "customer_support",
+  #     models: {customer_support: {target: "openrouter:openai/gpt-5.6-luna"}},
+  #     default_model: :customer_support,
   #     service_name: "support-api"
   #   )
   #   runtime = LittleGhost::Runtime.new(configuration: configuration)
   #
-  #   runtime.service_name # => "support-api"
-  #   runtime.root == Pathname.new(File.realpath(Dir.pwd)) # => true
+  #   CustomerSupportAgent.new(runtime: runtime)
+  #     .ask("Where is order 481?")
+  #     .response
   #
-  # Without explicit +settings+, construction canonicalizes the root, loads
-  # +config/little_ghost.rb+ once through the Configuration, snapshots settings,
-  # configures instrumentation, eager-loads application constants, and builds the
-  # selected model resolver and session store. Supplying +settings+ is the
-  # lower-level path used to create a sibling runtime from an existing snapshot.
+  # Explicit construction snapshots the supplied Configuration but does not
+  # replace LittleGhost's shared default Runtime.
   #
-  # Reuse a runtime across runs. +build_run+ creates any missing workspace and
-  # sandbox, transfers ownership only after both are built, and closes partial
-  # resources if construction fails. +build+ creates a sibling with explicit
-  # overrides and reuses the loader only when the application root is unchanged.
+  # A Runtime may build independent Runs concurrently. Each Run gets its own
+  # bound participants and Tools. By default, Runtime also creates a workspace
+  # and sandbox owned by that Run. Existing workspace or sandbox instances
+  # passed by the application remain caller-owned. Other supplied objects may
+  # receive calls from several threads, so custom stores, resolvers, hooks,
+  # subscribers, providers, and resource factories must be thread-safe. One
+  # SessionStore instance serializes calls sharing a Session; multi-process
+  # deployments need coordination provided by their store.
   #
-  # Startup emits structured lifecycle instrumentation; a failed phase emits a
-  # failure event, flushes instrumentation, and re-raises the original exception.
-  # Session actor resolution must use trusted authenticated identity for tenant
-  # isolation. The default UnrestrictedSandbox is convenient application plumbing,
-  # not a security boundary for untrusted work.
+  # == Advanced construction and ownership
+  #
+  # Normal construction reads the application's configured definitions and
+  # builds shared model resolution, persistence, hooks, and resource factories.
+  # The +settings+ form and #build are lower-level extension points for deriving
+  # another Runtime from an existing configuration snapshot.
+  #
+  # #build_run creates a workspace and sandbox when needed. Once the Run owns
+  # them, it closes them; if construction stops halfway through, Runtime closes
+  # the partial resources. Startup failures are reported to instrumentation and
+  # then raised. Session actor resolution must use authenticated application
+  # identity. The default UnrestrictedSandbox uses host permissions and is not a
+  # security boundary for untrusted work.
+  #
+  # Runtime has no shutdown operation. Runs close resources created for their
+  # request. The application shuts down shared services and process-wide
+  # Instrumentation subscribers with the rest of the process.
   class Runtime
-    # The snapshotted setup and materialized services used by new runs.
-    attr_reader :configuration, :settings, :root, :loader, :prompt_paths, :skill_paths,
-      :skill_resource_root, :model_resolver, :session_store, :workspace_class, :sandbox_class,
-      :runtime_hooks
+    # Configuration object used to construct this Runtime.
+    attr_reader :configuration
+    # Settings snapshot used by new Runs.
+    attr_reader :settings
+    # Canonical application root.
+    attr_reader :root
+    # Loader used for conventional application definitions.
+    attr_reader :loader
+    # Ordered directories searched for prompt templates.
+    attr_reader :prompt_paths
+    # Ordered directories searched for skill definitions.
+    attr_reader :skill_paths
+    # Root used for skill-owned resources, when configured.
+    attr_reader :skill_resource_root
+    # Resolver that turns model roles and targets into executable Models.
+    attr_reader :model_resolver
+    # Shared store used to open per-Run Sessions.
+    attr_reader :session_store
+    # Configured Workspace implementation, or +nil+ for the default.
+    attr_reader :workspace_class
+    # Configured Sandbox implementation, or +nil+ for the default.
+    attr_reader :sandbox_class
+    # Runtime hooks called around request and session preparation.
+    attr_reader :runtime_hooks
 
     # Starts a runtime from +configuration+ or an existing settings snapshot.
     def initialize(configuration:, settings: nil)
@@ -129,8 +170,7 @@ module LittleGhost
       payload.is_a?(@invocation_class) ? payload : @invocation_class.new(payload)
     end
 
-    # Creates a Run and transfers ownership of newly created workspace and
-    # sandbox resources to it.
+    # Creates a Run that owns any workspace and sandbox built for the request.
     def build_run(
       payload,
       agent_class: nil,
@@ -230,7 +270,7 @@ module LittleGhost
       assembly_class_or_name.new(run:, runtime: self)
     end
 
-    # The low-cardinality service name attached to runtime telemetry.
+    # The stable service name attached to runtime telemetry.
     def service_name
       @settings&.[](:service_name) || default_service_name
     end

@@ -6,6 +6,329 @@ require "test_helper"
 require "little_ghost/ag_ui"
 
 class ConfigurationTest < Minitest::Test
+  class SharedRuntimeResolver < LittleGhost::ModelResolver
+    class << self
+      attr_accessor :provider
+    end
+
+    def initialize(**)
+    end
+
+    def default_model = "default"
+
+    def resolve(*)
+      LittleGhost::Model.new(provider: self.class.provider, target: "test:model")
+    end
+  end
+
+  class SharedRuntimeAgent < LittleGhost::Agent
+    system_prompt "Answer clearly."
+  end
+
+  def test_configuration_builds_its_shared_runtime_once_across_threads
+    Dir.mktmpdir do |root|
+      configuration = LittleGhost::Configuration.new(root:)
+
+      runtimes = 10.times.map { Thread.new { configuration.runtime } }.map(&:value)
+
+      assert_equal 1, runtimes.map(&:object_id).uniq.length
+      assert_same configuration.runtime, runtimes.first
+    end
+  end
+
+  def test_execution_scoped_configurations_have_independent_shared_runtimes
+    Dir.mktmpdir do |first_root|
+      Dir.mktmpdir do |second_root|
+        first = LittleGhost::Configuration.new(root: first_root)
+        second = LittleGhost::Configuration.new(root: second_root)
+
+        first_runtime = LittleGhost.with_configuration(first) { LittleGhost.runtime }
+        second_runtime = LittleGhost.with_configuration(second) { LittleGhost.runtime }
+
+        assert_same first.runtime, first_runtime
+        assert_same second.runtime, second_runtime
+        refute_same first_runtime, second_runtime
+      end
+    end
+  end
+
+  def test_standalone_calls_share_the_runtime_but_not_run_resources
+    Dir.mktmpdir do |root|
+      SharedRuntimeResolver.provider = ScriptedProvider.new
+      configuration = LittleGhost::Configuration.new(root:)
+      configuration.model_resolver = SharedRuntimeResolver
+
+      first, second = LittleGhost.with_configuration(configuration) do
+        [SharedRuntimeAgent.ask("first"), SharedRuntimeAgent.ask("second")]
+      end
+
+      assert_same first.runtime, second.runtime
+      assert_same configuration.runtime, first.runtime
+      refute_same first, second
+      refute_same first.workspace, second.workspace
+      refute_same first.sandbox, second.sandbox
+    ensure
+      SharedRuntimeResolver.provider = nil
+    end
+  end
+
+  def test_shared_runtime_locks_configuration_after_successful_startup
+    Dir.mktmpdir do |root|
+      configuration = LittleGhost::Configuration.new(root:)
+      application_paths = ["application/prompts"]
+      configuration.prompt_paths = application_paths
+      configuration.runtime
+
+      error = assert_raises(LittleGhost::ConfigurationError) do
+        configuration.default_model :changed
+      end
+      assert_includes error.message, "configure the application before its first Agent or Assembly call"
+      assert_raises(LittleGhost::ConfigurationError) do
+        configuration.configure { |config| config.service_name "changed" }
+      end
+      assert_raises(LittleGhost::ConfigurationError) { configuration.providers(:invalid) }
+      assert_raises(FrozenError) { configuration.prompt_paths << "other/prompts" }
+      refute application_paths.frozen?
+      application_paths << "application/overrides"
+    end
+  end
+
+  def test_shared_runtime_owns_a_snapshot_of_nested_model_declarations
+    Dir.mktmpdir do |root|
+      models = {
+        customer_support: {
+          target: "test:model",
+          settings: {temperature: 0.1}
+        }
+      }
+      configuration = LittleGhost::Configuration.new(root:)
+      configuration.providers = {test: {adapter: :test}}
+      configuration.provider_adapter(:test, ->(**) { ScriptedProvider.new })
+      configuration.models = models
+      configuration.default_model = :customer_support
+
+      runtime = configuration.runtime
+      models[:customer_support][:settings][:temperature] = 0.9
+
+      assert_equal 0.1, runtime.model_resolver.resolve(:customer_support).settings.fetch(:temperature)
+    end
+  end
+
+  def test_shared_runtime_allows_its_configuration_file_to_finish_loading
+    Dir.mktmpdir do |root|
+      path = File.join(root, "config/little_ghost.rb")
+      FileUtils.mkdir_p(File.dirname(path))
+      File.write(path, <<~RUBY)
+        LittleGhost.configure { |config| config.service_name "loaded-from-file" }
+        LittleGhost.configuration.prompt_paths << "file/prompts"
+      RUBY
+
+      configuration = LittleGhost::Configuration.new(root:)
+
+      assert_equal "loaded-from-file", configuration.runtime.service_name
+      assert_includes configuration.prompt_paths, "file/prompts"
+    end
+  end
+
+  def test_shared_runtime_hides_mutable_configuration_while_its_file_loads
+    Dir.mktmpdir do |root|
+      started = Queue.new
+      release = Queue.new
+      config_path = File.join(root, "config/little_ghost.rb")
+      FileUtils.mkdir_p(File.dirname(config_path))
+      File.write(config_path, "# loaded by the test override\n")
+      configuration = LittleGhost::Configuration.new(root:)
+      configuration.define_singleton_method(:load_configuration_file) do |_path|
+        editable_values = copy_configuration_value(@configuration_values)
+        @lifecycle_monitor.synchronize do
+          @configuration_values = editable_values
+          @configuration_file_loading = true
+        end
+        started << true
+        release.pop
+        prompt_paths << "file/prompts"
+      ensure
+        sealed_values = freeze_configuration_copy(@configuration_values)
+        @lifecycle_monitor.synchronize do
+          @configuration_values = sealed_values
+          @configuration_file_loading = false
+        end
+      end
+
+      worker = Thread.new { configuration.runtime }
+      Timeout.timeout(1) { started.pop }
+
+      assert_raises(LittleGhost::ConfigurationError) do
+        configuration.prompt_paths << "late/prompts"
+      end
+
+      release << true
+      runtime = Timeout.timeout(2) { worker.value }
+      runtime_paths = runtime.prompt_paths.to_a.map { |entry| entry.path.to_s }
+      assert_includes configuration.prompt_paths, "file/prompts"
+      assert runtime_paths.any? { |path| path.end_with?("/file/prompts") }
+      refute runtime_paths.any? { |path| path.end_with?("/late/prompts") }
+    ensure
+      release << true if release
+      worker&.join(1)
+    end
+  end
+
+  def test_shared_runtime_owns_scalar_configuration_strings
+    Dir.mktmpdir do |root|
+      service_name = +"support"
+      default_model = +"first"
+      skill_resource_root = +"trusted/skills"
+      configuration = LittleGhost::Configuration.new(root:, service_name:)
+      configuration.default_model = default_model
+      configuration.skill_resource_root = skill_resource_root
+
+      resolver = configuration.model_resolver
+      runtime = configuration.runtime
+      service_name.replace("changed")
+      default_model.replace("second")
+      skill_resource_root.replace("other/skills")
+
+      assert_equal "support", configuration.service_name
+      assert_equal "support", runtime.service_name
+      assert_equal "first", configuration.default_model
+      assert_same resolver, runtime.model_resolver
+      assert_equal "first", runtime.model_resolver.default_model
+      assert_equal "trusted/skills", configuration.skill_resource_root
+      assert_equal "trusted/skills", runtime.skill_resource_root.to_s
+      assert_raises(FrozenError) { configuration.service_name.replace("during") }
+    end
+  end
+
+  def test_shared_runtime_rejects_configuration_changes_from_startup_callbacks
+    Dir.mktmpdir do |root|
+      configuration = LittleGhost::Configuration.new(root:, service_name: "before")
+      retained_paths = configuration.prompt_paths
+      errors = []
+      subscriber = TestInstrumentationSubscriber.new do |phase, name, _attributes|
+        next unless phase == :start && name == :runtime
+
+        begin
+          configuration.service_name "during"
+        rescue => error
+          errors << error
+        end
+        begin
+          configuration.prompt_paths << "late/prompts"
+        rescue => error
+          errors << error
+        end
+        retained_paths << "retained/prompts"
+      end
+      configuration.instrument(subscriber)
+
+      runtime = configuration.runtime
+
+      assert_equal "before", runtime.service_name
+      assert_equal "before", configuration.service_name
+      assert_instance_of LittleGhost::ConfigurationError, errors.fetch(0)
+      assert_instance_of FrozenError, errors.fetch(1)
+      refute_includes configuration.prompt_paths, "late/prompts"
+      refute_includes runtime.prompt_paths.to_a.map(&:to_s), "late/prompts"
+      refute_includes configuration.prompt_paths, "retained/prompts"
+      refute_includes runtime.prompt_paths.to_a.map(&:to_s), "retained/prompts"
+    end
+  end
+
+  def test_shared_runtime_does_not_hold_its_lifecycle_lock_during_callbacks
+    Dir.mktmpdir do |root|
+      configuration = LittleGhost::Configuration.new(root:)
+      errors = Queue.new
+      subscriber = TestInstrumentationSubscriber.new do |phase, name, _attributes|
+        next unless phase == :start && name == :runtime
+
+        worker = Thread.new do
+          configuration.service_name "during"
+        rescue => error
+          errors << error
+        end
+        raise "configuration worker did not finish" unless worker.join(1)
+      end
+      configuration.instrument(subscriber)
+
+      configuration.runtime
+
+      assert_instance_of LittleGhost::ConfigurationError, errors.pop
+    end
+  end
+
+  def test_shared_runtime_validates_sealed_declarations_before_startup
+    Dir.mktmpdir do |root|
+      constructions = 0
+      store = Class.new(LittleGhost::SessionStore) do
+        define_method(:initialize) { |**| constructions += 1 }
+      end
+      cyclic = {}
+      cyclic[:self] = cyclic
+      configuration = LittleGhost::Configuration.new(root:)
+      configuration.session_store = {provider: store, options: cyclic}
+
+      assert_raises(ArgumentError) { configuration.runtime }
+      assert_equal 0, constructions
+
+      configuration.session_store = {provider: store}
+      assert_instance_of store, configuration.runtime.session_store
+      assert_equal 1, constructions
+    end
+  end
+
+  def test_shared_runtime_preserves_application_keyed_hashes_as_collaborators
+    Dir.mktmpdir do |root|
+      key = Class.new do
+        attr_accessor :armed
+
+        def hash
+          raise "application hash callback ran" if armed
+
+          1
+        end
+      end.new
+      configuration = LittleGhost::Configuration.new(root:)
+      values = {key => "value"}
+      key.armed = true
+      configuration[:custom] = values
+
+      runtime = configuration.runtime
+
+      assert_same values, configuration[:custom]
+      assert_same values, runtime.settings[:custom]
+      refute_predicate values, :frozen?
+    end
+  end
+
+  def test_failed_shared_runtime_startup_leaves_configuration_editable
+    Dir.mktmpdir do |root|
+      agent = File.join(root, "app/agents/conflict.rb")
+      tool = File.join(root, "app/tools/conflict.rb")
+      FileUtils.mkdir_p(File.dirname(agent))
+      FileUtils.mkdir_p(File.dirname(tool))
+      File.write(agent, "class RuntimeConflict; end")
+      File.write(tool, "class RuntimeConflict; end")
+      configuration = LittleGhost::Configuration.new(root:)
+
+      assert_raises(LittleGhost::Support::Loader::ConflictError) { configuration.runtime }
+
+      assert_equal "recovered", configuration.service_name("recovered")
+    end
+  end
+
+  def test_explicit_runtime_remains_an_independent_configuration_snapshot
+    Dir.mktmpdir do |root|
+      configuration = LittleGhost::Configuration.new(root:)
+
+      runtime = LittleGhost::Runtime.new(configuration: configuration)
+      configuration.service_name "changed-later"
+
+      assert_nil runtime.settings[:service_name]
+      assert_equal "changed-later", configuration.service_name
+    end
+  end
+
   def test_event_logging_can_be_sent_to_stdout_without_duplicate_runtime_subscriptions
     stdout, stderr = capture_io do
       Dir.mktmpdir do |root|
@@ -371,6 +694,59 @@ class ConfigurationTest < Minitest::Test
       assert_equal Pathname.new(File.realpath(root)), harness.root
       assert_equal "Prompt for Build it", provider.requests.first.messages.first.text
       assert_same harness.runtime_instance, run.runtime
+    end
+  end
+
+  def test_shared_runtime_serves_independent_calls_concurrently
+    provider = Class.new(LittleGhost::Providers::Base) do
+      attr_reader :ready, :release
+
+      def initialize
+        @ready = Queue.new
+        @release = Queue.new
+      end
+
+      def stream(request)
+        ready << true
+        release.pop
+        text = "Done: #{request.messages.last.text}"
+        response = LittleGhost::ModelResponse.new(
+          message: LittleGhost::Message.new(role: :assistant, content: text),
+          stop_reason: :end_turn,
+          usage: LittleGhost::Usage.new(input_tokens: 1, output_tokens: 1)
+        )
+        [
+          LittleGhost::StreamEvent.build(:message_start),
+          LittleGhost::StreamEvent.build(:text_delta, text:),
+          LittleGhost::StreamEvent.build(:message_stop, response:),
+          LittleGhost::StreamEvent.build(:usage, usage: response.usage)
+        ].each
+      end
+    end.new
+
+    with_runtime(provider:) do |harness|
+      callers = %w[first second].map do |message|
+        Thread.new { harness.agent_instance.ask(message) }
+      end
+
+      2.times do
+        assert provider.ready.pop(timeout: 1), "shared Runtime did not start an independent call"
+      end
+      2.times { provider.release << true }
+      callers.each do |thread|
+        assert thread.join(1), "shared Runtime call did not finish"
+      end
+      runs = callers.map(&:value)
+
+      assert_equal ["Done: first", "Done: second"], runs.map(&:response).sort
+      assert runs.all?(&:completed?)
+      refute_same runs.fetch(0), runs.fetch(1)
+      refute_same runs.fetch(0).workspace, runs.fetch(1).workspace
+      refute_same runs.fetch(0).sandbox, runs.fetch(1).sandbox
+    ensure
+      2.times { provider.release << true }
+      callers&.each { |thread| thread.join(1) }
+      callers&.each(&:kill)
     end
   end
 

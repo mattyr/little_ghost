@@ -642,18 +642,28 @@ h2 em {
 }
 
 .node-flow {
-  top: 82%;
-  left: 28%;
+  top: 76%;
+  left: 15%;
+}
+
+.node-swarm {
+  top: 90%;
+  left: 45%;
+}
+
+.node-graph {
+  top: 68%;
+  left: 95%;
 }
 
 .node-subagent {
-  top: 80%;
-  left: 72%;
+  top: 82%;
+  left: 78%;
 }
 
 .node-context {
-  top: 18%;
-  left: 68%;
+  top: 12%;
+  left: 58%;
 }
 
 .hero-status {
