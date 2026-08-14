@@ -3,7 +3,7 @@
 module LittleGhost
   class Runtime
     # Hooks let applications prepare runs, select session history, transform
-    # interruptions, and map errors to caller-safe messages.
+    # interjections, and map errors to caller-safe messages.
     #
     # Hooks are instantiated once per Runtime in configuration order. Override
     # only the methods needed and return the supplied value when leaving it
@@ -20,8 +20,8 @@ module LittleGhost
       # lifecycle and close in reverse order.
       def prepare_run(run) = run
 
-      # Transforms an interruption payload before it reaches the agent.
-      def prepare_interruption(_run, payload) = payload
+      # Transforms an interjection payload before it reaches the agent.
+      def prepare_interjection(_run, payload) = payload
 
       # Returns the history to use for this run, or nil to defer to later hooks
       # and the session default. +stored+ is empty when the session is new;

@@ -358,7 +358,7 @@ module LittleGhost
         return unless %i[diagnostic_input diagnostic_output].include?(key.to_sym)
 
         prefix = (key.to_sym == :diagnostic_input) ? "input" : "output"
-        if %i[agent interrupt tool].include?(kind) &&
+        if %i[agent interjection tool].include?(kind) &&
             !(kind == :tool && prefix == "output" && attributes[:error_type])
           result["#{prefix}.value"] = value
           result["#{prefix}.mime_type"] = diagnostic_mime_type(value)

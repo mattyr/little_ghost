@@ -818,12 +818,12 @@ class ConfigurationTest < Minitest::Test
     end
   end
 
-  def test_run_interrupt_response_forwards_to_active_entrypoint_and_rejects_terminal_states
+  def test_run_interject_forwards_to_active_entrypoint_and_rejects_terminal_states
     provider = Class.new(LittleGhost::Providers::Base).new
     started = Queue.new
     release = Queue.new
-    interruption_started = Queue.new
-    release_interruption = Queue.new
+    interjection_started = Queue.new
+    release_interjection = Queue.new
     requests = []
     response = lambda do |text|
       LittleGhost::ModelResponse.new(
@@ -838,8 +838,8 @@ class ConfigurationTest < Minitest::Test
         release.pop
         value = response.call("would finish")
       else
-        interruption_started << true
-        release_interruption.pop
+        interjection_started << true
+        release_interjection.pop
         value = response.call("steered")
       end
       [LittleGhost::StreamEvent.build(:message_stop, response: value)].each
@@ -851,45 +851,45 @@ class ConfigurationTest < Minitest::Test
 
     with_runtime(agent:, provider:) do |harness|
       run = harness.agent_instance.build_run(message: "work")
-      not_ready = assert_raises(LittleGhost::AgentInterruptError) do
-        run.interrupt_response("too early")
+      not_ready = assert_raises(LittleGhost::AgentInterjectionError) do
+        run.interject("too early")
       end
-      assert_equal "Run entrypoint is not ready for interruptions", not_ready.message
+      assert_equal "Run entrypoint is not ready for interjections", not_ready.message
 
       runner = Thread.new { run.call }
       started.pop
-      interrupted = Thread.new do
-        run.interrupt_response(
+      interjected = Thread.new do
+        run.interject(
           "steer",
-          interruption_id: "slack-1",
+          interjection_id: "slack-1",
           batch_key: "channel",
           metadata: {authority: "signed"}
         )
       end
       release << true
-      interruption_started.pop
+      interjection_started.pop
 
       assert_predicate runner, :alive?
 
-      release_interruption << true
-      assert_equal "steered", interrupted.value.text
-      assert_equal ["slack-1"], interrupted.value.interruption_ids
-      assert_equal "channel", interrupted.value.batch_key
+      release_interjection << true
+      assert_equal "steered", interjected.value.text
+      assert_equal ["slack-1"], interjected.value.interjection_ids
+      assert_equal "channel", interjected.value.batch_key
       assert runner.value.completed?
 
-      terminal = assert_raises(LittleGhost::AgentInterruptError) do
-        run.interrupt_response("too late")
+      terminal = assert_raises(LittleGhost::AgentInterjectionError) do
+        run.interject("too late")
       end
       assert_equal "Run has already finished", terminal.message
     ensure
       release << true if runner&.alive?
-      release_interruption << true if interrupted&.alive?
+      release_interjection << true if interjected&.alive?
       runner&.kill
-      interrupted&.kill
+      interjected&.kill
     end
   end
 
-  def test_terminal_cleanup_waits_for_runtime_hook_interruption_preparation
+  def test_terminal_cleanup_waits_for_runtime_hook_interjection_preparation
     provider = Class.new(LittleGhost::Providers::Base).new
     model_started = Queue.new
     release_model = Queue.new
@@ -916,7 +916,7 @@ class ConfigurationTest < Minitest::Test
       define_method(:prepare_run) do |run|
         run.register { resource_closed << true }
       end
-      define_method(:prepare_interruption) do |_run, payload|
+      define_method(:prepare_interjection) do |_run, payload|
         preparation_started << true
         release_preparation.pop
         payload
@@ -930,8 +930,8 @@ class ConfigurationTest < Minitest::Test
     with_runtime(agent:, provider:, configure: ->(harness) { harness.runtime_hook hook }) do |harness|
       execution = harness.agent_instance.start_execution(message: "work")
       model_started.pop
-      interruption = Thread.new do
-        execution.interrupt_response(message: "steer")
+      interjection = Thread.new do
+        execution.interject(message: "steer")
       rescue => error
         error
       end
@@ -941,16 +941,16 @@ class ConfigurationTest < Minitest::Test
       assert_raises(LittleGhost::DeadlineExceededError) do
         execution.wait(deadline: Time.now + 0.01)
       end
-      assert resource_closed.empty?, "run resources closed while interruption preparation was active"
+      assert resource_closed.empty?, "run resources closed while interjection preparation was active"
 
       release_preparation << true
-      assert_instance_of LittleGhost::AgentInterruptError, interruption.value
+      assert_instance_of LittleGhost::AgentInterjectionError, interjection.value
       assert execution.wait(deadline: Time.now + 1).completed?
       assert resource_closed.pop
     ensure
       release_model << true if execution&.active?
-      release_preparation << true if interruption&.alive?
-      interruption&.join
+      release_preparation << true if interjection&.alive?
+      interjection&.join
       execution&.close(deadline: Time.now + 1) if execution&.active?
     end
   end
@@ -1168,7 +1168,7 @@ class ConfigurationTest < Minitest::Test
     end
   end
 
-  def test_runtime_hooks_prepare_runs_and_interruptions_in_registration_order
+  def test_runtime_hooks_prepare_runs_and_interjections_in_registration_order
     calls = []
     first = Class.new(LittleGhost::Runtime::Hook) do
       define_method(:prepare_run) do |run|
@@ -1176,8 +1176,8 @@ class ConfigurationTest < Minitest::Test
         run
       end
 
-      define_method(:prepare_interruption) do |run, payload|
-        calls << [:interruption, :first, run, payload.fetch(:message)]
+      define_method(:prepare_interjection) do |run, payload|
+        calls << [:interjection, :first, run, payload.fetch(:message)]
         payload.merge(first: true)
       end
     end
@@ -1187,8 +1187,8 @@ class ConfigurationTest < Minitest::Test
         run
       end
 
-      define_method(:prepare_interruption) do |run, payload|
-        calls << [:interruption, :second, run, payload.fetch(:first)]
+      define_method(:prepare_interjection) do |run, payload|
+        calls << [:interjection, :second, run, payload.fetch(:first)]
         payload.merge(second: true)
       end
     end
@@ -1199,12 +1199,12 @@ class ConfigurationTest < Minitest::Test
     }) do |harness|
       run = harness.agent_instance.build_run(message: "hello")
 
-      assert_equal({message: "interrupt", first: true, second: true}, run.prepare_interruption(message: "interrupt"))
+      assert_equal({message: "interject", first: true, second: true}, run.prepare_interjection(message: "interject"))
       assert_equal [
         [:run, :first, run],
         [:run, :second, run],
-        [:interruption, :first, run, "interrupt"],
-        [:interruption, :second, run, true]
+        [:interjection, :first, run, "interject"],
+        [:interjection, :second, run, true]
       ], calls
     end
   end
@@ -2060,12 +2060,12 @@ class ConfigurationTest < Minitest::Test
 
   private
 
-  def assert_stubborn_producer_fails_run(interruption)
+  def assert_stubborn_producer_fails_run(interjection)
     provider = StubbornProvider.new
 
     with_runtime(provider:) do |harness|
       payload = {message: "hello"}
-      payload[:deadline_at] = Time.now + 0.05 if interruption == :deadline
+      payload[:deadline_at] = Time.now + 0.05 if interjection == :deadline
       run = harness.agent_instance.build_run(payload)
       events = []
       runner = Thread.new do
@@ -2076,7 +2076,7 @@ class ConfigurationTest < Minitest::Test
       runner.report_on_exception = false
       worker = provider.producer_started.pop
 
-      run.cancellation_token.cancel if interruption == :cancellation
+      run.cancellation_token.cancel if interjection == :cancellation
       provider.cleanup_started.pop
 
       assert runner.join(1), "run did not finish after its producer shutdown timeout"

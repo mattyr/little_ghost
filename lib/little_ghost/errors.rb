@@ -51,8 +51,8 @@ module LittleGhost
   class ToolLoopError < ProtocolError; end
   # Base class for failures while executing a tool.
   class ToolError < Error; end
-  # Raised when an active run cannot accept an interruption.
-  class AgentInterruptError < InvocationError; end
+  # Raised when an active run cannot accept an interjection.
+  class AgentInterjectionError < InvocationError; end
   # Raised when cancellation stops an operation.
   class CancelledError < Error; end
   # Raised when an operation reaches its deadline.

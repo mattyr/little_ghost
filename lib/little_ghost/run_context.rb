@@ -26,7 +26,7 @@ module LittleGhost
     # Durable subagent conversation identifier, when present.
     attr_reader :conversation_id
 
-    # Creates a context with optional checkpoint and interruption state.
+    # Creates a context with optional checkpoint and interjection state.
     def initialize(
       state: {},
       cancellation_token: Support::CancellationToken.new,
@@ -34,8 +34,8 @@ module LittleGhost
       metadata: {},
       checkpoint: nil,
       conversation_id: nil,
-      interruption_metadata: nil,
-      interruption_ids: []
+      interjection_metadata: nil,
+      interjection_ids: []
     )
       if conversation_id
         conversation_id = String(conversation_id)
@@ -54,9 +54,9 @@ module LittleGhost
       @structured_result_mutex = Mutex.new
       @agent_operation_id = nil
       @agent_operation_id_mutex = Mutex.new
-      @interruption_mutex = Mutex.new
-      @interruption_metadata = interruption_metadata&.to_h
-      @interruption_ids = Array(interruption_ids).map { |id| String(id).dup.freeze }.freeze
+      @interjection_mutex = Mutex.new
+      @interjection_metadata = interjection_metadata&.to_h
+      @interjection_ids = Array(interjection_ids).map { |id| String(id).dup.freeze }.freeze
     end
 
     # Raises LittleGhost::CancelledError or LittleGhost::DeadlineExceededError
@@ -111,20 +111,20 @@ module LittleGhost
       @structured_result_mutex.synchronize { @structured_result }
     end
 
-    def interruption_metadata # :nodoc:
-      @interruption_mutex.synchronize { @interruption_metadata }
+    def interjection_metadata # :nodoc:
+      @interjection_mutex.synchronize { @interjection_metadata }
     end
 
-    def interruption_ids # :nodoc:
-      @interruption_mutex.synchronize { @interruption_ids }
+    def interjection_ids # :nodoc:
+      @interjection_mutex.synchronize { @interjection_ids }
     end
 
-    def activate_interruption(metadata:, ids:) # :nodoc:
+    def activate_interjection(metadata:, ids:) # :nodoc:
       value = metadata&.to_h
       values = Array(ids).map { |id| String(id).dup.freeze }.freeze
-      @interruption_mutex.synchronize do
-        @interruption_metadata = value
-        @interruption_ids = values
+      @interjection_mutex.synchronize do
+        @interjection_metadata = value
+        @interjection_ids = values
       end
     end
 

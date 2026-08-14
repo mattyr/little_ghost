@@ -130,11 +130,11 @@ class AGUITest < Minitest::Test
     refute retry_event.fetch(:value).key?(:superseded_message_id)
   end
 
-  def test_translates_interrupt_delivery_boundary
+  def test_translates_interject_delivery_boundary
     source = [
       LittleGhost::StreamEvent.build(
-        :agent_interrupt_delivered,
-        interruption_ids: ["interrupt-1", "interrupt-2"],
+        :agent_interjection_delivered,
+        interjection_ids: ["interject-1", "interject-2"],
         batch_key: "conversation"
       ),
       LittleGhost::StreamEvent.build(:text_delta, text: "Steered response")
@@ -142,8 +142,8 @@ class AGUITest < Minitest::Test
 
     events = LittleGhost::AGUI::Adapter.new.stream(source, thread_id: "thread", run_id: "run").to_a
 
-    assert_equal "little_ghost.agent_interrupt_delivered", events.first.fetch(:name)
-    assert_equal ["interrupt-1", "interrupt-2"], events.first.dig(:value, :interruption_ids)
+    assert_equal "little_ghost.agent_interjection_delivered", events.first.fetch(:name)
+    assert_equal ["interject-1", "interject-2"], events.first.dig(:value, :interjection_ids)
     assert_equal "conversation", events.first.dig(:value, :batch_key)
     assert_equal "TEXT_MESSAGE_START", events.fetch(1).fetch(:type)
   end

@@ -21,11 +21,11 @@ module LittleGhost
     #   end
     #
     # LittleGhost then gives +CustomerSupportAgent+ tools to spawn, message, wait for,
-    # interrupt, and list research agents. The manager keeps each child identity
+    # interject, and list research agents. The manager keeps each child identity
     # stable across follow-up turns.
     #
-    # Follow-up messages are FIFO turns and never interrupt active work.
-    # #interrupt is the separate synchronous path for delivery at the next model
+    # Follow-up messages are FIFO turns and never interject active work.
+    # #interject is the separate synchronous path for delivery at the next model
     # boundary; delivery does not stop the child, and tool calls from that model
     # response continue in the child run.
     #
@@ -58,16 +58,16 @@ module LittleGhost
       CURSOR_MAX_BYTES = 512 # :nodoc:
       UUID_PATTERN = /\A[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\z/ # :nodoc:
 
-      InterruptExchange = Struct.new(:message, :response, :complete) # :nodoc:
+      InterjectionExchange = Struct.new(:message, :response, :complete) # :nodoc:
       Turn = Struct.new( # :nodoc:
         :number,
         :message,
         :completion,
         :operation_id,
         :parent_operation_id,
-        :interrupts,
-        :interruption_metadata,
-        :interruption_ids
+        :interjections,
+        :interjection_metadata,
+        :interjection_ids
       )
       Identity = Struct.new( # :nodoc:
         :subagent_id,
@@ -368,7 +368,7 @@ module LittleGhost
       # model response. The returned +response_disposition+ says whether that
       # response also initiated tool calls; it does not imply the subagent has
       # stopped.
-      def interrupt(subagent_id:, message:, cancellation_token: @cancellation_token, deadline: @deadline)
+      def interject(subagent_id:, message:, cancellation_token: @cancellation_token, deadline: @deadline)
         unless message.is_a?(String)
           raise ToolError, "Subagent messages must be strings."
         end
@@ -376,30 +376,30 @@ module LittleGhost
           raise ToolError, "Subagent messages cannot exceed #{@max_message_chars} characters."
         end
 
-        exchange = InterruptExchange.new(message:, complete: false)
+        exchange = InterjectionExchange.new(message:, complete: false)
         identity, turn = @mutex.synchronize do
           ensure_open!
           value = fetch_identity!(subagent_id)
-          unless value.agent.respond_to?(:interrupt_response)
-            raise ToolError, "Subagent #{subagent_id.inspect} does not support interruptions."
+          unless value.agent.respond_to?(:interject)
+            raise ToolError, "Subagent #{subagent_id.inspect} does not support interjections."
           end
           unless value.status == "running"
             raise ToolError, "Subagent #{subagent_id.inspect} is not currently running."
           end
-          if value.current.interrupts.length >= @max_queued_turns_per_identity
-            raise ToolError, "Subagent #{subagent_id.inspect} has reached its interrupt limit."
+          if value.current.interjections.length >= @max_queued_turns_per_identity
+            raise ToolError, "Subagent #{subagent_id.inspect} has reached its interject limit."
           end
-          interrupt_chars = value.current.interrupts.sum { |pending| pending.message.length }
-          if interrupt_chars + message.length > @max_message_chars
-            raise ToolError, "Subagent interrupt messages cannot exceed #{@max_message_chars} total characters."
+          interjection_chars = value.current.interjections.sum { |pending| pending.message.length }
+          if interjection_chars + message.length > @max_message_chars
+            raise ToolError, "Subagent interjection messages cannot exceed #{@max_message_chars} total characters."
           end
 
-          value.current.interrupts << exchange
+          value.current.interjections << exchange
           [value, value.current]
         end
 
-        interrupt_response = begin
-          identity.agent.interrupt_response(
+        result = begin
+          identity.agent.interject(
             message,
             cancellation_token:,
             deadline:,
@@ -407,16 +407,16 @@ module LittleGhost
           )
         rescue
           @mutex.synchronize do
-            turn.interrupts.delete(exchange)
+            turn.interjections.delete(exchange)
             @condition.broadcast
           end
           raise
         end
-        response = interrupt_response.text
+        response = result.text
         truncated = response.length > @max_response_chars
         returned_response = truncated ? response[0, @max_response_chars] : response
         @mutex.synchronize do
-          used_response_chars = turn.interrupts.sum do |pending|
+          used_response_chars = turn.interjections.sum do |pending|
             pending.equal?(exchange) ? 0 : pending.response.to_s.length
           end
           remaining_response_chars = [@max_response_chars - used_response_chars, 0].max
@@ -428,17 +428,17 @@ module LittleGhost
           snapshot(identity, include_response: true, include_progress: true)
         end
         value = {
-          status: "interruption_delivered",
+          status: "interjection_delivered",
           subagent_id: identity.subagent_id,
           kind: identity.definition.kind,
           subagent:,
           turn: turn.number,
           response: returned_response,
-          response_disposition: interrupt_response.tool_calls? ? "text_with_tool_calls" : "text_only"
+          response_disposition: result.tool_calls? ? "text_with_tool_calls" : "text_only"
         }
         value[:response_truncated] = true if truncated
         value
-      rescue AgentInterruptError => error
+      rescue AgentInterjectionError => error
         raise ToolError, error.message
       end
 
@@ -504,7 +504,7 @@ module LittleGhost
         end
       end
 
-      # Builds spawn, follow-up, interrupt, wait, and list tools bound to this
+      # Builds spawn, follow-up, interject, wait, and list tools bound to this
       # manager. Closing the first tool closes the shared manager.
       def tools
         manager = self
@@ -559,8 +559,8 @@ module LittleGhost
             description: <<~DESCRIPTION.strip,
               Send a follow-up turn to an existing active or persisted subagent identity. Persisted conversations
               are restored transparently before the follow-up. Messages are processed in order after the
-              current turn and never interrupt active work. Do not use this for status, steering, stopping, or
-              finalization; use interrupt_subagent for an active subagent. Mode controls delivery: sync waits for the
+              current turn and never interject active work. Do not use this for status, steering, stopping, or
+              finalization; use interject_subagent for an active subagent. Mode controls delivery: sync waits for the
               later turn's response, while async enqueues the turn and returns immediately.
             DESCRIPTION
             input_schema: {
@@ -586,7 +586,7 @@ module LittleGhost
             )
           end,
           Tool.define(
-            name: "interrupt_subagent",
+            name: "interject_subagent",
             description: <<~DESCRIPTION.strip,
               Interrupt an actively running subagent in its current turn. The message is added at the next model
               boundary. This call waits for that model response and reports its ordinary text, whether the same
@@ -606,7 +606,7 @@ module LittleGhost
             options = {}
             options[:cancellation_token] = context.cancellation_token if context
             options[:deadline] = context.deadline if context&.deadline
-            manager.interrupt(
+            manager.interject(
               subagent_id: input.fetch("subagent_id"),
               message: input.fetch("message"),
               **options
@@ -1089,9 +1089,9 @@ module LittleGhost
             completion: Completion.new,
             operation_id: SecureRandom.uuid,
             parent_operation_id:,
-            interrupts: [],
-            interruption_metadata: context&.interruption_metadata,
-            interruption_ids: context&.interruption_ids || []
+            interjections: [],
+            interjection_metadata: context&.interjection_metadata,
+            interjection_ids: context&.interjection_ids || []
           )
           identity.next_turn += 1
           @turn_count += 1 if count_turn
@@ -1157,8 +1157,8 @@ module LittleGhost
                   options[:history] = identity.history
                   options[:context] = identity.state
                   options[:conversation_id] = identity.conversation_id
-                  options[:interruption_metadata] = turn.interruption_metadata
-                  options[:interruption_ids] = turn.interruption_ids
+                  options[:interjection_metadata] = turn.interjection_metadata
+                  options[:interjection_ids] = turn.interjection_ids
                 end
                 result = if identity.agent.is_a?(Agent)
                   run_agent_turn(identity, turn, options)
@@ -1284,8 +1284,8 @@ module LittleGhost
         response = serialized_response[0, @max_response_chars] if truncated
         persisted_response = response.is_a?(String) ? response : serialized_response
 
-        interrupt_exchanges = @mutex.synchronize do
-          while identity.durable && turn.interrupts.any? { |exchange| !exchange.complete } && !@closed
+        interject_exchanges = @mutex.synchronize do
+          while identity.durable && turn.interjections.any? { |exchange| !exchange.complete } && !@closed
             @condition.wait(@mutex, CANCELLATION_POLL_INTERVAL)
           end
           if @closed
@@ -1294,11 +1294,11 @@ module LittleGhost
           end
 
           identity.status = "persisting" if identity.durable
-          turn.interrupts.select(&:complete).map { |exchange| [exchange.message, exchange.response] }
+          turn.interjections.select(&:complete).map { |exchange| [exchange.message, exchange.response] }
         end
-        return unless interrupt_exchanges
+        return unless interject_exchanges
 
-        retain_agent_conversation(identity, turn, result, persisted_response, interrupt_exchanges)
+        retain_agent_conversation(identity, turn, result, persisted_response, interject_exchanges)
 
         @mutex.synchronize do
           identity.latest_turn = turn.number
@@ -1323,11 +1323,11 @@ module LittleGhost
         end
       end
 
-      def retain_agent_conversation(identity, turn, result, persisted_response, interrupt_exchanges)
+      def retain_agent_conversation(identity, turn, result, persisted_response, interject_exchanges)
         if identity.durable
           state = result.is_a?(RunResult) ? result.state : identity.state
           messages = [Message.new(role: :user, content: turn.message)]
-          interrupt_exchanges.each do |message, response|
+          interject_exchanges.each do |message, response|
             messages << Message.new(role: :user, content: message)
             messages << Message.new(role: :assistant, content: response)
           end

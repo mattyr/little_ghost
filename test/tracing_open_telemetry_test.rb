@@ -599,25 +599,25 @@ class TracingOpenTelemetryTest < Minitest::Test
     tracing&.shutdown
   end
 
-  def test_attaches_delivered_interrupt_to_its_started_model_span
+  def test_attaches_delivered_interject_to_its_started_model_span
     tracer = Tracer.new
     tracing = LittleGhost::Tracing::OpenTelemetry.new(tracer:)
 
     tracing.start(:model, {operation_id: "model", model_id: "model"})
     tracing.emit(
-      :agent_interrupt_delivered,
+      :agent_interjection_delivered,
       {
         parent_operation_id: "model",
-        interruption_id: "interrupt",
-        event_kind: :interrupt
+        interjection_id: "interject",
+        event_kind: :interjection
       }
     )
 
     span = tracer.started.first.last
     assert_equal 1, span.events.length
     name, attributes = span.events.first
-    assert_equal "little_ghost.agent_interrupt_delivered", name
-    assert_equal "interrupt", attributes.fetch("little_ghost.interruption_id")
+    assert_equal "little_ghost.agent_interjection_delivered", name
+    assert_equal "interject", attributes.fetch("little_ghost.interjection_id")
     assert_empty tracer.instant
   ensure
     tracing&.shutdown

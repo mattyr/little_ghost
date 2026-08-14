@@ -105,14 +105,14 @@ end
 record_outcome(run.outcome, error_type: run.error&.class&.name)
 ```
 
-Use `start_execution` when the caller must stay free for other work, or when you want to interrupt an active response:
+Use `start_execution` when the caller must stay free for other work, or when you want to deliver an interjection to an active response:
 
 ```ruby
 execution = agent.start_execution(message: question) do |event|
   event_buffer << event
 end
 
-execution.interrupt_response(message: "Include the latest ledger entry")
+execution.interject(message: "Include the latest ledger entry")
 execution.wait(deadline: Time.now + 30)
 execution.run.completed?
 ```

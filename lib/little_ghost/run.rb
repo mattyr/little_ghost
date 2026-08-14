@@ -41,7 +41,7 @@ module LittleGhost
   #
   # The Run opens its workspace, sandbox, Session, and Assembly entrypoint, then
   # closes registered resources in reverse order. +register+ adds application
-  # resources to that lifecycle. Interruption is available only while one Agent
+  # resources to that lifecycle. Interjection is available only while one Agent
   # entrypoint is active.
   class Run
     include Enumerable
@@ -104,10 +104,10 @@ module LittleGhost
       @exclusive_tools_mutex = Mutex.new
       @once_mutex = Mutex.new
       @once_keys = {}
-      @interruption_mutex = Mutex.new
-      @interruption_condition = ConditionVariable.new
-      @interruption_state = :not_started
-      @active_interruptions = 0
+      @interjection_mutex = Mutex.new
+      @interjection_condition = ConditionVariable.new
+      @interjection_state = :not_started
+      @active_interjections = 0
       @entrypoint = nil
       @usage = Usage.new
     end
@@ -146,23 +146,23 @@ module LittleGhost
     # True when cancellation stopped the run without a response.
     def cancelled? = outcome == "cancelled"
 
-    # Adds an interruption to the active entrypoint and waits for its response.
+    # Adds an interjection to the active entrypoint and waits for its response.
     #
-    # Raises LittleGhost::AgentInterruptError before the entrypoint is ready,
-    # after it finishes, or when the entrypoint does not support interruptions.
-    def interrupt_response(
+    # Raises LittleGhost::AgentInterjectionError before the entrypoint is ready,
+    # after it finishes, or when the entrypoint does not support interjections.
+    def interject(
       message,
-      interruption_id: nil,
+      interjection_id: nil,
       batch_key: nil,
       metadata: {},
       cancellation_token: Support::CancellationToken.new,
       deadline: nil
     )
-      interrupt_response_with do
+      interject_with do
         [
           message,
           {
-            interruption_id:,
+            interjection_id:,
             batch_key:,
             metadata:,
             cancellation_token:,
@@ -172,29 +172,29 @@ module LittleGhost
       end
     end
 
-    def interrupt_response_with # :nodoc:
-      entrypoint = @interruption_mutex.synchronize do
-        case @interruption_state
+    def interject_with # :nodoc:
+      entrypoint = @interjection_mutex.synchronize do
+        case @interjection_state
         when :not_started, :starting
-          raise AgentInterruptError, "Run entrypoint is not ready for interruptions"
+          raise AgentInterjectionError, "Run entrypoint is not ready for interjections"
         when :terminal
-          raise AgentInterruptError, "Run has already finished"
+          raise AgentInterjectionError, "Run has already finished"
         end
 
-        @active_interruptions += 1
+        @active_interjections += 1
         @entrypoint
       end
-      unless entrypoint.respond_to?(:interrupt_response)
-        raise AgentInterruptError, "Run entrypoint does not support interruptions"
+      unless entrypoint.respond_to?(:interject)
+        raise AgentInterjectionError, "Run entrypoint does not support interjections"
       end
 
       message, options = yield
-      entrypoint.interrupt_response(message, **options)
+      entrypoint.interject(message, **options)
     ensure
       if entrypoint
-        @interruption_mutex.synchronize do
-          @active_interruptions -= 1
-          @interruption_condition.broadcast
+        @interjection_mutex.synchronize do
+          @active_interjections -= 1
+          @interjection_condition.broadcast
         end
       end
     end
@@ -248,8 +248,8 @@ module LittleGhost
       end
     end
 
-    def prepare_interruption(payload) # :nodoc:
-      runtime.prepare_interruption(self, payload)
+    def prepare_interjection(payload) # :nodoc:
+      runtime.prepare_interjection(self, payload)
     end
 
     # Closes registered resources in reverse order.
@@ -311,7 +311,7 @@ module LittleGhost
       sandbox&.open(run: self)
       @session = runtime.open_session(self)
       agent = runtime.build_assembly(@execution_class, run: self)
-      @interruption_mutex.synchronize do
+      @interjection_mutex.synchronize do
         @entrypoint = agent
       end
       register(agent)
@@ -332,11 +332,11 @@ module LittleGhost
           end
         }
         if agent.is_a?(Agent)
-          options[:interrupt_ready] = lambda do
-            @interruption_mutex.synchronize { @interruption_state = :active }
+          options[:interject_ready] = lambda do
+            @interjection_mutex.synchronize { @interjection_state = :active }
           end
         else
-          @interruption_mutex.synchronize { @interruption_state = :active }
+          @interjection_mutex.synchronize { @interjection_state = :active }
         end
 
         agent.stream(invocation.message, **options).each do |event|
@@ -397,9 +397,9 @@ module LittleGhost
         }
       ]
     ensure
-      @interruption_mutex.synchronize do
-        @interruption_state = :terminal
-        @interruption_condition.wait(@interruption_mutex) while @active_interruptions.positive?
+      @interjection_mutex.synchronize do
+        @interjection_state = :terminal
+        @interjection_condition.wait(@interjection_mutex) while @active_interjections.positive?
         @last_entrypoint = @entrypoint
         @entrypoint = nil
       end
@@ -669,7 +669,7 @@ module LittleGhost
         raise Error, "run has already started" if @started
         @started = true
       end
-      @interruption_mutex.synchronize { @interruption_state = :starting }
+      @interjection_mutex.synchronize { @interjection_state = :starting }
     end
 
     def close_callback(resource)

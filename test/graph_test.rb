@@ -26,7 +26,7 @@ class GraphTest < Minitest::Test
       end
     end
 
-    def interrupt_response(...) = nil
+    def interject(...) = nil
     def close = @closed = true
     def closed? = @closed == true
   end

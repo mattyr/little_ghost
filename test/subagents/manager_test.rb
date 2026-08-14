@@ -85,20 +85,20 @@ class SubagentManagerTest < Minitest::Test
   end
 
   class InterruptibleAgent < ControlledAgent
-    attr_reader :interruptions, :interrupt_target
+    attr_reader :interjections, :interject_target
 
     def initialize(...)
       super
-      @interruptions = []
+      @interjections = []
     end
 
-    def interrupt_response(message, cancellation_token:, deadline:, target_operation_id:)
+    def interject(message, cancellation_token:, deadline:, target_operation_id:)
       cancellation_token.raise_if_cancelled!
       raise LittleGhost::DeadlineExceededError, "deadline" if deadline && Time.now >= deadline
 
-      @interruptions << message
-      @interrupt_target = target_operation_id
-      LittleGhost::AgentInterruptions::Response.new(text: "Still investigating", tool_calls: false)
+      @interjections << message
+      @interject_target = target_operation_id
+      LittleGhost::AgentInterjections::Result.new(text: "Still investigating", tool_calls: false)
     end
   end
 
@@ -1431,7 +1431,7 @@ class SubagentManagerTest < Minitest::Test
     transient_manager&.close
   end
 
-  def test_list_cursor_and_interrupt_aggregate_limits_are_bounded
+  def test_list_cursor_and_interject_aggregate_limits_are_bounded
     gate = Gate.new
     agent = InterruptibleAgent.new(gate:)
     manager = manager_for(
@@ -1443,9 +1443,9 @@ class SubagentManagerTest < Minitest::Test
     subagent_id = spawned.dig(:subagent, :subagent_id)
     agent.started.pop
 
-    manager.interrupt(subagent_id:, message: "12345")
+    manager.interject(subagent_id:, message: "12345")
 
-    assert_raises(LittleGhost::ToolError) { manager.interrupt(subagent_id:, message: "x") }
+    assert_raises(LittleGhost::ToolError) { manager.interject(subagent_id:, message: "x") }
     assert_raises(LittleGhost::ToolError) { manager.list(cursor: "x" * 513) }
   ensure
     gate&.open
@@ -1920,7 +1920,7 @@ class SubagentManagerTest < Minitest::Test
     manager&.close
   end
 
-  def test_interrupt_tool_returns_text_without_queuing_another_turn
+  def test_interject_tool_returns_text_without_queuing_another_turn
     gate = Gate.new
     agent = InterruptibleAgent.new(gate:)
     manager = manager_for(->(_id) { agent })
@@ -1928,28 +1928,28 @@ class SubagentManagerTest < Minitest::Test
     manager.spawn(kind: "explore", task_name: "explore", task: "inspect", mode: "async")
     agent.started.pop
 
-    result = JSON.parse(registry.fetch("interrupt_subagent").execute({
+    result = JSON.parse(registry.fetch("interject_subagent").execute({
       "subagent_id" => "/root/explore",
       "message" => "What are you checking?"
     }).content)
     snapshot = manager.list.dig(:subagents, 0)
 
-    assert_equal "interruption_delivered", result.fetch("status")
+    assert_equal "interjection_delivered", result.fetch("status")
     assert_equal "Still investigating", result.fetch("response")
     assert_equal "text_only", result.fetch("response_disposition")
     assert_equal "running", result.dig("subagent", "status")
-    assert_equal ["What are you checking?"], agent.interruptions
-    refute_nil agent.interrupt_target
+    assert_equal ["What are you checking?"], agent.interjections
+    refute_nil agent.interject_target
     assert_equal 1, snapshot[:current_turn]
     assert_nil snapshot[:latest_turn]
     assert_equal 0, snapshot[:queued_turns]
-    refute_includes registry.fetch("interrupt_subagent").input_schema.fetch("properties"), "mode"
+    refute_includes registry.fetch("interject_subagent").input_schema.fetch("properties"), "mode"
   ensure
     gate&.open
     manager&.close
   end
 
-  def test_successful_interrupt_exchange_is_persisted_and_visible_after_resume
+  def test_successful_interject_exchange_is_persisted_and_visible_after_resume
     store = LittleGhost::SessionStores::Memory.new
     parent = LittleGhost::Session.new(id: "parent", store:)
     gate = Gate.new
@@ -1969,8 +1969,8 @@ class SubagentManagerTest < Minitest::Test
             events << LittleGhost::StreamEvent.build(:invocation_stop, result: first_result)
           end
         end
-        agent.define_singleton_method(:interrupt_response) do |_message, **_options|
-          LittleGhost::AgentInterruptions::Response.new(text: "interrupt answer", tool_calls: false)
+        agent.define_singleton_method(:interject) do |_message, **_options|
+          LittleGhost::AgentInterjections::Result.new(text: "interject answer", tool_calls: false)
         end
       else
         agent.define_singleton_method(:stream) do |_message, **options|
@@ -1993,7 +1993,7 @@ class SubagentManagerTest < Minitest::Test
     conversation_id = spawned.dig(:subagent, :conversation_id)
     started.pop
 
-    interrupted = first_manager.interrupt(subagent_id:, message: "status?")
+    interjected = first_manager.interject(subagent_id:, message: "status?")
     gate.open
     assert_equal "finished", first_manager.wait(subagent_ids: [subagent_id]).fetch(:status)
     first_manager.close
@@ -2006,14 +2006,14 @@ class SubagentManagerTest < Minitest::Test
       store:
     )
 
-    assert_equal "interrupt answer", interrupted.fetch(:response)
+    assert_equal "interject answer", interjected.fetch(:response)
     assert_equal(
-      ["initial task", "status?", "interrupt answer", "final answer"],
+      ["initial task", "status?", "interject answer", "final answer"],
       resumed_history.first(4).map(&:text)
     )
     assert_equal %i[user user assistant assistant user assistant], child.history.map(&:role)
     assert_equal(
-      ["initial task", "status?", "interrupt answer", "final answer", "continue", "resumed answer"],
+      ["initial task", "status?", "interject answer", "final answer", "continue", "resumed answer"],
       child.history.map(&:text)
     )
   ensure
@@ -2022,7 +2022,7 @@ class SubagentManagerTest < Minitest::Test
     second_manager&.close
   end
 
-  def test_interrupt_exchange_is_not_persisted_when_the_durable_turn_fails
+  def test_interject_exchange_is_not_persisted_when_the_durable_turn_fails
     store = LittleGhost::SessionStores::Memory.new
     parent = LittleGhost::Session.new(id: "parent", store:)
     gate = Gate.new
@@ -2035,8 +2035,8 @@ class SubagentManagerTest < Minitest::Test
         raise "turn failed"
       end
     end
-    agent.define_singleton_method(:interrupt_response) do |_message, **_options|
-      LittleGhost::AgentInterruptions::Response.new(text: "temporary answer", tool_calls: false)
+    agent.define_singleton_method(:interject) do |_message, **_options|
+      LittleGhost::AgentInterjections::Result.new(text: "temporary answer", tool_calls: false)
     end
     definition = LittleGhost::Subagents::Definition.new(
       kind: "explore",
@@ -2049,7 +2049,7 @@ class SubagentManagerTest < Minitest::Test
     conversation_id = spawned.dig(:subagent, :conversation_id)
     started.pop
 
-    manager.interrupt(subagent_id:, message: "status?")
+    manager.interject(subagent_id:, message: "status?")
     gate.open
     _out, _err = capture_io { manager.wait(subagent_ids: [subagent_id]) }
     child = LittleGhost::Session.new(
@@ -2064,7 +2064,7 @@ class SubagentManagerTest < Minitest::Test
     manager&.close
   end
 
-  def test_interrupt_exchange_is_not_persisted_when_the_durable_turn_is_cancelled
+  def test_interject_exchange_is_not_persisted_when_the_durable_turn_is_cancelled
     store = LittleGhost::SessionStores::Memory.new
     parent = LittleGhost::Session.new(id: "parent", store:)
     gate = Gate.new
@@ -2077,8 +2077,8 @@ class SubagentManagerTest < Minitest::Test
         options.fetch(:cancellation_token).raise_if_cancelled!
       end
     end
-    agent.define_singleton_method(:interrupt_response) do |_message, **_options|
-      LittleGhost::AgentInterruptions::Response.new(text: "temporary answer", tool_calls: false)
+    agent.define_singleton_method(:interject) do |_message, **_options|
+      LittleGhost::AgentInterjections::Result.new(text: "temporary answer", tool_calls: false)
     end
     definition = LittleGhost::Subagents::Definition.new(
       kind: "explore",
@@ -2090,7 +2090,7 @@ class SubagentManagerTest < Minitest::Test
     subagent_id = spawned.dig(:subagent, :subagent_id)
     conversation_id = spawned.dig(:subagent, :conversation_id)
     started.pop
-    manager.interrupt(subagent_id:, message: "status?")
+    manager.interject(subagent_id:, message: "status?")
 
     closer = Thread.new { manager.close }
     wait_until { manager.list.dig(:subagents, 0, :status) == "cancelled" }

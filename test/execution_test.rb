@@ -4,14 +4,14 @@ require "test_helper"
 
 class ExecutionTest < Minitest::Test
   class ControlledRun < LittleGhost::Run
-    attr_reader :cancellation_token, :interruptions, :started, :close_count
+    attr_reader :cancellation_token, :interjections, :started, :close_count
 
-    def initialize(events: [], release: nil, interrupt_release: nil)
+    def initialize(events: [], release: nil, interject_release: nil)
       @events = events
       @release = release
-      @interrupt_release = interrupt_release
+      @interject_release = interject_release
       @cancellation_token = LittleGhost::Support::CancellationToken.new
-      @interruptions = []
+      @interjections = []
       @started = Queue.new
       @close_count = 0
     end
@@ -25,18 +25,18 @@ class ExecutionTest < Minitest::Test
       @close_count += 1
     end
 
-    def prepare_interruption(payload)
+    def prepare_interjection(payload)
       payload.merge(message: "prepared: #{payload.fetch(:message)}")
     end
 
-    def interrupt_response_with
+    def interject_with
       message, options = yield
-      interrupt_response(message, **options)
+      interject(message, **options)
     end
 
-    def interrupt_response(message, **options)
-      interruptions << [message, options]
-      @interrupt_release&.pop
+    def interject(message, **options)
+      interjections << [message, options]
+      @interject_release&.pop
       "accepted"
     end
   end
@@ -107,41 +107,41 @@ class ExecutionTest < Minitest::Test
     assert_equal 1, run.close_count
   end
 
-  def test_interruptions_are_prepared_and_close_waits_for_inflight_delivery
+  def test_interjections_are_prepared_and_close_waits_for_inflight_delivery
     release_run = Queue.new
-    release_interrupt = Queue.new
-    run = ControlledRun.new(release: release_run, interrupt_release: release_interrupt)
+    release_interject = Queue.new
+    run = ControlledRun.new(release: release_run, interject_release: release_interject)
     execution = LittleGhost::Execution.start(run)
     run.started.pop
-    interruption = Thread.new do
-      execution.interrupt_response(
-        {message: "update", interruption_id: "interrupt-1"},
+    interjection = Thread.new do
+      execution.interject(
+        {message: "update", interjection_id: "interject-1"},
         metadata: {source: "test"}
       )
     end
-    wait_until { run.interruptions.any? }
+    wait_until { run.interjections.any? }
 
     release_run << true
     assert_raises(LittleGhost::DeadlineExceededError) do
       execution.close(deadline: Time.now + 0.01)
     end
     assert_predicate run.cancellation_token, :cancelled?
-    assert_raises(LittleGhost::AgentInterruptError) do
-      execution.interrupt_response(message: "too late")
+    assert_raises(LittleGhost::AgentInterjectionError) do
+      execution.interject(message: "too late")
     end
 
-    release_interrupt << true
-    assert_equal "accepted", interruption.value
+    release_interject << true
+    assert_equal "accepted", interjection.value
     assert_same run, execution.close(deadline: Time.now + 1)
     assert_equal 1, run.close_count
     assert_equal [
       "prepared: update",
-      {interruption_id: "interrupt-1", metadata: {source: "test"}}
-    ], run.interruptions.first
+      {interjection_id: "interject-1", metadata: {source: "test"}}
+    ], run.interjections.first
   ensure
     release_run << true if execution&.active?
-    release_interrupt << true if interruption&.alive?
-    interruption&.join
+    release_interject << true if interjection&.alive?
+    interjection&.join
   end
 
   private

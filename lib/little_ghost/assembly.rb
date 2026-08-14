@@ -257,8 +257,8 @@ module LittleGhost
             parent_operation_id: assembly.run&.operation_id
           }
           if target.is_a?(Agent)
-            options[:interruption_metadata] = context&.interruption_metadata
-            options[:interruption_ids] = context&.interruption_ids || []
+            options[:interjection_metadata] = context&.interjection_metadata
+            options[:interjection_ids] = context&.interjection_ids || []
           end
           result = target.call(input.fetch("input"), **options)
           if result.is_a?(Run)
@@ -286,24 +286,19 @@ module LittleGhost
       ))
     end
 
-    # Adds +message+ to the single active leaf Agent and returns its text reply.
-    def interrupt(message, **options)
-      interrupt_response(message, **options).text
-    end
-
-    # Adds an interruption to the single active leaf Agent.
-    def interrupt_response(message, **options)
+    # Adds an interjection to the single active leaf Agent.
+    def interject(message, **options)
       child = @assembly_mutex.synchronize do
         active = @active_assemblies.dup
         if active.empty?
-          raise AgentInterruptError, "Assembly is not currently running"
+          raise AgentInterjectionError, "Assembly is not currently running"
         end
         if active.length > 1
-          raise AgentInterruptError, "Assembly has multiple active participants; the interruption target is ambiguous"
+          raise AgentInterjectionError, "Assembly has multiple active participants; the interjection target is ambiguous"
         end
         active.first
       end
-      child.interrupt_response(message, **options)
+      child.interject(message, **options)
     end
 
     # Closes resources owned directly by this assembly.
