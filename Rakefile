@@ -107,7 +107,39 @@ class RDoc::Generator::LittleGhost < RDoc::Generator::Aliki
     rewrite_guide_links
   end
 
+  def generate_ancestor_list(ancestors, klass)
+    return "" if ancestors.empty?
+
+    ancestor = ancestors.shift
+    target = little_ghost_ancestor(ancestor, klass)
+    label = CGI.escapeHTML(ancestor.respond_to?(:full_name) ? ancestor.full_name : ancestor.to_s)
+    content = +"<ul><li>"
+    content << if target
+      %(<a href="#{klass.aref_to(target.path)}">#{label}</a>)
+    else
+      label
+    end
+    content << generate_ancestor_list(ancestors, klass)
+    content << "</li></ul>"
+  end
+
   private
+
+  def little_ghost_ancestor(ancestor, klass)
+    if ancestor.respond_to?(:full_name) && ancestor.full_name.start_with?("LittleGhost::")
+      return ancestor
+    end
+
+    name = ancestor.to_s
+    namespaces = klass.full_name.split("::")[0...-1]
+    while namespaces.any?
+      candidate = @store.find_class_or_module("#{namespaces.join("::")}::#{name}")
+      return candidate if candidate&.full_name&.start_with?("LittleGhost::")
+
+      namespaces.pop
+    end
+    nil
+  end
 
   def rewrite_guide_links
     @outputdir.glob("**/*.html").each do |page|
