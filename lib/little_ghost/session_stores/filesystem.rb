@@ -7,38 +7,36 @@ require "securerandom"
 
 module LittleGhost
   module SessionStores
-    # Filesystem keeps LittleGhost sessions in JSON files beneath an application
-    # controlled directory. It is useful for durable local development, a
-    # single-host service, or processes that share a filesystem with reliable
-    # file locks and atomic rename support.
+    # Filesystem preserves LittleGhost sessions across process restarts in an
+    # application-controlled directory. Use it for durable local development,
+    # a single-host service, or processes that share a suitable filesystem.
     #
     #   store = LittleGhost::SessionStores::Filesystem.new(
     #     root: "/var/lib/customer_support/sessions"
     #   )
     #
     # Configure the resulting store through Configuration#session_store, or
-    # pass it directly when opening a Session. The root is a trust boundary:
-    # session data remains readable to any process that can read its files, and
-    # write access is equivalent to authority over persisted session state. The
-    # root and its parent path must be application-controlled and unavailable
-    # for untrusted users to rename or replace.
-    # This store does not encrypt session data.
+    # pass it directly when opening a Session. Calls for the same session wait
+    # for one writer, including when separate Ruby processes share the root.
     #
-    # State and metadata must contain JSON-compatible values with String or
-    # Symbol hash keys. A value outside that boundary raises ProtocolError
-    # without replacing the previous snapshot.
+    # **Warning:** The root contains readable session data and is not encrypted.
+    # Its complete path must be application-controlled: anyone able to read it
+    # can read session data, and anyone able to replace it can alter sessions.
     #
-    # Session and actor IDs are hashed before becoming filenames. Each write
-    # holds a per-session OS file lock, writes and flushes a temporary file, and
-    # atomically replaces the prior snapshot. Applications sharing the root
-    # must use a filesystem that supports those operations correctly.
+    # State and metadata must use JSON-compatible values with String or Symbol
+    # hash keys. A value outside that boundary raises ProtocolError without
+    # replacing the previous snapshot. Shared roots require filesystem support
+    # for file locking and atomic rename.
     class Filesystem < SessionStore
       FORMAT_VERSION = 1 # :nodoc:
       SYMBOL_KEY_PREFIX = "little_ghost:symbol:" # :nodoc:
       STRING_KEY_PREFIX = "little_ghost:string:" # :nodoc:
 
-      # Creates the private +root+ directory when needed. The application owns
-      # the root selection and should not let an untrusted request choose it.
+      # Creates a store rooted at +root+ and creates the directory when needed.
+      #
+      # +root+ must be a private, non-symlinked directory. The application owns
+      # the complete path and must not let an untrusted request choose it.
+      # Raises ArgumentError when the root does not meet those requirements.
       def initialize(root:)
         super()
         @root = File.expand_path(String(root))
@@ -48,8 +46,11 @@ module LittleGhost
         validate_root!
       end
 
-      # Loads the stored snapshot, or returns +nil+ before the first write.
-      # A stored session remains bound to its original actor.
+      # Returns the stored snapshot for +id+, or +nil+ before the first write.
+      #
+      # +actor_id+ must match the actor that created an existing session.
+      # Raises Error for an actor mismatch and ProtocolError for an invalid or
+      # unsafe persisted snapshot.
       def load(id, actor_id: nil)
         with_lock(id) do
           snapshot = read_snapshot(id)
@@ -58,8 +59,12 @@ module LittleGhost
         end
       end
 
-      # Appends sanitized messages when +expected_count+ matches the stored
-      # history length, then returns the updated snapshot.
+      # Atomically appends sanitized +messages+ and returns the updated snapshot.
+      #
+      # +expected_count+ must match the stored history length. +state+ and
+      # +metadata+ must meet this store's JSON boundary. Raises ProtocolError
+      # when another writer changed the session or the snapshot cannot be read
+      # or written. Raises Error when +actor_id+ does not match the session.
       def append(id, messages:, state:, metadata:, expected_count:, actor_id: nil)
         messages = persistable_messages(messages)
         with_lock(id) do
@@ -81,7 +86,10 @@ module LittleGhost
         end
       end
 
-      # Replaces the complete persisted snapshot atomically.
+      # Atomically replaces the complete persisted snapshot and returns it.
+      #
+      # +state+, +metadata+, and +actor_id+ follow the same requirements as
+      # #append.
       def replace(id, messages:, state:, metadata:, actor_id: nil)
         messages = persistable_messages(messages)
         with_lock(id) do
