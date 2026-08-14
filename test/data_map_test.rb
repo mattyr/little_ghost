@@ -34,26 +34,18 @@ class DataMapTest < Minitest::Test
     assert_raises(ArgumentError) { LittleGhost::DataMap.new(Object.new => "value") }
   end
 
-  def test_rejects_cyclic_or_excessively_nested_data
+  def test_rejects_cyclic_data_without_limiting_valid_nesting
     cyclic = {}
     cyclic["self"] = cyclic
-    accepted = {}
-    accepted_cursor = accepted
-    (LittleGhost::DataMap::MAX_DEPTH - 1).times do
-      child = {}
-      accepted_cursor["child"] = child
-      accepted_cursor = child
-    end
     nested = {}
     cursor = nested
-    LittleGhost::DataMap::MAX_DEPTH.times do
+    2_000.times do
       child = {}
       cursor["child"] = child
       cursor = child
     end
 
     assert_raises(ArgumentError) { LittleGhost::DataMap.new(cyclic) }
-    assert_instance_of LittleGhost::DataMap, LittleGhost::DataMap.new(accepted)
-    assert_raises(ArgumentError) { LittleGhost::DataMap.new(nested) }
+    assert_instance_of LittleGhost::DataMap, LittleGhost::DataMap.new(nested)
   end
 end

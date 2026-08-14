@@ -15,8 +15,8 @@ module LittleGhost
   # supplies both a String and Symbol form of the same key is ambiguous and
   # raises ArgumentError.
   class DataMap < Hash
-    MAX_DEPTH = 100 # :nodoc:
-    MAX_NODES = 100_000 # :nodoc:
+    alias_method :store_raw_value, :[]=
+    private :store_raw_value
 
     # Builds a deeply normalized map from +value+.
     def initialize(value = {})
@@ -36,7 +36,6 @@ module LittleGhost
 
     # Stores +value+ under the canonical String form of +key+.
     def []=(key, value)
-      validate_structure!(value)
       super(normalize_key(key), normalize_value(value))
     end
     alias_method :store, :[]=
@@ -72,7 +71,6 @@ module LittleGhost
 
     # Replaces all entries with a deeply normalized copy of +other+.
     def replace(other)
-      validate_structure!(other)
       pairs = canonical_pairs(other)
       clear
       pairs.each { |key, value| self[key] = value }
@@ -87,13 +85,12 @@ module LittleGhost
 
     # Produces a deep ordinary Hash with canonical String keys.
     def to_h
-      validate_structure!(self)
-      each_with_object({}) { |(key, value), copy| copy[key] = plain_value(value) }
+      plain_value(self)
     end
 
     private
 
-    def canonical_pairs(value)
+    def canonical_pairs(value, normalize_values: true)
       hash = Hash.try_convert(value)
       raise ArgumentError, "DataMap requires a mapping" unless hash
 
@@ -103,7 +100,7 @@ module LittleGhost
         raise ArgumentError, "DataMap keys must not contain both String and Symbol forms" if seen[normalized]
 
         seen[normalized] = true
-        [normalized, normalize_value(child)]
+        [normalized, normalize_values ? normalize_value(child) : child]
       end
     end
 
@@ -115,11 +112,89 @@ module LittleGhost
     end
 
     def normalize_value(value)
+      return normalize_scalar(value) unless container?(value)
+
+      copy = container_copy(value)
+      stack = [[:visit, value, copy]]
+      ancestors = {}
+      until stack.empty?
+        action, current, target = stack.pop
+        if action == :leave
+          ancestors.delete(current)
+          next
+        end
+
+        raise ArgumentError, "DataMap cannot contain cyclic values" if ancestors[current.object_id]
+
+        ancestors[current.object_id] = true
+        stack << [:leave, current.object_id, nil]
+        if current.is_a?(Hash)
+          canonical_pairs(current, normalize_values: false).reverse_each do |key, child|
+            child_copy = container?(child) ? container_copy(child) : normalize_scalar(child)
+            target.send(:store_raw_value, key, child_copy)
+            stack << [:visit, child, child_copy] if container?(child)
+          end
+        else
+          current.each_with_index do |child, index|
+            child_copy = container?(child) ? container_copy(child) : normalize_scalar(child)
+            target[index] = child_copy
+            stack << [:visit, child, child_copy] if container?(child)
+          end
+        end
+      end
+
+      copy
+    end
+
+    def plain_value(value)
+      return value unless container?(value)
+
+      copy = value.is_a?(Array) ? [] : {}
+      stack = [[:visit, value, copy]]
+      ancestors = {}
+      until stack.empty?
+        action, current, target = stack.pop
+        if action == :leave
+          ancestors.delete(current)
+          next
+        end
+
+        raise ArgumentError, "DataMap cannot contain cyclic values" if ancestors[current.object_id]
+
+        ancestors[current.object_id] = true
+        stack << [:leave, current.object_id, nil]
+        if current.is_a?(Hash)
+          canonical_pairs(current, normalize_values: false).each do |key, child|
+            child_copy = container?(child) ? plain_container_copy(child) : normalize_scalar(child)
+            target[key] = child_copy
+            stack << [:visit, child, child_copy] if container?(child)
+          end
+        else
+          current.each_with_index do |child, index|
+            child_copy = container?(child) ? plain_container_copy(child) : normalize_scalar(child)
+            target[index] = child_copy
+            stack << [:visit, child, child_copy] if container?(child)
+          end
+        end
+      end
+
+      copy
+    end
+
+    def container?(value)
+      value.is_a?(Hash) || value.is_a?(Array)
+    end
+
+    def container_copy(value)
+      value.is_a?(Array) ? [] : self.class.new
+    end
+
+    def plain_container_copy(value)
+      value.is_a?(Array) ? [] : {}
+    end
+
+    def normalize_scalar(value)
       case value
-      when DataMap, Hash
-        self.class.new(value)
-      when Array
-        value.map { |child| normalize_value(child) }
       when String, Integer, TrueClass, FalseClass, NilClass
         value
       when Float
@@ -128,43 +203,6 @@ module LittleGhost
         value
       else
         raise ArgumentError, "DataMap values must be JSON-compatible"
-      end
-    end
-
-    def plain_value(value)
-      case value
-      when DataMap
-        value.to_h
-      when Array
-        value.map { |child| plain_value(child) }
-      else
-        value
-      end
-    end
-
-    def validate_structure!(value)
-      stack = [[:visit, value, 0]]
-      ancestors = {}
-      nodes = 0
-      until stack.empty?
-        action, current, depth = stack.pop
-        if action == :leave
-          ancestors.delete(current)
-          next
-        end
-
-        nodes += 1
-        raise ArgumentError, "DataMap is too large" if nodes > MAX_NODES
-        next unless current.is_a?(Hash) || current.is_a?(Array)
-
-        raise ArgumentError, "DataMap is nested too deeply" if depth >= MAX_DEPTH
-        raise ArgumentError, "DataMap cannot contain cyclic values" if ancestors[current.object_id]
-
-        ancestors[current.object_id] = true
-        stack << [:leave, current.object_id, depth]
-        Array(current.is_a?(Hash) ? current.values : current).reverse_each do |child|
-          stack << [:visit, child, depth + 1]
-        end
       end
     end
   end
