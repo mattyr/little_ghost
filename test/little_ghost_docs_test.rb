@@ -184,6 +184,7 @@ class LittleGhostDocsTest < Minitest::Test
   end
 
   def test_published_releases_are_stable_annotated_tags_from_main_with_matching_source
+    original_repository = ENV.delete("GITHUB_REPOSITORY")
     commands = []
     responses = [
       ["", ""],
@@ -224,6 +225,8 @@ class LittleGhostDocsTest < Minitest::Test
       ["git", "merge-base", "--is-ancestor", "release-commit", "refs/remotes/origin/main"],
       ["git", "show", "release-commit:lib/little_ghost/version.rb"]
     ], commands.map(&:first)
+  ensure
+    ENV["GITHUB_REPOSITORY"] = original_repository if original_repository
   end
 
   def test_release_builds_do_not_inherit_workflow_tokens
