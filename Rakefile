@@ -43,16 +43,22 @@ SITE_TEMPLATE_ROOT = "#{SITE_SOURCE}/rdoc"
 class RDoc::Generator::LittleGhost < RDoc::Generator::Aliki
   DESCRIPTION = "Aliki with LittleGhost navigation"
   GUIDE_PATHS = {
+    "docs/guides/getting_started.md" => "getting_started.html",
     "docs/guides/core_concepts.md" => "core_concepts.html",
-    "docs/guides/getting_started.md" => "getting_started.html"
+    "docs/guides/assemblies.md" => "assemblies.html",
+    "docs/guides/production.md" => "production.html"
   }.freeze
   GUIDE_TITLES = {
+    "docs/guides/getting_started.md" => "Getting Started",
     "docs/guides/core_concepts.md" => "Core Concepts",
-    "docs/guides/getting_started.md" => "Getting Started"
+    "docs/guides/assemblies.md" => "Compose Agents with Assemblies",
+    "docs/guides/production.md" => "Running in Production"
   }.freeze
   LEGACY_GUIDE_LINKS = {
+    %r{(?:docs/guides/)?getting_started_md\.html} => "getting_started.html",
     %r{(?:docs/guides/)?core_concepts_md\.html} => "core_concepts.html",
-    %r{(?:docs/guides/)?getting_started_md\.html} => "getting_started.html"
+    %r{(?:docs/guides/)?assemblies_md\.html} => "assemblies.html",
+    %r{(?:docs/guides/)?production_md\.html} => "production.html"
   }.freeze
   ALIKI_TEMPLATE = Pathname.new(
     File.join(File.dirname(RDoc::Generator::Aliki.instance_method(:initialize).source_location.first), "template", "aliki")
@@ -121,15 +127,22 @@ class LittleGhostSiteChecker
     "assets/social-card.png",
     "docs/index.html",
     "docs/getting_started.html",
-    "docs/core_concepts.html"
+    "docs/core_concepts.html",
+    "docs/assemblies.html",
+    "docs/production.html"
   ].freeze
   COMMON_NAVIGATION_LABELS = %w[Home Docs GitHub].freeze
-  GUIDE_NAVIGATION_LABELS = ["Core Concepts", "Getting Started"].freeze
+  GUIDE_NAVIGATION_LABELS = [
+    "Getting Started",
+    "Core Concepts",
+    "Compose Agents with Assemblies",
+    "Running in Production"
+  ].freeze
   COMMON_NAVIGATION_PATTERN = /<nav\b[^>]*aria-label=["']Primary navigation["'][^>]*>(.*?)<\/nav>/mi
   NAVIGATION_LINK_PATTERN = /<a\b([^>]*)>(.*?)<\/a>/mi
   ATTRIBUTE_PATTERN = /\b(?:href|src)=["']([^"']+)["']/i
   ANCHOR_PATTERN = /\b(?:id|name)=["']([^"']+)["']/i
-  LEGACY_GUIDE_REFERENCE_PATTERN = /(?:Core%20Concepts|Getting%20Started|_md\.html)/
+  LEGACY_GUIDE_REFERENCE_PATTERN = /(?:Core%20Concepts|Getting%20Started|Compose%20Agents|Running%20in%20Production|_md\.html)/
 
   def initialize(root)
     @site_root = Pathname(root).expand_path
@@ -189,6 +202,12 @@ class LittleGhostSiteChecker
         unless html.match?(/>\s*#{Regexp.escape(label)}\s*<\/a>/)
           errors << "#{page.relative_path_from(site_root)} is missing the #{label} guide navigation"
         end
+      end
+      guide_positions = GUIDE_NAVIGATION_LABELS.filter_map do |label|
+        html.index(/>\s*#{Regexp.escape(label)}\s*<\/a>/)
+      end
+      if guide_positions.length == GUIDE_NAVIGATION_LABELS.length && guide_positions != guide_positions.sort
+        errors << "#{page.relative_path_from(site_root)} has guides in the wrong learning order"
       end
       if html.match?(/<summary>\s*docs\s*(?:<|$)/mi)
         errors << "#{page.relative_path_from(site_root)} nests guides under docs navigation"

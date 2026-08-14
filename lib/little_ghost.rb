@@ -70,34 +70,27 @@ require_relative "little_ghost/agent_factory"
 require_relative "little_ghost/runtime/hook"
 require_relative "little_ghost/runtime"
 
-# Build AI features with reusable agents and composable assemblies. LittleGhost can
-# sit inside an existing Ruby system or support a dedicated AI service, keeping
-# models, prompts, tools, sessions, streaming, and instrumentation behind a
-# cohesive set of Ruby conventions.
+# LittleGhost is a Ruby library for building AI features with reusable agents
+# and composable assemblies. It can sit inside an existing Ruby system or
+# support a dedicated AI service.
 #
-# A customer support agent can answer directly, use an application tool, or ask a
-# specialist for research while the caller observes one run:
-#
-#   class ResearchAgent < LittleGhost::Agent
-#     description "Researches difficult support questions"
-#     model "openai:gpt-5.6-luna"
-#   end
+# Start with one model-driven behavior:
 #
 #   class CustomerSupportAgent < LittleGhost::Agent
 #     description "Handles support requests"
-#     model "openai:gpt-5.6-luna"
-#     tools AccountTool
-#     subagent ResearchAgent, kind: "research"
+#     model "openrouter:openai/gpt-5.6-luna"
+#     system_prompt "Answer customer questions clearly."
 #   end
 #
 #   run = CustomerSupportAgent.ask("Why is transfer 481 still pending?")
 #   run.completed? # => true
-#   run.response   # => "Transfer 481 is waiting for the receiving bank."
+#   run.response
+#   # One possible response: Transfer 481 is waiting for the receiving bank.
 #
-# Agent subclasses hold reusable behavior; Invocation objects carry one request,
-# and Run objects own execution and cleanup. Assembly gives Agent, Workflow,
-# Swarm, and Graph the same caller interface while each type owns a different
-# coordination policy.
+# Agent subclasses hold reusable behavior, Invocation objects carry one request,
+# and Run objects own execution and cleanup. When one model loop is not enough,
+# Assembly gives Agent, Workflow, Swarm, and Graph the same caller interface
+# while each type owns a different coordination policy.
 #
 # LittleGhost.configuration is process-wide unless LittleGhost.with_configuration
 # supplies an execution-scoped replacement. Configuration is loaded lazily and

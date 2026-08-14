@@ -10,16 +10,13 @@ module LittleGhost
   # Agent or another coordinated Assembly. The workflow consumes intermediate
   # answers and streams one final participant response.
   #
-  # A support workflow can route a difficult request through research before the
-  # responder writes the caller-visible answer:
+  # A support workflow can guarantee that research happens before the responder
+  # writes the caller-visible answer:
   #
   #   class ResponseWorkflow < LittleGhost::Workflow
   #     private
   #
   #     def perform
-  #       route = invoke(RouterAgent).output
-  #       return invoke(CustomerSupportAgent) unless route["research"]
-  #
   #       evidence = invoke(ResearchAgent).output
   #       invoke CustomerSupportAgent, input: <<~PROMPT
   #         #{input.text}
@@ -31,7 +28,8 @@ module LittleGhost
   #   end
   #
   #   run = ResponseWorkflow.ask("Why is transfer 481 pending?")
-  #   run.response # => "Transfer 481 is waiting for the receiving bank."
+  #   run.response
+  #   # One possible response: Transfer 481 is waiting for the receiving bank.
   #
   # +invoke+ returns a lazy Workflow::Invocation. Reading +output+ consumes an
   # intermediate invocation and returns RunResult#output; +perform+ must return
@@ -51,7 +49,7 @@ module LittleGhost
   # lightweight invocation wrappers in reverse declaration order. Composition
   # errors emit an +invocation_error+ event and then re-raise.
   class Workflow < Assembly
-    # Hold one lazy agent call inside a workflow composition.
+    # Hold one lazy Assembly call inside a workflow composition.
     # Workflow implementations normally use only its output method or return the
     # object as the final invocation.
     class Invocation
@@ -299,8 +297,12 @@ module LittleGhost
       invocation
     end
 
+    # :doc:
     # Consumes independent invocations concurrently and returns their outputs in
     # declaration order.
+    #
+    # +max_concurrency+ bounds active child executions. A child failure cancels
+    # siblings cooperatively before the error is raised.
     def parallel(*invocations, max_concurrency: 8)
       raise ArgumentError, "parallel requires at least one invocation" if invocations.empty?
       unless invocations.all? { |invocation| invocation.is_a?(Invocation) && !invocation.consumed? }

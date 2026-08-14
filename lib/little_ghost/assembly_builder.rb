@@ -1,8 +1,7 @@
 # frozen_string_literal: true
 
 module LittleGhost
-  # An immutable, executable snapshot produced by an AssemblyBuilder.
-  AssemblyDefinition = Data.define(:kind, :assembly_id, :description, :implementation) do
+  AssemblyDefinition = Data.define(:kind, :assembly_id, :description, :implementation) do # :nodoc:
     def initialize(kind:, assembly_id:, description:, implementation:)
       super(
         kind: kind.to_sym,
@@ -11,6 +10,29 @@ module LittleGhost
         implementation:
       )
     end
+  end
+
+  # The immutable, executable snapshot produced by an AssemblyBuilder.
+  #
+  # Runtime and other builders accept a definition anywhere they accept an
+  # Assembly reference. +implementation+ is the sealed class instantiated for
+  # this snapshot.
+  class AssemblyDefinition < Data # :doc:
+    ##
+    # :attr_reader: kind
+    # The Assembly kind: +:agent+, +:workflow+, +:swarm+, or +:graph+.
+
+    ##
+    # :attr_reader: assembly_id
+    # The stable identifier captured by the snapshot.
+
+    ##
+    # :attr_reader: description
+    # The human-readable description captured by the snapshot.
+
+    ##
+    # :attr_reader: implementation
+    # The sealed Assembly subclass used to build executions.
   end
 
   # Builds an Assembly when its participants or routes are discovered at runtime.
@@ -230,6 +252,12 @@ module LittleGhost
   end
 
   # Builds an Agent definition from declarations made at runtime.
+  #
+  #   agent = LittleGhost::AgentBuilder.new(id: "customer_support")
+  #   agent.model "openrouter:openai/gpt-5.6-luna"
+  #   agent.system_prompt "Answer customer questions clearly."
+  #   agent.ask("Where is my order?")
+  #
   # Supported Agent class-DSL calls are recorded and replayed into each
   # immutable snapshot.
   class AgentBuilder < AssemblyBuilder
@@ -308,6 +336,9 @@ module LittleGhost
   end
 
   # Builds a Workflow whose Ruby composition block is supplied at runtime.
+  # Use a named Workflow subclass's +to_builder+ when the class supplies the
+  # composition and runtime configuration supplies its identity or description.
+  # +perform+ supplies the underlying dynamic form for trusted application code.
   class WorkflowBuilder < AssemblyBuilder
     class << self
       # :nodoc:
@@ -344,6 +375,13 @@ module LittleGhost
   end
 
   # Builds a Swarm at runtime while keeping its members Agent-only.
+  #
+  #   swarm = LittleGhost::SwarmBuilder.new(id: "problem_solver")
+  #   swarm.member TriageAgent
+  #   swarm.member BillingAgent
+  #   swarm.start TriageAgent
+  #   swarm.handoff TriageAgent, to: BillingAgent
+  #   swarm.validate!
   class SwarmBuilder < AssemblyBuilder
     class << self
       # :nodoc:

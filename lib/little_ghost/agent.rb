@@ -10,26 +10,23 @@ module LittleGhost
   # Each Agent subclass describes one application role with an inheritable Ruby
   # DSL. It can answer, stream, call tools, and delegate work.
   #
-  # A customer support agent can look up an account itself and give longer
-  # investigations to a research specialist:
-  #
-  #   class ResearchAgent < LittleGhost::Agent
-  #     description "Researches transfer failures"
-  #     model "customer_support.research"
-  #     tools LedgerSearchTool
-  #   end
+  # Start with one role and add capabilities as its work grows:
   #
   #   class CustomerSupportAgent < LittleGhost::Agent
   #     description "Handles support requests"
-  #     model :customer_support
-  #     limits max_turns: 40
-  #     tools AccountLookupTool
-  #     subagent ResearchAgent, kind: "research"
+  #     model "openrouter:openai/gpt-5.6-luna"
+  #     system_prompt "Answer customer questions clearly."
   #   end
   #
   #   run = CustomerSupportAgent.ask("Why is transfer 481 pending?")
   #   run.completed? # => true
-  #   run.response   # => "Transfer 481 is waiting for the receiving bank."
+  #   run.response
+  #   # One possible response: Transfer 481 is waiting for the receiving bank.
+  #
+  # An Agent is the smallest Assembly: it owns one model loop while inheriting
+  # the same +ask+ and +stream_ask+ entrypoints as coordinated assemblies.
+  # Add tools for application operations and subagents for model-directed
+  # delegation.
   #
   # Class declarations are inherited. Prompts resolve by the agent's logical
   # path unless +system_prompt+ or +system_template+ supplies one explicitly;

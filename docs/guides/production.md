@@ -1,0 +1,131 @@
+# Running in Production
+
+The Agent or Assembly you ran in a script can move into a controller, job, CLI, or service without changing shape. A long-running application usually adds stable model names, shared services, conversation history, background execution, and observability.
+
+## Select models by application role
+
+A direct target keeps a small definition self-contained:
+
+```ruby
+class CustomerSupportAgent < LittleGhost::Agent
+  model "openrouter:openai/gpt-5.6-luna"
+end
+```
+
+As an application grows, a **model role** gives that choice a stable application name:
+
+```ruby
+LittleGhost.configure do |config|
+  config.providers = {
+    openrouter: {
+      adapter: :openrouter,
+      api_key: ENV.fetch("OPENROUTER_API_KEY")
+    }
+  }
+  config.models = {
+    customer_support: {
+      target: "openrouter:openai/gpt-5.6-luna",
+      settings: {temperature: 0.2}
+    }
+  }
+  config.default_model = :customer_support
+end
+
+class CustomerSupportAgent < LittleGhost::Agent
+  model :customer_support
+end
+```
+
+Provider connections and model roles can also live in YAML files under `config/little_ghost`. You can point to files elsewhere too. Inline settings win over explicit paths, explicit paths win over conventional files, and environment-based defaults come last. See `LittleGhost::Configuration` for every supported shape.
+
+Prompts, caller input and history, tool results, and attachments may leave the application for the selected external provider. Select providers from trusted configuration and account for their retention and data-residency policies.
+
+## Reuse a Runtime for shared services
+
+Class-level `.ask` creates everything needed for one standalone call. A **Runtime** lets several calls reuse configuration and shared services.
+
+```ruby
+runtime = LittleGhost::Runtime.new(configuration: LittleGhost.configuration)
+agent = CustomerSupportAgent.new(runtime: runtime)
+
+first = agent.ask("Where is order 481?")
+second = agent.ask("Can I change the address on order 481?")
+```
+
+The Runtime is reused here, not conversation history. Each `.ask` still creates
+a new top-level Run. Add a stable session identity when one request should
+continue an earlier conversation.
+
+Build the Runtime after configuration is ready. Once created, it keeps that configuration snapshot.
+
+## Preserve conversation with Sessions
+
+A **Session** lets one request continue an earlier conversation. Pass the same session ID and trusted actor ID with each related call:
+
+```ruby
+run = CustomerSupportAgent.ask(
+  "What did we decide about my refund?",
+  session_id: "conversation-42",
+  actor_id: authenticated_user.id
+)
+```
+
+Take `actor_id` from authenticated application state. A session ID alone does not prove who the caller is, and a nil actor does not separate tenants. Built-in persistence drops system messages, temporary messages, and private reasoning. If you customize persistence, decide what else is safe to store.
+
+A session is checkpointed when its store write succeeds. The in-memory store lasts only as long as one process. Choose a durable `SessionStore` when conversations must survive a restart or continue on another process.
+
+## Stream or supervise long-running work
+
+`.stream_ask` runs on the caller's thread and yields `StreamEvent` values as the answer arrives:
+
+```ruby
+CustomerSupportAgent.stream_ask(question).each do |event|
+  publish(event) if event.type == :text_delta
+end
+```
+
+Use `start_execution` when the caller must stay free for other work, or when you want to interrupt an active response:
+
+```ruby
+execution = agent.start_execution(message: question) do |event|
+  event_buffer << event
+end
+
+execution.interrupt_response(message: "Include the latest ledger entry")
+execution.wait(deadline: Time.now + 30)
+execution.run.completed?
+```
+
+The event block runs on the worker thread, so keep it quick. Cancellation, deadlines, and `close` ask the work to stop; they cannot forcibly end arbitrary provider or tool code. They also cannot undo actions that already happened.
+
+## Treat tools as application boundaries
+
+A tool schema checks the shape of model-supplied input. Your application still owns permission checks, safe retries, rate limits, tenant boundaries, and auditing.
+
+Use the Tool binding to reach trusted run and application context. Do not make permission decisions from model arguments. A `ToolError` message is visible to the model, so keep it safe to share; LittleGhost hides unexpected exception messages from model-facing results.
+
+When a step retries, its tool calls may happen again too. Prefer read-only work, idempotency keys, or operations that are safe to repeat.
+
+## Choose workspace and sandbox behavior explicitly
+
+A Workspace gives one Run a place for files. A Sandbox decides how filesystem and process operations happen there.
+
+`LittleGhost::UnrestrictedSandbox` uses the host machine with the Ruby process's permissions. It does not contain untrusted code. Expose only the tools the model needs, and use a real isolation boundary when untrusted code must run.
+
+The run owns configured workspaces and sandboxes and closes them with its other resources.
+
+## Instrument without leaking the application
+
+LittleGhost emits events as a request starts, calls a model or tool, moves between assembly steps, retries, and finishes. Runtime hooks can prepare trusted request data. Instrumentation subscribers and OpenTelemetry exporters can send those events to your monitoring system.
+
+An external telemetry service may receive application identifiers and event data. Redact sensitive values before they leave your boundary. Keep attributes low-cardinality, and remember that replacing an identifier does not make the rest of the data anonymous.
+
+A composite `RunResult` includes short step summaries and trajectory queries. Keep detailed provider errors and sensitive diagnostics in trusted monitoring channels, not in model or user responses.
+
+## Keep ownership and failure visible
+
+One top-level Run owns the request-scoped resources it opens or that you register with it. It closes those resources after success, failure, a partial response, or cancellation. Shared services supplied by the application keep their own lifecycle.
+
+Ordinary execution failures appear on the Run and its final event. Cleanup, event delivery, or instrumentation can still raise an exception: once those boundaries fail, LittleGhost cannot promise a clean ending.
+
+For exact constructors, options, events, extension contracts, and error behavior, continue into the API reference for `LittleGhost::Configuration`, `LittleGhost::Runtime`, `LittleGhost::Run`, `LittleGhost::Execution`, `LittleGhost::Session`, `LittleGhost::Tool`, and `LittleGhost::StreamEvent`.

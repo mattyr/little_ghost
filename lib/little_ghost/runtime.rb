@@ -4,31 +4,33 @@ require "json"
 require_relative "configuration"
 
 module LittleGhost
-  # Prepare the shared services that assemblies use across many runs.
+  # Reuse the shared services that assemblies need across many runs.
   # A runtime owns model resolution, loading, persistence, lookup paths, hooks,
   # and resource factories for one Ruby setup.
   #
   #   configuration = LittleGhost::Configuration.new(
   #     root: Dir.pwd,
   #     providers: {
-  #       openai: {adapter: :openai, api_key: ENV.fetch("OPENAI_API_KEY")}
+  #       openrouter: {adapter: :openrouter, api_key: ENV.fetch("OPENROUTER_API_KEY")}
   #     },
-  #     models: {customer_support: {target: "openai:gpt-5.6-luna"}},
+  #     models: {customer_support: {target: "openrouter:openai/gpt-5.6-luna"}},
   #     default_model: "customer_support",
   #     service_name: "support-api"
   #   )
   #   runtime = LittleGhost::Runtime.new(configuration: configuration)
   #
-  #   runtime.service_name # => "support-api"
-  #   runtime.root == Pathname.new(File.realpath(Dir.pwd)) # => true
+  #   support = CustomerSupportAgent.new(runtime: runtime)
+  #   support.ask("Where is order 481?").response
   #
-  # Without explicit +settings+, construction canonicalizes the root, loads
-  # +config/little_ghost.rb+ once through the Configuration, snapshots settings,
-  # configures instrumentation, eager-loads application constants, and builds the
-  # selected model resolver and session store. Supplying +settings+ is the
-  # lower-level path used to create a sibling runtime from an existing snapshot.
+  # Build one Runtime during application setup, then use it to construct Agents
+  # and coordinated Assemblies. Configuration is snapshotted at construction;
+  # later mutations do not alter the Runtime.
   #
-  # Reuse a runtime across runs. +build_run+ creates any missing workspace and
+  # Without explicit +settings+, construction loads conventional application
+  # configuration and definitions, then builds the selected model resolver,
+  # session store, instrumentation, and resource factories. Supplying +settings+
+  # is the lower-level path for creating a sibling from an existing snapshot.
+  # +build_run+ creates any missing workspace and
   # sandbox, transfers ownership only after both are built, and closes partial
   # resources if construction fails. +build+ creates a sibling with explicit
   # overrides and reuses the loader only when the application root is unchanged.

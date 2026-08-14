@@ -8,15 +8,13 @@ module LittleGhost
     MAX_STEP_EVENTS = 10_000 # :nodoc:
     MAX_STEP_EVENT_BYTES = 10 * 1024 * 1024 # :nodoc:
 
-    # One attempt to execute an assembly step.
-    Attempt = Data.define(:number, :status, :started_at, :finished_at, :usage, :error) do
+    Attempt = Data.define(:number, :status, :started_at, :finished_at, :usage, :error) do # :nodoc:
       def initialize(number:, status:, started_at:, finished_at:, usage: Usage.new, error: nil)
         super(number:, status: status.to_sym, started_at:, finished_at:, usage:, error: error&.to_s&.freeze)
       end
     end
 
-    # One logical child execution in a composite assembly.
-    Step = Data.define(
+    Step = Data.define( # :nodoc:
       :id, :parent_id, :predecessor_ids, :branch_id, :participant,
       :assembly_id, :assembly_kind, :status, :attempts, :usage, :output, :output_truncated
     ) do
@@ -37,6 +35,91 @@ module LittleGhost
           output_truncated: output_truncated == true
         )
       end
+    end
+
+    # One bounded attempt to execute a child Assembly step.
+    #
+    # It records timing, normalized usage, terminal status, and a sanitized error
+    # description suitable for the public coordination trajectory.
+    class Attempt < Data # :doc:
+      ##
+      # :attr_reader: number
+      # The one-based attempt number.
+
+      ##
+      # :attr_reader: status
+      # The normalized terminal status for this attempt.
+
+      ##
+      # :attr_reader: started_at
+      # The wall-clock start time.
+
+      ##
+      # :attr_reader: finished_at
+      # The wall-clock finish time.
+
+      ##
+      # :attr_reader: usage
+      # The Usage recorded by this attempt.
+
+      ##
+      # :attr_reader: error
+      # A sanitized error description, or +nil+.
+    end
+
+    # One logical child execution in a composite Assembly result.
+    #
+    # Steps identify the participant, relationships to other steps, attempts,
+    # usage, and a bounded semantic output. Use RunResult#trajectory for queries
+    # over several steps.
+    class Step < Data # :doc:
+      ##
+      # :attr_reader: id
+      # The stable identifier for this step occurrence.
+
+      ##
+      # :attr_reader: parent_id
+      # The containing step identifier for nested coordination, or +nil+.
+
+      ##
+      # :attr_reader: predecessor_ids
+      # Step identifiers whose results led to this step.
+
+      ##
+      # :attr_reader: branch_id
+      # The parallel branch identifier, or +nil+.
+
+      ##
+      # :attr_reader: participant
+      # The participant name used by the parent Assembly.
+
+      ##
+      # :attr_reader: assembly_id
+      # The invoked Assembly's stable identifier.
+
+      ##
+      # :attr_reader: assembly_kind
+      # The invoked Assembly kind.
+
+      ##
+      # :attr_reader: status
+      # The logical step's terminal status.
+
+      ##
+      # :attr_reader: attempts
+      # Immutable Attempt values, including retries.
+
+      ##
+      # :attr_reader: usage
+      # Usage accumulated across the step's attempts.
+
+      ##
+      # :attr_reader: output
+      # The bounded semantic output retained for coordination inspection.
+
+      ##
+      # :attr_reader: output_truncated
+      # Indicates that +output+ exceeded the public result limit.
     end
 
     # Immutable queries over the steps returned by one assembly invocation.

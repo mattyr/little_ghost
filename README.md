@@ -1,18 +1,29 @@
-# Build AI features with LittleGhost
+# Build AI features that feel at home in Ruby
 
-<hr>
-
-**Growing in public.** LittleGhost is under active development, and interfaces may evolve between releases. Pin the gem version and review the release notes when upgrading.
-
-<hr>
-
-Build an agent inside an existing Ruby system, or use LittleGhost as the core of a dedicated AI service. An agent is a reusable Ruby class that gives one model a prompt, tools, limits, and a model selection. LittleGhost connects that class to providers, streaming, sessions, delegation, and observability.
-
-Set `OPENAI_API_KEY`, then paste this customer support agent into a Ruby console or file. It selects a model directly and exposes one validated application tool:
+LittleGhost is a Ruby library for building AI features with agents and composable assemblies. With `OPENROUTER_API_KEY` set, start with one class, give it a prompt, and call it like the rest of your application code:
 
 ```ruby
 require "little_ghost"
 
+class CustomerSupportAgent < LittleGhost::Agent
+  model "openrouter:openai/gpt-5.6-luna"
+  system_prompt "Answer customer questions clearly and concisely."
+end
+
+run = CustomerSupportAgent.ask("Draft a friendly greeting for a customer.")
+run.response
+# One possible response: Hi! How can I help today?
+```
+
+That small definition is already a complete agent. LittleGhost handles the model call, streaming, usage, and cleanup around it. Add a tool when the agent needs something from your application. Bring in more agents when the work grows.
+
+Model requests may send system instructions, caller input, conversation history, tool results, and attachments to the selected external provider. Model wording can vary between runs. Choose providers and the data you send them with the same care as any other external service.
+
+## Give an agent real capabilities
+
+Tools let an agent call focused parts of your application:
+
+```ruby
 class HelpCenterLookupTool < LittleGhost::Tool
   description "Look up a help center entry by topic."
   input_schema(
@@ -29,39 +40,33 @@ class HelpCenterLookupTool < LittleGhost::Tool
 end
 
 class CustomerSupportAgent < LittleGhost::Agent
-  description "Answers customer support questions."
-  model "openai:gpt-5.6-luna"
-  system_prompt "Answer clearly. Check the help center before stating company guidance."
+  model "openrouter:openai/gpt-5.6-luna"
+  system_prompt "Check the help center before stating company guidance."
   tools HelpCenterLookupTool
 end
-
-run = CustomerSupportAgent.ask("Can I get a refund after two weeks?")
-puts run.response
-# One possible response:
-# Refunds are available within 30 days, so your purchase is eligible.
 ```
 
-The completed `LittleGhost::Run` exposes its outcome, final response, normalized messages, token usage, and terminal error. Streaming callers receive `LittleGhost::StreamEvent` objects instead of provider-specific payloads:
+The schema checks the shape of the input. Your Ruby code still decides whether the operation is allowed and safe. The result goes back to the model as context.
+
+## Grow without changing the caller
+
+An **agent** owns one model loop. An **assembly** is one or more agents working as a unit. You call either one the same way:
 
 ```ruby
-CustomerSupportAgent.stream_ask("Can I get a refund?").each do |event|
-  print event.data.fetch(:text) if event.type == :text_delta
-end
+CustomerSupportAgent.ask(question)
+ResponseWorkflow.ask(question)
+ProblemSolverSwarm.ask(question)
+SupportFlowGraph.ask(question)
 ```
 
-## How the pieces fit
+Choose the coordination style that matches who should control the next step:
 
-One agent is the smallest useful LittleGhost application. A request creates a run, the agent may call a tool or delegate to a subagent, and the run records the outcome:
+- A **subagent** lets a model delegate an addressable task.
+- A **workflow** uses ordinary Ruby for ordering and branching.
+- A **swarm** lets configured agents choose permitted handoffs.
+- A **graph** makes allowed routes explicit as nodes and edges.
 
-```text
-provider connections + model selections ──> ModelResolver ──> provider
-                                               │
-request ──> CustomerSupportAgent ──> HelpCenterLookupTool
-                  │
-                  └────────> ResearchAgent subagent
-```
-
-When one model loop is not enough, LittleGhost calls the larger callable unit an **assembly**. An assembly may be one agent or a coordinated group that still looks like one agent to its caller:
+A Workflow or Graph can contain agents, other assemblies, or both. Named classes are the clearest place to begin. Builders are there when your application discovers the participants or routes at runtime.
 
 ```text
 request ──> CustomerSupportAgent
@@ -73,67 +78,43 @@ request ──> ProblemSolverSwarm ──> TriageAgent ──handoff──> Bill
 request ──> SupportFlowGraph ──> TriageAgent ──edge──> ResponseAgent
 ```
 
-A `Workflow` uses ordinary Ruby to enforce ordering and branching. A `Swarm` lets configured agents hand the request directly to one another. A `Graph` follows application-declared nodes and edges when the allowed paths should be visible in advance. These types share `ask` and `stream_ask`, so callers can depend on one entrypoint contract while the implementation grows.
+The result stays familiar too. Every call returns a `Run` with the response,
+outcome, usage, and any final error. A coordinated assembly also records which
+participants ran. Use `.stream_ask` to watch the work as it happens.
 
-Class definitions are the default way to organize agents and assemblies. Builder objects support definitions whose participants or topology are discovered at runtime; the Core Concepts guide introduces them after the class-based forms.
+## Install the gem
 
-Each top-level execution owns one run lifecycle. The run checkpoints session state, closes its resources, aggregates usage, and emits framework events regardless of which assembly type is the entrypoint.
-
-## Installation and configuration
-
-LittleGhost requires Ruby 3.3 or newer. Add it to your bundle:
+LittleGhost requires Ruby 3.3 or newer. Add it to your bundle and provide a supported provider credential:
 
 ```ruby
 gem "little_ghost"
 ```
 
-Then run `bundle install`. Built-in OpenAI-compatible, OpenRouter, Anthropic, Gemini, Vertex AI, and Amazon Bedrock integrations use Ruby's standard library and normalize responses into the same protocol.
-
-Configuration does not require a particular directory layout. Provider connections and model profiles resolve independently in this order:
-
-1. An inline `config.providers` or `config.models` declaration.
-2. The corresponding explicit `config.providers_path` or `config.models_path`.
-3. The optional conventional file under `config/little_ghost/`.
-4. Environment-based provider selection and the built-in `default` profile.
-
-An explicit path must exist. A missing conventional file is valid. The conventional form keeps connection policy separate from model roles:
-
-```yaml
-# config/little_ghost/providers.yml
-providers:
-  openai:
-    adapter: openai
-    api_key: <%= ENV.fetch("OPENAI_API_KEY") %>
+```sh
+$ bundle install
+$ export OPENROUTER_API_KEY="..."
 ```
 
-```yaml
-# config/little_ghost/models.yml
-default_model: customer_support
-models:
-  customer_support:
-    target: openai:gpt-5.6-luna
-```
+LittleGhost runs inside your Ruby process. Use it from a controller, job, CLI, or service. If you want a conventional layout, start with `app/agents`, `app/assemblies`, and `app/tools`.
 
-By default, LittleGhost maps `default` to GPT-5.6 Luna. It configures conventional OpenRouter and OpenAI connections from nonblank `LITTLEGHOST_OPENROUTER_API_KEY`, `LITTLEGHOST_OPENAI_API_KEY`, `OPENROUTER_API_KEY`, and `OPENAI_API_KEY` values; that order determines the default when more than one provider is available. Model inputs—including prompts, history, tool data, and attachments—leave the application for the selected external provider. Configure providers explicitly when provider choice or data residency matters.
+**Growing in public.** LittleGhost is under active development, and interfaces may evolve between releases. Pin the gem version and review release notes when upgrading.
 
-Applications that need custom routing can subclass `LittleGhost::ModelResolver` and install the class with `config.model_resolver`. A custom resolver owns its profiles and default role; configuring `models`, `models_path`, or `default_model` at the same time is an error. Provider configuration remains available to the resolver.
+## Keep going
 
-LittleGhost runs inside the surrounding Ruby process; it does not prescribe an HTTP server, CLI, job system, or application layout. `config/little_ghost`, `app/agents`, `app/assemblies`, `app/prompts`, `app/tools`, and `app/skills` are optional conventions. Keep agent classes in `app/agents`; workflow, swarm, and graph classes conventionally live in `app/assemblies`. Names should reveal the type, such as `DevelopmentWorkflow`, `ProblemSolverSwarm`, or `SupportFlowGraph`.
-
-## Documentation
-
-- [Getting Started](docs/guides/getting_started.md) builds and streams the customer support example.
-- [Core Concepts](docs/guides/core_concepts.md) starts with one agent, then introduces assemblies, delegation, workflows, swarms, graphs, and dynamic builders.
-- [API reference](rdoc-ref:LittleGhost) covers exact signatures, options, and lifecycle behavior.
+- [Getting Started](docs/guides/getting_started.md) takes you from installation to a tool-backed, streaming agent.
+- [Core Concepts](docs/guides/core_concepts.md) builds the mental model from Agent to Assembly.
+- [Compose Agents with Assemblies](docs/guides/assemblies.md) walks through workflows, swarms, graphs, nesting, and builders.
+- [Running in Production](docs/guides/production.md) covers configuration, sessions, execution, observability, and trust boundaries.
+- [API reference](rdoc-ref:LittleGhost) provides exact signatures and lifecycle contracts.
 
 ## Contributing
 
 See the [contributing guide](https://github.com/mattyr/little_ghost/blob/main/CONTRIBUTING.md), [Code of Conduct](https://github.com/mattyr/little_ghost/blob/main/CODE_OF_CONDUCT.md), and [security policy](https://github.com/mattyr/little_ghost/blob/main/SECURITY.md).
 
 ```sh
-bundle install
-bundle exec rake test
-bundle exec standardrb --no-fix
+$ bundle install
+$ bundle exec rake test
+$ bundle exec standardrb --no-fix
 ```
 
-LittleGhost is licensed under the MIT License.
+LittleGhost is available under the MIT License.
