@@ -124,7 +124,7 @@ class ProblemSolverSwarm < LittleGhost::Swarm
 end
 ```
 
-The active model requests a handoff through a reserved tool. LittleGhost accepts only the routes you declared. Step and repeat limits keep the conversation from circling forever.
+The active model sees a handoff tool listing the members it may choose next. LittleGhost accepts only the routes you declared. `max_steps` limits total member executions. `max_handoff_repeats` limits how often the same directed handoff, such as triage to billing, may repeat.
 
 Swarm members must be Agents, so each transition stays a direct model-to-model handoff. Caller history and application context are opt-in for each member. Handoff messages come from a model; never treat them as permission to read data or perform an action.
 
@@ -162,7 +162,7 @@ SupportFlowGraph.validate!
 SupportFlowGraph.to_mermaid
 ```
 
-Conditions and input mappers read an immutable `Graph::State`. Exactly one conditional edge may match. If several match, LittleGhost raises `AssemblyRoutingError` instead of guessing which one wins. One unconditional edge can catch the request when none match.
+Conditions and input mappers read an immutable `Graph::State`. At most one conditional edge may match. If several match, LittleGhost raises `AssemblyRoutingError` instead of guessing which one wins. One unconditional edge can catch the request when none match.
 
 Graph nodes start without caller history or application context. They still receive the original input or the output routed from an earlier node. Map or redact that data before it moves to a provider or participant that should see less.
 
@@ -256,7 +256,7 @@ class SupportCoordinatorAgent < LittleGhost::Agent
 end
 ```
 
-The nested assembly always receives the parent Tool's current working state as its context. That state may include restored Session values. It receives conversation history only with `preserve_context: true`. Turning that option off does not remove working state, so nested tools must still authorize from values freshly established or revalidated by the application.
+The nested assembly receives the parent Tool's current working state. That state may include values restored from a Session. `preserve_context` controls conversation history only: when it is false, working state still passes to the nested assembly. Any nested Tool doing privileged work must authorize with values the application established for the current request or checked again after loading.
 
 ## Reach for builders when definitions are dynamic
 
@@ -278,6 +278,6 @@ graph.validate!
 run = graph.ask("Where is my order?")
 ```
 
-Each builder uses the same declarations as its matching class. The builder stays editable, but LittleGhost takes a snapshot at the start of each run. Later edits affect later runs. Ruby callbacks still use any outside objects they captured.
+Each builder uses the same declarations as its matching class. The builder stays editable, but each run gets a fixed copy of its current definition. Later edits affect later runs. Ruby callbacks still see any application objects they captured.
 
 Continue with [Running in Production](production.md) to configure model roles, reuse runtimes, preserve sessions, supervise execution, and connect observability.

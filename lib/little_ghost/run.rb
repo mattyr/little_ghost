@@ -12,12 +12,13 @@ module LittleGhost
   #   run.outcome    # => "completed"
   #   run.response   # => "Transfer 481 is waiting for the receiving bank."
   #
-  # The class-level ask helper[rdoc-ref:LittleGhost::Assembly.ask] or standalone
-  # ask method[rdoc-ref:LittleGhost::Assembly#ask] consumes the event stream and
-  # returns the Run. For a live interface, the class-level streaming
+  # The class-level ask helper[rdoc-ref:LittleGhost::Assembly.ask] and standalone
+  # ask method[rdoc-ref:LittleGhost::Assembly#ask] return the Run after work
+  # finishes. For a live interface, use the class-level streaming
   # helper[rdoc-ref:LittleGhost::Assembly.stream_ask] or standalone streaming
-  # method[rdoc-ref:LittleGhost::Assembly#stream_ask] yields StreamEvent objects
-  # and returns the same run after enumeration. A run can execute only once.
+  # method[rdoc-ref:LittleGhost::Assembly#stream_ask]. The stream yields
+  # StreamEvent objects, and enumeration returns the same Run with its final
+  # outcome and response. A Run executes only once.
   #
   #   stream = CustomerSupportAgent.stream_ask("Where is transfer 481?")
   #   run = stream.each do |event|
@@ -29,19 +30,19 @@ module LittleGhost
   #
   # Completion, failure, deadline, and cancellation become the +completed+,
   # +failed+, +partial+, and +cancelled+ outcomes. Ordinary execution failures
-  # are available through +error+ and the terminal stream event; cleanup, event
-  # delivery, or instrumentation failures may still raise because the framework
-  # cannot safely report a clean stop.
+  # are available through +error+ and the terminal stream event. Failures while
+  # closing resources, delivering events, or reporting instrumentation may
+  # still raise because LittleGhost cannot report a reliable ending.
   #
   # Tool validation and ToolError failures return safe Tool results to the model,
   # which may recover and complete the Run. Input, configuration, or resource
   # construction can raise before a Run exists. Once execution begins, terminal
   # events are +run_stop+, +run_error+, +run_partial+, and +run_cancel+.
   #
-  # The run opens its workspace, sandbox, session, and assembly entrypoint, then closes
-  # registered resources in reverse order. +register+ extends that lifecycle for
-  # application resources. Interruption is available only while an agent
-  # entrypoint is active and unambiguous.
+  # The Run opens its workspace, sandbox, Session, and Assembly entrypoint, then
+  # closes registered resources in reverse order. +register+ adds application
+  # resources to that lifecycle. Interruption is available only while one Agent
+  # entrypoint is active.
   class Run
     include Enumerable
 

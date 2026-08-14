@@ -72,29 +72,20 @@ The Agent defines reusable behavior; the Run records what happened this time.
 
 ### Follow one request
 
-These objects carry one request from your application to its answer:
+One Run owns the trip from request to result:
 
 ```text
-caller input, history, and context
-              │
-              ▼
-          Invocation
-              │
-              ▼
-      Run and RunContext ──> Agent ──> Tool
-              │
-              ▼
-          RunResult
-              │
-              ▼
-             Run
+Run
+├── Invocation: caller input, history, and application context
+├── RunContext: mutable working state for this execution
+└── Agent and Tools ──> RunResult
 ```
 
-An **Invocation** is the normalized request. Its `context` is current request state supplied by your application. A Tool can read it through `run.invocation.context` when it authorizes work.
+An **Invocation** is the request in LittleGhost's standard shape. Its `context` contains current request values supplied by your application. A Tool can read those values through `run.invocation.context` when it authorizes work.
 
-The **RunContext** carries mutable working state in `context.state`. At the top level, that state begins with any restored Session state, then the current Invocation context. Child Assemblies may receive a copied, mapped, or empty context. Revalidate persisted values before using them for permission checks.
+The **RunContext** carries mutable working state in `context.state`. At the top level, saved Session state is loaded first, then current Invocation context is added. Child Assemblies may receive a copy, a mapped value, or no context at all. Recheck saved values before using them for permission decisions.
 
-A Tool's **Binding** provides run-scoped collaborators such as the Agent, Run, Runtime, workspace, and sandbox. Those collaborators are separate from the arguments chosen by the model.
+A Tool's **Binding** gives the Tool access to objects created for this run, including the Agent, Run, Runtime, workspace, and sandbox. These objects are separate from the arguments chosen by the model.
 
 The final **RunResult** keeps the complete assembly result. Its `text` is the final text answer. Its `output` returns structured data when the Agent declared a result schema, and text otherwise. The top-level `Run#response` is always the caller-facing text.
 
@@ -110,9 +101,10 @@ Top-level calls normally return a Run, even when execution fails. The terminal e
 | Cancellation stopped work | `cancelled` | `:run_cancel` | Returns the Run without a response |
 | Tool input or a `ToolError` failed | The model may recover | No terminal event by itself | Gives a safe error result back to the model |
 | Input, configuration, or resources failed before a Run could start | No Run exists | None | Raises the exception |
-| Cleanup, event delivery, or instrumentation failed | May also mark the Run failed | May emit `:run_error` | Raises because LittleGhost cannot report a clean stop |
 
 Unexpected Tool exception messages are hidden from the model. The original exception remains available to trusted application callbacks and diagnostics.
+
+Failures while closing resources, delivering events, or reporting instrumentation sit outside the normal result path. They raise a Ruby exception because LittleGhost can no longer promise that it delivered a clean ending. [Running in Production](production.md) covers that boundary where applications supervise and shut down work.
 
 ## An Assembly can look like one Agent
 
@@ -234,11 +226,11 @@ graph.validate!
 run = graph.ask("Review order 481")
 ```
 
-Use a builder when trusted runtime configuration decides the participants or routes. Each call freezes a snapshot of that definition. Ruby callbacks—and any outside objects they use—remain live application code.
+Use a builder when trusted runtime configuration decides the participants or routes. Each run gets a fixed copy of the builder as it looked when the run began, so later edits affect later runs. Ruby callbacks still see any application objects they captured.
 
 ## One result, including the journey
 
-Every assembly produces the same top-level `Run` and terminal `RunResult`. Composite assemblies also record bounded semantic steps:
+Every assembly produces the same top-level `Run` and final `RunResult`. Composite assemblies also keep a size-limited record of the participants that ran:
 
 ```ruby
 run = SupportFlowGraph.ask("Why was I charged twice?")
@@ -248,7 +240,7 @@ run.result.steps
 run.result.trajectory.transitions
 ```
 
-This shows callers which participants ran without exposing provider-specific payloads. A Swarm or Graph may hide intermediate model events from the public stream so the response stays coherent. That is a presentation choice, not a privacy boundary: routed outputs and step summaries still exist.
+This shows callers which participants ran without including raw provider responses. A Swarm or Graph may hide intermediate model events from the public stream so the response stays coherent. That is a presentation choice, not a privacy boundary: routed outputs and step summaries still exist.
 
 The pieces now fit together: Agents define behavior. Tools connect them to Ruby. Runs record one execution. Assemblies let the system grow without changing the caller.
 

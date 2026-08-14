@@ -19,9 +19,12 @@ module LittleGhost
   #     end
   #   end
   #
-  #   result = TicketStatusTool.new.execute("ticket_id" => "SUP-481")
-  #   result.success?            # => true
-  #   JSON.parse(result.content) # => {"ticket_id"=>"SUP-481", "status"=>"waiting_on_customer"}
+  #   class CustomerSupportAgent < LittleGhost::Agent
+  #     tools TicketStatusTool
+  #   end
+  #
+  #   run = CustomerSupportAgent.ask("What is happening with ticket SUP-481?")
+  #   run.response
   #
   # Use application context for authorization, never model-selected input:
   #
@@ -46,23 +49,30 @@ module LittleGhost
   #     context: {account_id: authenticated_user.account_id}
   #   )
   #
-  # Here +input+ comes from the model. The actor and account values come from
-  # the application's authentication boundary and remain available on the
-  # current Invocation. During execution, #context is the RunContext. Its mutable
-  # +state+ may also contain restored Session state, so revalidate persisted values
-  # before using them for authorization. The Binding supplies #run and other
-  # collaborators; it does not contain model arguments.
+  # These values cross different trust boundaries:
   #
-  # The class DSL produces the frozen specification sent to models. +execute+
-  # validates incoming arguments, invokes +call+, and normalizes strings,
-  # JSON-compatible collections, and other return values to model-facing text.
-  # Tool.define offers the same contract for an embedded implementation.
+  # [<tt>input</tt>]
+  #   Arguments selected by the model. The schema checks their shape, not their
+  #   permission to perform an operation.
+  # [<tt>run.invocation.context</tt>]
+  #   Current request values supplied by the application. Use these for
+  #   authorization after the application authenticates the caller.
+  # [<tt>context.state</tt>]
+  #   Mutable working state for the run. It may include values restored from a
+  #   Session, so check saved values again before trusting them.
+  # [Tool::Binding]
+  #   Run-scoped objects such as the Agent, Run, Runtime, workspace, and sandbox.
+  #   The Binding supplies #run; it does not contain model arguments.
   #
-  # A tool registry creates one instance per agent run and supplies a Binding for
-  # access to the agent, run, runtime, model, workspace, and sandbox. Mutable
-  # per-instance state therefore belongs to that run. Registries close tools that
-  # implement +close+; <tt>exclusive true</tt> serializes calls against every
-  # other exclusive tool in the same run.
+  # The class DSL produces the specification sent to models. During an Agent
+  # run, the tool registry creates and binds one Tool instance. Tests and custom
+  # integrations may call +execute+ directly; it validates the arguments, calls
+  # +call+, and returns an ExecutionResult. Tool.define offers the same contract
+  # for an embedded implementation.
+  #
+  # Mutable Tool instance state belongs to one Agent run. Registries close tool
+  # instances that implement +close+; <tt>exclusive true</tt> prevents that tool
+  # from overlapping other exclusive tools in the same run.
   #
   # Validation and application ToolError failures become error results. A
   # ToolError message is visible to the model and must be safe to disclose;

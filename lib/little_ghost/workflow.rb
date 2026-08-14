@@ -41,19 +41,16 @@ module LittleGhost
   # its final invocation without consuming it so those events reach the caller.
   # Intermediate usage is added to the final result.
   #
-  # Every child inherits input, history, settings, cancellation, deadline,
-  # template paths, and trace parentage unless +invoke+ overrides its input.
-  # JSON-like context is copied for each child, preventing one intermediate agent
-  # from mutating a sibling's state. Non-JSON-like workflow context raises
-  # ArgumentError.
+  # A child receives the Workflow input unless +invoke+ supplies another one.
+  # It also inherits history, settings, cancellation, deadline, template paths,
+  # and the parent tracing relationship. JSON-like context is copied for each
+  # child, preventing one intermediate Agent from mutating a sibling's state.
+  # Non-JSON-like workflow context raises ArgumentError.
   #
-  # A workflow instance streams once. Returning the wrong value, returning an
-  # already consumed invocation, or consuming an invocation twice raises
-  # ProtocolError. Each child assembly closes after its execution attempt;
-  # cleanup failures surface from that attempt. Closing the Workflow closes its
-  # lightweight invocation wrappers in reverse declaration order. Composition
-  # errors emit an +invocation_error+ event and then re-raise inside the owning
-  # Run. A top-level ask records that exception on a failed Run.
+  # A Workflow instance streams once. Returning the wrong value, returning an
+  # already consumed invocation, or consuming one twice raises ProtocolError.
+  # A composition error fails the owning top-level Run. Each child Assembly
+  # closes after its attempt, and a cleanup failure raises from that attempt.
   class Workflow < Assembly
     # Hold one lazy Assembly call inside a workflow composition.
     # Workflow implementations normally use only its output method or return the

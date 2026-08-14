@@ -7,8 +7,8 @@ module LittleGhost
   # Lets configured Agent members hand one request directly to one another.
   #
   # A swarm is an Assembly for model-selected routing. One member is active at a
-  # time. It either produces the final answer or calls a reserved handoff tool
-  # to select an allowed next member.
+  # time. It either produces the final answer or uses a model-visible handoff
+  # tool to choose one of the next members allowed by the application.
   #
   #   class ProblemSolverSwarm < LittleGhost::Swarm
   #     member TriageAgent
@@ -31,7 +31,7 @@ module LittleGhost
   # Swarm members are Agent definitions rather than arbitrary assemblies so a
   # handoff remains a direct model-to-model transition. Original conversation
   # history and application context stay isolated unless a member opts in with
-  # +history: true+ or +context: true+. Streams expose coordination lifecycle
+  # <tt>history: true</tt> or <tt>context: true</tt>. Streams expose coordination
   # events and the final member response, but not intermediate model text.
   class Swarm < Assembly
     MAX_BUFFERED_EVENTS = 10_000 # :nodoc:
@@ -96,7 +96,10 @@ module LittleGhost
         self.swarm_max_steps_value = value
       end
 
-      # Reads or assigns the repeated directed-handoff limit.
+      # Reads or assigns how often the same directed handoff may repeat.
+      #
+      # For example, a value of +2+ allows the transition from triage to billing
+      # twice during one Swarm run. +max_steps+ still limits total member calls.
       def max_handoff_repeats(value = nil)
         return swarm_max_handoff_repeats_value if value.nil?
 
@@ -106,7 +109,7 @@ module LittleGhost
         self.swarm_max_handoff_repeats_value = value
       end
 
-      # Validates the member set and topology and returns this Swarm class.
+      # Validates the members and allowed handoff routes, then returns this class.
       def validate!
         swarm_definition!
         self

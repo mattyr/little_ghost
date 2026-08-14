@@ -15,7 +15,7 @@ run.response
 # One possible response: Hi! How can I help today?
 ```
 
-That small definition is already a complete agent. LittleGhost handles the model call, streaming, usage, and cleanup around it. Add a tool when the agent needs something from your application. Bring in more agents when the work grows.
+That small definition is already a complete agent. LittleGhost makes the model call, tracks usage, supports streaming, and closes the resources it creates for the request. Add a tool when the agent needs something from your application. Bring in more agents when the work grows.
 
 Model requests may send system instructions, caller input, conversation history, tool results, and attachments to the selected external provider. Model wording can vary between runs. Choose providers and the data you send them with the same care as any other external service.
 
@@ -32,7 +32,7 @@ $ bundle install
 $ export OPENROUTER_API_KEY="..."
 ```
 
-OpenRouter keeps the first setup to one credential. It is not required: LittleGhost also includes adapters for OpenAI-compatible APIs, Anthropic, Gemini, Vertex AI, and Bedrock. [Running in Production](docs/guides/production.md) shows how to configure provider connections and stable model roles.
+OpenRouter keeps the first setup to one credential. It is not required: LittleGhost also includes adapters for OpenAI-compatible APIs, Anthropic, Gemini, Vertex AI, and Bedrock. [Running in Production](docs/guides/production.md) shows how to configure providers and give model choices application-facing names.
 
 LittleGhost runs inside your Ruby process. Use it from a controller, job, CLI, or service. If you want a conventional layout, start with `app/agents`, `app/assemblies`, and `app/tools`.
 
@@ -109,7 +109,7 @@ participants ran. Use `.stream_ask` to watch the work as it happens.
 - [Running in Production](docs/guides/production.md) covers configuration, sessions, execution, observability, and trust boundaries.
 - [API reference](rdoc-ref:LittleGhost) provides exact signatures and lifecycle contracts.
 
-## Contributing
+### For contributors
 
 See the [contributing guide](https://github.com/mattyr/little_ghost/blob/main/CONTRIBUTING.md), [Code of Conduct](https://github.com/mattyr/little_ghost/blob/main/CODE_OF_CONDUCT.md), and [security policy](https://github.com/mattyr/little_ghost/blob/main/SECURITY.md).
 

@@ -103,7 +103,9 @@ LittleGhost checks the model's arguments before it calls `HelpCenterLookupTool#c
 
 ### Use trusted context for private data
 
-Model tool arguments are untrusted, even after their shape has been checked. Pass identity and permissions from your application's authentication boundary instead:
+Model tool arguments are untrusted, even after their shape has been checked. Pass identity and permissions from your application's authentication boundary instead.
+
+While an Agent is working, LittleGhost binds each Tool instance to the current Run. The Tool can read trusted request values through its `run` accessor:
 
 ```ruby
 class OrderStatusTool < LittleGhost::Tool
@@ -143,9 +145,9 @@ run = CustomerSupportAgent.ask(
 )
 ```
 
-Here, `order_number` came from the model. The application supplied `actor_id` and `account_id` after authenticating the caller. The Tool reads those current request values from `run.invocation`. Invocation context keys are normalized to strings.
+Here, `order_number` came from the model. The application supplied `actor_id` and `account_id` after authenticating the caller. LittleGhost places those request values on `run.invocation`; context keys become strings. The model cannot replace them through its tool arguments.
 
-Inside the Tool, `context` is the current `RunContext`. Its mutable `state` begins with restored Session state plus the current Invocation context, so use it for working data rather than as the only source of authorization. The Tool's `Binding` supplies `run` and its Invocation; neither comes from the model's arguments.
+That is enough to authorize the first Tool safely. [Core Concepts](core_concepts.md) names the request and working-state objects behind `run`, and [Running in Production](production.md) explains what changes when you add saved conversations.
 
 ## Stream the same agent
 

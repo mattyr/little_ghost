@@ -31,8 +31,9 @@ module LittleGhost
   #
   # Conditions and input mappers receive immutable Graph::State. Nodes do not
   # receive caller history or application context unless their declaration opts
-  # in with +history: true+ or +context: true+. Validate the topology before
-  # execution; +to_mermaid+ renders the same definition as a flowchart.
+  # in with <tt>history: true</tt> or <tt>context: true</tt>. Validate the
+  # topology before execution; +to_mermaid+ renders the same definition as a
+  # flowchart.
   class Graph < Assembly
     Node = Data.define(:name, :assembly, :policies, :inherit_history, :inherit_context) # :nodoc:
     Edge = Data.define(:from, :to, :condition, :input_mapper) # :nodoc:
@@ -112,7 +113,11 @@ module LittleGhost
         self.graph_start_value = normalize_node_name(name)
       end
 
-      # Declares one exclusive route with an optional condition and input mapper.
+      # Declares one possible next route with an optional condition and input mapper.
+      #
+      # +input+ receives Graph::State and returns the value passed to the target
+      # node. At most one conditional edge may match from the current node; one
+      # unconditional edge may act as the fallback.
       def edge(from, to, input: nil, **options, &condition)
         condition = extract_condition(options, condition)
         validate_callable!(input, "edge input mapper")
@@ -127,6 +132,9 @@ module LittleGhost
       end
 
       # Routes selected node errors after retries are exhausted.
+      #
+      # +on+ lists the exception classes this route accepts. An +input+ mapper
+      # may turn Graph::State, including +state.error+, into recovery input.
       def error_edge(from, to, on:, input: nil)
         errors = Array(on)
         unless errors.any? && errors.all? { |error| error.is_a?(Class) && error <= Exception }
@@ -144,6 +152,10 @@ module LittleGhost
       end
 
       # Starts two or more independent branches with bounded concurrency.
+      #
+      # +to+ names the first node in each branch. The matching
+      # Graph.join[rdoc-ref:LittleGhost::Graph.join] collects the terminal result
+      # from every branch.
       def fork(from, to:, max_concurrency: 8)
         targets = Array(to).map { |name| normalize_node_name(name) }
         raise ArgumentError, "fork requires at least two targets" if targets.length < 2
@@ -157,6 +169,9 @@ module LittleGhost
       end
 
       # Joins the terminal results of one declared fork.
+      #
+      # +input+ receives Graph::State and returns the value passed to the target
+      # node. Read each completed branch through +state.branch_results+.
       def join(from, to:, input: nil)
         sources = Array(from).map { |name| normalize_node_name(name) }
         raise ArgumentError, "join requires at least two sources" if sources.length < 2

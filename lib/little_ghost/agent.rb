@@ -33,25 +33,24 @@ module LittleGhost
   # the streaming entrypoint[rdoc-ref:LittleGhost::Assembly.stream_ask] when you
   # want events as the answer arrives.
   #
-  # Class declarations are inherited. Prompts resolve by the agent's logical
-  # path unless +system_prompt+ or +system_template+ supplies one explicitly;
-  # tools and prompt locals may also be selected dynamically for each run.
-  # Capabilities such as skills, context management, loop detection, and
-  # delegation remain inactive until their DSL methods are called.
+  # Most applications call a named Agent class. Create
+  # <tt>CustomerSupportAgent.new(runtime: runtime)</tt> when several independent
+  # calls should share one Runtime. LittleGhost builds a fresh top-level Run for
+  # each call and closes the tools, workspace, and sandbox owned by that Run.
   #
-  # The class-level +ask+ and +stream_ask+ helpers create fresh standalone
-  # entrypoints. Create an instance explicitly to reuse one Runtime across
-  # calls. Runtimes build bound instances internally; those instances' +call+
-  # method returns a RunResult and their +stream+ method follows the owning run's
-  # single-execution lifecycle. Closing an agent closes owned tools and any
-  # standalone workspace and sandbox.
-  # LittleGhost::Agent.ask uses <tt>You are a helpful agent.</tt> as its system
-  # prompt. Subclasses continue to use their inline or conventional prompts.
+  # Agent declarations are inherited. Define a prompt inline, load one from the
+  # Agent's conventional path, or select prompt locals and tools for each run.
+  # Optional features such as skills, context management, loop detection, and
+  # delegation stay inactive until their DSL is used.
   #
-  # Models can return ordinary text or a locally validated structured result.
-  # Tool failures are sanitized before returning to the model, diagnostic
-  # capture can be disabled for sensitive agents, and cancellation, deadlines,
-  # and cleanup failures remain framework control flow.
+  # Calling LittleGhost::Agent itself uses <tt>You are a helpful agent.</tt> as
+  # the system prompt. Subclasses use the inline or conventional prompt they
+  # declare.
+  #
+  # Models may return text or locally validated structured data. LittleGhost
+  # hides unexpected Tool exception messages from the model. See
+  # Run[rdoc-ref:LittleGhost::Run] for outcomes, cancellation, and cleanup, and
+  # Assembly[rdoc-ref:LittleGhost::Assembly] for the advanced run-scoped form.
   class Agent < Assembly
     DEFAULT_SYSTEM_PROMPT = "You are a helpful agent." # :nodoc:
     DEFAULT_MAX_TOOL_RESULT_TOKENS = 10_000 # :nodoc:

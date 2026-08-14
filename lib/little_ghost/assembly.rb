@@ -24,12 +24,17 @@ module LittleGhost
   # normally subclass Agent, Workflow, Swarm, or Graph rather than Assembly
   # directly.
   #
-  # The two lifecycle forms return different objects:
+  # == What each calling form returns
   #
-  # [Named class or standalone instance]
-  #   +ask+ returns the top-level Run that owns execution and cleanup.
-  # [Run-scoped instance built by Runtime]
-  #   +call+ returns the child invocation's RunResult to its parent Assembly.
+  # [<tt>CustomerSupportAgent.ask(...)</tt>]
+  #   A named class creates and returns a top-level Run.
+  # [<tt>CustomerSupportAgent.new(runtime: runtime).ask(...)</tt>]
+  #   A standalone instance also creates and returns a top-level Run.
+  # [<tt>runtime.build_assembly(..., run: run).call(...)</tt>]
+  #   A participant already bound to a Run returns its child RunResult.
+  # [<tt>stream_ask(...).each { |event| ... }</tt>]
+  #   A standalone stream returns its top-level Run after enumeration. A
+  #   run-scoped stream ends with an +invocation_stop+ event carrying RunResult.
   class Assembly
     extend Support::ClassAttributes
 
@@ -214,13 +219,12 @@ module LittleGhost
 
     # Exposes this assembly as a Tool instance.
     #
-    # By default each call has empty conversational history. Set
-    # <tt>preserve_context: true</tt> to retain history serially. Every call still
-    # receives the invoking Tool's current RunContext#state, which may include
-    # current Invocation or restored Session state. It is separate from
-    # Tool::Binding. +preserve_context+ does not suppress it. Tools inside the
-    # assembly remain responsible for authorizing privileged work from trusted
-    # context.
+    # By default, calls do not remember earlier conversation history. Set
+    # <tt>preserve_context: true</tt> to carry that history from one tool call to
+    # the next. This option does not control working state: every call receives
+    # the invoking Tool's current RunContext#state, which may include current
+    # request values or values restored from a Session. Nested tools must still
+    # authorize privileged work with current, application-established values.
     def as_tool(name: self.class.assembly_id, description: self.class.description, preserve_context: false)
       assembly = self
       description = "Delegate a task to #{name}." if description.to_s.empty?
