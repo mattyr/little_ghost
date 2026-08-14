@@ -4,6 +4,8 @@ require "digest"
 require "fileutils"
 require "json"
 require "securerandom"
+require_relative "../data_map"
+require_relative "../session_store"
 
 module LittleGhost
   module SessionStores
@@ -23,14 +25,12 @@ module LittleGhost
     # Its complete path must be application-controlled: anyone able to read it
     # can read session data, and anyone able to replace it can alter sessions.
     #
-    # State and metadata must use JSON-compatible values with String or Symbol
-    # hash keys. A value outside that boundary raises ProtocolError without
-    # replacing the previous snapshot. Shared roots require filesystem support
-    # for file locking and atomic rename.
+    # Session data is stored as ordinary JSON with canonical String keys. A
+    # value outside that boundary raises ProtocolError without replacing the
+    # previous snapshot. Shared roots require filesystem support for file
+    # locking and atomic rename.
     class Filesystem < SessionStore
       FORMAT_VERSION = 1 # :nodoc:
-      SYMBOL_KEY_PREFIX = "little_ghost:symbol:" # :nodoc:
-      STRING_KEY_PREFIX = "little_ghost:string:" # :nodoc:
 
       # Creates a store rooted at +root+ and creates the directory when needed.
       #
@@ -67,6 +67,8 @@ module LittleGhost
       # or written. Raises Error when +actor_id+ does not match the session.
       def append(id, messages:, state:, metadata:, expected_count:, actor_id: nil)
         messages = persistable_messages(messages)
+        state = canonical_map(state)
+        metadata = canonical_map(metadata)
         with_lock(id) do
           current = read_snapshot(id)
           validate_actor!(current, actor_id) if current
@@ -92,6 +94,8 @@ module LittleGhost
       # #append.
       def replace(id, messages:, state:, metadata:, actor_id: nil)
         messages = persistable_messages(messages)
+        state = canonical_map(state)
+        metadata = canonical_map(metadata)
         with_lock(id) do
           current = read_snapshot(id)
           validate_actor!(current, actor_id) if current
@@ -146,13 +150,13 @@ module LittleGhost
 
         document = JSON.parse(File.binread(path))
         validate_document!(document)
-        snapshot = decode_value(document.fetch("snapshot"))
+        snapshot = document.fetch("snapshot")
         validate_snapshot!(snapshot)
         {
           actor_digest: document.fetch("actor_digest"),
-          messages: Array(snapshot.fetch(:messages)).map { |message| Message.coerce(message) }.freeze,
-          state: snapshot.fetch(:state),
-          metadata: snapshot.fetch(:metadata)
+          messages: Array(snapshot.fetch("messages")).map { |message| Message.coerce(message) }.freeze,
+          state: snapshot.fetch("state"),
+          metadata: snapshot.fetch("metadata")
         }.freeze
       rescue JSON::ParserError, KeyError, TypeError, ArgumentError, NoMethodError => error
         raise ProtocolError, "Filesystem session snapshot is invalid: #{error.class}"
@@ -162,11 +166,10 @@ module LittleGhost
         serialized_snapshot = public_snapshot(snapshot).merge(
           messages: snapshot.fetch(:messages).map(&:to_h)
         )
-        encoded_snapshot = encode_value(serialized_snapshot)
         document = {
           "version" => FORMAT_VERSION,
           "actor_digest" => snapshot.fetch(:actor_digest),
-          "snapshot" => encoded_snapshot
+          "snapshot" => serialized_snapshot
         }
         document["digest"] = Digest::SHA256.hexdigest(JSON.generate(document))
         write_atomically(snapshot_path(id), JSON.generate(document))
@@ -187,49 +190,15 @@ module LittleGhost
 
       def validate_snapshot!(snapshot)
         raise ArgumentError unless snapshot.is_a?(Hash)
-        raise ArgumentError unless snapshot.fetch(:messages).is_a?(Array)
-        raise ArgumentError unless snapshot.fetch(:state).is_a?(Hash)
-        raise ArgumentError unless snapshot.fetch(:metadata).is_a?(Hash)
+        raise ArgumentError unless snapshot.fetch("messages").is_a?(Array)
+        DataMap.new(snapshot.fetch("state"))
+        DataMap.new(snapshot.fetch("metadata"))
       end
 
-      def encode_value(value)
-        case value
-        when Hash
-          value.to_h do |key, child|
-            prefix = key.is_a?(Symbol) ? SYMBOL_KEY_PREFIX : STRING_KEY_PREFIX
-            raise TypeError unless key.is_a?(String) || key.is_a?(Symbol)
-
-            ["#{prefix}#{key}", encode_value(child)]
-          end
-        when Array
-          value.map { |child| encode_value(child) }
-        when String, Integer, Float, TrueClass, FalseClass, NilClass
-          value
-        else
-          raise TypeError
-        end
-      end
-
-      def decode_value(value)
-        case value
-        when Hash
-          value.to_h do |key, child|
-            raise ArgumentError unless key.start_with?(SYMBOL_KEY_PREFIX, STRING_KEY_PREFIX)
-
-            decoded = if key.start_with?(SYMBOL_KEY_PREFIX)
-              key.delete_prefix(SYMBOL_KEY_PREFIX).to_sym
-            else
-              key.delete_prefix(STRING_KEY_PREFIX)
-            end
-            [decoded, decode_value(child)]
-          end
-        when Array
-          value.map { |child| decode_value(child) }
-        when String, Integer, Float, TrueClass, FalseClass, NilClass
-          value
-        else
-          raise ArgumentError
-        end
+      def canonical_map(value)
+        DataMap.new(value).to_h
+      rescue ArgumentError => error
+        raise ProtocolError, "Filesystem session data is invalid: #{error.message}"
       end
 
       def write_atomically(path, content)

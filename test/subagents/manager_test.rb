@@ -805,7 +805,7 @@ class SubagentManagerTest < Minitest::Test
       ["Remember the conversation.", "first", "first response", "second"],
       requests.last.messages.map(&:text)
     )
-    assert_equal [{}, {turns: 1}], observed_states
+    assert_equal [{}, {"turns" => 1}], observed_states
   ensure
     manager&.close
   end
@@ -932,7 +932,7 @@ class SubagentManagerTest < Minitest::Test
     )
 
     assert_equal "{\"claim\":\"supported\"}", restored_history.fetch(1).text
-    assert_equal({step: 1}, restored_state)
+    assert_equal({"step" => 1}, restored_state)
   ensure
     first_manager&.close
     second_manager&.close

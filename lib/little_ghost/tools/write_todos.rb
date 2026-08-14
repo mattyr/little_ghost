@@ -59,7 +59,12 @@ module LittleGhost
         ids = todos.map { |todo| todo.fetch("id") }
         raise ToolError, "todo IDs must be unique" unless ids.uniq.length == ids.length
 
-        state = context ? (context.state["little_ghost.plan"] ||= empty_plan) : (@fallback_state ||= empty_plan)
+        if context
+          context.state["little_ghost.plan"] ||= empty_plan
+          state = context.state.fetch("little_ghost.plan")
+        else
+          state = @fallback_state ||= empty_plan
+        end
         state.replace("plan_title" => input.fetch("plan_title"), "todos" => todos.map(&:dup))
         state.dup
       end

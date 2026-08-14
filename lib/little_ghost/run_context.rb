@@ -9,11 +9,12 @@ module LittleGhost
   # cancellation and deadlines, checkpoint messages, and accumulate usage.
   # Access to framework-managed fields is thread-safe.
   class RunContext
-    # Mutable working state supplied to this invocation. A top-level Run starts
+    # Mutable DataMap state supplied to this invocation. A top-level Run starts
     # with restored Session state merged with current Invocation context; child
     # Assemblies may receive copied, mapped, or empty state. Application code must
-    # synchronize mutations when parallel Tools share this Hash, or use exclusive
-    # Tools.
+    # synchronize mutations when parallel Tools share this map, or use exclusive
+    # Tools. String and Symbol keys address the same value; persisted snapshots
+    # use canonical String keys.
     attr_reader :state
     # Token used to cooperatively stop the current work.
     attr_reader :cancellation_token
@@ -42,7 +43,7 @@ module LittleGhost
         raise ArgumentError, "conversation_id cannot be empty" if conversation_id.empty?
         conversation_id = conversation_id.dup.freeze
       end
-      @state = state
+      @state = DataMap.new(state)
       @cancellation_token = cancellation_token
       @deadline = deadline
       @metadata = metadata.freeze

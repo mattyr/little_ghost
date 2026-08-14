@@ -21,8 +21,8 @@ module LittleGhost
     attr_reader :role, :content, :metadata
 
     # Creates a frozen message with a supported +role+, normalized +content+, and
-    # application-defined +metadata+. The content Array and metadata Hash are
-    # frozen, but nested caller-owned values are retained.
+    # application-defined +metadata+. Metadata becomes a frozen DataMap, so
+    # String and Symbol keys address the same JSON-compatible value.
     def initialize(role:, content:, metadata: {})
       @role = role.to_sym
       raise ArgumentError, "Unsupported message role: #{role.inspect}" unless ROLES.include?(@role)
@@ -35,7 +35,7 @@ module LittleGhost
         [content]
       end
       @content = blocks.map { |block| Content.normalize(block) }.freeze
-      @metadata = metadata.freeze
+      @metadata = DataMap.new(metadata).freeze
       freeze
     end
 
@@ -64,7 +64,7 @@ module LittleGhost
 
     # Produces the JSON-safe message representation.
     def to_h
-      {"role" => role.to_s, "content" => content.map(&:to_h), "metadata" => metadata}
+      {"role" => role.to_s, "content" => content.map(&:to_h), "metadata" => metadata.to_h}
     end
 
     # Encodes #to_h as JSON, forwarding generator +arguments+.

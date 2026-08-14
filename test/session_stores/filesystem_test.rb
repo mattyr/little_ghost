@@ -27,8 +27,8 @@ class FilesystemSessionStoreTest < Minitest::Test
     snapshot = filesystem_store.load("conversation", actor_id: "actor")
 
     assert_equal ["Hello"], snapshot.fetch(:messages).map(&:text)
-    assert_equal({plan: {status: "active"}}, snapshot.fetch(:state))
-    assert_equal({source: "test"}, snapshot.fetch(:metadata))
+    assert_equal({"plan" => {"status" => "active"}}, snapshot.fetch(:state))
+    assert_equal({"source" => "test"}, snapshot.fetch(:metadata))
   end
 
   def test_sessions_filter_private_messages_before_filesystem_persistence
@@ -44,7 +44,7 @@ class FilesystemSessionStoreTest < Minitest::Test
     assert_equal ["Keep this"], snapshot.fetch(:messages).map(&:text)
   end
 
-  def test_preserves_string_and_symbol_hash_keys
+  def test_canonicalizes_string_and_symbol_hash_keys
     filesystem_store.replace(
       "conversation",
       actor_id: "actor",
@@ -55,7 +55,7 @@ class FilesystemSessionStoreTest < Minitest::Test
 
     snapshot = filesystem_store.load("conversation", actor_id: "actor")
 
-    assert_equal({"string" => {symbol: "value"}}, snapshot.fetch(:state))
+    assert_equal({"string" => {"symbol" => "value"}}, snapshot.fetch(:state))
   end
 
   def test_rejects_another_actor_for_a_persisted_session
@@ -95,7 +95,7 @@ class FilesystemSessionStoreTest < Minitest::Test
     store.replace("conversation", actor_id: "actor", messages: [], state: {status: "original"}, metadata: {})
     path = snapshot_path
     document = JSON.parse(File.binread(path))
-    document.fetch("snapshot").fetch("little_ghost:symbol:state")["little_ghost:string:status"] = "changed"
+    document.fetch("snapshot").fetch("state").fetch("status").replace("changed")
     File.binwrite(path, JSON.generate(document))
 
     assert_raises(LittleGhost::ProtocolError) { store.load("conversation", actor_id: "actor") }
@@ -117,7 +117,7 @@ class FilesystemSessionStoreTest < Minitest::Test
       store.replace("conversation", actor_id: "actor", messages: [], state: {status: Object.new}, metadata: {})
     end
 
-    assert_equal({status: "original"}, store.load("conversation", actor_id: "actor").fetch(:state))
+    assert_equal({"status" => "original"}, store.load("conversation", actor_id: "actor").fetch(:state))
   end
 
   def test_rejects_a_stale_append_from_an_independent_store_instance

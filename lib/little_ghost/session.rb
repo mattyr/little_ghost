@@ -21,7 +21,7 @@ module LittleGhost
   #     store: session.store
   #   )
   #   reopened.history.last.text # => "Hello"
-  #   reopened.state              # => {language: "en"}
+  #   reopened.state[:language]  # => "en"
   #
   # === Persistence and trust
   #
@@ -43,7 +43,7 @@ module LittleGhost
       @actor_id = actor_id&.to_s
       @store = store
       @operation_id = operation_id
-      @metadata = metadata.to_h.freeze
+      @metadata = DataMap.new(metadata).freeze
       @loaded = false
     end
 
@@ -63,16 +63,18 @@ module LittleGhost
       load&.fetch(:messages) || fallback
     end
 
-    # Exposes a mutable copy of the persisted application state.
+    # Exposes a mutable DataMap copy of the persisted application state. String
+    # and Symbol keys address the same value; persisted snapshots use Strings.
     def state
       snapshot = load
-      snapshot ? mutable_copy(snapshot.fetch(:state)) : {}
+      DataMap.new(snapshot ? snapshot.fetch(:state) : {})
     end
 
     # Uses persisted metadata when present and otherwise keeps the metadata from
-    # construction.
+    # construction. The returned DataMap is frozen.
     def metadata
-      load&.fetch(:metadata) || @metadata
+      loaded = load
+      loaded ? DataMap.new(loaded.fetch(:metadata)).freeze : @metadata
     end
 
     # Atomically appends +messages+ when the store still has the expected
@@ -165,8 +167,8 @@ module LittleGhost
     def build_snapshot(messages:, state:, metadata:)
       {
         messages: persistable_messages(messages),
-        state: Support.deep_dup(state.to_h),
-        metadata: Support.deep_dup(metadata.to_h)
+        state: DataMap.new(state).to_h,
+        metadata: DataMap.new(metadata).to_h
       }.freeze
     end
 
@@ -193,8 +195,8 @@ module LittleGhost
 
       {
         messages: persistable_messages(Array(value.fetch(:messages))),
-        state: Support.deep_dup(value.fetch(:state, {}).to_h),
-        metadata: Support.deep_dup(value.fetch(:metadata, {}).to_h)
+        state: DataMap.new(value.fetch(:state, {})).to_h,
+        metadata: DataMap.new(value.fetch(:metadata, {})).to_h
       }.freeze
     rescue KeyError, NoMethodError, TypeError => error
       raise ProtocolError, "Session store returned an invalid value: #{error.class}"
@@ -211,19 +213,6 @@ module LittleGhost
 
         sanitized
       end.freeze
-    end
-
-    def mutable_copy(value)
-      case value
-      when Hash
-        value.to_h { |key, child| [mutable_copy(key), mutable_copy(child)] }
-      when Array
-        value.map { |child| mutable_copy(child) }
-      when String
-        value.dup
-      else
-        value
-      end
     end
   end
 end

@@ -21,9 +21,11 @@ module LittleGhost
   #     end
   #   end
   #
-  # A snapshot contains +:messages+, +:state+, and +:metadata+. Implementations
-  # provide #load, #append, and #replace; #append must check +expected_count+
-  # atomically so two writers cannot silently lose a turn.
+  # A snapshot contains +:messages+, +:state+, and +:metadata+. State and
+  # metadata cross this boundary as deeply string-keyed JSON mappings. Sessions
+  # expose the same data through DataMap, which accepts String or Symbol keys.
+  # Implementations provide #load, #append, and #replace; #append must check
+  # +expected_count+ atomically so two writers cannot silently lose a turn.
   #
   # Actor identity always comes from the caller. A store must not infer it from
   # ambient process state.
@@ -39,14 +41,16 @@ module LittleGhost
       raise AbstractMethodError, "#{self.class} must implement #load"
     end
 
-    # Atomically appends sanitized messages and stores state and metadata.
+    # Atomically appends sanitized messages and stores canonical JSON state and
+    # metadata.
     # Implementations raise ProtocolError if the persisted message count differs
     # from +expected_count+.
     def append(_id, messages:, state:, metadata:, expected_count:, actor_id: nil)
       raise AbstractMethodError, "#{self.class} must implement #append"
     end
 
-    # Replaces the complete snapshot for +id+ atomically.
+    # Replaces the complete snapshot for +id+ atomically with canonical JSON
+    # state and metadata.
     def replace(_id, messages:, state:, metadata:, actor_id: nil)
       raise AbstractMethodError, "#{self.class} must implement #replace"
     end

@@ -37,7 +37,7 @@ module LittleGhost
         raise ArgumentError, "tool use name is required" if name.empty?
         raise ArgumentError, "tool use input must be an object" unless input.is_a?(Hash)
 
-        super(id: id.to_s, name: name.to_s, input:)
+        super(id: id.to_s, name: name.to_s, input: DataMap.new(input))
       rescue TypeError
         raise ArgumentError, "tool use id and name must be strings"
       end
@@ -82,7 +82,7 @@ module LittleGhost
           text: text.freeze,
           signature: signature&.freeze,
           redacted_content: redacted_content&.freeze,
-          details:
+          details: details&.map { |detail| DataMap.new(detail) }
         )
       rescue TypeError
         raise ArgumentError, "reasoning content is invalid"
@@ -166,7 +166,7 @@ module LittleGhost
 
       ##
       # :attr_reader: input
-      # The object-shaped arguments supplied by the model.
+      # The object-shaped arguments supplied by the model as a DataMap.
     end
 
     # Carries the model-facing result for one ToolUse. A successful result uses
@@ -292,14 +292,14 @@ module LittleGhost
             value["data"] = Base64.strict_encode64(block.redacted_content)
             value["encoding"] = "base64"
           end
-          value["details"] = block.details if block.details
+          value["details"] = block.details.map(&:to_h) if block.details
         end
       when Image
         binary("image", block.data, media_type: block.media_type)
       when Document
         binary("document", block.data, media_type: block.media_type, name: block.name)
       when ToolUse
-        {"type" => "tool_use", "id" => block.id, "name" => block.name, "input" => block.input}
+        {"type" => "tool_use", "id" => block.id, "name" => block.name, "input" => block.input.to_h}
       when ToolResult
         {
           "type" => "tool_result", "tool_use_id" => block.tool_use_id,
