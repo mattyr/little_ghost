@@ -6,7 +6,7 @@
 }
 
 .version-badge.docs-version-picker {
-  margin-left: 0.45rem;
+  margin-left: 0.9rem;
 }
 
 .docs-version-picker select {
@@ -23,10 +23,14 @@
   cursor: pointer;
 }
 
-.docs-version-picker select:focus-visible {
-  border-radius: 3px;
+.docs-version-picker:focus-within {
+  border-radius: 999px;
   outline: 2px solid currentcolor;
   outline-offset: 3px;
+}
+
+.docs-version-picker select:focus-visible {
+  outline: 0;
 }
 
 .docs-version-picker option {
@@ -38,18 +42,19 @@
   position: relative;
   z-index: 5;
   box-sizing: border-box;
-  width: min(calc(100% - 2rem), 46rem);
+  width: max-content;
+  max-width: calc(100% - 2rem);
   margin: 0.75rem auto 0;
-  padding: 0.65rem 1rem;
-  border: 1px solid rgb(169 138 255 / 30%);
+  padding: 0.45rem 0.8rem;
+  border: 1px solid rgb(132 101 204 / 18%);
   border-radius: 999px;
-  color: #ddd5f7;
-  background: rgb(16 16 27 / 92%);
-  box-shadow: 0 12px 34px rgb(0 0 0 / 24%);
+  color: inherit;
+  background: rgb(132 101 204 / 9%);
   font-family: ui-sans-serif, system-ui, sans-serif;
-  font-size: 0.78rem;
+  font-size: 0.72rem;
   line-height: 1.35;
   text-align: center;
+  white-space: nowrap;
   -webkit-backdrop-filter: blur(18px);
   backdrop-filter: blur(18px);
 }
@@ -59,14 +64,24 @@
 }
 
 .docs-version-notice a {
-  color: #87f2d6;
+  color: inherit;
   text-decoration: underline;
-  text-decoration-color: rgb(135 242 214 / 45%);
+  text-decoration-color: currentcolor;
   text-underline-offset: 0.16em;
+}
+
+.site-header + .docs-version-notice {
+  position: absolute;
+  top: 4.75rem;
+  left: 50%;
+  margin: 0;
+  transform: translateX(-50%);
 }
 
 @media (max-width: 720px) {
   .docs-version-notice {
+    width: calc(100% - 2rem);
     border-radius: 0.8rem;
+    white-space: normal;
   }
 }
