@@ -555,6 +555,10 @@ footer.site-footer {
   background: transparent;
 }
 
+footer.site-footer .footer-bottom a {
+  font-size: inherit;
+}
+
 .search-modal-backdrop {
   -webkit-backdrop-filter: blur(10px);
   backdrop-filter: blur(10px);
