@@ -2,164 +2,156 @@ name: Documentation
 
 on:
   workflow_dispatch:
+    inputs:
+      expected_release:
+        description: Release tag that must be visible before the build starts
+        required: false
+        type: string
   workflow_run:
     workflows: [CI]
     types: [completed]
     branches: [main]
+  release:
+    types: [published]
 
 permissions:
   contents: read
 
 jobs:
-  build-edge:
+  resolve-source:
     if: >-
-      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
-      github.event.workflow_run.conclusion == 'success'
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == 'main' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      source_sha: ${{ steps.source.outputs.sha }}
+    steps:
+      - name: Resolve the newest successful main commit
+        id: source
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          GH_TOKEN: ${{ github.token }}
+          WORKFLOW_RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          if [[ "$EVENT_NAME" == "workflow_run" ]]; then
+            sha="$WORKFLOW_RUN_SHA"
+          else
+            sha="$(
+              gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?branch=main&event=push&status=success&per_page=20" \
+                --jq '.workflow_runs[] | select(.event == "push" and .head_branch == "main" and .head_repository.full_name == env.GITHUB_REPOSITORY) | .head_sha' |
+                head -n 1
+            )"
+          fi
+          if [[ -z "$sha" ]]; then
+            echo "No successful main CI run is available for Edge documentation" >&2
+            exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+  build-site:
+    needs: resolve-source
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - name: Check out the successful main commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ needs.resolve-source.outputs.source_sha }}
           fetch-depth: 0
           persist-credentials: false
       - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1
         with:
           ruby-version: 4.0.4
           bundler-cache: true
-      - name: Build Edge documentation
-        run: bundle exec rake site:check
-      - name: Load the existing documentation archive
-        run: |
-          if git ls-remote --exit-code origin refs/heads/docs-archive >/dev/null 2>&1; then
-            git clone --depth 1 --branch docs-archive "https://github.com/${GITHUB_REPOSITORY}.git" _docs_archive
-          else
-            mkdir _docs_archive
-          fi
-      - name: Assemble Edge and released documentation
+      - name: Build Edge and every released documentation version
         env:
+          EXPECTED_RELEASE: ${{ inputs.expected_release || github.event.release.tag_name }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          git fetch origin main:refs/remotes/origin/main --tags --force
-          bundle exec ruby bin/docs-archive publish-edge _docs_archive _site
-          gh api --paginate -H "X-GitHub-Api-Version: 2026-03-10" "repos/${GITHUB_REPOSITORY}/releases" \
-            --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name' |
-            while read -r tag; do
-              version="${tag#v}"
-              if [[ "$tag" != "v${version}" ]]; then
-                echo "Release ${tag} has an unexpected tag" >&2
+          if [[ -n "$EXPECTED_RELEASE" ]]; then
+            for attempt in $(seq 1 12); do
+              if gh release view "$EXPECTED_RELEASE" >/dev/null 2>&1; then
+                break
+              fi
+              if [[ "$attempt" == "12" ]]; then
+                echo "Release ${EXPECTED_RELEASE} was not visible before the documentation build" >&2
                 exit 1
               fi
-
-              tag_object="$(git rev-parse --verify "refs/tags/${tag}^{tag}")"
-              read -r target_type tag_commit < <(
-                gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object}" \
-                  --jq '[.object.type, .object.sha] | @tsv'
-              )
-              if [[ "$target_type" != "commit" ]]; then
-                echo "Documentation release ${tag} does not have an annotated commit tag" >&2
-                exit 1
-              fi
-              if ! git merge-base --is-ancestor "$tag_commit" refs/remotes/origin/main; then
-                echo "Documentation release ${tag} is not part of main" >&2
-                exit 1
-              fi
-              declared_version="$(git show "${tag_commit}:lib/little_ghost/version.rb" | sed -nE 's/^[[:space:]]*VERSION = "([^"]+)".*/\1/p')"
-              if [[ "$declared_version" != "$version" ]]; then
-                echo "Documentation release ${tag} does not match source version ${declared_version}" >&2
-                exit 1
-              fi
-
-              bundle exec ruby bin/docs-archive sync-release _docs_archive . "$version" "$tag_commit"
+              sleep 5
             done
-          DOCS_ARCHIVE=_docs_archive bundle exec rake site:archive_check
-      - name: Package the candidate archive
-        run: |
-          tar -czf "$RUNNER_TEMP/edge-site.tgz" -C _site .
-          tar --exclude=.git -czf "$RUNNER_TEMP/docs-archive.tgz" -C _docs_archive .
-      - name: Upload the candidate archive
+          fi
+          bundle exec rake site:build_all
+      - name: Package the complete site
+        run: tar -czf "$RUNNER_TEMP/versioned-site.tgz" -C _site .
+      - name: Upload the complete site
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: edge-documentation
-          path: |
-            ${{ runner.temp }}/edge-site.tgz
-            ${{ runner.temp }}/docs-archive.tgz
+          path: ${{ runner.temp }}/versioned-site.tgz
           if-no-files-found: error
           retention-days: 1
 
-  publish-edge:
-    needs: build-edge
+  publish-site:
+    needs: [resolve-source, build-site]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     concurrency:
       group: little-ghost-documentation-publish
       cancel-in-progress: false
     permissions:
-      contents: write
+      actions: read
+      contents: read
       pages: write
       id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - name: Check out the successful main commit
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
-          fetch-depth: 1
-          persist-credentials: false
-      - name: Require the current main commit
-        env:
-          GH_TOKEN: ${{ github.token }}
-          SOURCE_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
-        run: |
-          current_main="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
-          if [[ "$SOURCE_SHA" != "$current_main" ]]; then
-            echo "A newer main commit superseded this Edge build" >&2
-            exit 1
-          fi
-      - name: Download the candidate archive
+      - name: Download the complete site
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: edge-documentation
           path: _candidate
-      - name: Extract the candidate archive
-        run: |
-          mkdir _candidate/archive _candidate/edge
-          tar -xzf _candidate/docs-archive.tgz -C _candidate/archive
-          tar -xzf _candidate/edge-site.tgz -C _candidate/edge
-      - name: Ensure the documentation archive branch exists
-        env:
-          GH_TOKEN: ${{ github.token }}
-          SOURCE_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
-        run: |
-          if ! gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/docs-archive" >/dev/null 2>&1; then
-            gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
-              -f ref="refs/heads/docs-archive" \
-              -f sha="$SOURCE_SHA"
-          fi
-      - name: Check out the documentation archive
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: docs-archive
-          path: _published
-          fetch-depth: 1
-      - name: Save the documentation archive
-        run: |
-          ruby bin/docs-archive merge-releases _published _candidate/archive
-          ruby bin/docs-archive publish-edge _published _candidate/edge
-          git -C _published config user.name github-actions[bot]
-          git -C _published config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git -C _published add --all
-          if ! git -C _published diff --cached --quiet; then
-            git -C _published commit -m "Publish Edge documentation"
-            git -C _published push origin HEAD:docs-archive
-          fi
-      - name: Prepare the Pages artifact
+      - name: Extract the complete site
         run: |
           mkdir _pages
-          git -C _published archive --format=tar HEAD | tar -x -C _pages
+          tar -xzf _candidate/versioned-site.tgz -C _pages
+      - name: Require the current published release set
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/releases" \
+            --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name | ltrimstr("v")' |
+            sort > "$RUNNER_TEMP/published-versions"
+          jq --raw-output '.versions[] | select(.kind == "release") | .id' _pages/versions.json |
+            sort > "$RUNNER_TEMP/candidate-versions"
+          diff --unified "$RUNNER_TEMP/published-versions" "$RUNNER_TEMP/candidate-versions"
+      - name: Require the newest successful main commit
+        env:
+          EXPECTED_SHA: ${{ needs.resolve-source.outputs.source_sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for attempt in $(seq 1 12); do
+            current_sha="$(
+              gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?branch=main&event=push&status=success&per_page=20" \
+                --jq '.workflow_runs[] | select(.event == "push" and .head_branch == "main" and .head_repository.full_name == env.GITHUB_REPOSITORY) | .head_sha' |
+                head -n 1
+            )"
+            [[ "$current_sha" == "$EXPECTED_SHA" ]] && break
+            [[ "$attempt" == "12" ]] && break
+            sleep 5
+          done
+          if [[ "$current_sha" != "$EXPECTED_SHA" ]]; then
+            echo "A newer successful main build superseded this documentation" >&2
+            exit 1
+          fi
       - name: Configure GitHub Pages
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
       - name: Upload GitHub Pages artifact

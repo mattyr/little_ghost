@@ -398,6 +398,20 @@ class LittleGhostSiteFileHandler < WEBrick::HTTPServlet::FileHandler
   end
 end
 
+class LittleGhostSiteServer
+  def self.start(root:, port:, label: root)
+    server = WEBrick::HTTPServer.new(
+      BindAddress: "127.0.0.1",
+      Port: port
+    )
+    server.mount "/", LittleGhostSiteFileHandler, root, FancyIndexing: false
+    %w[INT TERM].each { |signal| Signal.trap(signal) { server.shutdown } }
+
+    puts "Serving #{label} at http://127.0.0.1:#{port}/"
+    server.start
+  end
+end
+
 Rake::TestTask.new do |task|
   task.libs << "lib"
   task.libs << "test"
@@ -445,30 +459,36 @@ namespace :site do
 
   desc "Build and verify the complete GitHub Pages artifact"
   task check: :build do
-    LittleGhostDocs::Archive.new(SITE_OUTPUT).verify!
+    LittleGhostDocs::VersionedSite.new(SITE_OUTPUT).verify!
     LittleGhostSiteChecker.new(SITE_OUTPUT).check
   end
 
-  desc "Verify a complete versioned documentation archive"
-  task :archive_check do
-    archive_root = ENV.fetch("DOCS_ARCHIVE")
-    LittleGhostDocs::Archive.new(archive_root).verify!
-    LittleGhostSiteChecker.new(archive_root).check
+  desc "Build Edge and every published documentation version"
+  task build_all: :build do
+    repository = File.expand_path(__dir__)
+    edge_site = File.expand_path(SITE_OUTPUT, __dir__)
+
+    Dir.mktmpdir("little-ghost-versioned-site") do |destination|
+      LittleGhostDocs::SiteBuilder.new(repository:, edge_site:).build!(destination)
+      LittleGhostSiteChecker.new(destination).check
+      rm_rf SITE_OUTPUT
+      mkdir_p SITE_OUTPUT
+      Pathname(destination).children.each { |child| cp_r child, SITE_OUTPUT }
+    end
   end
 
   desc "Build and serve the site locally"
   task serve: :build do
     port = Integer(ENV.fetch("PORT", "4000"), 10)
     root = File.expand_path(SITE_OUTPUT, __dir__)
-    server = WEBrick::HTTPServer.new(
-      BindAddress: "127.0.0.1",
-      Port: port
-    )
-    server.mount "/", LittleGhostSiteFileHandler, root, FancyIndexing: false
-    %w[INT TERM].each { |signal| Signal.trap(signal) { server.shutdown } }
+    LittleGhostSiteServer.start(root:, port:, label: SITE_OUTPUT)
+  end
 
-    puts "Serving #{SITE_OUTPUT} at http://127.0.0.1:#{port}/"
-    server.start
+  desc "Build Edge with every published documentation version and serve them locally"
+  task serve_all: :build_all do
+    port = Integer(ENV.fetch("PORT", "4000"), 10)
+    root = File.expand_path(SITE_OUTPUT, __dir__)
+    LittleGhostSiteServer.start(root:, port:, label: "Edge and all published versions")
   end
 end
 

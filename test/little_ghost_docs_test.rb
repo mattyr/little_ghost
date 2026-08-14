@@ -51,12 +51,12 @@ class LittleGhostDocsTest < Minitest::Test
     end
   end
 
-  def test_archive_keeps_edge_mutable_and_release_snapshots_immutable
+  def test_versioned_site_combines_edge_and_release_snapshots
     Dir.mktmpdir("little-ghost-docs") do |directory|
       archive = File.join(directory, "archive")
       edge = build_site(directory, "edge", version: "0.4.0", pages: %w[Agent Assembly])
       release = build_site(directory, "release", version: "0.3.0", pages: %w[Agent])
-      docs = LittleGhostDocs::Archive.new(archive)
+      docs = LittleGhostDocs::VersionedSite.new(archive)
 
       docs.publish_edge!(edge)
       docs.publish_release!(release, "0.3.0")
@@ -87,7 +87,7 @@ class LittleGhostDocsTest < Minitest::Test
   def test_catalog_sorts_stable_versions_and_ignores_unrelated_directories
     Dir.mktmpdir("little-ghost-docs") do |directory|
       archive = File.join(directory, "archive")
-      docs = LittleGhostDocs::Archive.new(archive)
+      docs = LittleGhostDocs::VersionedSite.new(archive)
       docs.publish_edge!(build_site(directory, "edge", version: "0.4.0"))
       docs.publish_release!(build_site(directory, "older", version: "0.1.0"), "0.1.0")
       docs.publish_release!(build_site(directory, "newer", version: "0.3.0"), "0.3.0")
@@ -99,9 +99,9 @@ class LittleGhostDocsTest < Minitest::Test
     end
   end
 
-  def test_archive_rejects_prerelease_versions
+  def test_versioned_site_rejects_prerelease_versions
     Dir.mktmpdir("little-ghost-docs") do |directory|
-      archive = LittleGhostDocs::Archive.new(File.join(directory, "archive"))
+      archive = LittleGhostDocs::VersionedSite.new(File.join(directory, "archive"))
       site = build_site(directory, "site", version: "0.4.0.pre")
 
       error = assert_raises(LittleGhostDocs::Error) do
@@ -111,7 +111,7 @@ class LittleGhostDocsTest < Minitest::Test
     end
   end
 
-  def test_archive_preserves_assets_from_an_already_decorated_release
+  def test_versioned_site_preserves_assets_from_an_already_decorated_release
     Dir.mktmpdir("little-ghost-docs") do |directory|
       release = build_site(directory, "release", version: "1.0.0")
       original_assets = build_selector_assets(directory, "original", "release assets")
@@ -124,27 +124,9 @@ class LittleGhostDocsTest < Minitest::Test
       ).decorate!
 
       archive = File.join(directory, "archive")
-      LittleGhostDocs::Archive.new(archive, asset_source: current_assets).publish_release!(release, "1.0.0")
+      LittleGhostDocs::VersionedSite.new(archive, asset_source: current_assets).publish_release!(release, "1.0.0")
 
       assert_equal "release assets", File.read(File.join(archive, "versions", "1.0.0", "assets", "version-selector.js"))
-    end
-  end
-
-  def test_release_merge_rejects_versions_missing_from_the_verified_candidate
-    Dir.mktmpdir("little-ghost-docs") do |directory|
-      published = File.join(directory, "published")
-      candidate = File.join(directory, "candidate")
-      published_archive = LittleGhostDocs::Archive.new(published)
-      candidate_archive = LittleGhostDocs::Archive.new(candidate)
-      published_archive.publish_edge!(build_site(directory, "published-edge", version: "2.0.0"))
-      candidate_archive.publish_edge!(build_site(directory, "candidate-edge", version: "2.0.0"))
-      published_archive.publish_release!(build_site(directory, "unknown", version: "9.0.0"), "9.0.0")
-      candidate_archive.publish_release!(build_site(directory, "known", version: "1.0.0"), "1.0.0")
-
-      error = assert_raises(LittleGhostDocs::Error) do
-        published_archive.merge_releases!(candidate)
-      end
-      assert_equal "Documentation archive contains unverified releases: 9.0.0", error.message
     end
   end
 
@@ -157,39 +139,137 @@ class LittleGhostDocsTest < Minitest::Test
       File.write(sentinel, "safe")
 
       error = assert_raises(LittleGhostDocs::Error) do
-        LittleGhostDocs::Archive.new(unmarked).publish_edge!(site)
+        LittleGhostDocs::VersionedSite.new(unmarked).publish_edge!(site)
       end
-      assert_includes error.message, LittleGhostDocs::ARCHIVE_MARKER
+      assert_includes error.message, LittleGhostDocs::SITE_MARKER
       assert_equal "safe", File.read(sentinel)
 
       error = assert_raises(LittleGhostDocs::Error) do
-        LittleGhostDocs::Archive.new(site).publish_edge!(site)
+        LittleGhostDocs::VersionedSite.new(site).publish_edge!(site)
       end
-      assert_equal "Documentation archive source cannot overlap its destination", error.message
+      assert_equal "Versioned documentation source cannot overlap its destination", error.message
     end
   end
 
-  def test_workflows_publish_edge_and_stable_versions_through_the_shared_archive
+  def test_site_builder_rebuilds_edge_and_each_published_release
+    Dir.mktmpdir("little-ghost-docs") do |directory|
+      edge = build_site(directory, "current-edge", version: "0.5.0", pages: %w[Agent Graph])
+      destination = File.join(directory, "preview")
+      releases = [LittleGhostDocs::Release.new(version: "0.3.0", commit: "release-commit")]
+      release_site = build_site(directory, "release", version: "0.3.0")
+      built = []
+      release_builder = Object.new
+      release_builder.define_singleton_method(:add!) do |version:, commit:|
+        built << [version, commit]
+        LittleGhostDocs::VersionedSite.new(destination).publish_release!(
+          release_site,
+          version
+        )
+      end
+
+      result = LittleGhostDocs::SiteBuilder.new(
+        repository: directory,
+        edge_site: edge,
+        releases:,
+        release_builder:
+      ).build!(destination)
+
+      assert_equal Pathname(destination).expand_path, result
+      assert_path_exists File.join(destination, "docs", "LittleGhost", "Graph.html")
+      assert_path_exists File.join(destination, "versions", "0.3.0", "index.html")
+      catalog = JSON.parse(File.read(File.join(destination, "versions.json")))
+      assert_equal %w[edge 0.3.0], catalog.fetch("versions").map { |entry| entry.fetch("id") }
+      assert_equal [["0.3.0", "release-commit"]], built
+    end
+  end
+
+  def test_published_releases_are_stable_annotated_tags_from_main_with_matching_source
+    commands = []
+    responses = [
+      ["", ""],
+      ["git@github.com:mattyr/little_ghost.git\n", ""],
+      ["v0.3.0\n", ""],
+      [JSON.generate(
+        "author" => {"login" => "github-actions[bot]"},
+        "assets" => [
+          {"name" => "little_ghost-0.3.0.gem", "uploader" => {"login" => "github-actions[bot]"}},
+          {"name" => "little_ghost-0.3.0.gem.sha256", "uploader" => {"login" => "github-actions[bot]"}}
+        ]
+      ), ""],
+      ["tag-object\n", ""],
+      [JSON.generate("object" => {"type" => "commit", "sha" => "release-commit"}), ""],
+      ["", ""],
+      ["module LittleGhost\n  VERSION = \"0.3.0\"\nend\n", ""]
+    ]
+    capture_runner = lambda do |*command, chdir:|
+      commands << [command, chdir]
+      output, error = responses.shift
+      [output, error, successful_status]
+    end
+
+    releases = LittleGhostDocs::PublishedReleases.new(
+      repository: "/project",
+      capture_runner:
+    ).to_a
+
+    assert_equal [LittleGhostDocs::Release.new(version: "0.3.0", commit: "release-commit")], releases
+    assert_equal [
+      ["git", "fetch", "origin", "main:refs/remotes/origin/main", "--tags"],
+      ["git", "remote", "get-url", "origin"],
+      ["gh", "api", "--paginate", "repos/mattyr/little_ghost/releases", "--jq",
+        ".[] | select(.draft == false and .prerelease == false) | .tag_name"],
+      ["gh", "api", "repos/mattyr/little_ghost/releases/tags/v0.3.0"],
+      ["git", "rev-parse", "--verify", "refs/tags/v0.3.0^{tag}"],
+      ["gh", "api", "repos/mattyr/little_ghost/git/tags/tag-object"],
+      ["git", "merge-base", "--is-ancestor", "release-commit", "refs/remotes/origin/main"],
+      ["git", "show", "release-commit:lib/little_ghost/version.rb"]
+    ], commands.map(&:first)
+  end
+
+  def test_release_builds_do_not_inherit_workflow_tokens
+    captured_environment = nil
+    command_runner = lambda do |environment, *_command, chdir:|
+      captured_environment = environment
+      true
+    end
+    builder = LittleGhostDocs::ReleaseBuilder.new(
+      repository: "/project",
+      site: "/versioned-site",
+      command_runner:
+    )
+
+    builder.send(:run_command!, "bundle", "install", chdir: "/release")
+
+    assert_nil captured_environment.fetch("GH_TOKEN")
+    assert_nil captured_environment.fetch("GITHUB_TOKEN")
+    assert_nil captured_environment.fetch("ACTIONS_ID_TOKEN_REQUEST_URL")
+    assert_nil captured_environment.fetch("ACTIONS_ID_TOKEN_REQUEST_TOKEN")
+  end
+
+  def test_workflows_rebuild_the_complete_site_without_a_persistent_branch
     docs_workflow = File.read(File.expand_path("../.github/workflows/docs.yml", __dir__))
     release_workflow = File.read(File.expand_path("../.github/workflows/release.yml", __dir__))
 
     assert_includes docs_workflow, "workflow_run:"
-    assert_includes docs_workflow, "github.ref == 'refs/heads/main'"
-    assert_includes docs_workflow, "publish-edge _docs_archive _site"
-    assert_includes docs_workflow, "publish-edge _published _candidate/edge"
-    assert_includes docs_workflow, "merge-releases _published _candidate/archive"
-    assert_includes docs_workflow, "sync-release _docs_archive"
-    assert_includes docs_workflow, "does not have an annotated commit tag"
-    assert_includes docs_workflow, "git merge-base --is-ancestor"
-    assert_includes docs_workflow, "A newer main commit superseded this Edge build"
+    assert_includes docs_workflow, "release:"
+    assert_includes docs_workflow, "bundle exec rake site:build_all"
+    assert_includes docs_workflow, "versioned-site.tgz"
+    assert_includes docs_workflow, "event=push"
+    assert_includes docs_workflow, "Require the current published release set"
     assert_includes docs_workflow, "little-ghost-documentation-publish"
-    assert_includes release_workflow, "publish-release _docs_archive _release_site"
-    assert_includes release_workflow, "needs.publish.outputs.prerelease != 'true'"
-    assert_includes release_workflow, "release-documentation.tgz"
-    assert_includes release_workflow, "/versions/${version}/docs/"
+    refute_includes docs_workflow, "docs-archive"
+    assert_includes release_workflow, 'gh workflow run docs.yml --ref main -f expected_release="$GITHUB_REF_NAME"'
+    refute_includes release_workflow, "bundle exec rake site:build_all"
+    refute_includes release_workflow, "docs-archive"
   end
 
   private
+
+  def successful_status
+    status = Object.new
+    status.define_singleton_method(:success?) { true }
+    status
+  end
 
   def build_site(directory, name, version:, pages: %w[Agent])
     root = File.join(directory, name)

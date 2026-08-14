@@ -18,7 +18,7 @@ module LittleGhostDocs
   EDGE_ID = "edge"
   VERSION_DIRECTORY = "versions"
   CATALOG_FILE = "versions.json"
-  ARCHIVE_MARKER = ".little-ghost-docs-archive"
+  SITE_MARKER = ".little-ghost-versioned-site"
   SELECTOR_ASSETS = %w[version-selector.css version-selector.js].freeze
   VERSION_LINK_PATTERN = %r{
     <a\s+class="(?<class>version-badge|navbar-version)"[^>]*>\s*(?<label>v[^<]+)\s*</a>
@@ -141,9 +141,9 @@ module LittleGhostDocs
 
     def verify!
       path = archive_root.join(CATALOG_FILE)
-      raise Error, "Documentation archive is missing #{CATALOG_FILE}" unless path.file?
+      raise Error, "Versioned documentation is missing #{CATALOG_FILE}" unless path.file?
       if archive_root.glob("**/*", File::FNM_DOTMATCH).any?(&:symlink?)
-        raise Error, "Documentation archive must not contain symbolic links"
+        raise Error, "Versioned documentation must not contain symbolic links"
       end
 
       actual = JSON.parse(path.read)
@@ -214,7 +214,7 @@ module LittleGhostDocs
     end
   end
 
-  class Archive
+  class VersionedSite
     def initialize(root, asset_source: File.expand_path("../site/assets", __dir__))
       @root = Pathname(root).expand_path
       @asset_source = asset_source
@@ -247,24 +247,6 @@ module LittleGhostDocs
       refresh_catalog
     end
 
-    def merge_releases!(candidate)
-      candidate = Pathname(candidate).expand_path
-      prepare_root!(site: candidate)
-      candidate_versions = candidate.join(VERSION_DIRECTORY)
-      candidate_releases = candidate_versions.directory? ? candidate_versions.children.select(&:directory?) : []
-      candidate_names = candidate_releases.map { |path| path.basename.to_s }
-      published_versions = root.join(VERSION_DIRECTORY)
-      if published_versions.directory?
-        unexpected = published_versions.children.select(&:directory?).map { |path| path.basename.to_s } - candidate_names
-        raise Error, "Documentation archive contains unverified releases: #{unexpected.join(", ")}" if unexpected.any?
-      end
-
-      candidate_releases.sort.each do |release|
-        publish_release!(release, release.basename.to_s)
-      end
-      verify!
-    end
-
     def verify!
       Catalog.new(root).verify!
     end
@@ -274,20 +256,20 @@ module LittleGhostDocs
     attr_reader :asset_source, :root
 
     def prepare_root!(site:)
-      raise Error, "Documentation archive root cannot be a symbolic link" if root.symlink?
-      raise Error, "Documentation archive source cannot overlap its destination" if overlapping_paths?(root, site)
+      raise Error, "Versioned documentation root cannot be a symbolic link" if root.symlink?
+      raise Error, "Versioned documentation source cannot overlap its destination" if overlapping_paths?(root, site)
 
       dangerous_roots = [Pathname("/").expand_path, Pathname(Dir.home).expand_path, repository_root]
       if dangerous_roots.any? { |path| root == path || path.to_s.start_with?("#{root}#{File::SEPARATOR}") }
-        raise Error, "Refusing unsafe documentation archive root #{root}"
+        raise Error, "Refusing unsafe versioned documentation root #{root}"
       end
 
       FileUtils.mkdir_p(root)
-      marker = root.join(ARCHIVE_MARKER)
-      unless marker.file? || root.children.empty? || docs_archive_checkout?
-        raise Error, "Documentation archive root is missing #{ARCHIVE_MARKER}"
+      marker = root.join(SITE_MARKER)
+      unless marker.file? || root.children.empty?
+        raise Error, "Versioned documentation root is missing #{SITE_MARKER}"
       end
-      marker.write("Generated documentation archive. Do not edit by hand.\n")
+      marker.write("Generated versioned documentation. Do not edit by hand.\n")
     end
 
     def repository_root
@@ -298,16 +280,9 @@ module LittleGhostDocs
       left == right || left.to_s.start_with?("#{right}#{File::SEPARATOR}") || right.to_s.start_with?("#{left}#{File::SEPARATOR}")
     end
 
-    def docs_archive_checkout?
-      return false unless root.join(".git").exist?
-
-      branch, status = Open3.capture2("git", "-C", root.to_s, "branch", "--show-current")
-      status.success? && branch.strip == "docs-archive"
-    end
-
     def clear_edge
       root.children.each do |child|
-        next if [".git", ARCHIVE_MARKER, VERSION_DIRECTORY].include?(child.basename.to_s)
+        next if [SITE_MARKER, VERSION_DIRECTORY].include?(child.basename.to_s)
 
         FileUtils.rm_rf(child)
       end
@@ -337,12 +312,193 @@ module LittleGhostDocs
     end
   end
 
-  class ReleaseSync
-    def initialize(repository:, archive:, command_runner: Kernel.method(:system), capture_runner: Open3.method(:capture3))
+  Release = Data.define(:version, :commit)
+
+  class PublishedReleases
+    include Enumerable
+
+    def initialize(repository:, capture_runner: Open3.method(:capture3))
       @repository = Pathname(repository).expand_path
-      @archive = Archive.new(archive, asset_source: @repository.join("site/release-compat/v1"))
+      @capture_runner = capture_runner
+    end
+
+    def each
+      return enum_for(:each) unless block_given?
+
+      release_tags.each do |tag|
+        version = LittleGhostDocs.stable_version!(tag.delete_prefix("v"))
+        raise Error, "Release #{tag} has an unexpected tag" unless tag == "v#{version}"
+
+        verify_publication!(tag, version)
+        tag_object = capture!("git", "rev-parse", "--verify", "refs/tags/#{tag}^{tag}").strip
+        tag_data = JSON.parse(capture!("gh", "api", "repos/#{github_repository}/git/tags/#{tag_object}"))
+        target = tag_data.fetch("object")
+        raise Error, "Documentation release #{tag} does not have an annotated commit tag" unless target.fetch("type") == "commit"
+
+        commit = target.fetch("sha")
+        capture!("git", "merge-base", "--is-ancestor", commit, "refs/remotes/origin/main")
+        declared_version = source_version(commit)
+        unless declared_version == version
+          raise Error, "Documentation release #{tag} does not match source version #{declared_version}"
+        end
+
+        yield Release.new(version:, commit:)
+      end
+    end
+
+    private
+
+    attr_reader :capture_runner, :repository
+
+    def release_tags
+      capture!("git", "fetch", "origin", "main:refs/remotes/origin/main", "--tags")
+      capture!(
+        "gh", "api", "--paginate", "repos/#{github_repository}/releases",
+        "--jq", ".[] | select(.draft == false and .prerelease == false) | .tag_name"
+      ).lines(chomp: true).reject(&:empty?)
+    end
+
+    def github_repository
+      @github_repository ||= ENV["GITHUB_REPOSITORY"] || begin
+        remote = capture!("git", "remote", "get-url", "origin").strip
+        match = remote.match(%r{(?:github\.com[:/])([^/]+/[^/]+?)(?:\.git)?\z})
+        raise Error, "Could not identify the GitHub repository from #{remote.inspect}" unless match
+
+        match[1]
+      end
+    end
+
+    def source_version(commit)
+      source = capture!("git", "show", "#{commit}:lib/little_ghost/version.rb")
+      source[/^\s*VERSION = "([^"]+)"/, 1]
+    end
+
+    def verify_publication!(tag, version)
+      release = JSON.parse(capture!("gh", "api", "repos/#{github_repository}/releases/tags/#{tag}"))
+      expected_assets = ["little_ghost-#{version}.gem", "little_ghost-#{version}.gem.sha256"]
+      actual_assets = release.fetch("assets").map { |asset| asset.fetch("name") }.sort
+      automated = release.dig("author", "login") == "github-actions[bot]" &&
+        release.fetch("assets").all? { |asset| asset.dig("uploader", "login") == "github-actions[bot]" }
+      return if automated && actual_assets == expected_assets.sort
+
+      raise Error, "Documentation release #{tag} was not published by the trusted release workflow"
+    end
+
+    def capture!(*command)
+      output, error, status = capture_runner.call(*command, chdir: repository.to_s)
+      return output if status.success?
+
+      detail = error.strip
+      detail = output.strip if detail.empty?
+      raise Error, "Documentation command failed: #{command.join(" ")}#{": #{detail}" unless detail.empty?}"
+    end
+  end
+
+  class SiteBuilder
+    def initialize(repository:, edge_site:, releases: nil, release_builder: nil)
+      @repository = Pathname(repository).expand_path
+      @edge_site = Pathname(edge_site).expand_path
+      @releases = releases || PublishedReleases.new(repository: @repository)
+      @release_builder = release_builder
+    end
+
+    def build!(destination)
+      destination = Pathname(destination).expand_path
+      raise Error, "Versioned documentation destination cannot be a symbolic link" if destination.symlink?
+
+      FileUtils.mkdir_p(destination)
+      raise Error, "Versioned documentation destination must be empty" unless destination.children.empty?
+
+      site = VersionedSite.new(destination)
+      site.publish_edge!(edge_site)
+      release_builder ? build_with_injected_builder : build_releases_in_parallel(site)
+      site.verify!
+      destination
+    end
+
+    private
+
+    attr_reader :edge_site, :release_builder, :releases, :repository
+
+    def build_with_injected_builder
+      releases.each do |release|
+        release_builder.add!(version: release.version, commit: release.commit)
+      end
+    end
+
+    def build_releases_in_parallel(site)
+      release_list = releases.to_a
+      return if release_list.empty?
+
+      worker_count = Integer(ENV.fetch("DOCS_BUILD_JOBS", [release_list.length, 4].min.to_s), 10)
+      raise Error, "DOCS_BUILD_JOBS must be at least 1" if worker_count < 1
+
+      command_environment = ReleaseBuilder.command_environment
+      Dir.mktmpdir("little-ghost-release-sites") do |directory|
+        queue = Queue.new
+        release_list.each { |release| queue << release }
+        results = {}
+        results_lock = Mutex.new
+        errors = Queue.new
+        workers = [worker_count, release_list.length].min.times.map do
+          Thread.new do
+            loop do
+              release = queue.pop(true)
+              release_site = Pathname(directory).join(release.version)
+              ReleaseBuilder.new(repository:, site: release_site, command_environment:).add!(
+                version: release.version,
+                commit: release.commit
+              )
+              results_lock.synchronize do
+                results[release.version] = release_site.join(VERSION_DIRECTORY, release.version)
+              end
+            rescue ThreadError
+              break
+            rescue => error
+              errors << error
+              break
+            end
+          end
+        end
+        workers.each(&:join)
+        raise errors.pop unless errors.empty?
+
+        release_list.each do |release|
+          release_site = results.fetch(release.version)
+          site.publish_release!(release_site, release.version)
+        end
+      end
+    end
+  end
+
+  class ReleaseBuilder
+    PRIVATE_ENVIRONMENT = %w[
+      ACTIONS_ID_TOKEN_REQUEST_TOKEN
+      ACTIONS_ID_TOKEN_REQUEST_URL
+      GH_TOKEN
+      GITHUB_TOKEN
+    ].to_h { |name| [name, nil] }.freeze
+
+    def self.command_environment
+      original = ENV.to_h
+      unbundled = Bundler.with_unbundled_env { ENV.to_h }
+      (original.keys | unbundled.keys).to_h do |name|
+        [name, unbundled.key?(name) ? unbundled[name] : nil]
+      end.select { |name, value| original[name] != value }
+    end
+
+    def initialize(
+      repository:,
+      site:,
+      command_runner: Kernel.method(:system),
+      capture_runner: Open3.method(:capture3),
+      command_environment: self.class.command_environment
+    )
+      @repository = Pathname(repository).expand_path
+      @site = VersionedSite.new(site, asset_source: @repository.join("site/release-compat/v1"))
       @command_runner = command_runner
       @capture_runner = capture_runner
+      @command_environment = command_environment
     end
 
     def add!(version:, commit:)
@@ -351,7 +507,9 @@ module LittleGhostDocs
         source = Pathname(directory).join("source")
         FileUtils.mkdir_p(source)
         extract_commit(commit, source)
-        return false unless source.join("Rakefile").read.match?(/^namespace :site do$/)
+        unless source.join("Rakefile").read.match?(/^namespace :site do$/)
+          raise Error, "Documentation release v#{version} does not support versioned site builds"
+        end
 
         run_command!("bundle", "install", "--jobs", "4", chdir: source.to_s)
         if source.join("rakelib/little_ghost_docs.rb").file?
@@ -363,14 +521,14 @@ module LittleGhostDocs
         else
           run_command!("bundle", "exec", "rake", "site:check", chdir: source.to_s)
         end
-        archive.publish_release!(source.join("_site"), version)
+        site.publish_release!(source.join("_site"), version)
       end
-      archive.verify!
+      site.verify!
     end
 
     private
 
-    attr_reader :archive, :capture_runner, :command_runner, :repository
+    attr_reader :capture_runner, :command_environment, :command_runner, :repository, :site
 
     def extract_commit(commit, destination)
       archive_data, error, status = capture_runner.call("git", "archive", "--format=tar", commit, chdir: repository.to_s)
@@ -395,9 +553,8 @@ module LittleGhostDocs
     end
 
     def run_command!(*command, chdir:, env: {})
-      succeeded = Bundler.with_unbundled_env do
-        command_runner.call(env, *command, chdir:)
-      end
+      subprocess_environment = command_environment.merge(env).merge(PRIVATE_ENVIRONMENT)
+      succeeded = command_runner.call(subprocess_environment, *command, chdir:)
       return if succeeded
 
       raise Error, "Documentation command failed: #{command.join(" ")}"

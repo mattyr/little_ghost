@@ -1,6 +1,6 @@
 # Releasing LittleGhost
 
-LittleGhost releases use a version tag, RubyGems Trusted Publishing, generated GitHub release notes, and an immutable documentation snapshot built from the same commit. The release workflow stores no RubyGems API token.
+LittleGhost releases use a version tag, RubyGems Trusted Publishing, generated GitHub release notes, and versioned documentation rebuilt from the same commit. The release workflow stores no RubyGems API token.
 
 ## One-time setup
 
@@ -12,7 +12,9 @@ it is pushed.
 
 The GitHub-created `github-pages` environment must allow deployments from `main` and tags matching `v*`. This is a one-time repository setting; documentation and release runs do not modify environment policies.
 
-GitHub Pages continues to use GitHub Actions as its publishing source. Generated Edge and release sites are retained on the `docs-archive` branch, which is created automatically on the first documentation deployment. Add a branch ruleset that blocks deletion, force pushes, and direct updates while allowing the GitHub Actions integration to publish. Do not edit that branch by hand.
+GitHub Pages uses GitHub Actions as its publishing source. Each documentation deployment rebuilds Edge and every stable released version from the repository's published release tags. The generated site is disposable and is never committed to a branch.
+
+Run `bundle exec rake site:serve_all` to build and browse the same versioned site locally. The task uses the GitHub CLI to discover published releases, rebuilds them in parallel from their tags, and serves the result at `http://127.0.0.1:4000/`. Set `PORT` to use another port, or `DOCS_BUILD_JOBS` to tune build concurrency.
 
 Register a trusted publisher for the existing `little_ghost` gem on RubyGems.org with these values:
 
@@ -57,20 +59,23 @@ The publish task validates that `origin` is this repository, fetches remote stat
 
 If the tag push succeeds but workflow discovery or watching is interrupted, run `bundle exec rake release:publish` again. The task recognizes the same verified local and remote tag, does not recreate or push it, and resumes watching the workflow for that tag commit. It refuses mismatched, lightweight, unverified, or wrong-commit tags.
 
-The tag starts the release workflow. Repository permissions control who can push it, and the workflow requires GitHub to report a valid tag signature before verifying the version and membership in `main`. Immediately before trusted publishing, it confirms that the remote tag is still the exact verified tag object and commit. It then reruns the complete gate, publishes through RubyGems OIDC, verifies the served package, creates the GitHub Release, preserves stable documentation under `/versions/X.Y.Z/`, and checks every public release surface. RubyGems checksum verification tolerates bounded API propagation delays while retaining complete package-equivalence checks.
+The tag starts the release workflow. Repository permissions control who can push it, and the workflow requires GitHub to report a valid tag signature before verifying the version and membership in `main`. Immediately before trusted publishing, it confirms that the remote tag is still the exact verified tag object and commit. It then reruns the complete gate, publishes through RubyGems OIDC, verifies the served package, and creates the GitHub Release. RubyGems checksum verification tolerates bounded API propagation delays while retaining complete package-equivalence checks.
 
-The documentation root is Edge and follows every successful `main` build. Its version selector lists stable releases from newest to oldest. Each build discovers published stable releases, verifies their annotated tags and `main` ancestry, then recreates each site from its release commit. The operation is idempotent: matching snapshots stay untouched, while any drift fails the build. Releases from before the site builder existed are skipped naturally. Prerelease tags rely on Edge and do not create permanent documentation snapshots.
+After the GitHub Release exists, the release workflow dispatches the separate Documentation workflow. The release does not wait for documentation publication. Documentation independently rebuilds Edge and every stable released version, then refuses to deploy if either the successful `main` source or published release set changed during the build.
 
-GitHub generates the release notes from merged pull requests. The `enhancement`, `bug`, and `documentation` labels group the notes; every other pull request appears under **Other changes**. Prerelease gem versions produce prerelease GitHub Releases but do not replace or add to the versioned documentation archive.
+The documentation root is Edge and follows every successful `main` build. Its version selector lists stable releases from newest to oldest. Each build discovers published stable releases, verifies their automated publication, annotated tags, and `main` ancestry, then recreates each site from its release commit. The operation is idempotent: the same source set produces a fresh disposable site, with no generated branch to maintain. Prerelease tags rely on Edge and do not add a versioned documentation site.
+
+GitHub generates the release notes from merged pull requests. The `enhancement`, `bug`, and `documentation` labels group the notes; every other pull request appears under **Other changes**. Prerelease gem versions produce prerelease GitHub Releases but do not add a versioned documentation site.
 
 ## Verify a release
 
-The workflow must finish all four jobs successfully:
+The release workflow must finish all three jobs successfully:
 
 - `validate` proves the source, package, and site are releasable.
 - `publish` verifies the gem on RubyGems and creates the matching GitHub Release with the published gem and checksum attached.
-- `publish-docs` adds a stable documentation snapshot when appropriate and deploys the complete archive.
-- `verify-release` confirms RubyGems, the GitHub Release assets, Edge, and stable version URLs expose the expected content.
+- `verify-release` confirms RubyGems and the GitHub Release assets expose the expected content.
+
+The independently dispatched Documentation workflow publishes Edge and stable version URLs. Its status is visible as a separate workflow run.
 
 Confirm the version on RubyGems, the generated GitHub Release notes, Edge at the documentation root, and the released version in the selector and permanent version URL.
 

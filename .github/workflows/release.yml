@@ -51,26 +51,13 @@ jobs:
       - run: bundle exec standardrb
       - run: bundle exec rake site:check
       - run: bundle exec rake package:check
-      - name: Build the versioned documentation snapshot
-        run: |
-          version="$(ruby -Ilib -rlittle_ghost/version -e 'print LittleGhost::VERSION')"
-          DOCS_VERSION_ID="$version" DOCS_BASE_PATH="versions/$version" bundle exec rake site:build
-          grep --fixed-strings --quiet "data-current-version=\"$version\"" _site/index.html
-          grep --fixed-strings --quiet "data-current-version=\"$version\"" _site/docs/index.html
-          tar -czf "$RUNNER_TEMP/release-documentation.tgz" -C _site .
-      - name: Upload the versioned documentation snapshot
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: release-documentation
-          path: ${{ runner.temp }}/release-documentation.tgz
-          if-no-files-found: error
-          retention-days: 1
 
   publish:
     needs: validate
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
+      actions: write
       contents: write
       id-token: write
     outputs:
@@ -172,85 +159,13 @@ jobs:
           fi
 
           gh release create "$GITHUB_REF_NAME" "$gem_path" "$gem_path.sha256" "${release_args[@]}"
-
-  publish-docs:
-    needs: publish
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    concurrency:
-      group: little-ghost-documentation-publish
-      cancel-in-progress: false
-    permissions:
-      contents: write
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - name: Check out the released source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1
-        with:
-          ruby-version: 4.0.4
-          bundler-cache: true
-      - name: Require the initialized documentation archive
+      - name: Rebuild versioned documentation independently
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/docs-archive" >/dev/null
-      - name: Check out the documentation archive
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: docs-archive
-          path: _docs_archive
-          fetch-depth: 1
-      - name: Download the versioned documentation snapshot
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: release-documentation
-          path: _release_artifact
-      - name: Extract the versioned documentation snapshot
-        run: |
-          mkdir _release_site
-          tar -xzf _release_artifact/release-documentation.tgz -C _release_site
-      - name: Add the stable release
-        if: needs.publish.outputs.prerelease != 'true'
-        env:
-          VERSION: ${{ needs.publish.outputs.version }}
-        run: bundle exec ruby bin/docs-archive publish-release _docs_archive _release_site "$VERSION"
-      - name: Verify the complete documentation archive
-        run: DOCS_ARCHIVE=_docs_archive bundle exec rake site:archive_check
-      - name: Save the documentation archive
-        env:
-          VERSION: ${{ needs.publish.outputs.version }}
-        run: |
-          git -C _docs_archive config user.name github-actions[bot]
-          git -C _docs_archive config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git -C _docs_archive add --all
-          if ! git -C _docs_archive diff --cached --quiet; then
-            git -C _docs_archive commit -m "Publish documentation for v${VERSION}"
-            git -C _docs_archive push origin HEAD:docs-archive
-          fi
-      - name: Prepare the Pages artifact
-        run: |
-          mkdir _pages
-          git -C _docs_archive archive --format=tar HEAD | tar -x -C _pages
-      - name: Configure GitHub Pages
-        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
-      - name: Upload GitHub Pages artifact
-        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
-        with:
-          path: _pages
-          include-hidden-files: true
-      - name: Deploy released documentation
-        id: deployment
-        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
+        run: gh workflow run docs.yml --ref main -f expected_release="$GITHUB_REF_NAME"
 
   verify-release:
-    needs: [publish, publish-docs]
+    needs: publish
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -282,22 +197,6 @@ jobs:
           wait_for_content "RubyGems" \
             "https://rubygems.org/api/v1/versions/little_ghost.json" \
             "\"number\":\"${version}\""
-          wait_for_content "Edge website" \
-            "https://mattyr.github.io/little_ghost/" \
-            'data-current-version="edge"'
-          wait_for_content "Edge API documentation" \
-            "https://mattyr.github.io/little_ghost/docs/" \
-            'data-current-version="edge"'
-
-          if [[ "${{ needs.publish.outputs.prerelease }}" != "true" ]]; then
-            wait_for_content "versioned website" \
-              "https://mattyr.github.io/little_ghost/versions/${version}/" \
-              "data-current-version=\"${version}\""
-            wait_for_content "versioned API documentation" \
-              "https://mattyr.github.io/little_ghost/versions/${version}/docs/" \
-              "data-current-version=\"${version}\""
-          fi
-
           assets="$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json assets,isDraft --jq '[.isDraft, ([.assets[].name] | sort)]')"
           expected="[false,[\"little_ghost-${version}.gem\",\"little_ghost-${version}.gem.sha256\"]]"
           if [[ "$assets" != "$expected" ]]; then
