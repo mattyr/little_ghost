@@ -331,6 +331,23 @@ header.top-navbar .theme-toggle:hover .theme-toggle-icon {
   padding-inline: 1.15rem;
 }
 
+#sidebar-navigation .essential-api-section {
+  padding-top: 0.8rem;
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+#sidebar-navigation .essential-api-section .nav-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.08rem 0.35rem;
+}
+
+#sidebar-navigation .essential-api-section .nav-list a {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 #sidebar-navigation h2,
 #sidebar-navigation h3 {
   border-bottom-color: var(--color-border-subtle);

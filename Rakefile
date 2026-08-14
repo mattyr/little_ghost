@@ -3,6 +3,7 @@
 require "cgi"
 require "erb"
 require "pathname"
+require "ripper"
 require "bundler/gem_tasks"
 require "rake/testtask"
 require "rdoc/rdoc"
@@ -65,7 +66,7 @@ class RDoc::Generator::LittleGhost < RDoc::Generator::Aliki
     File.join(File.dirname(RDoc::Generator::Aliki.instance_method(:initialize).source_location.first), "template", "aliki")
   ).freeze
   TEMPLATE_ROOT = Pathname.new(File.expand_path("site/rdoc", __dir__)).freeze
-  CUSTOM_TEMPLATES = %w[_footer.rhtml _header.rhtml _sidebar_pages.rhtml].to_h do |file_name|
+  CUSTOM_TEMPLATES = %w[_footer.rhtml _header.rhtml _sidebar_classes.rhtml _sidebar_pages.rhtml].to_h do |file_name|
     [file_name, TEMPLATE_ROOT.join(file_name)]
   end.freeze
 
@@ -142,6 +143,8 @@ class LittleGhostSiteChecker
     "Compose Agents with Assemblies",
     "Running in Production"
   ].freeze
+  ESSENTIAL_API_LABELS = %w[Agent Tool Run Assembly Workflow Swarm Graph Runtime].freeze
+  RUBY_EXAMPLE_PATHS = [RDOC_MAIN, *RDoc::Generator::LittleGhost::GUIDE_PATHS.keys].freeze
   COMMON_NAVIGATION_PATTERN = /<nav\b[^>]*aria-label=["']Primary navigation["'][^>]*>(.*?)<\/nav>/mi
   NAVIGATION_LINK_PATTERN = /<a\b([^>]*)>(.*?)<\/a>/mi
   ATTRIBUTE_PATTERN = /\b(?:href|src)=["']([^"']+)["']/i
@@ -160,6 +163,7 @@ class LittleGhostSiteChecker
     check_landing_page
     check_documentation_navigation
     check_local_links
+    check_ruby_examples
 
     abort errors.join("\n") unless errors.empty?
 
@@ -223,6 +227,16 @@ class LittleGhostSiteChecker
       end
       if html.match?(/<summary>\s*docs\s*(?:<|$)/mi)
         errors << "#{page.relative_path_from(site_root)} nests guides under docs navigation"
+      end
+      essential_api = html[/<div id=["']essential-api-section["'].*?<\/div>/m]
+      unless essential_api
+        errors << "#{page.relative_path_from(site_root)} is missing Essential API navigation"
+        next
+      end
+      ESSENTIAL_API_LABELS.each do |label|
+        unless essential_api.match?(/>\s*#{Regexp.escape(label)}\s*<\/a>/)
+          errors << "#{page.relative_path_from(site_root)} is missing the #{label} API shortcut"
+        end
       end
     end
   end
@@ -328,6 +342,23 @@ class LittleGhostSiteChecker
     end
   end
 
+  def check_ruby_examples
+    RUBY_EXAMPLE_PATHS.each do |relative_path|
+      path = Pathname(__dir__).join(relative_path)
+      source = path.read
+      source.to_enum(:scan, /^```ruby[^\n]*\n(.*?)^```\s*$/m).each do
+        match = Regexp.last_match
+        code = match[1]
+        first_line = source.byteslice(0, match.begin(1)).count("\n") + 1
+        parser = RubyExampleParser.new(code, relative_path, first_line)
+        parser.parse
+        parser.errors.each do |line, column, message|
+          errors << "#{relative_path}:#{line}:#{column}: #{message}"
+        end
+      end
+    end
+  end
+
   def inside_site?(target)
     target == site_root || target.to_s.start_with?("#{site_root}#{File::SEPARATOR}")
   end
@@ -335,6 +366,19 @@ class LittleGhostSiteChecker
   def anchor_targets(page)
     anchors_by_page[page] ||= page.read.scan(ANCHOR_PATTERN).flatten.each_with_object({}) do |anchor, targets|
       targets[CGI.unescapeHTML(anchor)] = true
+    end
+  end
+
+  class RubyExampleParser < Ripper
+    attr_reader :errors
+
+    def initialize(*)
+      @errors = []
+      super
+    end
+
+    def on_parse_error(message)
+      errors << [lineno, column, message]
     end
   end
 end

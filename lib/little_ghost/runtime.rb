@@ -26,6 +26,14 @@ module LittleGhost
   # and coordinated Assemblies. Configuration is snapshotted at construction;
   # later mutations do not alter the Runtime.
   #
+  # A constructed Runtime may build independent Runs concurrently. Each Run gets
+  # its own bound participants, Tools, workspace, and sandbox. Application-supplied
+  # stores, session-actor and credential resolvers, model resolvers, hooks,
+  # subscribers, providers, and resource factories may therefore receive
+  # concurrent calls and must be thread-safe. One SessionStore instance serializes
+  # calls sharing a Session; multi-process deployments need external coordination
+  # supported by their store.
+  #
   # Without explicit +settings+, construction loads conventional application
   # configuration and definitions, then builds the selected model resolver,
   # session store, instrumentation, and resource factories. Supplying +settings+
@@ -40,11 +48,35 @@ module LittleGhost
   # Session actor resolution must use trusted authenticated identity for tenant
   # isolation. The default UnrestrictedSandbox is convenient application plumbing,
   # not a security boundary for untrusted work.
+  #
+  # Runtime has no shutdown operation. Runs close the request-scoped resources
+  # they own. The application remains responsible for shutting down shared
+  # services and process-wide Instrumentation subscribers.
   class Runtime
-    # The snapshotted setup and materialized services used by new runs.
-    attr_reader :configuration, :settings, :root, :loader, :prompt_paths, :skill_paths,
-      :skill_resource_root, :model_resolver, :session_store, :workspace_class, :sandbox_class,
-      :runtime_hooks
+    # Configuration object used to construct this Runtime.
+    attr_reader :configuration
+    # Settings snapshot used by new Runs.
+    attr_reader :settings
+    # Canonical application root.
+    attr_reader :root
+    # Loader used for conventional application definitions.
+    attr_reader :loader
+    # Ordered directories searched for prompt templates.
+    attr_reader :prompt_paths
+    # Ordered directories searched for skill definitions.
+    attr_reader :skill_paths
+    # Root used for skill-owned resources, when configured.
+    attr_reader :skill_resource_root
+    # Resolver that turns model roles and targets into executable Models.
+    attr_reader :model_resolver
+    # Shared store used to open per-Run Sessions.
+    attr_reader :session_store
+    # Configured Workspace implementation, or +nil+ for the default.
+    attr_reader :workspace_class
+    # Configured Sandbox implementation, or +nil+ for the default.
+    attr_reader :sandbox_class
+    # Runtime hooks called around request and session preparation.
+    attr_reader :runtime_hooks
 
     # Starts a runtime from +configuration+ or an existing settings snapshot.
     def initialize(configuration:, settings: nil)

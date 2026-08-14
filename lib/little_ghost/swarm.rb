@@ -23,6 +23,11 @@ module LittleGhost
   #   run = ProblemSolverSwarm.ask("Why was I charged twice?")
   #   run.response
   #
+  # Call a named Swarm with
+  # ask[rdoc-ref:LittleGhost::Assembly.ask] for its final Run, or
+  # the streaming entrypoint[rdoc-ref:LittleGhost::Assembly.stream_ask] for
+  # coordination and final-response events.
+  #
   # Swarm members are Agent definitions rather than arbitrary assemblies so a
   # handoff remains a direct model-to-model transition. Original conversation
   # history and application context stay isolated unless a member opts in with

@@ -374,6 +374,59 @@ class ConfigurationTest < Minitest::Test
     end
   end
 
+  def test_shared_runtime_serves_independent_calls_concurrently
+    provider = Class.new(LittleGhost::Providers::Base) do
+      attr_reader :ready, :release
+
+      def initialize
+        @ready = Queue.new
+        @release = Queue.new
+      end
+
+      def stream(request)
+        ready << true
+        release.pop
+        text = "Done: #{request.messages.last.text}"
+        response = LittleGhost::ModelResponse.new(
+          message: LittleGhost::Message.new(role: :assistant, content: text),
+          stop_reason: :end_turn,
+          usage: LittleGhost::Usage.new(input_tokens: 1, output_tokens: 1)
+        )
+        [
+          LittleGhost::StreamEvent.build(:message_start),
+          LittleGhost::StreamEvent.build(:text_delta, text:),
+          LittleGhost::StreamEvent.build(:message_stop, response:),
+          LittleGhost::StreamEvent.build(:usage, usage: response.usage)
+        ].each
+      end
+    end.new
+
+    with_runtime(provider:) do |harness|
+      callers = %w[first second].map do |message|
+        Thread.new { harness.agent_instance.ask(message) }
+      end
+
+      2.times do
+        assert provider.ready.pop(timeout: 1), "shared Runtime did not start an independent call"
+      end
+      2.times { provider.release << true }
+      callers.each do |thread|
+        assert thread.join(1), "shared Runtime call did not finish"
+      end
+      runs = callers.map(&:value)
+
+      assert_equal ["Done: first", "Done: second"], runs.map(&:response).sort
+      assert runs.all?(&:completed?)
+      refute_same runs.fetch(0), runs.fetch(1)
+      refute_same runs.fetch(0).workspace, runs.fetch(1).workspace
+      refute_same runs.fetch(0).sandbox, runs.fetch(1).sandbox
+    ensure
+      2.times { provider.release << true }
+      callers&.each { |thread| thread.join(1) }
+      callers&.each(&:kill)
+    end
+  end
+
   def test_stream_is_generic_and_call_returns_the_run
     with_runtime do |harness|
       events = harness.agent_instance.stream({message: "Build it"}).to_a

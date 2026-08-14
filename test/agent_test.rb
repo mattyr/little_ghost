@@ -238,6 +238,47 @@ class AgentTest < Minitest::Test
     assert_equal [[:build_run, {message: "hello"}], [:call], [:build_run, {message: "goodbye"}], [:each]], calls
   end
 
+  def test_an_entrypoint_instance_starts_independent_calls_concurrently
+    ready = Queue.new
+    release = Queue.new
+    built = Queue.new
+    runtime = Object.new
+    runtime.define_singleton_method(:build_run) do |payload, **|
+      run = Object.new
+      run.define_singleton_method(:call) do
+        ready << true
+        release.pop
+        self
+      end
+      built << [payload, run]
+      run
+    end
+    entrypoint = Class.new(LittleGhost::Agent).new(runtime:)
+
+    callers = %w[first second].map do |message|
+      Thread.new { entrypoint.ask(message) }
+    end
+    2.times do
+      assert ready.pop(timeout: 1), "concurrent agent call did not reach its run"
+    end
+    2.times { release << true }
+    callers.each do |thread|
+      assert thread.join(1), "concurrent agent call did not finish"
+    end
+    returned = callers.map(&:value)
+    constructed = 2.times.map do
+      built.pop(timeout: 1) || flunk("concurrent agent call did not build its run")
+    end
+
+    assert_equal %w[first second], constructed.map { |payload, _run| payload.fetch(:message) }.sort
+    assert_equal constructed.map(&:last).sort_by(&:object_id), returned.sort_by(&:object_id)
+    refute_same returned.fetch(0), returned.fetch(1)
+  ensure
+    2.times { release << true } if release
+    callers&.each { |thread| thread.join(1) }
+    callers&.each(&:kill)
+  end
+
   def test_an_entrypoint_leaves_default_resources_to_its_runtime
     agent = Class.new(LittleGhost::Agent)
     values = nil

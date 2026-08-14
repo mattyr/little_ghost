@@ -23,6 +23,36 @@ module LittleGhost
   #   result.success?            # => true
   #   JSON.parse(result.content) # => {"ticket_id"=>"SUP-481", "status"=>"waiting_on_customer"}
   #
+  # Use application context for authorization, never model-selected input:
+  #
+  #   class OrderStatusTool < LittleGhost::Tool
+  #     description "Look up an order for the current account."
+  #     input_schema type: "object", properties: {
+  #       order_number: {type: "string"}
+  #     }, required: ["order_number"], additionalProperties: false
+  #
+  #     def call(input)
+  #       Orders.status_for(
+  #         actor_id: run.invocation.actor_id,
+  #         account_id: run.invocation.context.fetch("account_id"),
+  #         order_number: input.fetch("order_number")
+  #       )
+  #     end
+  #   end
+  #
+  #   OrderSupportAgent.ask(
+  #     "Where is order 481?",
+  #     actor_id: authenticated_user.id,
+  #     context: {account_id: authenticated_user.account_id}
+  #   )
+  #
+  # Here +input+ comes from the model. The actor and account values come from
+  # the application's authentication boundary and remain available on the
+  # current Invocation. During execution, #context is the RunContext. Its mutable
+  # +state+ may also contain restored Session state, so revalidate persisted values
+  # before using them for authorization. The Binding supplies #run and other
+  # collaborators; it does not contain model arguments.
+  #
   # The class DSL produces the frozen specification sent to models. +execute+
   # validates incoming arguments, invokes +call+, and normalizes strings,
   # JSON-compatible collections, and other return values to model-facing text.
@@ -45,8 +75,10 @@ module LittleGhost
     # A binding can be copied with selected collaborators replaced.
     #
     # Tool instances expose the bound agent, run, runtime, model, workspace, and
-    # sandbox through matching accessors. ToolRegistry and Agent normally create
-    # bindings on behalf of application code.
+    # sandbox through matching accessors. A Binding does not carry model Tool
+    # arguments or application state; the current RunContext carries that state.
+    # ToolRegistry and Agent normally create bindings on behalf of application
+    # code.
     class Binding
       # Agent, run, runtime, model, workspace, and sandbox available to a tool.
       attr_reader :agent, :run, :runtime, :model, :workspace, :sandbox

@@ -9,10 +9,22 @@ module LittleGhost
   # cancellation and deadlines, checkpoint messages, and accumulate usage.
   # Access to framework-managed fields is thread-safe.
   class RunContext
-    # Shared state, cancellation, deadline, metadata, operation identity, and
-    # durable conversation identity for the current work.
-    attr_reader :state, :cancellation_token, :deadline, :metadata,
-      :agent_operation_id, :conversation_id
+    # Mutable working state supplied to this invocation. A top-level Run starts
+    # with restored Session state merged with current Invocation context; child
+    # Assemblies may receive copied, mapped, or empty state. Application code must
+    # synchronize mutations when parallel Tools share this Hash, or use exclusive
+    # Tools.
+    attr_reader :state
+    # Token used to cooperatively stop the current work.
+    attr_reader :cancellation_token
+    # Wall-clock deadline for the current work, when present.
+    attr_reader :deadline
+    # Framework metadata attached to this context.
+    attr_reader :metadata
+    # Active Agent operation identifier, after the context is bound.
+    attr_reader :agent_operation_id
+    # Durable subagent conversation identifier, when present.
+    attr_reader :conversation_id
 
     # Creates a context with optional checkpoint and interruption state.
     def initialize(

@@ -58,6 +58,48 @@ continue an earlier conversation.
 
 Build the Runtime after configuration is ready. Once created, it keeps that configuration snapshot.
 
+A constructed Runtime can serve independent calls from several threads. Each call creates its own Run, bound participants, Tools, workspace, and sandbox. The same standalone Agent entrypoint can also start independent calls concurrently. A run-scoped Agent or Assembly belongs to its owning Run and must not be reused elsewhere.
+
+Within one SessionStore instance, LittleGhost serializes calls that share a session. A multi-process deployment needs external coordination supported by its store.
+
+Shared application collaborators can still receive calls from several threads. This includes your session stores; session-actor, credential, and model resolvers; runtime hooks; instrumentation subscribers; and provider, workspace, or sandbox factories.
+
+Make those collaborators thread-safe. The workspace and sandbox instances created for one Run still belong only to that Run.
+
+### Put the Runtime in a Rails application
+
+Build the shared Runtime once, after application configuration loads:
+
+```ruby
+# config/initializers/little_ghost.rb
+Rails.application.config.x.little_ghost.runtime =
+  LittleGhost::Runtime.new(configuration: LittleGhost.configuration)
+```
+
+Use it for a fresh top-level call in a controller or job:
+
+```ruby
+class SupportQuestionsController < ApplicationController
+  def create
+    runtime = Rails.application.config.x.little_ghost.runtime
+    agent = CustomerSupportAgent.new(runtime: runtime)
+    run = agent.ask(
+      params.require(:question),
+      actor_id: current_user.id,
+      context: {account_id: current_user.account_id}
+    )
+
+    if run.completed?
+      render json: {answer: run.response}
+    else
+      render json: {error: "Support request failed"}, status: :bad_gateway
+    end
+  end
+end
+```
+
+The controller supplies identity and account access from authenticated application state. The model cannot replace those values through its prompt or tool arguments. Pass a stable `session_id` only when a later request should continue this conversation. A background job can use the same Runtime and calling pattern.
+
 ## Preserve conversation with Sessions
 
 A **Session** lets one request continue an earlier conversation. Pass the same session ID and trusted actor ID with each related call:
@@ -74,14 +116,20 @@ Take `actor_id` from authenticated application state. A session ID alone does no
 
 A session is checkpointed when its store write succeeds. The in-memory store lasts only as long as one process. Choose a durable `SessionStore` when conversations must survive a restart or continue on another process.
 
+Every Run receives a generated session ID even when you do not pass one. With a persistent SessionStore, a Run may checkpoint its working state under that generated ID before it completes. Keep request context safe to store, or filter sensitive fields in your SessionStore design.
+
 ## Stream or supervise long-running work
 
 `.stream_ask` runs on the caller's thread and yields `StreamEvent` values as the answer arrives:
 
 ```ruby
-CustomerSupportAgent.stream_ask(question).each do |event|
+stream = CustomerSupportAgent.stream_ask(question)
+
+run = stream.each do |event|
   publish(event) if event.type == :text_delta
 end
+
+record_outcome(run.outcome, error_type: run.error&.class&.name)
 ```
 
 Use `start_execution` when the caller must stay free for other work, or when you want to interrupt an active response:
@@ -102,7 +150,11 @@ The event block runs on the worker thread, so keep it quick. Cancellation, deadl
 
 A tool schema checks the shape of model-supplied input. Your application still owns permission checks, safe retries, rate limits, tenant boundaries, and auditing.
 
-Use the Tool binding to reach trusted run and application context. Do not make permission decisions from model arguments. A `ToolError` message is visible to the model, so keep it safe to share; LittleGhost hides unexpected exception messages from model-facing results.
+Use the Tool binding's `run` to read current, application-established values from `run.invocation.context`. Do not make permission decisions from model arguments.
+
+Treat `RunContext#state` as mutable working and Session state. Revalidate anything restored from an earlier request. Synchronize access when parallel Tools share mutable state, or mark every Tool that reads or changes it as `exclusive true`.
+
+A `ToolError` message is visible to the model, so keep it safe to share. LittleGhost hides unexpected exception messages from model-facing results.
 
 When a step retries, its tool calls may happen again too. Prefer read-only work, idempotency keys, or operations that are safe to repeat.
 
@@ -124,7 +176,9 @@ A composite `RunResult` includes short step summaries and trajectory queries. Ke
 
 ## Keep ownership and failure visible
 
-One top-level Run owns the request-scoped resources it opens or that you register with it. It closes those resources after success, failure, a partial response, or cancellation. Shared services supplied by the application keep their own lifecycle.
+One top-level Run owns the request-scoped resources it opens or that you register with it. It closes those resources after success, failure, a partial response, or cancellation.
+
+Runtime itself has no shutdown step. Shared services supplied by the application keep their own lifecycle. Shut those services down with the rest of your application. If you installed process-wide instrumentation subscribers, flush or shut down `LittleGhost::Instrumentation` during application shutdown.
 
 Ordinary execution failures appear on the Run and its final event. Cleanup, event delivery, or instrumentation can still raise an exception: once those boundaries fail, LittleGhost cannot promise a clean ending.
 

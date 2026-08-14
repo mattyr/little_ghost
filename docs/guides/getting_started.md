@@ -17,6 +17,8 @@ $ export OPENROUTER_API_KEY="..."
 
 Use your application's secret manager outside a local shell, and never commit provider credentials.
 
+This guide uses OpenRouter because one credential is enough to begin. LittleGhost can use other provider connections too; you will configure those in [Running in Production](production.md).
+
 ## See your first answer
 
 Create `customer_support_agent.rb`:
@@ -99,12 +101,60 @@ run.response
 
 LittleGhost checks the model's arguments before it calls `HelpCenterLookupTool#call`. The schema checks shape, not permission. If a tool reads customer data or changes something, authorize that work from trusted application context. The tool's result then becomes context for the model.
 
+### Use trusted context for private data
+
+Model tool arguments are untrusted, even after their shape has been checked. Pass identity and permissions from your application's authentication boundary instead:
+
+```ruby
+class OrderStatusTool < LittleGhost::Tool
+  ORDER_STATUSES = {
+    ["user-7", "account-2", "481"] => "out for delivery"
+  }.freeze
+
+  description "Look up an order that belongs to the current customer."
+  input_schema(
+    type: "object",
+    properties: {order_number: {type: "string"}},
+    required: ["order_number"],
+    additionalProperties: false
+  )
+
+  def call(input)
+    lookup = [
+      run.invocation.actor_id,
+      run.invocation.context.fetch("account_id"),
+      input.fetch("order_number")
+    ]
+
+    ORDER_STATUSES.fetch(lookup) do
+      raise LittleGhost::ToolError, "Order not found"
+    end
+  end
+end
+
+class CustomerSupportAgent < LittleGhost::Agent
+  tools HelpCenterLookupTool, OrderStatusTool
+end
+
+run = CustomerSupportAgent.ask(
+  "Where is order 481?",
+  actor_id: "user-7",
+  context: {account_id: "account-2"}
+)
+```
+
+Here, `order_number` came from the model. The application supplied `actor_id` and `account_id` after authenticating the caller. The Tool reads those current request values from `run.invocation`. Invocation context keys are normalized to strings.
+
+Inside the Tool, `context` is the current `RunContext`. Its mutable `state` begins with restored Session state plus the current Invocation context, so use it for working data rather than as the only source of authorization. The Tool's `Binding` supplies `run` and its Invocation; neither comes from the model's arguments.
+
 ## Stream the same agent
 
 Use `.stream_ask` when a console, HTTP response, or user interface should receive progress as it happens:
 
 ```ruby
-CustomerSupportAgent.stream_ask("Can I get a refund?").each do |event|
+stream = CustomerSupportAgent.stream_ask("Can I get a refund?")
+
+run = stream.each do |event|
   case event.type
   when :text_delta
     print event.data.fetch(:text)
@@ -112,9 +162,12 @@ CustomerSupportAgent.stream_ask("Can I get a refund?").each do |event|
     warn event.data.fetch(:message)
   end
 end
+
+puts "\n#{run.response}" if run.completed?
+warn run.error.class.name if run.failed?
 ```
 
-The stream yields `LittleGhost::StreamEvent` values. Text, tool activity, usage, and completion all look the same across providers.
+The stream yields `LittleGhost::StreamEvent` values. Text, tool activity, usage, and completion all look the same across providers. When enumeration finishes, `.each` returns the same `LittleGhost::Run` that now holds the final outcome and response.
 
 ## Give the code a home
 

@@ -23,6 +23,13 @@ module LittleGhost
   # participates in the existing run and returns a RunResult. Applications
   # normally subclass Agent, Workflow, Swarm, or Graph rather than Assembly
   # directly.
+  #
+  # The two lifecycle forms return different objects:
+  #
+  # [Named class or standalone instance]
+  #   +ask+ returns the top-level Run that owns execution and cleanup.
+  # [Run-scoped instance built by Runtime]
+  #   +call+ returns the child invocation's RunResult to its parent Assembly.
   class Assembly
     extend Support::ClassAttributes
 
@@ -31,11 +38,18 @@ module LittleGhost
 
     class << self
       # Executes +message+ through a fresh standalone assembly and returns its Run.
+      #
+      # +options+ become Invocation fields. Common values include +history+,
+      # +context+, +settings+, +metadata+, +session_id+, +actor_id+, and
+      # +deadline_at+.
       def ask(message, **options)
         definition.implementation.new.ask(message, **options)
       end
 
       # Lazily streams +message+ through a fresh standalone assembly.
+      #
+      # Enumeration yields StreamEvent objects and returns the terminal Run.
+      # The same Invocation fields accepted by .ask may be supplied as +options+.
       def stream_ask(message, **options)
         snapshot = definition
         stream = nil
@@ -116,8 +130,14 @@ module LittleGhost
       end
     end
 
-    # The owning run, runtime, and optional standalone resources.
-    attr_reader :run, :runtime, :workspace, :sandbox
+    # The owning Run, or +nil+ for a standalone entrypoint.
+    attr_reader :run
+    # Runtime used to resolve participants and build Runs.
+    attr_reader :runtime
+    # Workspace supplied to this Assembly, when present.
+    attr_reader :workspace
+    # Sandbox supplied to this Assembly, when present.
+    attr_reader :sandbox
 
     def initialize(run: nil, runtime: nil, workspace: nil, sandbox: nil, standalone: run.nil?) # :nodoc:
       @run = run
@@ -167,11 +187,18 @@ module LittleGhost
     end
 
     # Runs +message+ to completion.
+    #
+    # A standalone instance returns its owning Run. A run-scoped instance
+    # returns the child RunResult.
     def ask(message, **options)
       call(message, **options)
     end
 
     # Lazily streams +message+ through the standalone or run-scoped assembly.
+    #
+    # A standalone stream returns its terminal Run after enumeration. A
+    # run-scoped stream finishes with an +invocation_stop+ event containing its
+    # RunResult.
     def stream_ask(message, **options)
       if standalone?
         options[:deadline_at] = options.delete(:deadline) if options.key?(:deadline)
@@ -189,9 +216,11 @@ module LittleGhost
     #
     # By default each call has empty conversational history. Set
     # <tt>preserve_context: true</tt> to retain history serially. Every call still
-    # receives the invoking Tool::Context application state; +preserve_context+
-    # does not suppress it. Tools inside the assembly remain responsible for
-    # authorizing privileged work from trusted context.
+    # receives the invoking Tool's current RunContext#state, which may include
+    # current Invocation or restored Session state. It is separate from
+    # Tool::Binding. +preserve_context+ does not suppress it. Tools inside the
+    # assembly remain responsible for authorizing privileged work from trusted
+    # context.
     def as_tool(name: self.class.assembly_id, description: self.class.description, preserve_context: false)
       assembly = self
       description = "Delegate a task to #{name}." if description.to_s.empty?

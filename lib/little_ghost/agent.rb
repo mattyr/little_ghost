@@ -28,6 +28,11 @@ module LittleGhost
   # Add tools for application operations and subagents for model-directed
   # delegation.
   #
+  # Call a named Agent with
+  # ask[rdoc-ref:LittleGhost::Assembly.ask] when you need the final Run, or
+  # the streaming entrypoint[rdoc-ref:LittleGhost::Assembly.stream_ask] when you
+  # want events as the answer arrives.
+  #
   # Class declarations are inherited. Prompts resolve by the agent's logical
   # path unless +system_prompt+ or +system_template+ supplies one explicitly;
   # tools and prompt locals may also be selected dynamically for each run.
@@ -36,8 +41,8 @@ module LittleGhost
   #
   # The class-level +ask+ and +stream_ask+ helpers create fresh standalone
   # entrypoints. Create an instance explicitly to reuse one Runtime across
-  # calls. Runtimes build bound instances internally; their +call+ method
-  # returns a RunResult and their +stream+ method follows the owning run's
+  # calls. Runtimes build bound instances internally; those instances' +call+
+  # method returns a RunResult and their +stream+ method follows the owning run's
   # single-execution lifecycle. Closing an agent closes owned tools and any
   # standalone workspace and sandbox.
   # LittleGhost::Agent.ask uses <tt>You are a helpful agent.</tt> as its system
@@ -158,9 +163,10 @@ module LittleGhost
       # strategy selection prefers provider-native structured output and falls
       # back to a terminal tool when supported.
       #
-      # A missing or invalid result receives one repair attempt before
-      # LittleGhost::StructuredResultError is raised. Invalid schemas and
-      # strategies raise LittleGhost::ConfigurationError immediately.
+      # During execution, a missing or invalid result receives one repair attempt
+      # before LittleGhost::StructuredResultError is raised inside the owning Run.
+      # A top-level +ask+ records it on a failed Run. Invalid schemas and strategies
+      # raise LittleGhost::ConfigurationError before execution begins.
       def result_schema(schema = nil, name: nil, description: nil, strategy: :auto, **schema_keywords)
         return result_schema_value if schema.nil? && schema_keywords.empty? && name.nil? && description.nil? && strategy == :auto
 
@@ -463,16 +469,32 @@ module LittleGhost
       end
     end
 
-    # Run-scoped model, tools, lifecycle, delegation, and execution resources
-    # available to agent extensions.
-    attr_reader :model, :tool_registry, :run, :delegation_activity, :agent_path, :workspace, :sandbox,
-      :max_tool_calls
+    # The resolved model used by this run-scoped Agent.
+    attr_reader :model
+    # Tools created and bound for this Agent's owning Run.
+    attr_reader :tool_registry
+    # The owning Run, or +nil+ for a standalone entrypoint.
+    attr_reader :run
+    # Shared delegation tracker, when subagents are enabled.
+    attr_reader :delegation_activity
+    # This Agent's location in the bounded subagent tree.
+    attr_reader :agent_path
+    # Run-scoped workspace available to Tools and extensions.
+    attr_reader :workspace
+    # Run-scoped sandbox used for filesystem and process operations.
+    attr_reader :sandbox
+    # Maximum Tool calls allowed during one invocation.
+    attr_reader :max_tool_calls
 
     # Creates either a standalone entrypoint or a run-scoped agent.
+    # :call-seq:
+    #   new(runtime: nil) -> Agent
+    #   new(model:, runtime:, tools:, run:, ...) -> Agent
     #
-    # Calling <tt>new</tt> without +model+ and +run+ creates the standalone form
-    # used by +ask+ and +stream_ask+. Runtime builders supply the remaining
-    # dependencies and apply class-level limits and declarations.
+    # The first form is the application-facing entrypoint. It may be reused for
+    # independent concurrent calls and creates a fresh Run for each one. The
+    # second form is run-scoped; Runtime builders supply its dependencies and it
+    # must not outlive or be shared outside its owning Run.
     def initialize(
       model: nil,
       runtime: nil,

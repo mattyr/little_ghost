@@ -39,6 +39,44 @@ run.response
 
 Every participant passed to `invoke` can be an Agent or another Assembly. By default, each child receives the caller's history and application context. Pass `history: []`, `context: {}`, or redacted values when a child should see less.
 
+The last child is special because its events become the Workflow's public stream. Return that `invoke` without consuming it:
+
+```ruby
+# Wrong: this returns a String after consuming the final invocation.
+def perform
+  invoke(CustomerSupportAgent).output
+end
+
+# Right: this returns the lazy invocation itself.
+def perform
+  invoke CustomerSupportAgent
+end
+```
+
+The first version produces a failed top-level Run whose error is `ProtocolError`. Use `.output` only when Ruby needs an intermediate answer before choosing the next step.
+
+### Choose a branch in Ruby
+
+Each branch should end with its final unconsumed invocation:
+
+```ruby
+class RoutedResponseWorkflow < LittleGhost::Workflow
+  private
+
+  def perform
+    route = invoke(TriageAgent, as: :triage).output
+
+    if route == "billing"
+      invoke BillingAgent, as: :billing_response
+    else
+      invoke CustomerSupportAgent, as: :general_response
+    end
+  end
+end
+```
+
+`as:` gives the child a readable participant name in steps, trajectories, and telemetry. It does not change which Assembly runs.
+
 ### Run independent work in parallel
 
 Use `parallel` when several inputs can be processed independently:
@@ -90,6 +128,12 @@ The active model requests a handoff through a reserved tool. LittleGhost accepts
 
 Swarm members must be Agents, so each transition stays a direct model-to-model handoff. Caller history and application context are opt-in for each member. Handoff messages come from a model; never treat them as permission to read data or perform an action.
 
+Opt in only for a member that needs the data:
+
+```ruby
+member AccountAgent, history: true, context: true
+```
+
 Intermediate model text stays out of the caller-facing stream, leaving one coherent public answer. This is not a privacy boundary. The next member receives the handoff, and the result keeps a bounded summary of the journey.
 
 ## Use a Graph for guided routes
@@ -121,6 +165,12 @@ SupportFlowGraph.to_mermaid
 Conditions and input mappers read an immutable `Graph::State`. Exactly one conditional edge may match. If several match, LittleGhost raises `AssemblyRoutingError` instead of guessing which one wins. One unconditional edge can catch the request when none match.
 
 Graph nodes start without caller history or application context. They still receive the original input or the output routed from an earlier node. Map or redact that data before it moves to a provider or participant that should see less.
+
+Opt in for a trusted node when it needs caller context:
+
+```ruby
+node :account_lookup, AccountLookupAgent, context: true
+```
 
 ### Fork and join bounded parallel paths
 
@@ -162,6 +212,8 @@ invoke(
 
 A timeout asks the running code to stop; it cannot forcibly end arbitrary Ruby or provider work. A retry repeats the whole child step. Retry only selected failures, and make sure repeated external actions are safe.
 
+Retries start at zero. When `retries` is greater than zero, `retry_on` must list the exception classes that are safe to try again. LittleGhost does not retry every failure by default.
+
 ## Inspect what the assembly did
 
 A composite result remembers the steps it took. `trajectory` lets you explore them:
@@ -194,7 +246,17 @@ class ResolutionGraph < LittleGhost::Graph
 end
 ```
 
-An Assembly can also become an Agent tool with `assembly_as_tool`. The nested assembly always receives the application's invocation context. It receives conversation history only with `preserve_context: true`. Turning that option off does not remove application context, so nested tools must still authorize from trusted values.
+An Assembly can also become an Agent tool:
+
+```ruby
+class SupportCoordinatorAgent < LittleGhost::Agent
+  assembly_as_tool InvestigationGraph,
+    name: "investigate_support_request",
+    preserve_context: false
+end
+```
+
+The nested assembly always receives the parent Tool's current working state as its context. That state may include restored Session values. It receives conversation history only with `preserve_context: true`. Turning that option off does not remove working state, so nested tools must still authorize from values freshly established or revalidated by the application.
 
 ## Reach for builders when definitions are dynamic
 

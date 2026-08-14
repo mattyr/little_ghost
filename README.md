@@ -19,6 +19,23 @@ That small definition is already a complete agent. LittleGhost handles the model
 
 Model requests may send system instructions, caller input, conversation history, tool results, and attachments to the selected external provider. Model wording can vary between runs. Choose providers and the data you send them with the same care as any other external service.
 
+## Install the gem
+
+LittleGhost requires Ruby 3.3 or newer. Add it to your bundle and provide a provider credential:
+
+```ruby
+gem "little_ghost"
+```
+
+```sh
+$ bundle install
+$ export OPENROUTER_API_KEY="..."
+```
+
+OpenRouter keeps the first setup to one credential. It is not required: LittleGhost also includes adapters for OpenAI-compatible APIs, Anthropic, Gemini, Vertex AI, and Bedrock. [Running in Production](docs/guides/production.md) shows how to configure provider connections and stable model roles.
+
+LittleGhost runs inside your Ruby process. Use it from a controller, job, CLI, or service. If you want a conventional layout, start with `app/agents`, `app/assemblies`, and `app/tools`.
+
 ## Give an agent real capabilities
 
 Tools let an agent call focused parts of your application:
@@ -81,21 +98,6 @@ request ──> SupportFlowGraph ──> TriageAgent ──edge──> ResponseA
 The result stays familiar too. Every call returns a `Run` with the response,
 outcome, usage, and any final error. A coordinated assembly also records which
 participants ran. Use `.stream_ask` to watch the work as it happens.
-
-## Install the gem
-
-LittleGhost requires Ruby 3.3 or newer. Add it to your bundle and provide a supported provider credential:
-
-```ruby
-gem "little_ghost"
-```
-
-```sh
-$ bundle install
-$ export OPENROUTER_API_KEY="..."
-```
-
-LittleGhost runs inside your Ruby process. Use it from a controller, job, CLI, or service. If you want a conventional layout, start with `app/agents`, `app/assemblies`, and `app/tools`.
 
 **Growing in public.** LittleGhost is under active development, and interfaces may evolve between releases. Pin the gem version and review release notes when upgrading.
 

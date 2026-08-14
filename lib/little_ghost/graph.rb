@@ -25,6 +25,10 @@ module LittleGhost
   #   SupportFlowGraph.validate!
   #   run = SupportFlowGraph.ask("Why is my transfer pending?")
   #
+  # Call a named Graph with ask[rdoc-ref:LittleGhost::Assembly.ask] for its final
+  # Run, or the streaming entrypoint[rdoc-ref:LittleGhost::Assembly.stream_ask]
+  # for routing and final-response events.
+  #
   # Conditions and input mappers receive immutable Graph::State. Nodes do not
   # receive caller history or application context unless their declaration opts
   # in with +history: true+ or +context: true+. Validate the topology before

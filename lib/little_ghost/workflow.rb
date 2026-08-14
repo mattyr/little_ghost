@@ -31,6 +31,11 @@ module LittleGhost
   #   run.response
   #   # One possible response: Transfer 481 is waiting for the receiving bank.
   #
+  # Call a named Workflow with
+  # ask[rdoc-ref:LittleGhost::Assembly.ask] for its final Run, or
+  # the streaming entrypoint[rdoc-ref:LittleGhost::Assembly.stream_ask] for live
+  # events.
+  #
   # +invoke+ returns a lazy Workflow::Invocation. Reading +output+ consumes an
   # intermediate invocation and returns RunResult#output; +perform+ must return
   # its final invocation without consuming it so those events reach the caller.
@@ -47,7 +52,8 @@ module LittleGhost
   # ProtocolError. Each child assembly closes after its execution attempt;
   # cleanup failures surface from that attempt. Closing the Workflow closes its
   # lightweight invocation wrappers in reverse declaration order. Composition
-  # errors emit an +invocation_error+ event and then re-raise.
+  # errors emit an +invocation_error+ event and then re-raise inside the owning
+  # Run. A top-level ask records that exception on a failed Run.
   class Workflow < Assembly
     # Hold one lazy Assembly call inside a workflow composition.
     # Workflow implementations normally use only its output method or return the
@@ -124,8 +130,10 @@ module LittleGhost
       end
     end
 
-    # Owning run and the runtime used to resolve workflow agents.
-    attr_reader :run, :runtime
+    # Run that owns this run-scoped Workflow.
+    attr_reader :run
+    # Runtime used to resolve child Assemblies.
+    attr_reader :runtime
 
     def initialize(run: nil, runtime: nil) # :nodoc:
       super(run:, runtime:, standalone: run.nil?)
@@ -267,7 +275,9 @@ module LittleGhost
     # Creates a lazy invocation for +assembly+.
     #
     # Intermediate calls may use +output+; the final call must be returned from
-    # +perform+ without being consumed.
+    # +perform+ without being consumed. +as+ supplies the participant name used
+    # in steps and telemetry. Retries default to zero; a positive +retries+
+    # value requires explicit exception classes in +retry_on+.
     def invoke(
       assembly,
       as: nil,

@@ -70,6 +70,50 @@ run.result     # => the complete LittleGhost::RunResult
 
 The Agent defines reusable behavior; the Run records what happened this time.
 
+### Follow one request
+
+These objects carry one request from your application to its answer:
+
+```text
+caller input, history, and context
+              │
+              ▼
+          Invocation
+              │
+              ▼
+      Run and RunContext ──> Agent ──> Tool
+              │
+              ▼
+          RunResult
+              │
+              ▼
+             Run
+```
+
+An **Invocation** is the normalized request. Its `context` is current request state supplied by your application. A Tool can read it through `run.invocation.context` when it authorizes work.
+
+The **RunContext** carries mutable working state in `context.state`. At the top level, that state begins with any restored Session state, then the current Invocation context. Child Assemblies may receive a copied, mapped, or empty context. Revalidate persisted values before using them for permission checks.
+
+A Tool's **Binding** provides run-scoped collaborators such as the Agent, Run, Runtime, workspace, and sandbox. Those collaborators are separate from the arguments chosen by the model.
+
+The final **RunResult** keeps the complete assembly result. Its `text` is the final text answer. Its `output` returns structured data when the Agent declared a result schema, and text otherwise. The top-level `Run#response` is always the caller-facing text.
+
+### See how a call ended
+
+Top-level calls normally return a Run, even when execution fails. The terminal event carries the same outcome when you stream:
+
+| What happened | Run outcome | Terminal event | What Ruby does |
+| --- | --- | --- | --- |
+| The assembly completed | `completed` | `:run_stop` | Returns the Run |
+| Model, provider, or assembly execution failed | `failed` | `:run_error` | Returns the Run; inspect `run.error` |
+| The deadline stopped work | `partial` | `:run_partial` | Returns the Run with any response produced so far |
+| Cancellation stopped work | `cancelled` | `:run_cancel` | Returns the Run without a response |
+| Tool input or a `ToolError` failed | The model may recover | No terminal event by itself | Gives a safe error result back to the model |
+| Input, configuration, or resources failed before a Run could start | No Run exists | None | Raises the exception |
+| Cleanup, event delivery, or instrumentation failed | May also mark the Run failed | May emit `:run_error` | Raises because LittleGhost cannot report a clean stop |
+
+Unexpected Tool exception messages are hidden from the model. The original exception remains available to trusted application callbacks and diagnostics.
+
 ## An Assembly can look like one Agent
 
 One model loop is not always enough. LittleGhost calls any unit that a caller can invoke like an Agent an **Assembly**.
@@ -113,6 +157,8 @@ Use a subagent when delegation is part of one model's decision-making. Use a Wor
 ### Workflows make Ruby the coordinator
 
 A **Workflow** coordinates work with ordinary Ruby. Its `perform` method can call an Agent or another Assembly, read a result, choose a branch, or run independent steps together.
+
+`invoke` prepares a lazy child call. Reading `.output` runs an intermediate child. Return the final `invoke` itself, without reading its output, so that answer can stream to the caller.
 
 ```ruby
 class ResponseWorkflow < LittleGhost::Workflow
