@@ -4,35 +4,17 @@
 
 <%- unless pages.empty? %>
   <div id="fileindex-section" class="nav-section">
-    <details class="nav-section-collapsible" <%= 'open' unless @inside_class_file %>>
-      <summary class="nav-section-header">
-        <span class="nav-section-icon">
-          <svg>
-            <use href="#icon-file"></use>
-          </svg>
-        </span>
-
-        <span class="nav-section-title">Pages</span>
-
-        <span class="nav-section-chevron">
-          <svg>
-            <use href="#icon-chevron"></use>
-          </svg>
-        </span>
-      </summary>
-
-      <ul class="nav-list">
+    <ul class="nav-list">
+      <li>
+        <a href="<%= rel_prefix %>/index.html">Docs home</a>
+      </li>
+      <%- pages.each do |page| %>
         <li>
-          <a href="<%= rel_prefix %>/index.html">Docs home</a>
+          <a href="<%= rel_prefix %>/<%= h page.path %>"<%= ' aria-current="page"' if defined?(current) && current == page %>>
+            <%= h page.page_name %>
+          </a>
         </li>
-        <%- pages.each do |page| %>
-          <li>
-            <a href="<%= rel_prefix %>/<%= h page.path %>"<%= ' aria-current="page"' if defined?(current) && current == page %>>
-              <%= h page.page_name %>
-            </a>
-          </li>
-        <%- end %>
-      </ul>
-    </details>
+      <%- end %>
+    </ul>
   </div>
 <%- end %>

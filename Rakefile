@@ -65,7 +65,7 @@ class RDoc::Generator::LittleGhost < RDoc::Generator::Aliki
     File.join(File.dirname(RDoc::Generator::Aliki.instance_method(:initialize).source_location.first), "template", "aliki")
   ).freeze
   TEMPLATE_ROOT = Pathname.new(File.expand_path("site/rdoc", __dir__)).freeze
-  CUSTOM_TEMPLATES = %w[_header.rhtml _sidebar_pages.rhtml].to_h do |file_name|
+  CUSTOM_TEMPLATES = %w[_footer.rhtml _header.rhtml _sidebar_pages.rhtml].to_h do |file_name|
     [file_name, TEMPLATE_ROOT.join(file_name)]
   end.freeze
 
@@ -147,6 +147,7 @@ class LittleGhostSiteChecker
   ATTRIBUTE_PATTERN = /\b(?:href|src)=["']([^"']+)["']/i
   ANCHOR_PATTERN = /\b(?:id|name)=["']([^"']+)["']/i
   LEGACY_GUIDE_REFERENCE_PATTERN = /(?:Core%20Concepts|Getting%20Started|Compose%20Agents|Running%20in%20Production|_md\.html)/
+  MODIFIED_THEME_CREDIT = "using a modified version of the Aliki theme by"
 
   def initialize(root)
     @site_root = Pathname(root).expand_path
@@ -202,6 +203,13 @@ class LittleGhostSiteChecker
       check_version(page, html)
       check_navigation(page, html, "Docs")
       errors << "#{page.relative_path_from(site_root)} is missing Docs home navigation" unless html.include?(">Docs home</a>")
+      file_index = html[/<div id=["']fileindex-section["'].*?<\/div>/m]
+      if file_index&.match?(/<details\b|>\s*Pages\s*</m)
+        errors << "#{page.relative_path_from(site_root)} hides guide navigation behind a Pages section"
+      end
+      unless html.include?(MODIFIED_THEME_CREDIT)
+        errors << "#{page.relative_path_from(site_root)} is missing the modified Aliki theme credit"
+      end
       GUIDE_NAVIGATION_LABELS.each do |label|
         unless html.match?(/>\s*#{Regexp.escape(label)}\s*<\/a>/)
           errors << "#{page.relative_path_from(site_root)} is missing the #{label} guide navigation"
