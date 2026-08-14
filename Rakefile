@@ -172,7 +172,8 @@ class LittleGhostSiteChecker
     "docs/assemblies.html",
     "docs/production.html"
   ].freeze
-  COMMON_NAVIGATION_LABELS = %w[Home Docs GitHub].freeze
+  LANDING_NAVIGATION_LABELS = %w[Docs GitHub].freeze
+  DOCUMENTATION_NAVIGATION_LABELS = %w[Home Docs GitHub].freeze
   GUIDE_NAVIGATION_LABELS = [
     "Getting Started",
     "Core Concepts",
@@ -234,15 +235,18 @@ class LittleGhostSiteChecker
 
     errors << "Landing page is missing its primary heading" unless html.match?(/<h1\b[^>]*>.*?<\/h1>/m)
     errors << "Landing page is missing skip navigation" unless html.include?('href="#main"')
+    errors << "Landing page is missing the single-agent demo" unless html.include?('id="first-agent"') && html.include?('data-demo="agent"')
+    errors << "Landing page is missing the agent-graph demo" unless html.include?('id="agent-graph"') && html.include?('data-demo="graph"')
+    errors << "Landing page is missing the batteries section" unless html.include?('id="batteries"')
     check_version(page, html)
-    check_navigation(page, html, "Home")
+    check_navigation(page, html, LANDING_NAVIGATION_LABELS)
   end
 
   def check_documentation_navigation
     site_root.join("docs").glob("**/*.html").each do |page|
       html = page.read
       check_version(page, html)
-      check_navigation(page, html, "Docs")
+      check_navigation(page, html, DOCUMENTATION_NAVIGATION_LABELS, current_label: "Docs")
       errors << "#{page.relative_path_from(site_root)} is missing Docs home navigation" unless html.include?(">Docs home</a>")
       file_index = html[/<div id=["']fileindex-section["'].*?<\/div>/m]
       if file_index&.match?(/<details\b|>\s*Pages\s*</m)
@@ -285,7 +289,7 @@ class LittleGhostSiteChecker
     end
   end
 
-  def check_navigation(page, html, current_label)
+  def check_navigation(page, html, required_labels, current_label: nil)
     relative_page = page.relative_path_from(site_root)
     navigation = html[COMMON_NAVIGATION_PATTERN, 1]
 
@@ -300,14 +304,22 @@ class LittleGhostSiteChecker
       [label, {attributes:, href:}]
     end
 
-    check_local_navigation_target(page, relative_page, links, "Home", site_root.join("index.html"))
-    check_local_navigation_target(page, relative_page, links, "Docs", site_root.join("docs/index.html"))
+    (DOCUMENTATION_NAVIGATION_LABELS - required_labels).each do |label|
+      errors << "#{relative_page} has unexpected #{label} navigation" if links.key?(label)
+    end
 
-    unless links.dig("GitHub", :href) == "https://github.com/mattyr/little_ghost"
+    if required_labels.include?("Home")
+      check_local_navigation_target(page, relative_page, links, "Home", site_root.join("index.html"))
+    end
+    if required_labels.include?("Docs")
+      check_local_navigation_target(page, relative_page, links, "Docs", site_root.join("docs/index.html"))
+    end
+
+    if required_labels.include?("GitHub") && links.dig("GitHub", :href) != "https://github.com/mattyr/little_ghost"
       errors << "#{relative_page} has the wrong GitHub navigation target"
     end
 
-    COMMON_NAVIGATION_LABELS.each do |label|
+    DOCUMENTATION_NAVIGATION_LABELS.each do |label|
       link = links[label]
       next unless link
 

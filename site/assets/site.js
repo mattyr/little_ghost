@@ -3,241 +3,380 @@ const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
 
 root.classList.add("js");
 
-const revealElements = [...document.querySelectorAll(".reveal")];
-
-if (reduceMotion.matches || !("IntersectionObserver" in window)) {
-  revealElements.forEach((element) => element.classList.add("is-visible"));
-} else {
-  const revealObserver = new IntersectionObserver(
-    (entries, observer) => {
-      entries.forEach((entry) => {
-        if (!entry.isIntersecting) return;
-
-        entry.target.classList.add("is-visible");
-        observer.unobserve(entry.target);
-      });
-    },
-    { rootMargin: "0px 0px -8%", threshold: 0.12 },
-  );
-
-  revealElements.forEach((element) => revealObserver.observe(element));
-}
-
 const header = document.querySelector(".site-header");
-
-const updateHeader = () => {
-  header?.classList.toggle("is-scrolled", window.scrollY > 28);
-};
+const updateHeader = () => header?.classList.toggle("is-scrolled", window.scrollY > 28);
 
 updateHeader();
 window.addEventListener("scroll", updateHeader, { passive: true });
 
+const introGhost = document.querySelector(".intro-ghost");
 let pointerFrame = 0;
 let pointerX = window.innerWidth / 2;
 let pointerY = window.innerHeight / 2;
-
-const updatePointerEffects = () => {
-  pointerFrame = 0;
-  root.style.setProperty("--pointer-x", `${pointerX}px`);
-  root.style.setProperty("--pointer-y", `${pointerY}px`);
-
-  const ghost = document.querySelector(".ghost-button");
-  if (!ghost || reduceMotion.matches) return;
-
-  const bounds = ghost.getBoundingClientRect();
-  const centerX = bounds.left + bounds.width / 2;
-  const centerY = bounds.top + bounds.height / 2;
-  const deltaX = Math.max(-1, Math.min(1, (pointerX - centerX) / window.innerWidth));
-  const deltaY = Math.max(-1, Math.min(1, (pointerY - centerY) / window.innerHeight));
-
-  ghost.style.setProperty("--ghost-x", `${deltaX * 13}px`);
-  ghost.style.setProperty("--ghost-y", `${deltaY * 10}px`);
-  ghost.style.setProperty("--ghost-rotate", `${deltaX * 3}deg`);
-  ghost.style.setProperty("--pupil-x", `${deltaX * 8}px`);
-  ghost.style.setProperty("--pupil-y", `${deltaY * 7}px`);
-};
-
+let pointerType = "mouse";
 window.addEventListener(
   "pointermove",
   (event) => {
     pointerX = event.clientX;
     pointerY = event.clientY;
-    if (!pointerFrame) pointerFrame = requestAnimationFrame(updatePointerEffects);
+    pointerType = event.pointerType;
+    if (pointerFrame) return;
+
+    pointerFrame = requestAnimationFrame(() => {
+      pointerFrame = 0;
+      root.style.setProperty("--pointer-x", `${pointerX}px`);
+      root.style.setProperty("--pointer-y", `${pointerY}px`);
+
+      if (!introGhost || reduceMotion.matches || pointerType === "touch") return;
+
+      const bounds = introGhost.getBoundingClientRect();
+      const centerX = bounds.left + bounds.width / 2;
+      const centerY = bounds.top + bounds.height / 2;
+      const horizontal = Math.max(-1, Math.min(1, (pointerX - centerX) / (window.innerWidth * 0.7)));
+      const vertical = Math.max(-1, Math.min(1, (pointerY - centerY) / (window.innerHeight * 0.7)));
+      introGhost.style.setProperty("--pupil-x", `${0.4 + horizontal * 1.8}px`);
+      introGhost.style.setProperty("--pupil-y", `${vertical * 1.9}px`);
+    });
   },
   { passive: true },
 );
 
-document.querySelectorAll(".magnetic").forEach((element) => {
-  element.addEventListener("pointermove", (event) => {
-    if (reduceMotion.matches || event.pointerType === "touch") return;
+const createDemo = (section) => {
+  const lineElements = [...section.querySelectorAll("[data-demo-line]")];
+  const highlightedLines = lineElements.map((line) => line.innerHTML);
+  const syntaxClasses = ["syntax-keyword", "syntax-constant", "syntax-method", "syntax-string"];
+  const typedCharacters = lineElements.map((line) => {
+    const characters = [];
+    const walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT);
+    let textNode = walker.nextNode();
 
-    const bounds = element.getBoundingClientRect();
-    const x = event.clientX - bounds.left;
-    const y = event.clientY - bounds.top;
-    const offsetX = (x / bounds.width - 0.5) * 9;
-    const offsetY = (y / bounds.height - 0.5) * 7;
+    while (textNode) {
+      const syntaxParent = textNode.parentElement.closest(`.${syntaxClasses.join(", .")}`);
+      const className = syntaxClasses.find((name) => syntaxParent?.classList.contains(name)) ?? "";
+      [...textNode.data].forEach((character) => characters.push({character, className}));
+      textNode = walker.nextNode();
+    }
 
-    element.style.setProperty("--magnetic-x", `${offsetX}px`);
-    element.style.setProperty("--magnetic-y", `${offsetY}px`);
-    element.style.setProperty("--button-x", `${x}px`);
-    element.style.setProperty("--button-y", `${y}px`);
+    return characters;
+  });
+  const recording = section.querySelector(".recording");
+  const editor = section.querySelector(".editor");
+  const ghost = section.querySelector(".typing-ghost");
+  const spark = section.querySelector(".typing-spark");
+  const runButton = section.querySelector(".run-button");
+  const replayButton = section.querySelector(".replay-button");
+  const underhood = section.querySelector(".underhood");
+  const flowRequest = section.querySelector(".flow-request");
+  const flowResponse = section.querySelector(".flow-response");
+  const flowNodes = [...section.querySelectorAll("[data-flow-node]")];
+  const flowEdges = [...section.querySelectorAll("[data-flow-edge]")];
+  const command = section.querySelector(".output-command");
+  const output = section.querySelector(".output-text");
+  const caret = section.querySelector(".output-caret");
+  const announcement = section.querySelector(".demo-announcement");
+  let generation = 0;
+  let lineDestinations = [];
+
+  const wait = (duration, expectedGeneration) => new Promise((resolve) => {
+    window.setTimeout(() => resolve(expectedGeneration === generation), duration);
   });
 
-  element.addEventListener("pointerleave", () => {
-    element.style.setProperty("--magnetic-x", "0px");
-    element.style.setProperty("--magnetic-y", "0px");
+  const caretBoxFor = (line) => {
+    const walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT);
+    let lastTextNode;
+    let textNode = walker.nextNode();
+
+    while (textNode) {
+      if (textNode.data.length > 0) lastTextNode = textNode;
+      textNode = walker.nextNode();
+    }
+    if (!lastTextNode) return null;
+
+    const range = document.createRange();
+    range.setStart(lastTextNode, lastTextNode.data.length);
+    range.collapse(true);
+    return range.getBoundingClientRect();
+  };
+
+  const measureLineDestinations = () => {
+    const currentMarkup = lineElements.map((line) => line.innerHTML);
+    lineElements.forEach((line, index) => {
+      line.innerHTML = highlightedLines[index];
+    });
+    const editorBox = editor.getBoundingClientRect();
+    const horizontalRange = Math.min(24, editorBox.width * 0.065);
+    lineDestinations = lineElements.map((line, index) => {
+      const lineBox = line.getBoundingClientRect();
+      const horizontalDrift = Math.sin(index * 1.15) * horizontalRange;
+      return {
+        x: Math.min(editorBox.width - 48, Math.max(72, editorBox.width * 0.62 + horizontalDrift)),
+        y: lineBox.top - editorBox.top + Math.max(-2, (lineBox.height - 35) / 2),
+      };
+    });
+    lineElements.forEach((line, index) => {
+      line.innerHTML = currentMarkup[index];
+    });
+  };
+
+  const placeGhost = (lineIndex) => {
+    const destination = lineDestinations[lineIndex];
+    if (!destination) return;
+
+    ghost.style.left = `${destination.x}px`;
+    ghost.style.top = `${destination.y}px`;
+  };
+
+  const placeSparkAfterText = (lineIndex) => {
+    const line = lineElements[lineIndex];
+    if (!line) return;
+
+    const editorBox = editor.getBoundingClientRect();
+    const caretBox = caretBoxFor(line);
+    const lineBox = line.getBoundingClientRect();
+    const x = caretBox ? Math.min(editorBox.width - 22, Math.max(42, caretBox.left - editorBox.left + 4)) : 42;
+    const y = (caretBox?.height ? caretBox.top : lineBox.top) - editorBox.top + 7;
+    spark.style.left = `${x}px`;
+    spark.style.top = `${y}px`;
+  };
+
+  const showSpark = () => {
+    spark.classList.remove("is-visible");
+    void spark.offsetWidth;
+    spark.classList.add("is-visible");
+  };
+
+  const finishCode = () => {
+    lineElements.forEach((line, index) => {
+      line.innerHTML = highlightedLines[index];
+    });
+    placeGhost(lineElements.length - 1);
+    placeSparkAfterText(lineElements.length - 1);
+  };
+
+  const resetFlow = () => {
+    flowRequest.classList.remove("is-active", "is-complete");
+    flowResponse.classList.remove("is-active", "is-complete");
+    flowNodes.forEach((node) => node.classList.remove("is-active", "is-complete"));
+    flowEdges.forEach((edge) => edge.classList.remove("is-active", "is-complete"));
+  };
+
+  const playFlow = async (expectedGeneration) => {
+    flowRequest.classList.add("is-active");
+    if (reduceMotion.matches) {
+      flowNodes.forEach((node) => node.classList.add("is-complete"));
+      flowEdges.forEach((edge) => edge.classList.add("is-complete"));
+      flowResponse.classList.add("is-complete");
+      return true;
+    }
+
+    if (!(await wait(900, expectedGeneration))) return false;
+    flowRequest.classList.remove("is-active");
+    flowRequest.classList.add("is-complete");
+    const steps = [...new Set(flowNodes.map((node) => Number(node.dataset.flowStep)))].sort((a, b) => a - b);
+
+    for (const step of steps) {
+      const stepNodes = flowNodes.filter((node) => Number(node.dataset.flowStep) === step);
+      const stepEdges = flowEdges.filter((edge) => Number(edge.dataset.flowStep) === step);
+      stepNodes.forEach((node) => node.classList.add("is-active"));
+      stepEdges.forEach((edge) => edge.classList.add("is-active"));
+      if (!(await wait(1700, expectedGeneration))) return false;
+      stepNodes.forEach((node) => {
+        node.classList.remove("is-active");
+        node.classList.add("is-complete");
+      });
+      stepEdges.forEach((edge) => {
+        edge.classList.remove("is-active");
+        edge.classList.add("is-complete");
+      });
+      if (step !== steps.at(-1) && !(await wait(480, expectedGeneration))) return false;
+    }
+
+    const finalStep = Math.max(...steps) + 1;
+    const finalEdges = flowEdges.filter((edge) => Number(edge.dataset.flowStep) === finalStep);
+    finalEdges.forEach((edge) => edge.classList.add("is-active"));
+    if (!(await wait(900, expectedGeneration))) return false;
+    finalEdges.forEach((edge) => {
+      edge.classList.remove("is-active");
+      edge.classList.add("is-complete");
+    });
+    flowResponse.classList.add("is-complete");
+    return true;
+  };
+
+  const runTerminal = async (expectedGeneration, animateTap = true, preserveLayout = false) => {
+    if (expectedGeneration !== generation) return;
+
+    command.textContent = "";
+    output.textContent = "";
+    announcement.textContent = "";
+    caret.style.opacity = "";
+    runButton.classList.remove("is-pressed");
+    resetFlow();
+    underhood.classList.remove("is-open");
+    underhood.setAttribute("aria-hidden", "true");
+    if (!preserveLayout) recording.classList.remove("is-executing");
+    finishCode();
+    ghost.classList.remove("is-typing", "is-running", "is-tapping");
+
+    if (animateTap && !reduceMotion.matches) {
+      ghost.classList.add("is-running");
+      const editorBox = editor.getBoundingClientRect();
+      const runBox = runButton.getBoundingClientRect();
+      const ghostBox = ghost.getBoundingClientRect();
+      const buttonCenter = runBox.left - editorBox.left + runBox.width / 2;
+      ghost.style.left = `${Math.max(18, Math.min(editorBox.width - ghostBox.width - 12, buttonCenter - ghostBox.width / 2))}px`;
+      ghost.style.top = `${runBox.top - editorBox.top + runBox.height / 2 - ghostBox.height - 3}px`;
+      if (!(await wait(900, expectedGeneration))) return;
+      ghost.classList.add("is-tapping");
+      runButton.classList.add("is-pressed");
+      if (!(await wait(260, expectedGeneration))) return;
+      ghost.classList.remove("is-tapping");
+      runButton.classList.remove("is-pressed");
+    }
+
+    recording.style.height = `${recording.offsetHeight}px`;
+    command.textContent = section.dataset.command;
+    ghost.style.opacity = "0";
+    recording.classList.add("is-executing");
+    underhood.classList.add("is-open");
+    underhood.setAttribute("aria-hidden", "false");
+    if (!(await wait(reduceMotion.matches ? 0 : 850, expectedGeneration))) return;
+    if (!(await playFlow(expectedGeneration))) return;
+
+    if (reduceMotion.matches) {
+      output.textContent = section.dataset.response;
+    } else {
+      for (const character of section.dataset.response) {
+        if (expectedGeneration !== generation) return;
+        output.textContent += character;
+        if (!(await wait(character === " " ? 8 : 17, expectedGeneration))) return;
+      }
+    }
+
+    caret.style.opacity = "0";
+    runButton.textContent = "Replay run ↻";
+    announcement.textContent = `Demo complete. ${section.dataset.response}`;
+  };
+
+  const play = async () => {
+    section.dataset.started = "true";
+    generation += 1;
+    const expectedGeneration = generation;
+    recording.style.height = `${recording.offsetHeight}px`;
+    recording.classList.add("is-resetting");
+    recording.classList.remove("is-executing");
+    underhood.classList.remove("is-open");
+    underhood.setAttribute("aria-hidden", "true");
+    void recording.offsetHeight;
+    measureLineDestinations();
+    recording.classList.remove("is-resetting");
+    lineElements.forEach((line) => {
+      line.textContent = "";
+    });
+    command.textContent = "";
+    output.textContent = "";
+    announcement.textContent = "";
+    caret.style.opacity = "";
+    runButton.textContent = section.dataset.runLabel;
+    runButton.classList.remove("is-pressed");
+    resetFlow();
+    ghost.classList.remove("is-running", "is-tapping");
+    ghost.classList.add("is-typing");
+    ghost.style.opacity = "1";
+    ghost.style.transform = "";
+    placeGhost(0);
+
+    if (reduceMotion.matches) {
+      finishCode();
+      await runTerminal(expectedGeneration, false);
+      return;
+    }
+
+    if (!(await wait(380, expectedGeneration))) return;
+    for (let lineIndex = 0; lineIndex < typedCharacters.length; lineIndex += 1) {
+      const line = lineElements[lineIndex];
+      if (typedCharacters[lineIndex].length > 0) placeGhost(lineIndex);
+      let targetNode;
+      let activeClass;
+
+      for (const token of typedCharacters[lineIndex]) {
+        if (expectedGeneration !== generation) return;
+        if (!targetNode || token.className !== activeClass) {
+          activeClass = token.className;
+          if (activeClass) {
+            const span = document.createElement("span");
+            span.className = activeClass;
+            line.append(span);
+            targetNode = span;
+          } else {
+            targetNode = document.createTextNode("");
+            line.append(targetNode);
+          }
+        }
+        targetNode.textContent += token.character;
+        placeSparkAfterText(lineIndex);
+        if (token.character !== " ") showSpark();
+        if (!(await wait(token.character === " " ? 5 : 13, expectedGeneration))) return;
+      }
+      if (!(await wait(90, expectedGeneration))) return;
+    }
+    finishCode();
+    if (!(await wait(320, expectedGeneration))) return;
+    await runTerminal(expectedGeneration);
+  };
+
+  replayButton.addEventListener("click", play);
+  runButton.addEventListener("click", () => {
+    generation += 1;
+    const expectedGeneration = generation;
+    section.dataset.started = "true";
+    ghost.style.opacity = "0";
+    runTerminal(expectedGeneration, false, true);
   });
-});
-
-document.querySelectorAll(".interactive-card").forEach((card) => {
-  card.addEventListener("pointermove", (event) => {
-    const bounds = card.getBoundingClientRect();
-    card.style.setProperty("--card-x", `${event.clientX - bounds.left}px`);
-    card.style.setProperty("--card-y", `${event.clientY - bounds.top}px`);
-  });
-});
-
-const ghostButton = document.querySelector(".ghost-button");
-const ghostWorld = document.querySelector(".hero-world");
-const ghostMessage = document.querySelector(".ghost-message");
-const ghostMessages = ["hello, Ruby", "tools ready", "let's build", "still floating"];
-let ghostMessageIndex = 0;
-let ghostMessageTimer;
-
-const showGhostMessage = () => {
-  if (!ghostMessage) return;
-
-  ghostMessage.textContent = ghostMessages[ghostMessageIndex % ghostMessages.length];
-  ghostMessageIndex += 1;
-  ghostMessage.classList.add("is-visible");
-  window.clearTimeout(ghostMessageTimer);
-  ghostMessageTimer = window.setTimeout(() => ghostMessage.classList.remove("is-visible"), 1700);
-};
-
-const releaseSparks = () => {
-  if (!ghostWorld || reduceMotion.matches) return;
-
-  const colors = ["#76f7d2", "#a98aff", "#ff829c", "#fffdf7"];
-
-  for (let index = 0; index < 15; index += 1) {
-    const spark = document.createElement("span");
-    const angle = (Math.PI * 2 * index) / 15 + Math.random() * 0.25;
-    const distance = 70 + Math.random() * 95;
-
-    spark.className = "ghost-spark";
-    spark.style.setProperty("--spark-x", `${Math.cos(angle) * distance}px`);
-    spark.style.setProperty("--spark-y", `${Math.sin(angle) * distance}px`);
-    spark.style.setProperty("--spark-size", `${3 + Math.random() * 5}px`);
-    spark.style.setProperty("--spark-color", colors[index % colors.length]);
-    ghostWorld.append(spark);
-    spark.addEventListener("animationend", () => spark.remove(), { once: true });
-  }
-};
-
-ghostButton?.addEventListener("click", () => {
-  showGhostMessage();
-  releaseSparks();
-});
-
-const orbitLabels = [...document.querySelectorAll(".orbit-node")];
-const orbitTracks = [...document.querySelectorAll(".orbit-anchor-track")];
-const orbitLayer = document.querySelector(".orbit-labels");
-let orbitFrame = 0;
-let orbitElapsed = 0;
-let orbitResumedAt = 0;
-
-const clearOrbitLabelStyles = () => {
-  orbitLayer?.classList.remove("is-orbiting");
-  orbitLabels.forEach((label) => {
-    ["opacity", "transform"].forEach((property) => label.style.removeProperty(property));
-  });
-};
-
-const updateOrbitLabels = (timestamp) => {
-  orbitFrame = 0;
-  if (reduceMotion.matches || document.hidden) return;
-
-  const elapsed = ((orbitElapsed + timestamp - orbitResumedAt) / 110_000) * Math.PI * 2;
-  const angles = orbitTracks.map((track, index) => {
-    const angle = elapsed + (index * Math.PI * 2) / orbitTracks.length;
-    track.style.transform = `rotate(${angle}rad)`;
-    return angle;
-  });
-  const bounds = orbitLayer.getBoundingClientRect();
-  const anchors = orbitTracks.map((track) => track.firstElementChild.getBoundingClientRect());
-
-  orbitLabels.forEach((label, index) => {
-    const angle = angles[index];
-    const anchor = anchors[index];
-    const x = anchor.left + anchor.width / 2 - bounds.left;
-    const y = anchor.top + anchor.height / 2 - bounds.top;
-    const depth = (Math.sin(angle) + 1) / 2;
-    const scale = 0.76 + depth * 0.14;
-
-    label.style.opacity = `${0.4 + depth * 0.24}`;
-    label.style.transform = `translate(calc(-50% + ${x}px), calc(-50% + ${y}px)) rotate(-8deg) skewX(-7deg) scale(${scale}, ${scale * 0.9})`;
+  window.addEventListener("resize", () => {
+    let lastLine = 0;
+    lineElements.forEach((line, index) => {
+      if (line.textContent.length > 0) lastLine = index;
+    });
+    recording.style.height = "";
+    measureLineDestinations();
+    placeGhost(lastLine);
+    placeSparkAfterText(lastLine);
   });
 
-  orbitFrame = requestAnimationFrame(updateOrbitLabels);
-};
-
-const startOrbitLabels = () => {
-  if (!orbitLabels.length || orbitLabels.length !== orbitTracks.length || orbitFrame || reduceMotion.matches || document.hidden) return;
-
-  orbitLayer?.classList.add("is-orbiting");
-  orbitResumedAt = performance.now();
-  orbitFrame = requestAnimationFrame(updateOrbitLabels);
-};
-
-const stopOrbitLabels = (reset = false) => {
-  if (orbitFrame && !reset) orbitElapsed += performance.now() - orbitResumedAt;
-  cancelAnimationFrame(orbitFrame);
-  orbitFrame = 0;
-  orbitResumedAt = 0;
-  if (reset) {
-    orbitElapsed = 0;
-    clearOrbitLabelStyles();
-  }
-};
-
-startOrbitLabels();
-
-document.addEventListener("visibilitychange", () => {
-  if (document.hidden) stopOrbitLabels();
-  else startOrbitLabels();
-});
-
-reduceMotion.addEventListener("change", (event) => {
-  if (event.matches) stopOrbitLabels(true);
-  else startOrbitLabels();
-});
-
-const tracePanel = document.querySelector(".trace-panel");
-const traceReplay = document.querySelector(".trace-replay");
-
-const playTrace = () => {
-  if (!tracePanel || reduceMotion.matches) return;
-
-  tracePanel.classList.remove("is-playing");
-  requestAnimationFrame(() => {
-    requestAnimationFrame(() => tracePanel.classList.add("is-playing"));
+  recording.style.height = `${recording.offsetHeight}px`;
+  measureLineDestinations();
+  lineElements.forEach((line) => {
+    line.textContent = "";
   });
+  command.textContent = "";
+  output.textContent = "";
+  announcement.textContent = "";
+  ghost.style.opacity = "0";
+  underhood.setAttribute("aria-hidden", "true");
+
+  return { play };
 };
 
-if (tracePanel && !reduceMotion.matches && "IntersectionObserver" in window) {
-  const traceObserver = new IntersectionObserver(
+const sections = [...document.querySelectorAll("[data-demo]")];
+const controllers = new Map(sections.map((section) => [section, createDemo(section)]));
+
+if (!("IntersectionObserver" in window)) {
+  controllers.forEach((controller) => controller.play());
+} else {
+  const observer = new IntersectionObserver(
     (entries) => {
       entries.forEach((entry) => {
-        tracePanel.classList.toggle("is-playing", entry.isIntersecting);
+        if (!entry.isIntersecting) return;
+        const section = entry.target.closest("[data-demo]");
+        if (!section.dataset.started) controllers.get(section).play();
+        observer.unobserve(entry.target);
       });
     },
-    { threshold: 0.45 },
+    { threshold: 1 },
   );
-
-  traceObserver.observe(tracePanel);
+  sections.forEach((section) => observer.observe(section.querySelector(".terminal")));
 }
-
-traceReplay?.addEventListener("click", playTrace);
 
 class Constellation {
   constructor(canvas) {
@@ -250,13 +389,13 @@ class Constellation {
     this.frame = 0;
     this.running = false;
     this.pointer = { x: window.innerWidth / 2, y: window.innerHeight / 2, active: false };
-    this.colors = ["118, 247, 210", "169, 138, 255", "255, 130, 156", "247, 244, 237"];
-
+    this.colors = ["121, 246, 212", "180, 154, 255", "255, 143, 169", "247, 244, 237"];
     this.resize = this.resize.bind(this);
     this.draw = this.draw.bind(this);
     this.handlePointer = this.handlePointer.bind(this);
     this.handleVisibility = this.handleVisibility.bind(this);
 
+    if (!this.context) return;
     this.resize();
     window.addEventListener("resize", this.resize, { passive: true });
     window.addEventListener("pointermove", this.handlePointer, { passive: true });
@@ -264,9 +403,8 @@ class Constellation {
       this.pointer.active = false;
     });
     document.addEventListener("visibilitychange", this.handleVisibility);
-
-    if (!reduceMotion.matches) this.start();
-    else this.drawStatic();
+    if (reduceMotion.matches) this.drawStatic();
+    else this.start();
   }
 
   resize() {
@@ -280,7 +418,6 @@ class Constellation {
     this.canvas.style.width = `${this.width}px`;
     this.canvas.style.height = `${this.height}px`;
     this.context.setTransform(this.ratio, 0, 0, this.ratio, 0, 0);
-
     const desiredCount = Math.max(28, Math.min(72, Math.round((this.width * this.height) / 24000)));
 
     if (!this.particles.length) {
@@ -290,11 +427,9 @@ class Constellation {
         particle.x = (particle.x / oldWidth) * this.width;
         particle.y = (particle.y / oldHeight) * this.height;
       });
-
       while (this.particles.length < desiredCount) this.particles.push(this.makeParticle(this.particles.length));
       this.particles.length = desiredCount;
     }
-
     if (reduceMotion.matches) this.drawStatic();
   }
 
@@ -302,8 +437,6 @@ class Constellation {
     return {
       x: Math.random() * this.width,
       y: Math.random() * this.height,
-      baseX: Math.random() * this.width,
-      baseY: Math.random() * this.height,
       vx: (Math.random() - 0.5) * 0.14,
       vy: (Math.random() - 0.5) * 0.14,
       radius: 0.65 + Math.random() * 1.45,
@@ -325,7 +458,6 @@ class Constellation {
 
   start() {
     if (this.running) return;
-
     this.running = true;
     this.frame = requestAnimationFrame(this.draw);
   }
@@ -335,41 +467,38 @@ class Constellation {
     cancelAnimationFrame(this.frame);
   }
 
-  updateParticle(particle) {
-    particle.x += particle.vx;
-    particle.y += particle.vy;
-
-    if (particle.x < -20) particle.x = this.width + 20;
-    if (particle.x > this.width + 20) particle.x = -20;
-    if (particle.y < -20) particle.y = this.height + 20;
-    if (particle.y > this.height + 20) particle.y = -20;
-
-    if (!this.pointer.active) return;
-
-    const deltaX = this.pointer.x - particle.x;
-    const deltaY = this.pointer.y - particle.y;
-    const distance = Math.hypot(deltaX, deltaY);
-
-    if (distance > 0 && distance < 190) {
-      const force = (190 - distance) / 1900;
-      particle.x -= deltaX * force * 0.09;
-      particle.y -= deltaY * force * 0.09;
-    }
-  }
-
   paint(update) {
     const context = this.context;
     context.clearRect(0, 0, this.width, this.height);
+    this.particles.forEach((particle) => {
+      if (update) {
+        particle.x += particle.vx;
+        particle.y += particle.vy;
+        if (particle.x < -20) particle.x = this.width + 20;
+        if (particle.x > this.width + 20) particle.x = -20;
+        if (particle.y < -20) particle.y = this.height + 20;
+        if (particle.y > this.height + 20) particle.y = -20;
 
-    if (update) this.particles.forEach((particle) => this.updateParticle(particle));
+        if (this.pointer.active) {
+          const deltaX = this.pointer.x - particle.x;
+          const deltaY = this.pointer.y - particle.y;
+          const distance = Math.hypot(deltaX, deltaY);
+          if (distance > 0 && distance < 180) {
+            const force = (180 - distance) / 1800;
+            particle.x -= deltaX * force * 0.08;
+            particle.y -= deltaY * force * 0.08;
+          }
+        }
+      }
+
+      context.beginPath();
+      context.fillStyle = `rgba(${particle.color}, ${particle.alpha})`;
+      context.arc(particle.x, particle.y, particle.radius, 0, Math.PI * 2);
+      context.fill();
+    });
 
     for (let first = 0; first < this.particles.length; first += 1) {
       const particle = this.particles[first];
-
-      context.beginPath();
-      context.arc(particle.x, particle.y, particle.radius, 0, Math.PI * 2);
-      context.fillStyle = `rgba(${particle.color}, ${particle.alpha})`;
-      context.fill();
 
       for (let second = first + 1; second < this.particles.length; second += 1) {
         const neighbor = this.particles[second];
@@ -387,17 +516,17 @@ class Constellation {
     }
 
     if (this.pointer.active) {
-      const glow = context.createRadialGradient(this.pointer.x, this.pointer.y, 0, this.pointer.x, this.pointer.y, 190);
-      glow.addColorStop(0, "rgba(118, 247, 210, 0.045)");
-      glow.addColorStop(1, "rgba(118, 247, 210, 0)");
+      const radius = 190;
+      const glow = context.createRadialGradient(this.pointer.x, this.pointer.y, 0, this.pointer.x, this.pointer.y, radius);
+      glow.addColorStop(0, "rgba(121, 246, 212, 0.045)");
+      glow.addColorStop(1, "rgba(121, 246, 212, 0)");
       context.fillStyle = glow;
-      context.fillRect(this.pointer.x - 190, this.pointer.y - 190, 380, 380);
+      context.fillRect(this.pointer.x - radius, this.pointer.y - radius, radius * 2, radius * 2);
     }
   }
 
   draw() {
     if (!this.running) return;
-
     this.paint(true);
     this.frame = requestAnimationFrame(this.draw);
   }
@@ -407,19 +536,14 @@ class Constellation {
   }
 }
 
-const canvas = document.querySelector("#constellation");
-let constellation;
-
-if (canvas?.getContext) constellation = new Constellation(canvas);
+const constellationCanvas = document.querySelector("#constellation");
+const constellation = constellationCanvas ? new Constellation(constellationCanvas) : null;
 
 reduceMotion.addEventListener("change", (event) => {
-  revealElements.forEach((element) => element.classList.add("is-visible"));
-
   if (!constellation) return;
   if (event.matches) {
     constellation.stop();
     constellation.drawStatic();
-    tracePanel?.classList.remove("is-playing");
   } else {
     constellation.start();
   }
