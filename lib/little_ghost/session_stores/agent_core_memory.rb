@@ -3,6 +3,7 @@
 require "digest"
 require "json"
 require "securerandom"
+require_relative "../data_map"
 require_relative "../session_store"
 
 module LittleGhost
@@ -49,10 +50,15 @@ module LittleGhost
     # but horizontally scaled applications need an external lock or unique
     # active-run record. Commits use generation and checkpoint records so an
     # incomplete write is never exposed as a successful snapshot.
+    #
+    # AgentCore checkpoints are versioned. This store reads supported historical
+    # versions without writing during #load, then writes the current checkpoint
+    # format when the session next appends or replaces its snapshot.
     class AgentCoreMemory < SessionStore
       MESSAGE_PREFIX = "little_ghost:message:v4:" # :nodoc:
       MESSAGE_CHUNK_PREFIX = "little_ghost:message_chunk:v4:" # :nodoc:
-      CHECKPOINT_PREFIX = "little_ghost:checkpoint:v4:" # :nodoc:
+      CHECKPOINT_PREFIX = "little_ghost:checkpoint:v5:" # :nodoc:
+      LEGACY_CHECKPOINT_PREFIX = "little_ghost:checkpoint:v4:" # :nodoc:
       CONVERSATIONAL_TEXT_LIMIT = 100_000 # :nodoc:
       MESSAGE_CHUNK_CONTENT_LIMIT = 90_000 # :nodoc:
       EVENT_PAYLOAD_LIMIT = 100 # :nodoc:
@@ -63,7 +69,8 @@ module LittleGhost
       SYMBOL_KEY_PREFIX = "little_ghost:symbol:" # :nodoc:
       STRING_KEY_PREFIX = "little_ghost:string:" # :nodoc:
       MESSAGE_EVENT_TYPE = "message_v4" # :nodoc:
-      CHECKPOINT_EVENT_TYPE = "checkpoint_v4" # :nodoc:
+      CHECKPOINT_EVENT_TYPE = "checkpoint_v5" # :nodoc:
+      LEGACY_CHECKPOINT_EVENT_TYPE = "checkpoint_v4" # :nodoc:
       CONVERSATION_PROJECTION_EVENT_TYPE = "conversation_projection_v1" # :nodoc:
       PROJECTION_METADATA_KEYS = %w[
         little_ghost_parent_link
@@ -135,27 +142,39 @@ module LittleGhost
       # +expected_count+ matches the latest remote generation.
       def append(id, messages:, state:, metadata:, expected_count:, actor_id: nil)
         messages = persistable_messages(messages)
+        state = DataMap.new(state).to_h
+        metadata = DataMap.new(metadata).to_h
         actor = self.class.safe_id(required_actor_id(actor_id))
         session = self.class.safe_id(id)
         key = [actor, session]
         synchronize_persistence(key) do
-          head, = latest_checkpoint(actor, session)
+          head, lineage = latest_checkpoint(actor, session)
           persistence = head&.fetch(:checkpoint)
           persisted_count = persistence&.fetch(:message_count, 0) || 0
           unless persisted_count == expected_count
             raise ProtocolError, "Session changed while it was being updated"
           end
 
-          generation = persistence&.fetch(:generation) || SecureRandom.uuid
+          if head && head.fetch(:format) != CHECKPOINT_EVENT_TYPE
+            existing = messages_from(message_records_for(actor, session, lineage:), lineage:)
+            messages = [*existing, *messages].freeze
+            expected_count = 0
+            persistence = head.fetch(:checkpoint)
+            root = true
+            generation = SecureRandom.uuid
+          else
+            root = persistence.nil?
+            generation = persistence&.fetch(:generation) || SecureRandom.uuid
+          end
           commit_id = SecureRandom.uuid
           plan = plan_messages(messages, generation:, commit_id:, offset: expected_count)
           checkpoint = build_checkpoint(
             persistence:,
             generation:,
             commit_id:,
-            root: persistence.nil?,
+            root:,
             plan:,
-            message_count: expected_count + messages.length,
+            message_count: root ? messages.length : expected_count + messages.length,
             state:,
             metadata:
           )
@@ -167,6 +186,8 @@ module LittleGhost
       # Replaces the visible snapshot by committing a new remote generation.
       def replace(id, messages:, state:, metadata:, actor_id: nil)
         messages = persistable_messages(messages)
+        state = DataMap.new(state).to_h
+        metadata = DataMap.new(metadata).to_h
         actor = self.class.safe_id(required_actor_id(actor_id))
         session = self.class.safe_id(id)
         key = [actor, session]
@@ -379,27 +400,29 @@ module LittleGhost
 
       def checkpoint_entries(actor_id, session_id)
         entries = []
-        each_event(
-          actor_id,
-          session_id,
-          filter: metadata_filter(type: CHECKPOINT_EVENT_TYPE),
-          event_limit: MAX_CHECKPOINT_EVENTS,
-          payload_limit: MAX_CHECKPOINT_EVENTS,
-          byte_limit: MAX_CHECKPOINT_READ_BYTES
-        ) do |event|
-          data = event_session_data(event)
-          raise ProtocolError, "AgentCore session checkpoint event is invalid" unless data
-          unless event.event_timestamp.is_a?(Time)
-            raise ProtocolError, "AgentCore session checkpoint timestamp is invalid"
-          end
+        [LEGACY_CHECKPOINT_EVENT_TYPE, CHECKPOINT_EVENT_TYPE].each do |format|
+          each_event(
+            actor_id,
+            session_id,
+            filter: metadata_filter(type: format),
+            event_limit: MAX_CHECKPOINT_EVENTS,
+            payload_limit: MAX_CHECKPOINT_EVENTS,
+            byte_limit: MAX_CHECKPOINT_READ_BYTES
+          ) do |event|
+            data = event_session_data(event, format:)
+            raise ProtocolError, "AgentCore session checkpoint event is invalid" unless data
+            unless event.event_timestamp.is_a?(Time)
+              raise ProtocolError, "AgentCore session checkpoint timestamp is invalid"
+            end
 
-          checkpoint = normalize_checkpoint(data)
-          unless event_metadata_value(event, GENERATION_METADATA_KEY) == checkpoint.fetch(:generation) &&
-              event_metadata_value(event, COMMIT_METADATA_KEY) == checkpoint.fetch(:commit_id)
-            raise ProtocolError, "AgentCore session checkpoint metadata is invalid"
-          end
+            checkpoint = normalize_checkpoint(data, format:)
+            unless event_metadata_value(event, GENERATION_METADATA_KEY) == checkpoint.fetch(:generation) &&
+                event_metadata_value(event, COMMIT_METADATA_KEY) == checkpoint.fetch(:commit_id)
+              raise ProtocolError, "AgentCore session checkpoint metadata is invalid"
+            end
 
-          entries << {checkpoint:, event_timestamp: event.event_timestamp}.freeze
+            entries << {checkpoint:, event_timestamp: event.event_timestamp, format:}.freeze
+          end
         end
         entries
       end
@@ -666,12 +689,13 @@ module LittleGhost
         expected.length.times.map { |sequence| indexed.fetch(sequence) }
       end
 
-      def event_session_data(event)
+      def event_session_data(event, format:)
+        prefix = (format == LEGACY_CHECKPOINT_EVENT_TYPE) ? LEGACY_CHECKPOINT_PREFIX : CHECKPOINT_PREFIX
         values = event_payloads(event).filter_map do |payload|
           blob = payload.respond_to?(:blob) ? payload.blob : nil
-          next unless blob.is_a?(String) && blob.start_with?(CHECKPOINT_PREFIX)
+          next unless blob.is_a?(String) && blob.start_with?(prefix)
 
-          checkpoint = deserialize_checkpoint(blob.delete_prefix(CHECKPOINT_PREFIX))
+          checkpoint = deserialize_checkpoint(blob.delete_prefix(prefix), format:)
           checkpoint if checkpoint.is_a?(Hash)
         end
         values.one? ? values.first : nil
@@ -854,37 +878,21 @@ module LittleGhost
       end
 
       def serialize_checkpoint(checkpoint)
-        document = checkpoint.merge(
-          "state" => encode_hash_keys(checkpoint.fetch("state")),
-          "metadata" => encode_hash_keys(checkpoint.fetch("metadata"))
-        )
-        JSON.generate(document)
+        JSON.generate(checkpoint)
       end
 
-      def deserialize_checkpoint(value)
+      def deserialize_checkpoint(value, format: CHECKPOINT_EVENT_TYPE)
         document = JSON.parse(value)
         return document unless document.is_a?(Hash)
 
-        document["state"] = decode_hash_keys(document.fetch("state", {}))
-        document["metadata"] = decode_hash_keys(document.fetch("metadata", {}))
+        if format == LEGACY_CHECKPOINT_EVENT_TYPE
+          document["state"] = decode_legacy_hash_keys(document.fetch("state", {}))
+          document["metadata"] = decode_legacy_hash_keys(document.fetch("metadata", {}))
+        end
         document
       end
 
-      def encode_hash_keys(value)
-        case value
-        when Hash
-          value.to_h do |key, child|
-            prefix = key.is_a?(Symbol) ? SYMBOL_KEY_PREFIX : STRING_KEY_PREFIX
-            ["#{prefix}#{key}", encode_hash_keys(child)]
-          end
-        when Array
-          value.map { |child| encode_hash_keys(child) }
-        else
-          value
-        end
-      end
-
-      def decode_hash_keys(value)
+      def decode_legacy_hash_keys(value)
         case value
         when Hash
           value.to_h do |key, child|
@@ -893,10 +901,10 @@ module LittleGhost
             else
               key.delete_prefix(STRING_KEY_PREFIX)
             end
-            [decoded_key, decode_hash_keys(child)]
+            [decoded_key, decode_legacy_hash_keys(child)]
           end
         when Array
-          value.map { |child| decode_hash_keys(child) }
+          value.map { |child| decode_legacy_hash_keys(child) }
         else
           value
         end
@@ -984,7 +992,7 @@ module LittleGhost
         end
       end
 
-      def normalize_checkpoint(value)
+      def normalize_checkpoint(value, format: CHECKPOINT_EVENT_TYPE)
         if serialize_checkpoint(value.transform_keys(&:to_s)).bytesize > MAX_CHECKPOINT_SERIALIZED_BYTES
           raise ProtocolError, "AgentCore session checkpoint exceeds the byte limit"
         end
@@ -1002,8 +1010,8 @@ module LittleGhost
         serialized_bytes = data.fetch("serialized_bytes")
         event_count = data.fetch("event_count")
         payload_count = data.fetch("payload_count")
-        state = data.fetch("state", {})
-        metadata = data.fetch("metadata", {})
+        state = DataMap.new(data.fetch("state", {})).to_h
+        metadata = DataMap.new(data.fetch("metadata", {})).to_h
         valid = valid_identifier?(generation) && valid_identifier?(commit_id) &&
           (parent_commit_id.nil? || valid_identifier?(parent_commit_id)) &&
           generation_revision.is_a?(Integer) && generation_revision.between?(1, MAX_REVISION) &&

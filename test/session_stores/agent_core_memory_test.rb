@@ -274,12 +274,61 @@ class AgentCoreMemoryTest < Minitest::Test
     checkpoint = checkpoint_from(client.created.last)
     assert_instance_of String, client.created.last.dig(:payload, 0, :blob)
     assert_equal 3, checkpoint.fetch("message_count")
-    assert_equal({step: 1}, checkpoint.fetch("state"))
-    assert_equal({source: "test"}, checkpoint.fetch("metadata"))
+    assert_equal({"step" => 1}, checkpoint.fetch("state"))
+    assert_equal({"source" => "test"}, checkpoint.fetch("metadata"))
     assert_operator checkpoint.fetch("serialized_bytes"), :>, 0
     assert(client.listed.all? do |parameters|
       parameters.fetch(:max_results) == LittleGhost::SessionStores::AgentCoreMemory::LIST_PAGE_SIZE
     end)
+  end
+
+  def test_reads_a_legacy_checkpoint_and_upgrades_it_on_the_next_append
+    seed_client = Client.new
+    seed = store_for(seed_client)
+    seed.replace(
+      "session",
+      actor_id: "actor",
+      messages: [user_message("seed")],
+      state: {step: 1},
+      metadata: {source: "legacy"}
+    )
+    events = events_from(seed_client.created)
+    checkpoint_event = events.find { |event| event.payload.first.blob }
+    checkpoint = checkpoint_from_event(checkpoint_event)
+    legacy = checkpoint.merge(
+      "state" => legacy_encode_hash_keys(step: 1),
+      "metadata" => legacy_encode_hash_keys(source: "legacy")
+    )
+    checkpoint_event.payload.first.blob =
+      "#{LittleGhost::SessionStores::AgentCoreMemory::LEGACY_CHECKPOINT_PREFIX}#{JSON.generate(legacy)}"
+    checkpoint_event.metadata = event_metadata(
+      LittleGhost::SessionStores::AgentCoreMemory::LEGACY_CHECKPOINT_EVENT_TYPE,
+      checkpoint.fetch("generation"),
+      checkpoint.fetch("commit_id")
+    )
+    client = Client.new(events)
+    store = store_for(client)
+
+    loaded = store.load("session", actor_id: "actor")
+
+    assert_equal({"step" => 1}, loaded.fetch(:state))
+    assert_empty client.created
+
+    store.append(
+      "session",
+      actor_id: "actor",
+      messages: [user_message("again")],
+      expected_count: 1,
+      state: {step: 2},
+      metadata: {source: "current"}
+    )
+
+    upgraded = checkpoint_from(client.created.last)
+    assert_equal LittleGhost::SessionStores::AgentCoreMemory::CHECKPOINT_EVENT_TYPE,
+      client.created.last.dig(:metadata, LittleGhost::SessionStores::AgentCoreMemory::EVENT_TYPE_METADATA_KEY, :string_value)
+    assert_equal true, upgraded.fetch("root")
+    assert_equal 2, upgraded.fetch("message_count")
+    assert_equal({"step" => 2}, upgraded.fetch("state"))
   end
 
   def test_projects_clean_subagent_dialogue_with_link_metadata
@@ -452,9 +501,10 @@ class AgentCoreMemoryTest < Minitest::Test
     ).load("session", actor_id: "actor")
 
     assert_equal compacted.map(&:to_h), loaded.fetch(:messages).map(&:to_h)
-    assert_equal({compacted: true}, loaded.fetch(:state))
+    assert_equal({"compacted" => true}, loaded.fetch(:state))
     filters = load_client.listed.map { |parameters| parameters.dig(:filter, :event_metadata) }
     assert_equal [
+      LittleGhost::SessionStores::AgentCoreMemory::LEGACY_CHECKPOINT_EVENT_TYPE,
       LittleGhost::SessionStores::AgentCoreMemory::CHECKPOINT_EVENT_TYPE,
       LittleGhost::SessionStores::AgentCoreMemory::MESSAGE_EVENT_TYPE
     ], filters.map { |expressions| expressions.first.dig(:right, :metadata_value, :string_value) }
@@ -524,7 +574,7 @@ class AgentCoreMemoryTest < Minitest::Test
 
     loaded = store.load("session", actor_id: "actor")
     assert_equal %w[seed retry], loaded.fetch(:messages).map(&:text)
-    assert_equal({attempt: 2}, loaded.fetch(:state))
+    assert_equal({"attempt" => 2}, loaded.fetch(:state))
   end
 
   def test_can_retry_different_messages_after_an_uncommitted_append
@@ -634,10 +684,10 @@ class AgentCoreMemoryTest < Minitest::Test
       store_for(Client.new(ordered)).load("session", actor_id: "actor")
     end
 
-    expected_branch = winner.fetch("state").fetch(:branch)
+    expected_branch = winner.fetch("state").fetch("branch")
     assert_equal [["seed", expected_branch], ["seed", expected_branch]],
       histories.map { |snapshot| snapshot.fetch(:messages).map(&:text) }
-    assert_equal [expected_branch, expected_branch], histories.map { |snapshot| snapshot.dig(:state, :branch) }
+    assert_equal [expected_branch, expected_branch], histories.map { |snapshot| snapshot.dig(:state, "branch") }
   end
 
   def test_a_delayed_old_generation_writer_cannot_resurrect_replaced_history
@@ -695,7 +745,7 @@ class AgentCoreMemoryTest < Minitest::Test
     ])).load("session", actor_id: "actor")
 
     assert_equal %w[replacement current], snapshot.fetch(:messages).map(&:text)
-    assert_equal "current", snapshot.dig(:state, :generation)
+    assert_equal "current", snapshot.dig(:state, "generation")
   end
 
   def test_rejects_an_initial_root_checkpoint_with_a_noninitial_revision
@@ -728,7 +778,7 @@ class AgentCoreMemoryTest < Minitest::Test
     snapshot = store_for(Client.new(events_from(client.created))).load("session", actor_id: "actor")
 
     assert_equal ["replacement"], snapshot.fetch(:messages).map(&:text)
-    assert_equal({compacted: true}, snapshot.fetch(:state))
+    assert_equal({"compacted" => true}, snapshot.fetch(:state))
   end
 
   def test_ignores_an_obsolete_append_whose_parent_expired_before_a_replacement
@@ -757,7 +807,7 @@ class AgentCoreMemoryTest < Minitest::Test
     snapshot = store_for(Client.new(retained)).load("session", actor_id: "actor")
 
     assert_equal ["replacement"], snapshot.fetch(:messages).map(&:text)
-    assert_equal({compacted: true}, snapshot.fetch(:state))
+    assert_equal({"compacted" => true}, snapshot.fetch(:state))
   end
 
   def test_returns_nil_when_only_an_unrecoverable_append_checkpoint_remains
@@ -1327,6 +1377,14 @@ class AgentCoreMemoryTest < Minitest::Test
       klass::GENERATION_METADATA_KEY => {string_value: generation},
       klass::COMMIT_METADATA_KEY => {string_value: commit_id}
     }
+  end
+
+  def legacy_encode_hash_keys(value)
+    klass = LittleGhost::SessionStores::AgentCoreMemory
+    value.to_h do |key, child|
+      prefix = key.is_a?(Symbol) ? klass::SYMBOL_KEY_PREFIX : klass::STRING_KEY_PREFIX
+      ["#{prefix}#{key}", child.is_a?(Hash) ? legacy_encode_hash_keys(child) : child]
+    end
   end
 
   def event_with_message(timestamp, role:, text:, metadata: nil)

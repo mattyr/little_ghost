@@ -1,5 +1,8 @@
 # frozen_string_literal: true
 
+require_relative "../data_map"
+require_relative "../session_store"
+
 module LittleGhost
   # Ready-to-use persistence implementations for LittleGhost conversations.
   module SessionStores
@@ -32,6 +35,8 @@ module LittleGhost
       # stored conversation, then returns the updated snapshot.
       def append(id, messages:, state:, metadata:, expected_count:, actor_id: nil)
         messages = persistable_messages(messages)
+        state = DataMap.new(state).to_h
+        metadata = DataMap.new(metadata).to_h
         @records_mutex.synchronize do
           key = id.to_s
           record = @records[key]
@@ -56,6 +61,8 @@ module LittleGhost
       # Replaces the complete in-memory snapshot with sanitized +messages+.
       def replace(id, messages:, state:, metadata:, actor_id: nil)
         messages = persistable_messages(messages)
+        state = DataMap.new(state).to_h
+        metadata = DataMap.new(metadata).to_h
         @records_mutex.synchronize do
           key = id.to_s
           validate_actor!(@records[key], actor_id)

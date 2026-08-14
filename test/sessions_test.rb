@@ -49,8 +49,8 @@ class SessionsTest < Minitest::Test
     reopened = LittleGhost::Session.new(id: "conversation", actor_id: "actor", store:)
 
     assert_equal ["Hello"], reopened.history.map(&:text)
-    assert_equal({calls: 1}, reopened.state)
-    assert_equal({source: "test"}, reopened.metadata)
+    assert_equal({"calls" => 1}, reopened.state)
+    assert_equal({"source" => "test"}, reopened.metadata)
   end
 
   def test_transient_messages_are_not_persisted
@@ -84,7 +84,7 @@ class SessionsTest < Minitest::Test
     session.checkpoint_result(result)
 
     snapshot = store.load("conversation", actor_id: "actor")
-    assert_equal({source: "stored"}, snapshot.fetch(:metadata))
+    assert_equal({"source" => "stored"}, snapshot.fetch(:metadata))
   end
 
   def test_checkpoint_snapshots_do_not_freeze_live_nested_state
