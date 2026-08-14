@@ -10,7 +10,7 @@ module LittleGhost
     #     agent_as_tool SentimentAgent, name: "classify_sentiment"
     #   end
     #
-    # The support model receives spawn, messaging, interruption, waiting, and
+    # The support model receives spawn, messaging, interjection, waiting, and
     # listing tools for the +research+ kind. It sees the sentiment agent as one
     # regular tool whose result is returned to the current turn.
     #

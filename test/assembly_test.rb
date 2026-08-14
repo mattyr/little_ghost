@@ -63,22 +63,22 @@ class AssemblyTest < Minitest::Test
     assert_same token, options.fetch(:cancellation_token)
   end
 
-  def test_interruptions_route_to_the_single_active_child
+  def test_interjections_route_to_the_single_active_child
     responses = []
     child = Object.new
-    child.define_singleton_method(:interrupt_response) do |message, **options|
+    child.define_singleton_method(:interject) do |message, **options|
       responses << [message, options]
       :response
     end
     assembly = ActiveAssembly.new(runtime: Object.new)
 
     result = assembly.activate(child) do
-      assembly.interrupt_response("status", metadata: {source: "test"})
+      assembly.interject("status", metadata: {source: "test"})
     end
 
     assert_equal :response, result
     assert_equal [["status", {metadata: {source: "test"}}]], responses
-    assert_raises(LittleGhost::AgentInterruptError) { assembly.interrupt_response("late") }
+    assert_raises(LittleGhost::AgentInterjectionError) { assembly.interject("late") }
   end
 
   def test_agents_can_declare_any_assembly_as_a_tool

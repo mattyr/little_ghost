@@ -519,8 +519,8 @@ module LittleGhost
         @owns_resources = true
         @closed = false
         @close_mutex = Mutex.new
-        @interruptions_mutex = Mutex.new
-        @active_interruptions = []
+        @interjections_mutex = Mutex.new
+        @active_interjections = []
         return
       end
 
@@ -555,8 +555,8 @@ module LittleGhost
       @closed = false
       @close_mutex = Mutex.new
       @exclusive_tools_mutex = Mutex.new
-      @interruptions_mutex = Mutex.new
-      @active_interruptions = []
+      @interjections_mutex = Mutex.new
+      @active_interjections = []
       @assembly_transitions_mutex = Mutex.new
       @assembly_transitions = {}
       @assembly_tool_batch_sizes = {}
@@ -595,94 +595,69 @@ module LittleGhost
 
     attr_reader :assembly_transition # :nodoc:
 
-    # Adds +message+ to one active invocation and waits for its ordinary text reply.
-    #
-    # The response may continue into tool calls; delivery does not stop the
-    # original invocation. Raises LittleGhost::AgentInterruptError when there is
-    # no unambiguous active target.
-    def interrupt(
-      message,
-      cancellation_token: Support::CancellationToken.new,
-      deadline: nil,
-      target_operation_id: nil,
-      interruption_id: nil,
-      batch_key: nil,
-      metadata: {}
-    )
-      interrupt_response(
-        message,
-        cancellation_token:,
-        deadline:,
-        target_operation_id:,
-        interruption_id:,
-        batch_key:,
-        metadata:
-      ).text
-    end
-
-    # Adds an interruption and returns the model's immediate response details.
+    # Adds an interjection and returns the model's immediate result details.
     #
     # Use +target_operation_id+ when an agent has multiple active invocations.
     # Messages may contain only text, image, or document content. The returned
-    # response value exposes +text+, +tool_calls?+, +interruption_ids+, and
-    # +batch_key+; tool calls may continue after this response. Depend on these
-    # methods rather than the response's concrete class.
-    def interrupt_response(
+    # result value exposes +text+, +tool_calls?+, +interjection_ids+, and
+    # +batch_key+; tool calls may continue after this result. Depend on these
+    # methods rather than the result's concrete class.
+    def interject(
       message,
       cancellation_token: Support::CancellationToken.new,
       deadline: nil,
       target_operation_id: nil,
-      interruption_id: nil,
+      interjection_id: nil,
       batch_key: nil,
       metadata: {}
     )
       message = Message.new(role: :user, content: message) if message.is_a?(String)
-      raise ArgumentError, "interrupt message must be a String or LittleGhost::Message" unless message.is_a?(Message)
+      raise ArgumentError, "interject message must be a String or LittleGhost::Message" unless message.is_a?(Message)
       safe_content = message.content.all? do |content|
         content.is_a?(Content::Text) ||
           content.is_a?(Content::Image) ||
           content.is_a?(Content::Document)
       end
       unless safe_content
-        raise ArgumentError, "interrupt message content must contain only text, images, or documents"
+        raise ArgumentError, "interject message content must contain only text, images, or documents"
       end
 
-      interruptions = @interruptions_mutex.synchronize do
+      interjections = @interjections_mutex.synchronize do
         active = if target_operation_id
-          @active_interruptions.select { |candidate| candidate.target_operation_id == target_operation_id }
+          @active_interjections.select { |candidate| candidate.target_operation_id == target_operation_id }
         else
-          @active_interruptions
+          @active_interjections
         end
         if active.empty?
-          raise AgentInterruptError, "Agent is not currently running"
+          raise AgentInterjectionError, "Agent is not currently running"
         end
         if active.length > 1
-          raise AgentInterruptError, "Agent has multiple active invocations; the interruption target is ambiguous"
+          raise AgentInterjectionError, "Agent has multiple active invocations; the interjection target is ambiguous"
         end
 
         active.first
       end
       options = {batch_key:, metadata:}
-      options[:id] = interruption_id unless interruption_id.nil?
-      ticket = interruptions.enqueue(message, **options)
+      options[:id] = interjection_id unless interjection_id.nil?
+      ticket = interjections.enqueue(message, **options)
       instrument(
-        :agent_interrupt_queued,
-        parent_operation_id: interruptions.operation_id,
-        interruption_id: ticket.id,
-        event_kind: :interrupt,
+        :agent_interjection_queued,
+        parent_operation_id: interjections.operation_id,
+        interjection_id: ticket.id,
+        event_kind: :interjection,
         diagnostic: {input: diagnostic_message(message)}
       )
       begin
         response = ticket.value(cancellation_token:, deadline:)
-        interruptions.release(ticket)
+        interjections.release(ticket)
         response
       rescue => error
-        interruptions.release(ticket, withdraw: true)
+        interjections.release(ticket, withdraw: true)
         instrument(
-          :agent_interrupt_failed,
-          parent_operation_id: interruptions.operation_id,
-          interruption_id: ticket.id,
-          event_kind: :interrupt,
+          :agent_interjection_failed,
+          parent_operation_id: interjections.operation_id,
+          interjection_id: ticket.id,
+          event_kind: :interjection,
           error_type: error.class.name,
           diagnostic: {exception: diagnostic_exception(error)}
         )
@@ -710,9 +685,9 @@ module LittleGhost
       parent_operation_id: nil,
       checkpoint: nil,
       conversation_id: nil,
-      interruption_metadata: nil,
-      interruption_ids: [],
-      interrupt_ready: nil
+      interjection_metadata: nil,
+      interjection_ids: [],
+      interject_ready: nil
     )
       if standalone?
         raise ArgumentError, "input is required" if input.nil?
@@ -742,7 +717,7 @@ module LittleGhost
       end
       settings = @model_settings.merge(settings)
       Enumerator.new do |events|
-        interruptions = AgentInterruptions.new
+        interjections = AgentInterjections.new
         run_context = RunContext.new(
           state: context,
           cancellation_token: cancellation_token,
@@ -750,8 +725,8 @@ module LittleGhost
           metadata: {agent_id: self.class.agent_id},
           checkpoint:,
           conversation_id:,
-          interruption_metadata:,
-          interruption_ids:
+          interjection_metadata:,
+          interjection_ids:
         )
         begin
           with_invocation(run_context) do
@@ -764,16 +739,16 @@ module LittleGhost
               template_paths: invocation_paths,
               events: events,
               parent_operation_id:,
-              interruptions:,
-              interrupt_ready:
+              interjections:,
+              interject_ready:
             )
           end
         rescue => error
-          interruptions.close(error)
+          interjections.close(error)
           raise
         ensure
-          interruptions.close(AgentInterruptError.new("Agent finished before the interruption was delivered"))
-          unregister_interruptions(interruptions)
+          interjections.close(AgentInterjectionError.new("Agent finished before the interjection was delivered"))
+          unregister_interjections(interjections)
         end
       end
     end
@@ -793,21 +768,21 @@ module LittleGhost
     # The materialized tools available during this agent run.
     def tools = tool_registry
 
-    # Closes owned tools, interruptions, sandbox, and workspace resources.
+    # Closes owned tools, interjections, sandbox, and workspace resources.
     # The operation is idempotent and re-raises the first cleanup failure.
     def close
-      resources, interruptions = @close_mutex.synchronize do
+      resources, interjections = @close_mutex.synchronize do
         return if @closed
 
         @closed = true
         [
           [tool_registry, (@sandbox if @owns_resources), (@workspace if @owns_resources)],
-          @interruptions_mutex.synchronize { @active_interruptions.dup }
+          @interjections_mutex.synchronize { @active_interjections.dup }
         ]
       end
       first_error = nil
-      interruptions.each do |active|
-        active.close(AgentInterruptError.new("Agent was closed"))
+      interjections.each do |active|
+        active.close(AgentInterjectionError.new("Agent was closed"))
       end
       resources.each do |resource|
         resource.close if resource.respond_to?(:close)
@@ -849,45 +824,45 @@ module LittleGhost
       {message: input, **options}
     end
 
-    def register_interruptions(interruptions)
+    def register_interjections(interjections)
       @close_mutex.synchronize do
         raise InvocationError, "Agent is closed" if @closed
 
-        @interruptions_mutex.synchronize { @active_interruptions << interruptions }
+        @interjections_mutex.synchronize { @active_interjections << interjections }
       end
     end
 
-    def unregister_interruptions(interruptions)
-      @interruptions_mutex.synchronize { @active_interruptions.delete(interruptions) }
+    def unregister_interjections(interjections)
+      @interjections_mutex.synchronize { @active_interjections.delete(interjections) }
     end
 
-    def interruption_message(interruption)
-      source = interruption.message
+    def interjection_message(interjection)
+      source = interjection.message
       Message.new(
         role: :user,
         content: [
           Content::Text.new(text: <<~MESSAGE.strip),
-            Agent interruption:
+            Agent interjection:
 
             Respond briefly in ordinary text before any tool calls, then continue the current task unless this
-            interruption asks you to finish.
+            interjection asks you to finish.
           MESSAGE
           *source.content
         ],
-        metadata: source.metadata.merge(interruption.metadata).merge(
-          little_ghost_interruption_id: interruption.id,
-          little_ghost_interruption_batch_key: interruption.batch_key,
-          little_ghost_interruption_metadata: interruption.metadata
+        metadata: source.metadata.merge(interjection.metadata).merge(
+          little_ghost_interjection_id: interjection.id,
+          little_ghost_interjection_batch_key: interjection.batch_key,
+          little_ghost_interjection_metadata: interjection.metadata
         )
       )
     end
 
-    def request_with_interruption(request, interruption)
+    def request_with_interjection(request, interjection)
       ModelRequest.new(
         messages: [
           *request.messages,
-          *interruption.tickets.reject { |ticket| request_contains_interruption?(request, ticket) }
-            .map { |ticket| interruption_message(ticket) }
+          *interjection.tickets.reject { |ticket| request_contains_interjection?(request, ticket) }
+            .map { |ticket| interjection_message(ticket) }
         ],
         tools: request.tools,
         settings: request.settings,
@@ -899,10 +874,10 @@ module LittleGhost
       )
     end
 
-    def request_contains_interruption?(request, interruption)
+    def request_contains_interjection?(request, interjection)
       request.messages.any? do |message|
-        (message.metadata[:little_ghost_interruption_id] ||
-          message.metadata["little_ghost_interruption_id"]) == interruption.id
+        (message.metadata[:little_ghost_interjection_id] ||
+          message.metadata["little_ghost_interjection_id"]) == interjection.id
       end
     end
 
@@ -926,16 +901,16 @@ module LittleGhost
       template_paths:,
       events:,
       parent_operation_id:,
-      interruptions:,
-      interrupt_ready:
+      interjections:,
+      interject_ready:
     )
       started_at = monotonic_time
       operation_id = SecureRandom.uuid
       context.bind_agent_operation_id(operation_id)
       @assembly_transitions_mutex.synchronize { @assembly_transition = nil }
-      interruptions.bind(operation_id, target_operation_id: parent_operation_id)
-      register_interruptions(interruptions)
-      interrupt_ready&.call
+      interjections.bind(operation_id, target_operation_id: parent_operation_id)
+      register_interjections(interjections)
+      interject_ready&.call
       agent_handle = start_instrumentation(
         :agent,
         parent: parent_operation_id || active_instrumentation_parent,
@@ -966,7 +941,7 @@ module LittleGhost
         )
         begin
           context.check!
-          response, interrupted = invoke_model(
+          response, interjected = invoke_model(
             messages,
             context,
             settings,
@@ -974,7 +949,7 @@ module LittleGhost
             events,
             parent_operation_id: turn_operation_id,
             structured_result_repair_due:,
-            interruptions:
+            interjections:
           )
           messages.reject! { |message| tool_companion_message?(message) }
           messages << response.message
@@ -989,12 +964,12 @@ module LittleGhost
             )
             unless validation_error
               messages[-1] = redact_structured_result_message(response.message)
-              unless interruptions.finish
+              unless interjections.finish
                 context.checkpoint(messages)
                 finish_instrumentation(
                   turn_handle,
                   operation_id: turn_operation_id,
-                  outcome: :interrupted,
+                  outcome: :interjected,
                   turn: turn + 1
                 )
                 next
@@ -1049,20 +1024,20 @@ module LittleGhost
               raise OutputLimitError, "The model stopped before completing its response"
             end
 
-            if interrupted || !@structured_output_strategy
-              unless interruptions.finish
+            if interjected || !@structured_output_strategy
+              unless interjections.finish
                 context.checkpoint(messages)
                 finish_instrumentation(
                   turn_handle,
                   operation_id: turn_operation_id,
-                  outcome: :interrupted,
+                  outcome: :interjected,
                   turn: turn + 1
                 )
                 next
               end
             end
 
-            if @structured_output_strategy && !interrupted
+            if @structured_output_strategy && !interjected
               validation_error = if @structured_output_strategy.provider?
                 capture_structured_result(response.message.text, context)
               else
@@ -1070,12 +1045,12 @@ module LittleGhost
               end
               unless validation_error
                 messages[-1] = redact_structured_result_message(response.message)
-                unless interruptions.finish
+                unless interjections.finish
                   context.checkpoint(messages)
                   finish_instrumentation(
                     turn_handle,
                     operation_id: turn_operation_id,
-                    outcome: :interrupted,
+                    outcome: :interjected,
                     turn: turn + 1
                   )
                   next
@@ -1283,10 +1258,10 @@ module LittleGhost
       turn,
       events,
       parent_operation_id:,
-      interruptions:,
+      interjections:,
       structured_result_repair_due: false,
       recovery_attempt: 0,
-      interruption: nil
+      interjection: nil
     )
       started_at = monotonic_time
       operation_id = SecureRandom.uuid
@@ -1303,9 +1278,9 @@ module LittleGhost
         cancellation_token: context.cancellation_token,
         deadline: context.deadline
       )
-      interruption ||= interruptions.deliver
-      if interruption
-        context.activate_interruption(metadata: interruption.metadata, ids: interruption.interruption_ids)
+      interjection ||= interjections.deliver
+      if interjection
+        context.activate_interjection(metadata: interjection.metadata, ids: interjection.interjection_ids)
       end
       decision = run_callbacks(
         :before_model,
@@ -1314,11 +1289,11 @@ module LittleGhost
       )
       apply_cancellation_decision!(decision)
       request = replacement_value(decision, :request, request)
-      interruption_delivered = interruption&.tickets&.any? do |ticket|
-        !request_contains_interruption?(request, ticket)
+      interjection_delivered = interjection&.tickets&.any? do |ticket|
+        !request_contains_interjection?(request, ticket)
       end
-      if interruption_delivered
-        request = request_with_interruption(request, interruption)
+      if interjection_delivered
+        request = request_with_interjection(request, interjection)
       end
       messages.replace(request.messages)
       context.checkpoint(messages)
@@ -1333,20 +1308,20 @@ module LittleGhost
         model_settings: request.settings,
         **model_attributes
       )
-      if interruption_delivered
-        interruption.tickets.each do |ticket|
+      if interjection_delivered
+        interjection.tickets.each do |ticket|
           instrument(
-            :agent_interrupt_delivered,
+            :agent_interjection_delivered,
             parent_operation_id: operation_id,
-            interruption_id: ticket.id,
-            event_kind: :interrupt
+            interjection_id: ticket.id,
+            event_kind: :interjection
           )
         end
         emit(
           events,
-          :agent_interrupt_delivered,
-          interruption_ids: interruption.interruption_ids,
-          batch_key: interruption.batch_key
+          :agent_interjection_delivered,
+          interjection_ids: interjection.interjection_ids,
+          batch_key: interjection.batch_key
         )
       end
       emit(events, :model_start, turn: turn)
@@ -1384,21 +1359,21 @@ module LittleGhost
       decision = run_callbacks(:after_model, {request: request, response: response, turn: turn}, context: context)
       apply_cancellation_decision!(decision)
       response = replacement_value(decision, :response, response)
-      interruptions.resolve(
-        interruption,
-        AgentInterruptions::Response.new(
+      interjections.resolve(
+        interjection,
+        AgentInterjections::Result.new(
           text: response.message.text,
           tool_calls: response.message.content.any? { |content| content.is_a?(Content::ToolUse) },
-          interruption_ids: interruption&.interruption_ids || [],
-          batch_key: interruption&.batch_key
+          interjection_ids: interjection&.interjection_ids || [],
+          batch_key: interjection&.batch_key
         )
       )
-      interruption&.tickets&.each do |ticket|
+      interjection&.tickets&.each do |ticket|
         instrument(
-          :agent_interrupt_responded,
+          :agent_interjection_responded,
           parent_operation_id: operation_id,
-          interruption_id: ticket.id,
-          event_kind: :interrupt,
+          interjection_id: ticket.id,
+          event_kind: :interjection,
           diagnostic: {output: response.message.text}
         )
       end
@@ -1447,7 +1422,7 @@ module LittleGhost
           repair: structured_result_repair_due
         )
       )
-      [response, !interruption.nil?]
+      [response, !interjection.nil?]
     rescue => error
       finish_instrumentation(
         model_handle,
@@ -1483,8 +1458,8 @@ module LittleGhost
             parent_operation_id:,
             structured_result_repair_due:,
             recovery_attempt: recovery_attempt + 1,
-            interruptions:,
-            interruption:
+            interjections:,
+            interjection:
           )
         end
       end

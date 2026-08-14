@@ -3,16 +3,16 @@
 require "securerandom"
 
 module LittleGhost
-  class AgentInterruptions # :nodoc: all
+  class AgentInterjections # :nodoc: all
     MAX_BATCH_SIZE = 100
-    MAX_INTERRUPTION_COUNT = 1_000
+    MAX_INTERJECTION_COUNT = 1_000
 
-    Response = Data.define(:text, :tool_calls, :interruption_ids, :batch_key) do
-      def initialize(text:, tool_calls:, interruption_ids: [], batch_key: nil)
+    Result = Data.define(:text, :tool_calls, :interjection_ids, :batch_key) do
+      def initialize(text:, tool_calls:, interjection_ids: [], batch_key: nil)
         super(
           text: String(text),
           tool_calls: !!tool_calls,
-          interruption_ids: Array(interruption_ids).map { |id| String(id).dup.freeze }.freeze,
+          interjection_ids: Array(interjection_ids).map { |id| String(id).dup.freeze }.freeze,
           batch_key: batch_key.nil? ? nil : String(batch_key).dup.freeze
         )
       end
@@ -21,7 +21,7 @@ module LittleGhost
     end
 
     Batch = Data.define(:tickets) do
-      def interruption_ids = tickets.map(&:id)
+      def interjection_ids = tickets.map(&:id)
       def batch_key = tickets.first&.batch_key
       def metadata = tickets.last&.metadata
     end
@@ -99,7 +99,7 @@ module LittleGhost
 
     def enqueue(message, id: SecureRandom.uuid, batch_key: nil, metadata: {})
       id = String(id)
-      raise ArgumentError, "interruption_id cannot be empty" if id.empty?
+      raise ArgumentError, "interjection_id cannot be empty" if id.empty?
 
       batch_key = String(batch_key) unless batch_key.nil?
       metadata = metadata.to_h
@@ -111,14 +111,14 @@ module LittleGhost
           unless existing.message.to_h == message.to_h &&
               existing.batch_key == batch_key &&
               existing.metadata == metadata
-            raise ArgumentError, "interruption_id has already been used with different input"
+            raise ArgumentError, "interjection_id has already been used with different input"
           end
 
           @waiters[existing] += 1
           return existing
         end
-        if @tickets_by_id.length >= MAX_INTERRUPTION_COUNT
-          raise AgentInterruptError, "Agent interruption capacity reached"
+        if @tickets_by_id.length >= MAX_INTERJECTION_COUNT
+          raise AgentInterjectionError, "Agent interjection capacity reached"
         end
 
         ticket = Ticket.new(message, id: id.freeze, batch_key: batch_key&.freeze, metadata:)
@@ -128,7 +128,7 @@ module LittleGhost
         ticket
       end
     rescue TypeError, NoMethodError
-      raise ArgumentError, "interruption_id, batch_key, and metadata are invalid"
+      raise ArgumentError, "interjection_id, batch_key, and metadata are invalid"
     end
 
     def deliver
@@ -166,7 +166,7 @@ module LittleGhost
         return true if @closed_error
         return false if @delivered || !@queue.empty?
 
-        @closed_error = AgentInterruptError.new("Agent is not currently running")
+        @closed_error = AgentInterjectionError.new("Agent is not currently running")
         true
       end
     end

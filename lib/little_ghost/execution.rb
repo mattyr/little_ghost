@@ -2,13 +2,13 @@
 
 module LittleGhost
   # Runs one dormant Run in a supervised worker while the caller remains free to
-  # serve health checks, deliver interruptions, or coordinate process shutdown.
+  # serve health checks, deliver interjections, or coordinate process shutdown.
   #
   #   execution = agent.start_execution(message: "Investigate transfer 481") do |event|
   #     event_buffer << event
   #   end
   #
-  #   execution.interrupt_response(message: "Include the latest ledger entry")
+  #   execution.interject(message: "Include the latest ledger entry")
   #   execution.wait(deadline: Time.now + 30)
   #   execution.run.completed? # => true
   #
@@ -16,7 +16,7 @@ module LittleGhost
   # request-scoped ExecutionState. The Run continues to own its workspace,
   # sandbox, session, entrypoint, and registered resources. +close+ requests
   # cooperative cancellation and waits for both the worker and in-flight
-  # interruption calls.
+  # interjection calls.
   class Execution
     # The supervised Run and an exception raised outside the Run's ordinary
     # terminal outcome, such as event delivery or cleanup failure.
@@ -45,7 +45,7 @@ module LittleGhost
       @error = nil
       @mutex = Mutex.new
       @condition = ConditionVariable.new
-      @active_interruptions = 0
+      @active_interjections = 0
       @closing = false
       @execution_state = ExecutionState.capture
     end
@@ -60,36 +60,36 @@ module LittleGhost
       @mutex.synchronize { @error }
     end
 
-    # Indicates that the worker or an interruption call is still active.
+    # Indicates that the worker or an interjection call is still active.
     def active?
-      @mutex.synchronize { @state != :finished || @active_interruptions.positive? }
+      @mutex.synchronize { @state != :finished || @active_interjections.positive? }
     end
 
-    # Indicates that the worker and all interruption calls have finished.
+    # Indicates that the worker and all interjection calls have finished.
     def finished?
       !active?
     end
 
-    # Prepares and delivers one interruption to the active run.
+    # Prepares and delivers one interjection to the active run.
     #
     # +payload+ may be a message or a Hash containing +message+ and the options
-    # accepted by Run#interrupt_response. Runtime hooks receive the Hash before
+    # accepted by Run#interject. Runtime hooks receive the Hash before
     # delivery, allowing them to materialize trusted application attachments.
     # Calls may overlap, but +close+ prevents new calls and waits for calls that
     # have already begun.
-    def interrupt_response(payload = nil, **options)
+    def interject(payload = nil, **options)
       if payload.nil? && options.key?(:message)
         payload = options.delete(:message)
       end
-      interruption_started = false
-      begin_interruption!
-      interruption_started = true
-      run.interrupt_response_with do
-        prepared = run.prepare_interruption(interruption_payload(payload, options))
-        interruption_arguments(prepared, options)
+      interjection_started = false
+      begin_interjection!
+      interjection_started = true
+      run.interject_with do
+        prepared = run.prepare_interjection(interjection_payload(payload, options))
+        interjection_arguments(prepared, options)
       end
     ensure
-      finish_interruption! if interruption_started
+      finish_interjection! if interjection_started
     end
 
     # Requests cooperative cancellation and returns +self+.
@@ -98,7 +98,7 @@ module LittleGhost
       self
     end
 
-    # Waits for the worker and in-flight interruptions, then returns the Run.
+    # Waits for the worker and in-flight interjections, then returns the Run.
     #
     # +deadline+ is an absolute Time. Reaching it raises DeadlineExceededError
     # without cancelling the run. An event-delivery or cleanup failure raised by
@@ -112,7 +112,7 @@ module LittleGhost
       run
     end
 
-    # Prevents new interruptions, requests cancellation, and waits for shutdown.
+    # Prevents new interjections, requests cancellation, and waits for shutdown.
     # The operation is idempotent. +deadline+ has the same meaning as in #wait.
     def close(deadline: nil)
       @mutex.synchronize { @closing = true }
@@ -147,37 +147,37 @@ module LittleGhost
       end
     end
 
-    def begin_interruption!
+    def begin_interjection!
       @mutex.synchronize do
-        raise AgentInterruptError, "Execution is closing" if @closing
-        raise AgentInterruptError, "Execution has already finished" if @state == :finished
+        raise AgentInterjectionError, "Execution is closing" if @closing
+        raise AgentInterjectionError, "Execution has already finished" if @state == :finished
 
-        @active_interruptions += 1
+        @active_interjections += 1
       end
     end
 
-    def finish_interruption!
+    def finish_interjection!
       @mutex.synchronize do
-        @active_interruptions -= 1 if @active_interruptions.positive?
+        @active_interjections -= 1 if @active_interjections.positive?
         @condition.broadcast
       end
     end
 
-    def interruption_payload(payload, options)
+    def interjection_payload(payload, options)
       values = payload.is_a?(Hash) ? payload.dup : {message: payload}
       options.each { |key, value| values[key] = value }
       values
     end
 
-    def interruption_arguments(prepared, fallback)
+    def interjection_arguments(prepared, fallback)
       unless prepared.is_a?(Hash)
-        return [prepared, fallback.slice(:interruption_id, :batch_key, :metadata, :cancellation_token, :deadline)]
+        return [prepared, fallback.slice(:interjection_id, :batch_key, :metadata, :cancellation_token, :deadline)]
       end
 
       values = prepared.transform_keys(&:to_sym)
-      message = values.delete(:message) { raise ArgumentError, "prepared interruption must include a message" }
-      allowed = values.slice(:interruption_id, :batch_key, :metadata, :cancellation_token, :deadline)
-      [message, fallback.slice(:interruption_id, :batch_key, :metadata, :cancellation_token, :deadline).merge(allowed)]
+      message = values.delete(:message) { raise ArgumentError, "prepared interjection must include a message" }
+      allowed = values.slice(:interjection_id, :batch_key, :metadata, :cancellation_token, :deadline)
+      [message, fallback.slice(:interjection_id, :batch_key, :metadata, :cancellation_token, :deadline).merge(allowed)]
     end
 
     def wait_until_finished(deadline:)
@@ -185,7 +185,7 @@ module LittleGhost
         monotonic_time + [deadline - Time.now, 0].max
       end
       @mutex.synchronize do
-        until @state == :finished && @active_interruptions.zero?
+        until @state == :finished && @active_interjections.zero?
           if monotonic_deadline
             remaining = monotonic_deadline - monotonic_time
             raise DeadlineExceededError, "Execution did not finish before the wait deadline" unless remaining.positive?

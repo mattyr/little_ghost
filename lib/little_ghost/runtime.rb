@@ -304,9 +304,9 @@ module LittleGhost
       run
     end
 
-    def prepare_interruption(run, payload) # :nodoc:
+    def prepare_interjection(run, payload) # :nodoc:
       runtime_hooks.reduce(payload) do |prepared, hook|
-        hook.prepare_interruption(run, prepared)
+        hook.prepare_interjection(run, prepared)
       end
     end
 
