@@ -12,24 +12,6 @@ const destinationFor = (manifestUrl, version, page) => {
   return new URL(targetPage, versionRoot);
 };
 
-const showVersionNotice = (picker, catalog, versionsById) => {
-  const notice = document.querySelector("[data-docs-version-notice]");
-  if (!notice) return;
-
-  const current = picker.dataset.currentVersion;
-  if (current === "edge" || !catalog.latest_release || current === catalog.latest_release) return;
-
-  const latest = versionsById.get(catalog.latest_release);
-  if (!latest) return;
-
-  notice.append("You’re reading v", current, ". ");
-  const link = document.createElement("a");
-  link.href = destinationFor(new URL(picker.dataset.versionsUrl, window.location.href), latest, picker.dataset.currentPage);
-  link.textContent = `Open v${catalog.latest_release}`;
-  notice.append(link, ".");
-  notice.hidden = false;
-};
-
 const initializePicker = async (picker) => {
   const manifestUrl = new URL(picker.dataset.versionsUrl, window.location.href);
   const response = await fetch(manifestUrl, { credentials: "same-origin" });
@@ -54,7 +36,6 @@ const initializePicker = async (picker) => {
 
     window.location.assign(destinationFor(manifestUrl, version, picker.dataset.currentPage));
   });
-  showVersionNotice(picker, catalog, versionsById);
 };
 
 pickers.forEach((picker) => {

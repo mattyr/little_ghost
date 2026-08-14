@@ -14,6 +14,7 @@ class LittleGhostDocsTest < Minitest::Test
       agent = File.read(File.join(site, "docs", "LittleGhost", "Agent.html"))
       assert_includes homepage, 'data-current-version="edge"'
       assert_includes homepage, 'data-versions-url="versions.json"'
+      refute_includes homepage, "data-docs-version-notice"
       assert_includes agent, 'data-current-page="docs/LittleGhost/Agent.html"'
       assert_includes agent, 'data-versions-url="../../versions.json"'
       assert_path_exists File.join(site, "assets", "version-selector.css")

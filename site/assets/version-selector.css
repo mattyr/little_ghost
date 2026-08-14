@@ -14,6 +14,8 @@
   padding: 0 1.1rem 0 0;
   border: 0;
   outline: 0;
+  box-shadow: none;
+  -webkit-appearance: none;
   appearance: none;
   color: inherit;
   background: transparent
@@ -30,58 +32,12 @@
 }
 
 .docs-version-picker select:focus-visible {
-  outline: 0;
+  border: 0 !important;
+  outline: 0 !important;
+  box-shadow: none !important;
 }
 
 .docs-version-picker option {
   color: #14131d;
   background: #fffdf8;
-}
-
-.docs-version-notice {
-  position: relative;
-  z-index: 5;
-  box-sizing: border-box;
-  width: max-content;
-  max-width: calc(100% - 2rem);
-  margin: 0.75rem auto 0;
-  padding: 0.45rem 0.8rem;
-  border: 1px solid rgb(132 101 204 / 18%);
-  border-radius: 999px;
-  color: inherit;
-  background: rgb(132 101 204 / 9%);
-  font-family: ui-sans-serif, system-ui, sans-serif;
-  font-size: 0.72rem;
-  line-height: 1.35;
-  text-align: center;
-  white-space: nowrap;
-  -webkit-backdrop-filter: blur(18px);
-  backdrop-filter: blur(18px);
-}
-
-.docs-version-notice[hidden] {
-  display: none;
-}
-
-.docs-version-notice a {
-  color: inherit;
-  text-decoration: underline;
-  text-decoration-color: currentcolor;
-  text-underline-offset: 0.16em;
-}
-
-.site-header + .docs-version-notice {
-  position: absolute;
-  top: 4.75rem;
-  left: 50%;
-  margin: 0;
-  transform: translateX(-50%);
-}
-
-@media (max-width: 720px) {
-  .docs-version-notice {
-    width: calc(100% - 2rem);
-    border-radius: 0.8rem;
-    white-space: normal;
-  }
 }

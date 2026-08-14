@@ -107,13 +107,9 @@ module LittleGhostDocs
           </select>
         </label>
       HTML
-      notice = <<~HTML.chomp
-        <aside class="docs-version-notice" data-docs-version-notice hidden aria-live="polite"></aside>
-      HTML
 
       html = html.sub(match[0], picker)
       html = add_stylesheet(html, stylesheet_href)
-      html = html.sub(%r{</header>}, "</header>\n#{notice}")
       html = html.sub("</body>", %(  <script type="module" src="#{script_href}"></script>\n</body>))
       html = rewrite_public_urls(html) unless base_path.to_s.empty? || base_path.to_s == "."
       page.write(html)
