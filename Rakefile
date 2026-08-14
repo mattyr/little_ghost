@@ -11,6 +11,7 @@ require "uri"
 require "webrick"
 
 require_relative "lib/little_ghost/version"
+require_relative "rakelib/little_ghost_docs"
 
 task "release:trusted_publishing_guard" do
   expected_ref = "refs/tags/v#{LittleGhost::VERSION}"
@@ -123,8 +124,11 @@ class LittleGhostSiteChecker
     "404.html",
     "assets/site.css",
     "assets/site.js",
+    "assets/version-selector.css",
+    "assets/version-selector.js",
     "assets/favicon.svg",
     "assets/social-card.png",
+    "versions.json",
     "docs/index.html",
     "docs/getting_started.html",
     "docs/core_concepts.html",
@@ -217,11 +221,9 @@ class LittleGhostSiteChecker
 
   def check_version(page, html)
     relative_page = page.relative_path_from(site_root)
-    version = LittleGhost::VERSION
-    expected_link = "https://rubygems.org/gems/little_ghost/versions/#{version}"
-
-    errors << "#{relative_page} is missing version v#{version}" unless html.include?(">v#{version}<")
-    errors << "#{relative_page} has the wrong RubyGems version link" unless html.include?(%(href="#{expected_link}"))
+    unless html.include?("data-docs-version-picker") && html.include?('data-current-version="edge"')
+      errors << "#{relative_page} is missing the Edge documentation selector"
+    end
   end
 
   def check_navigation(page, html, current_label)
@@ -364,7 +366,11 @@ namespace :site do
   task :build do
     rm_rf SITE_OUTPUT
     mkdir_p SITE_OUTPUT
-    static_files = FileList["#{SITE_SOURCE}/*"].exclude(SITE_TEMPLATE_ROOT, "#{SITE_SOURCE}/index.html")
+    static_files = FileList["#{SITE_SOURCE}/*"].exclude(
+      SITE_TEMPLATE_ROOT,
+      "#{SITE_SOURCE}/index.html",
+      "#{SITE_SOURCE}/release-compat"
+    )
     cp_r static_files.to_a, SITE_OUTPUT
     homepage = ERB.new(File.read("#{SITE_SOURCE}/index.html"), trim_mode: "-")
     File.write("#{SITE_OUTPUT}/index.html", homepage.result)
@@ -378,11 +384,24 @@ namespace :site do
       *RDOC_OPTIONS,
       *FileList[*RDOC_FILES].to_a
     ])
+
+    docs_id = ENV.fetch("DOCS_VERSION_ID", LittleGhostDocs::EDGE_ID)
+    docs_base_path = ENV.fetch("DOCS_BASE_PATH", "")
+    LittleGhostDocs::Snapshot.new(SITE_OUTPUT, id: docs_id, base_path: docs_base_path).decorate!
+    LittleGhostDocs::Catalog.new(SITE_OUTPUT).write! if docs_id == LittleGhostDocs::EDGE_ID && docs_base_path.empty?
   end
 
   desc "Build and verify the complete GitHub Pages artifact"
   task check: :build do
+    LittleGhostDocs::Archive.new(SITE_OUTPUT).verify!
     LittleGhostSiteChecker.new(SITE_OUTPUT).check
+  end
+
+  desc "Verify a complete versioned documentation archive"
+  task :archive_check do
+    archive_root = ENV.fetch("DOCS_ARCHIVE")
+    LittleGhostDocs::Archive.new(archive_root).verify!
+    LittleGhostSiteChecker.new(archive_root).check
   end
 
   desc "Build and serve the site locally"

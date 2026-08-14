@@ -1,0 +1,27 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require_relative "../rakelib/little_ghost_docs"
+
+command, archive, site, version = ARGV
+
+case command
+when "publish-edge"
+  abort "usage: bin/docs-archive publish-edge ARCHIVE SITE" unless archive && site && !version
+  LittleGhostDocs::Archive.new(archive).publish_edge!(site).verify!
+when "publish-release"
+  abort "usage: bin/docs-archive publish-release ARCHIVE SITE VERSION" unless archive && site && version
+  LittleGhostDocs::Archive.new(archive).publish_release!(site, version).verify!
+when "verify"
+  abort "usage: bin/docs-archive verify ARCHIVE" unless archive && !site
+  LittleGhostDocs::Archive.new(archive).verify!
+when "merge-releases"
+  abort "usage: bin/docs-archive merge-releases ARCHIVE CANDIDATE" unless archive && site && !version
+  LittleGhostDocs::Archive.new(archive).merge_releases!(site)
+when "sync-release"
+  commit = ARGV.fetch(4, nil)
+  abort "usage: bin/docs-archive sync-release ARCHIVE REPOSITORY VERSION COMMIT" unless archive && site && version && commit
+  LittleGhostDocs::ReleaseSync.new(archive:, repository: site).add!(version:, commit:)
+else
+  abort "usage: bin/docs-archive publish-edge|publish-release|merge-releases|verify|sync-release ..."
+end

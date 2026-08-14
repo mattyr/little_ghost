@@ -109,11 +109,11 @@ Place a comment immediately before the definition. Start with the object's purpo
 # model identifiers.
 #
 #   providers = LittleGhost::Providers::Configuration.new(
-#     openai: {adapter: :openai, api_key: ENV.fetch("OPENAI_API_KEY")}
+#     openrouter: {adapter: :open_router, api_key: ENV.fetch("OPENROUTER_API_KEY")}
 #   )
 #   resolver = LittleGhost::ModelResolver.new(
 #     providers:,
-#     profiles: {customer_support: {target: "openai:gpt-5.6-luna"}}
+#     profiles: {customer_support: {target: "openrouter:openai/gpt-5.6-luna"}}
 #   )
 #   resolver.resolve("customer_support")
 class ModelResolver
