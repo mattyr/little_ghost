@@ -89,7 +89,7 @@ Take `actor_id` from authenticated application state. A session ID alone does no
 
 A session is checkpointed when its store write succeeds. The in-memory store lasts only as long as one process. Choose a durable `SessionStore` when conversations must survive a restart or continue on another process.
 
-`SessionStores::Filesystem` is a built-in durable choice for a trusted local or shared filesystem. Choose its root explicitly so application data does not end up in an unexpected directory:
+`SessionStores::Filesystem` is a built-in durable choice for a trusted local or shared filesystem. Set its root to the application-managed directory that holds session data:
 
 ```ruby
 LittleGhost.configure do |config|
