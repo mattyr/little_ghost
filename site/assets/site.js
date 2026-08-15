@@ -81,6 +81,11 @@ const createDemo = (section) => {
     window.setTimeout(() => resolve(expectedGeneration === generation), duration);
   });
 
+  const allowRecordingGrowth = () => {
+    recording.style.minHeight = `${recording.offsetHeight}px`;
+    recording.style.height = "auto";
+  };
+
   const caretBoxFor = (line) => {
     const walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT);
     let lastTextNode;
@@ -234,7 +239,7 @@ const createDemo = (section) => {
       runButton.classList.remove("is-pressed");
     }
 
-    recording.style.height = `${recording.offsetHeight}px`;
+    allowRecordingGrowth();
     command.textContent = section.dataset.command;
     ghost.style.opacity = "0";
     recording.classList.add("is-executing");
@@ -339,6 +344,7 @@ const createDemo = (section) => {
       if (line.textContent.length > 0) lastLine = index;
     });
     recording.style.height = "";
+    recording.style.minHeight = "";
     measureLineDestinations();
     placeGhost(lastLine);
     placeSparkAfterText(lastLine);
