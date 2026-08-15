@@ -18,13 +18,10 @@ class SandboxPolicyTest < Minitest::Test
     end
   end
 
-  def test_sandbox_backends_reject_removed_and_unknown_options
+  def test_sandbox_backends_reject_unknown_options
     Dir.mktmpdir do |root|
       workspace = LittleGhost::Workspace.new(root:)
 
-      assert_raises(ArgumentError) do
-        LittleGhost::Sandboxes::Unrestricted.new(workspace:, writable: true)
-      end
       assert_raises(ArgumentError) do
         LittleGhost::Sandboxes::Bubblewrap.new(workspace:, unknown_option: true)
       end

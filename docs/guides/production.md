@@ -164,6 +164,23 @@ LittleGhost.configure do |config|
 end
 ```
 
+Use named paths and lifecycle callbacks when a run needs more than one
+application-owned directory. This remains configuration; it does not require a
+Workspace subclass:
+
+```ruby
+config.workspace = lambda do
+  root = File.join("/var/lib/my_agent/runs", SecureRandom.uuid)
+  cache = File.join(root, ".cache")
+  LittleGhost::Workspace.new(
+    root:,
+    paths: {cache:},
+    setup: ->(workspace:, **) { FileUtils.mkdir_p(workspace.path(:cache)) },
+    teardown: ->(workspace:, **) { FileUtils.remove_entry_secure(workspace.root) }
+  )
+end
+```
+
 The built-in providers have distinct dependency and lifecycle tradeoffs:
 
 | Provider | Platforms | Dependency | Isolation | Lifecycles |

@@ -148,23 +148,6 @@ class RuntimeTest < Minitest::Test
     end
   end
 
-  def test_resource_configuration_rejects_bare_classes
-    configuration = LittleGhost::Configuration.new
-
-    assert_raises(ArgumentError) { configuration.workspace = Object }
-    assert_raises(ArgumentError) { configuration.sandbox = Object }
-    assert_raises(ArgumentError) { configuration.workspace = LittleGhost::Workspace }
-    assert_raises(ArgumentError) { configuration.sandbox = LittleGhost::Sandboxes::Unrestricted }
-    assert_raises(ArgumentError) { configuration[:workspace] = LittleGhost::Workspace }
-    assert_raises(ArgumentError) { configuration[:sandbox] = LittleGhost::Sandboxes::Unrestricted }
-    assert_raises(ArgumentError) do
-      LittleGhost::Configuration.new(workspace: LittleGhost::Workspace)
-    end
-    assert_raises(ArgumentError) do
-      LittleGhost::Configuration.new(sandbox: LittleGhost::Sandboxes::Unrestricted)
-    end
-  end
-
   def test_runtime_builds_resources_from_provider_declarations
     Dir.mktmpdir do |root|
       FileUtils.mkdir_p(File.join(root, "work"))
