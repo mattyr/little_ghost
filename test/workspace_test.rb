@@ -20,6 +20,12 @@ class WorkspaceTest < Minitest::Test
     end
   end
 
+  def test_resolves_relative_paths_from_the_filesystem_root
+    workspace = LittleGhost::Workspace.new(root: File::SEPARATOR, paths: {tmp: "tmp"})
+
+    assert_equal File.join(File::SEPARATOR, "tmp"), workspace.path(:tmp)
+  end
+
   def test_runs_configured_lifecycle_once
     events = []
     run = Run.new("run-1")

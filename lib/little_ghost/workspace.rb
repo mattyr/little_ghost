@@ -101,7 +101,8 @@ module LittleGhost
         raise ArgumentError, "workspace path :#{key} must not be empty" if path.empty?
 
         expanded = File.expand_path(path, root)
-        if !Pathname.new(path).absolute? && expanded != root && !expanded.start_with?("#{root}#{File::SEPARATOR}")
+        root_prefix = root.end_with?(File::SEPARATOR) ? root : "#{root}#{File::SEPARATOR}"
+        if !Pathname.new(path).absolute? && expanded != root && !expanded.start_with?(root_prefix)
           raise ArgumentError, "relative workspace path :#{key} must remain beneath the workspace root"
         end
 
