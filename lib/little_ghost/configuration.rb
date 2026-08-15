@@ -107,6 +107,16 @@ module LittleGhost
       @configuration_values[:provider_adapters] = @configuration_values.fetch(:provider_adapters, {}).dup
       @configuration_values[:catalog_sources] = Array(@configuration_values[:catalog_sources]).dup
       @configuration_values[:provider_credentials] ||= nil
+      if @configuration_values[:workspace]
+        @configuration_values[:workspace] = component_declaration(
+          @configuration_values[:workspace], Workspace, :workspace
+        )
+      end
+      if @configuration_values[:sandbox]
+        @configuration_values[:sandbox] = component_declaration(
+          @configuration_values[:sandbox], Sandbox, :sandbox
+        )
+      end
     end
 
     # Yields this builder for setup and returns the same instance.
@@ -352,17 +362,21 @@ module LittleGhost
       value
     end
 
-    # Selects the Workspace subclass instantiated for each run.
+    # Selects the Workspace provider instantiated for each run. A declaration
+    # may be a registered provider symbol, callable, or a Hash containing a
+    # +:provider+ and constructor options.
     def workspace=(value)
       change_configuration do
-        @configuration_values[:workspace] = component_class(value, Workspace, :workspace)
+        @configuration_values[:workspace] = component_declaration(value, Workspace, :workspace)
       end
     end
 
-    # Selects the Sandbox subclass instantiated around each run's workspace.
+    # Selects the Sandbox provider instantiated around each run's workspace.
+    # LittleGhost does not fall back to unrestricted execution when an explicit
+    # backend is unavailable.
     def sandbox=(value)
       change_configuration do
-        @configuration_values[:sandbox] = component_class(value, Sandbox, :sandbox)
+        @configuration_values[:sandbox] = component_declaration(value, Sandbox, :sandbox)
       end
     end
 
@@ -391,7 +405,14 @@ module LittleGhost
 
     # Adds or replaces an arbitrary setting.
     def []=(name, value)
-      change_configuration { configuration_values[name.to_sym] = value }
+      case name.to_sym
+      when :workspace
+        self.workspace = value
+      when :sandbox
+        self.sandbox = value
+      else
+        change_configuration { configuration_values[name.to_sym] = value }
+      end
     end
 
     # Replaces the application root after resolving it to a stable real path.
@@ -724,6 +745,28 @@ module LittleGhost
       end
 
       value
+    end
+
+    def component_declaration(value, base_class, name)
+      return value if value.is_a?(Symbol) || callable_component?(value)
+
+      unless value.is_a?(Hash)
+        raise ArgumentError, "#{name} must be a provider symbol, callable, or Hash"
+      end
+
+      declaration = value.transform_keys(&:to_sym)
+      raise ArgumentError, "#{name} must include a provider" unless declaration.key?(:provider)
+
+      provider = declaration[:provider]
+      valid_class = provider.is_a?(Class) && provider <= base_class
+      unless provider.is_a?(Symbol) || callable_component?(provider) || valid_class
+        raise ArgumentError, "#{name} provider must be a #{base_class} class, symbol, or callable"
+      end
+      declaration
+    end
+
+    def callable_component?(value)
+      value.respond_to?(:call) && !value.is_a?(Class)
     end
 
     def inferred_root

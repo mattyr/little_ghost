@@ -7,7 +7,7 @@ require "little_ghost/tools"
 class ToolsTest < Minitest::Test
   def test_filesystem_provider_exposes_writable_operations
     Dir.mktmpdir do |directory|
-      registry = filesystem_registry(unrestricted_sandbox(directory, writable: true))
+      registry = filesystem_registry(unrestricted_sandbox(directory, policy: writable_policy))
 
       assert_equal %w[read_file list_files write_file replace_in_file], registry.names
       assert registry.fetch("write_file").execute({"path" => "note.txt", "content" => "hello"}).success?
@@ -41,7 +41,7 @@ class ToolsTest < Minitest::Test
         target = File.join(outside, "secret.txt")
         File.write(target, "original")
         File.symlink(target, File.join(directory, "link.txt"))
-        registry = filesystem_registry(unrestricted_sandbox(directory, writable: true))
+        registry = filesystem_registry(unrestricted_sandbox(directory, policy: writable_policy))
 
         assert registry.fetch("write_file").execute({"path" => "link.txt", "content" => "changed"}).error?
         assert_equal "original", File.read(target)
@@ -51,7 +51,10 @@ class ToolsTest < Minitest::Test
 
   def test_exclusive_filesystem_provider_marks_every_tool_exclusive
     Dir.mktmpdir do |directory|
-      registry = filesystem_registry(unrestricted_sandbox(directory, writable: true), LittleGhost::Tools::Filesystem::Exclusive)
+      registry = filesystem_registry(
+        unrestricted_sandbox(directory, policy: writable_policy),
+        LittleGhost::Tools::Filesystem::Exclusive
+      )
 
       assert registry.all?(&:exclusive?)
     end
@@ -95,9 +98,13 @@ class ToolsTest < Minitest::Test
   end
 
   def unrestricted_sandbox(directory, **options)
-    LittleGhost::UnrestrictedSandbox.new(
+    LittleGhost::Sandboxes::Unrestricted.new(
       workspace: LittleGhost::Workspace.new(root: directory),
       **options
     )
+  end
+
+  def writable_policy
+    {workspace_access: :read_write, network: :inherit}
   end
 end

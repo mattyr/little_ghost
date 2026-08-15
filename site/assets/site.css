@@ -387,9 +387,7 @@ main,
 .tool-database { --tool-chip-color: var(--warm); animation: batteryToolDatabase 3.1s ease-in-out infinite; }
 .tool-web { --tool-chip-color: #c7b8ff; animation: batteryToolWeb 3.6s ease-in-out infinite; }
 .battery-route-lines path { stroke-dasharray: 4 3; animation: batteryRoute 1.8s linear infinite; }
-.battery-handoff circle { transform-box: fill-box; transform-origin: center; animation: batteryHandoff 1.8s ease-in-out infinite; }
-.battery-handoff circle:nth-child(2) { animation-delay: 0.3s; }
-.battery-handoff circle:nth-child(3) { animation-delay: 0.6s; }
+.battery-sandbox-shield { transform-origin: 36px 29px; animation: batteryShield 3.2s ease-in-out infinite; }
 .battery-provider-network circle { transform-box: fill-box; transform-origin: center; animation: batteryProviderSignal 2.6s ease-in-out infinite; }
 .battery-provider-network circle:nth-child(2) { animation-delay: 0.65s; }
 .battery-provider-network circle:nth-child(3) { animation-delay: 1.3s; }
@@ -400,7 +398,7 @@ main,
 .battery-icon .ghost-c { animation-delay: -3.2s; }
 .battery-item:hover .battery-icon { filter: drop-shadow(0 8px 14px color-mix(in srgb, var(--battery-color) 36%, transparent)); transform: translateY(-3px); }
 .battery-routes { --battery-color: #c7b8ff; }
-.battery-team { --battery-color: #ff9ab1; }
+.battery-sandbox { --battery-color: #ff9ab1; }
 .battery-providers { --battery-color: var(--warm); }
 .battery-streaming { --battery-color: var(--mint); }
 .battery-runtime { --battery-color: var(--paper); }
@@ -429,7 +427,7 @@ main,
 @keyframes batteryToolDatabase { 0%, 100% { transform: translateY(1.5px); } 50% { transform: translateY(-1.5px); } }
 @keyframes batteryToolWeb { 0%, 100% { transform: scale(0.95); } 50% { transform: scale(1.04); } }
 @keyframes batteryRoute { to { stroke-dashoffset: -7; } }
-@keyframes batteryHandoff { 0%, 58%, 100% { opacity: 0.18; transform: scale(0.75); } 22% { opacity: 0.9; transform: scale(1.2); } }
+@keyframes batteryShield { 0%, 100% { opacity: 0.42; transform: scale(0.96); } 50% { opacity: 0.72; transform: scale(1.02); } }
 @keyframes batteryProviderSignal { 0%, 62%, 100% { opacity: 0.25; transform: scale(0.78); } 24% { opacity: 0.9; transform: scale(1.2); } }
 @keyframes batteryStream { to { stroke-dashoffset: -11; } }
 @keyframes batteryWatch { 0%, 100% { opacity: 0.3; transform: scale(0.92); } 50% { opacity: 0.72; transform: scale(1.03); } }

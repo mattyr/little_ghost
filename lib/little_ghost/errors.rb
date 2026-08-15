@@ -5,6 +5,17 @@ module LittleGhost
   class Error < StandardError; end
   # Raised for invalid framework or application configuration.
   class ConfigurationError < Error; end
+  # Base class for sandbox setup failures that trusted application code can
+  # diagnose before model-controlled work starts.
+  class SandboxConfigurationError < ConfigurationError; end
+  # Raised when a sandbox backend does not support the current operating system.
+  class UnsupportedPlatformError < SandboxConfigurationError; end
+  # Raised when an explicitly selected sandbox backend dependency is unavailable.
+  class DependencyError < SandboxConfigurationError; end
+  # Raised when a backend cannot enforce a requested sandbox capability.
+  class CapabilityError < SandboxConfigurationError; end
+  # Raised when a sandbox policy is internally invalid.
+  class PolicyError < SandboxConfigurationError; end
   # Raised when an abstract framework method has no concrete implementation.
   class AbstractMethodError < Error; end
   # Raised when a configured provider adapter cannot be constructed.

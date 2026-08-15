@@ -418,11 +418,16 @@ main h6 {
   letter-spacing: -0.035em;
 }
 
-main h1,
-main h1.page-title .page-title-name {
+main h1 {
   font-size: clamp(2.15rem, 4vw, 3.1rem);
   font-weight: 720;
   line-height: 1;
+}
+
+main h1.page-title .page-title-name {
+  font-size: clamp(1.9rem, 3vw, 2.35rem);
+  font-weight: 720;
+  line-height: 1.08;
 }
 
 main h1.page-title {

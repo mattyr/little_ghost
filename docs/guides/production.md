@@ -144,11 +144,42 @@ When a step retries, its tool calls may happen again too. Prefer read-only work,
 
 ## Choose workspace and sandbox behavior explicitly
 
-A Workspace gives one Run a place for files. A Sandbox decides how filesystem and process operations happen there.
+A **Workspace** names the host paths associated with a Run. A **Sandbox** governs bounded filesystem operations and child processes that deliberately pass through it. A custom Ruby Tool remains trusted application code unless it delegates work to the bound Sandbox.
 
-`LittleGhost::UnrestrictedSandbox` uses the host machine with the Ruby process's permissions. It does not contain untrusted code. Expose only the tools the model needs, and use a real isolation boundary when untrusted code must run.
+The dependency-free default is an application-root Workspace with `LittleGhost::Sandboxes::Unrestricted`. It is not process or network isolation. Select an enforcing backend explicitly when a model can influence commands; LittleGhost raises when that backend is unavailable instead of silently falling back:
 
-The Run closes workspaces and sandboxes that LittleGhost creates for it. If your application passes an existing instance instead, your application keeps ownership and must close it when its own lifecycle ends.
+```ruby
+require "fileutils"
+require "tmpdir"
+
+LittleGhost.configure do |config|
+  config.workspace = lambda do |**|
+    root = Dir.mktmpdir("little-ghost-support-")
+    LittleGhost::Workspace.new(
+      root:,
+      teardown: lambda do |workspace:, **|
+        FileUtils.remove_entry_secure(workspace.root) if File.exist?(workspace.root)
+      end
+    )
+  end
+  config.sandbox = {
+    provider: :docker,
+    image: "my-agent-runtime@sha256:...",
+    workspace_path: "/workspace",
+    workspace_access: :read_write,
+    root_filesystem: :read_only,
+    environment: {inherit: false, set: {"LANG" => "C.UTF-8"}},
+    network: :none,
+    execution_scope: :command
+  }
+end
+```
+
+The temporary Workspace above is useful when files should live for one Run. Use application-managed storage, with tenant isolation and concurrency control, when files must persist or several Runs share a root.
+
+The Run opens a Runtime-created Workspace before its Sandbox and closes them in reverse order after every outcome. Closing a Workspace invokes its configured teardown; it does not delete files by default. Cleanup failures raise because LittleGhost cannot confirm a clean shutdown of every owned resource. Existing instances passed by the application remain caller-owned.
+
+[Workspaces, Sandboxes, and Tools](sandboxing.md) explains backend selection, named Workspace paths, lifecycle callbacks, mounts, Scopes, profiles, process persistence, filtered networking, hosting boundaries, and deployment validation in depth.
 
 ## Instrument without leaking the application
 

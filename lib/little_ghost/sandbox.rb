@@ -1,34 +1,71 @@
 # frozen_string_literal: true
 
 module LittleGhost
-  # A Sandbox decides what an agent may do with files and processes. Applications
-  # can place that work on the host, in a container or VM, or behind a remote
-  # execution service without changing their tools.
+  # A Sandbox governs filesystem operations and child processes that explicitly
+  # pass through it. Built-in filesystem and shell Tools use their bound
+  # Sandbox. A custom Ruby Tool remains trusted application code unless it
+  # delegates work to that Sandbox or one of its Scopes.
   #
-  #   class ContainerSandbox < LittleGhost::Sandbox
-  #     def initialize(workspace:, container:)
-  #       super(workspace:)
-  #       @container = container
-  #     end
-  #
-  #     def read(path, context: nil)
-  #       context&.check!
-  #       @container.read(path)
-  #     end
-  #
-  #     def execute_program(command, timeout:, context: nil, **)
-  #       result = @container.run(
-  #         command, timeout:, cancellation: context&.cancellation_token
-  #       )
-  #       LittleGhost::Sandbox::Execution.new(**result)
-  #     end
+  #   LittleGhost.configure do |config|
+  #     config.sandbox = {
+  #       provider: :docker,
+  #       image: "customer-support-runtime@sha256:...",
+  #       network: :none
+  #     }
   #   end
   #
-  # Implementations confine paths to #workspace, honor RunContext cancellation,
-  # enforce time and output limits, and return
+  # Implementations report their effective policy and capabilities, confine
+  # brokered paths to declared mounts, honor RunContext cancellation, enforce
+  # time and output limits, and return
   # {Execution}[rdoc-ref:LittleGhost::Sandbox::Execution] from process
-  # operations.
+  # operations. A backend's isolation mechanism still relies on its outer host,
+  # kernel or VM, dependencies, trusted configuration, and deliberately exposed
+  # mounts. Sandbox policy does not apply to provider requests or arbitrary Ruby
+  # code in the application process.
   class Sandbox
+    @providers = {}
+
+    class << self
+      # Registers a trusted backend class under a configuration symbol.
+      def register_provider(name, implementation)
+        unless implementation.is_a?(Class) && implementation <= Sandbox
+          raise ArgumentError, "sandbox provider must be a Sandbox class"
+        end
+
+        Sandbox.providers[name.to_sym] = implementation
+      end
+
+      # Resolves a registered backend without silently falling back.
+      def resolve_provider(name)
+        Sandbox.providers.fetch(name.to_sym) do
+          raise DependencyError, "sandbox provider :#{name} is not available"
+        end
+      end
+
+      # Reports whether a registered backend can start in the current
+      # environment without creating a Run-owned sandbox.
+      def probe(name, **options)
+        implementation = resolve_provider(name)
+        provider_probe = implementation.method(:probe)
+        return provider_probe.call(**options) unless provider_probe.owner == Sandbox.singleton_class
+        unless options.empty?
+          raise ArgumentError, "sandbox provider :#{name} does not accept probe options"
+        end
+
+        {
+          available: true,
+          reason: nil,
+          capabilities: Capabilities.new(features: [], network_modes: [])
+        }
+      rescue DependencyError => error
+        {available: false, reason: error.message, capabilities: Capabilities.new(features: [], network_modes: [])}
+      end
+
+      def providers # :nodoc:
+        @providers ||= {}
+      end
+    end
+
     # Contains captured process output, exit status, and an optional execution
     # error.
     Execution = Data.define(:stdout, :stderr, :exit_code, :error) do # :nodoc:
@@ -73,12 +110,67 @@ module LittleGhost
     end
 
     # Binds the sandbox to +workspace+.
-    def initialize(workspace:)
+    def initialize(workspace:, policy: nil, profiles: {}, limits: {})
       @workspace = workspace
+      @policy = Policy.coerce(policy)
+      @limits = Limits.coerce(limits)
+      configure_profiles!(profiles)
     end
 
     # Workspace whose files and processes this sandbox governs.
     attr_reader :workspace
+
+    # Normalized policy requested by trusted application configuration.
+    attr_reader :policy
+    # File and process output bounds enforced by this Sandbox.
+    attr_reader :limits
+
+    # Policy the backend enforces. Backends may fill a documented default or
+    # report an unavoidable effective value, but reject unsupported requested
+    # rules instead of silently claiming enforcement.
+    def effective_policy = policy
+
+    # Operations and network modes implemented by this backend.
+    def capabilities
+      Capabilities.new(features: [], network_modes: [])
+    end
+
+    # Indicates whether the backend implements +feature+.
+    def supports?(feature, value = nil) = capabilities.supports?(feature, value)
+
+    # Indicates whether an operation is allowed by this sandbox and optional
+    # virtual +path+.
+    def allows?(operation, path = nil)
+      return supports?(operation) unless path
+
+      scope.allows?(operation, path)
+    end
+
+    # Produces a non-owning capability-reduced view for tools or child agents.
+    # The caller must pass and use that Scope; retaining this parent Sandbox
+    # retains its broader authority.
+    def scope(profile = nil, mounts: nil, capabilities: nil, network: nil)
+      if profile
+        if !mounts.nil? || !capabilities.nil? || !network.nil?
+          raise ArgumentError, "scope profile cannot be combined with explicit options"
+        end
+
+        declaration = @profiles.fetch(profile.to_sym) do
+          raise PolicyError, "unknown sandbox scope profile: #{profile.inspect}"
+        end
+        declaration = declaration.call(workspace:, policy: effective_policy) if declaration.respond_to?(:call)
+        unless declaration.respond_to?(:transform_keys)
+          raise PolicyError, "sandbox scope profile must be a Hash"
+        end
+        values = declaration.transform_keys(&:to_sym)
+        unknown = values.keys - %i[mounts capabilities network]
+        raise PolicyError, "unknown sandbox scope profile options: #{unknown.join(", ")}" unless unknown.empty?
+        mounts = values[:mounts]
+        capabilities = values[:capabilities]
+        network = values[:network]
+      end
+      Scope.new(sandbox: self, mounts:, capabilities:, network:)
+    end
 
     # Opens any run-scoped resources and makes the sandbox ready for tools.
     def open(run: nil)
@@ -86,24 +178,25 @@ module LittleGhost
     end
 
     # Indicates whether filesystem mutation is allowed.
-    def writable? = false
+    def writable? = supports?(:filesystem_write)
 
-    # Reads UTF-8 text at a workspace-relative +path+.
+    # Reads UTF-8 text at a workspace-relative or absolute virtual +path+.
     def read(path, context: nil)
       raise AbstractMethodError, "#{self.class} does not support filesystem reads"
     end
 
-    # Lists entries at a workspace-relative directory +path+.
+    # Lists entries at a workspace-relative or absolute virtual directory +path+.
     def list(path = ".", context: nil)
       raise AbstractMethodError, "#{self.class} does not support filesystem listings"
     end
 
-    # Writes +content+ to a workspace-relative +path+.
+    # Writes +content+ to a workspace-relative or absolute virtual +path+.
     def write(path, content, context: nil)
       raise AbstractMethodError, "#{self.class} does not support filesystem writes"
     end
 
-    # Replaces one exact +old_text+ occurrence with +new_text+.
+    # Replaces one exact +old_text+ occurrence at a workspace-relative or
+    # absolute virtual +path+ with +new_text+.
     def replace(path, old_text, new_text, context: nil)
       raise AbstractMethodError, "#{self.class} does not support filesystem edits"
     end
@@ -112,7 +205,7 @@ module LittleGhost
     #
     # Prefer #execute_program for model-controlled arguments so shell syntax is
     # not interpreted.
-    def execute(command, timeout:, context: nil, max_output_bytes: 1_000_000, **options)
+    def execute(command, timeout:, context: nil, max_output_bytes: nil, **options)
       execute_program(
         ["/bin/sh", "-c", String(command)],
         timeout:,
@@ -125,8 +218,9 @@ module LittleGhost
     # Executes an argument vector without shell interpretation.
     #
     # Implementations must enforce +timeout+ and +max_output_bytes+. Environment
-    # inheritance is disabled by default to avoid leaking process credentials.
-    def execute_program(command, timeout:, context: nil, max_output_bytes: 1_000_000, environment: {}, inherit_environment: false)
+    # inheritance is disabled by default to avoid leaking process credentials;
+    # both policy and the individual call must opt in before a backend may inherit.
+    def execute_program(command, timeout:, context: nil, max_output_bytes: nil, environment: {}, inherit_environment: false, **options)
       raise AbstractMethodError, "#{self.class} does not support program execution"
     end
 
@@ -134,5 +228,24 @@ module LittleGhost
     def close
       nil
     end
+
+    private
+
+    def configure_profiles!(profiles)
+      unless profiles.respond_to?(:to_h)
+        raise PolicyError, "sandbox profiles must be a Hash"
+      end
+
+      @profiles = profiles.to_h.transform_keys(&:to_sym).freeze
+    end
   end
 end
+
+require_relative "sandbox/capabilities"
+require_relative "sandbox/limits"
+require_relative "sandbox/mount"
+require_relative "sandbox/environment_policy"
+require_relative "sandbox/network_policy"
+require_relative "sandbox/policy"
+require_relative "sandbox/filesystem"
+require_relative "sandbox/scope"

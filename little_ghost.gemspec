@@ -29,6 +29,7 @@ Gem::Specification.new do |spec|
   spec.require_paths = ["lib"]
 
   spec.add_dependency "base64"
+  spec.add_dependency "fiddle"
   spec.add_dependency "opentelemetry-api", "~> 1.0"
 
   spec.add_development_dependency "minitest", "~> 5.25"
