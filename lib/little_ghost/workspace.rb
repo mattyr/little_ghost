@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "pathname"
+
 module LittleGhost
   # A Workspace gives an agent a concrete home for files. Pair it with a Sandbox
   # to decide how those files may be read, changed, or used by commands.
@@ -98,7 +100,12 @@ module LittleGhost
         path = value.to_s
         raise ArgumentError, "workspace path :#{key} must not be empty" if path.empty?
 
-        [key, File.expand_path(path, root).freeze]
+        expanded = File.expand_path(path, root)
+        if !Pathname.new(path).absolute? && expanded != root && !expanded.start_with?("#{root}#{File::SEPARATOR}")
+          raise ArgumentError, "relative workspace path :#{key} must remain beneath the workspace root"
+        end
+
+        [key, expanded.freeze]
       end.freeze
     end
 

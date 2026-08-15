@@ -53,6 +53,9 @@ class WorkspaceTest < Minitest::Test
 
   def test_rejects_invalid_configuration
     assert_raises(ArgumentError) { LittleGhost::Workspace.new(root: Dir.pwd, paths: []) }
+    assert_raises(ArgumentError) do
+      LittleGhost::Workspace.new(root: Dir.pwd, paths: {cache: "../cache"})
+    end
     assert_raises(ArgumentError) { LittleGhost::Workspace.new(root: Dir.pwd, setup: Object.new) }
     assert_raises(ArgumentError) { LittleGhost::Workspace.new(root: Dir.pwd, teardown: Object.new) }
   end
