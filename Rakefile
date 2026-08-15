@@ -72,6 +72,7 @@ class RDoc::Generator::LittleGhost < RDoc::Generator::Aliki
     File.join(File.dirname(RDoc::Generator::Aliki.instance_method(:initialize).source_location.first), "template", "aliki")
   ).freeze
   TEMPLATE_ROOT = Pathname.new(File.expand_path("site/rdoc", __dir__)).freeze
+  FAVICON_SOURCE = Pathname.new(File.expand_path("site/assets/favicon.svg", __dir__)).freeze
   CUSTOM_TEMPLATES = %w[_footer.rhtml _header.rhtml _sidebar_classes.rhtml _sidebar_pages.rhtml].to_h do |file_name|
     [file_name, TEMPLATE_ROOT.join(file_name)]
   end.freeze
@@ -107,7 +108,8 @@ class RDoc::Generator::LittleGhost < RDoc::Generator::Aliki
 
   def generate
     super
-    rewrite_guide_links
+    @outputdir.join("favicon.svg").binwrite(FAVICON_SOURCE.binread)
+    rewrite_output
   end
 
   def generate_ancestor_list(ancestors, klass)
@@ -144,13 +146,18 @@ class RDoc::Generator::LittleGhost < RDoc::Generator::Aliki
     nil
   end
 
-  def rewrite_guide_links
+  def rewrite_output
     @outputdir.glob("**/*.html").each do |page|
       html = page.read
       rewritten = LEGACY_GUIDE_LINKS.reduce(html) do |content, (legacy_path, clean_path)|
         relative_path = @outputdir.join(clean_path).relative_path_from(page.dirname)
         content.gsub(legacy_path, relative_path.to_s)
       end
+      favicon_path = @outputdir.join("favicon.svg").relative_path_from(page.dirname)
+      rewritten = rewritten.sub(
+        "</title>",
+        %(</title>\n<link rel="icon" href="#{favicon_path}" type="image/svg+xml">)
+      )
       page.write(rewritten) unless rewritten == html
     end
   end
@@ -169,6 +176,7 @@ class LittleGhostSiteChecker
     "assets/social-card.png",
     "versions.json",
     "docs/index.html",
+    "docs/favicon.svg",
     "docs/getting_started.html",
     "docs/prompt_views.html",
     "docs/core_concepts.html",
