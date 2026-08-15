@@ -49,6 +49,7 @@ class RDoc::Generator::LittleGhost < RDoc::Generator::Aliki
     "docs/guides/core_concepts.md" => "core_concepts.html",
     "docs/guides/assemblies.md" => "assemblies.html",
     "docs/guides/prompt_views.md" => "prompt_views.html",
+    "docs/guides/sandboxing.md" => "sandboxing.html",
     "docs/guides/production.md" => "production.html"
   }.freeze
   GUIDE_TITLES = {
@@ -56,6 +57,7 @@ class RDoc::Generator::LittleGhost < RDoc::Generator::Aliki
     "docs/guides/core_concepts.md" => "Core Concepts",
     "docs/guides/assemblies.md" => "Compose Agents",
     "docs/guides/prompt_views.md" => "Prompts as Views",
+    "docs/guides/sandboxing.md" => "Workspaces, Sandboxes, and Tools",
     "docs/guides/production.md" => "Running in Production"
   }.freeze
   LEGACY_GUIDE_LINKS = {
@@ -63,6 +65,7 @@ class RDoc::Generator::LittleGhost < RDoc::Generator::Aliki
     %r{(?:docs/guides/)?prompt_views_md\.html} => "prompt_views.html",
     %r{(?:docs/guides/)?core_concepts_md\.html} => "core_concepts.html",
     %r{(?:docs/guides/)?assemblies_md\.html} => "assemblies.html",
+    %r{(?:docs/guides/)?sandboxing_md\.html} => "sandboxing.html",
     %r{(?:docs/guides/)?production_md\.html} => "production.html"
   }.freeze
   ALIKI_TEMPLATE = Pathname.new(
@@ -170,6 +173,7 @@ class LittleGhostSiteChecker
     "docs/prompt_views.html",
     "docs/core_concepts.html",
     "docs/assemblies.html",
+    "docs/sandboxing.html",
     "docs/production.html"
   ].freeze
   LANDING_NAVIGATION_LABELS = %w[Docs GitHub].freeze
@@ -179,6 +183,7 @@ class LittleGhostSiteChecker
     "Core Concepts",
     "Compose Agents",
     "Prompts as Views",
+    "Workspaces, Sandboxes, and Tools",
     "Running in Production"
   ].freeze
   ESSENTIAL_API_LABELS = %w[Agent Tool Run Assembly Workflow Swarm Graph].freeze
@@ -187,7 +192,7 @@ class LittleGhostSiteChecker
   NAVIGATION_LINK_PATTERN = /<a\b([^>]*)>(.*?)<\/a>/mi
   ATTRIBUTE_PATTERN = /\b(?:href|src)=["']([^"']+)["']/i
   ANCHOR_PATTERN = /\b(?:id|name)=["']([^"']+)["']/i
-  LEGACY_GUIDE_REFERENCE_PATTERN = /(?:Core%20Concepts|Getting%20Started|Prompts%20as%20Views|Compose%20Agents|Running%20in%20Production|_md\.html)/
+  LEGACY_GUIDE_REFERENCE_PATTERN = /(?:Core%20Concepts|Getting%20Started|Prompts%20as%20Views|Compose%20Agents|Workspaces%2C%20Sandboxes%2C%20and%20Tools|Running%20in%20Production|_md\.html)/
   MODIFIED_THEME_CREDIT = "using a modified version of the Aliki theme by"
 
   def initialize(root)

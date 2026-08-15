@@ -3,16 +3,18 @@
 require "pathname"
 
 module LittleGhost
-  # A Workspace gives an agent a concrete home for files. Pair it with a Sandbox
-  # to decide how those files may be read, changed, or used by commands.
+  # A Workspace names the host paths associated with a Run. Pair it with a
+  # Sandbox to decide how those paths may be read, changed, or used by commands.
   #
   #   workspace = LittleGhost::Workspace.new(root: "./tmp/support-run")
   #   workspace.root # => an absolute path ending in "/tmp/support-run"
   #
-  # Workspaces participate in the run resource lifecycle. Named paths let an
-  # application expose workspace-owned directories to sandbox configuration,
-  # while setup and teardown callbacks provision run-scoped resources without a
-  # Workspace subclass.
+  # Workspaces participate in the Run resource lifecycle, but object lifetime
+  # and file lifetime are separate. Workspace does not create +root+ or delete
+  # it by default. Named paths and setup and teardown callbacks let trusted
+  # application configuration provision run-scoped resources without a
+  # Workspace subclass. Applications that share a writable root between Runs
+  # must provide their own concurrency and tenant isolation.
   class Workspace
     @providers = {}
 
@@ -39,8 +41,9 @@ module LittleGhost
     end
 
     # Expands +root+ and every named path to absolute paths. Relative named paths
-    # are resolved beneath +root+. +setup+ receives +workspace:+ and +run:+ when
-    # the run opens; +teardown+ receives the same values when it closes.
+    # must remain beneath +root+; absolute named paths deliberately refer outside
+    # it. +setup+ receives +workspace:+ and +run:+ when the Run opens. +teardown+
+    # receives the same values when it closes, including after partial setup.
     def initialize(root:, paths: {}, setup: nil, teardown: nil)
       @root = File.expand_path(root)
       @paths = normalize_paths(paths)
@@ -62,7 +65,7 @@ module LittleGhost
       paths.fetch(name.to_sym)
     end
 
-    # Opens any run-scoped resources and yields this workspace to the run.
+    # Calls the application setup callback once and returns this workspace.
     def open(run: nil)
       return self if @opened
 
@@ -76,7 +79,8 @@ module LittleGhost
       raise
     end
 
-    # Releases workspace resources. The default workspace has nothing to close.
+    # Calls the application teardown callback once. The default does not remove
+    # files or directories.
     def close
       return nil unless @active
 

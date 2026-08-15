@@ -2,8 +2,10 @@
 
 module LittleGhost
   class Sandbox
-    # A non-owning, capability-reduced view of a Sandbox for one agent or tool
-    # set. Scopes never open or close their parent and cannot widen it.
+    # A non-owning, capability-reduced view of a Sandbox for one agent or Tool
+    # set. Scopes never open or close their parent and cannot widen it. They
+    # constrain only callers that receive and use the Scope; code retaining the
+    # parent Sandbox retains its broader authority.
     class Scope
       # Creates a view of +sandbox+. +mounts+ and +capabilities+ may only narrow
       # the parent scope or sandbox.

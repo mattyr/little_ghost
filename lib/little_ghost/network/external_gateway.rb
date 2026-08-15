@@ -5,7 +5,8 @@ require_relative "../network"
 module LittleGhost
   module Network
     # Exposes an application-managed proxy to an isolated sandbox without
-    # claiming ownership of the proxy's lifecycle.
+    # claiming ownership of its lifecycle or attesting what it enforces. The
+    # application owns proxy policy, credentials, readiness, logging, and cleanup.
     class ExternalGateway < Gateway
       # Builds a gateway around existing mounts and a proxy socket path.
       def initialize(policy:, mounts:, proxy_mount_path:, environment: {}, validate: nil)

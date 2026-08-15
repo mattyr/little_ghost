@@ -107,6 +107,7 @@ participants ran. Use `.stream_ask` to watch the work as it happens.
 - [Core Concepts](docs/guides/core_concepts.md) builds the mental model from Agent to Assembly.
 - [Compose Agents](docs/guides/assemblies.md) walks through workflows, swarms, graphs, nesting, and builders.
 - [Prompts as Views](docs/guides/prompt_views.md) gives growing instructions, shared pieces, and application values a natural home.
+- [Workspaces, Sandboxes, and Tools](docs/guides/sandboxing.md) explains filesystem, process, network, lifecycle, and hosting boundaries without treating “sandboxed” as a blanket guarantee.
 - [Running in Production](docs/guides/production.md) covers configuration, sessions, execution, observability, and trust boundaries.
 - [API reference](rdoc-ref:LittleGhost) provides exact signatures and lifecycle contracts.
 

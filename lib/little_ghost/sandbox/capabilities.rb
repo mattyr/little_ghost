@@ -2,8 +2,9 @@
 
 module LittleGhost
   class Sandbox
-    # Describes the operations and isolation guarantees a Sandbox backend can
-    # actually provide. Capabilities are immutable and safe to expose to tools.
+    # Describes the operations, network modes, and isolation mechanism a Sandbox
+    # backend implements. Capabilities are immutable and safe to expose to
+    # tools, but are not a security certification of the surrounding deployment.
     class Capabilities
       DEFAULT_FEATURES = %i[filesystem_read filesystem_list process_execute].freeze # :nodoc:
       NETWORK_MODES = %i[inherit none allowlist].freeze # :nodoc:
@@ -19,7 +20,8 @@ module LittleGhost
       def self.normalize(feature) = ALIASES.fetch(feature.to_sym, feature.to_sym) # :nodoc:
 
       # Builds a capability report from feature names and supported network
-      # modes. +isolation+ is descriptive and does not itself grant an operation.
+      # modes. +isolation+ is descriptive and does not itself grant an operation
+      # or establish a complete trust boundary.
       def initialize(features: DEFAULT_FEATURES, network_modes: [:inherit], isolation: :none)
         @features = Array(features).map(&:to_sym).uniq.freeze
         @network_modes = Array(network_modes).map(&:to_sym).uniq.freeze

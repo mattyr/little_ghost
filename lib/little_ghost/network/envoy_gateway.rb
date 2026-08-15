@@ -13,6 +13,10 @@ require_relative "envoy_config"
 module LittleGhost
   module Network
     # Manages Envoy as a native process or pinned Docker sidecar for one Sandbox.
+    # CONNECT policy sees destinations, not encrypted request details. Optional
+    # HTTP inspection changes the child trust configuration and may not work for
+    # clients with certificate pinning or custom trust stores. The Sandbox must
+    # block direct sockets for either mode to be an enforcement boundary.
     class EnvoyGateway < Gateway
       ENVOY_IMAGE = "envoyproxy/envoy:v1.39.0@sha256:d59f7f5fa10cff6d5892b6c5e7df5c9297ddfb2c3683e33fbfb82da24de4fa66" # :nodoc:
       RUNTIMES = %i[auto native docker].freeze # :nodoc:

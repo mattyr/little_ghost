@@ -5,6 +5,10 @@ require "pathname"
 module LittleGhost
   class Sandbox
     # Maps one trusted host directory into the sandbox's virtual filesystem.
+    # Process and direct-tool visibility are separate: +tools: false+ keeps the
+    # mount available to child processes while denying it to the filesystem
+    # broker. +protect_aliases+ preserves restrictive access when the same host
+    # files are reachable through a broader mount.
     class Mount
       ACCESS_MODES = %i[read_only read_write].freeze # :nodoc:
 
@@ -17,6 +21,7 @@ module LittleGhost
       end
 
       # Maps +source+ at the absolute virtual +target+ with the selected access.
+      # +source+ is trusted host configuration, not model input.
       def initialize(source:, target:, access: :read_only, protect_aliases: false, tools: true, root: nil)
         source = File.expand_path(String(source), root)
         target = normalize_target(target)

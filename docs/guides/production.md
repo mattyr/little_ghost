@@ -144,9 +144,9 @@ When a step retries, its tool calls may happen again too. Prefer read-only work,
 
 ## Choose workspace and sandbox behavior explicitly
 
-A **Workspace** is the host directory owned by one Run. It answers where Run files persist. A **Sandbox** maps that directory and any additional mounts into a filesystem view, applies process and network policy, and answers how commands run. A **Tool** remains application code: built-in filesystem and shell tools use the bound Sandbox, while a custom Ruby Tool runs in the application process unless it deliberately delegates work to `sandbox` or a narrowed `sandbox.scope`.
+A **Workspace** names the host paths associated with a Run. A **Sandbox** governs bounded filesystem operations and child processes that deliberately pass through it. A custom Ruby Tool remains trusted application code unless it delegates work to the bound Sandbox.
 
-The default is deliberately compatible and dependency-free: an application-root Workspace with `LittleGhost::Sandboxes::Unrestricted`. It uses the host process's permissions and inherited networking, so it is not an isolation boundary. Selecting an enforcing backend is always explicit and never silently falls back:
+The dependency-free default is an application-root Workspace with `LittleGhost::Sandboxes::Unrestricted`. It is not process or network isolation. Select an enforcing backend explicitly when a model can influence commands; LittleGhost raises when that backend is unavailable instead of silently falling back:
 
 ```ruby
 LittleGhost.configure do |config|
@@ -164,94 +164,9 @@ LittleGhost.configure do |config|
 end
 ```
 
-Use named paths and lifecycle callbacks when a run needs more than one
-application-owned directory. This remains configuration; it does not require a
-Workspace subclass:
+The Run opens a Runtime-created Workspace before its Sandbox and closes them in reverse order after every outcome. Closing a Workspace invokes its configured teardown; it does not delete files by default. Cleanup failures raise because LittleGhost cannot promise that every owned resource was removed. Existing instances passed by the application remain caller-owned.
 
-```ruby
-config.workspace = lambda do
-  root = File.join("/var/lib/my_agent/runs", SecureRandom.uuid)
-  cache = File.join(root, ".cache")
-  LittleGhost::Workspace.new(
-    root:,
-    paths: {cache:},
-    setup: ->(workspace:, **) { FileUtils.mkdir_p(workspace.path(:cache)) },
-    teardown: ->(workspace:, **) { FileUtils.remove_entry_secure(workspace.root) }
-  )
-end
-```
-
-The built-in providers have distinct dependency and lifecycle tradeoffs:
-
-| Provider | Platforms | Dependency | Isolation | Lifecycles |
-| --- | --- | --- | --- | --- |
-| `:unrestricted` | Ruby platforms | none | host process permissions | Run-owned object |
-| `:bubblewrap` | Linux | `bwrap`; `socat` for filtered egress | user, PID, mount, IPC, UTS, cgroup, and optional network namespaces | fresh namespace per command |
-| `:docker` | macOS and Linux | reachable Docker daemon and an application-selected image | container filesystem and network | fresh container per command or one container per Sandbox |
-
-`execution_scope: :command` starts with a clean process environment for each command. `execution_scope: :sandbox` preserves one Docker container until the Sandbox closes, which is useful when process-visible state must survive between commands. Bubblewrap is command-scoped. Files in writable mounts persist in either mode; process state and unmounted root-filesystem changes do not persist across command-scoped executions.
-
-Mounts are explicit virtual mappings. By default, the same mount is available to isolated processes and direct filesystem tools. Set `tools: false` for process-only runtime, service-socket, cache, or home mounts that filesystem tools must not traverse. A Scope can only remove capabilities, narrow a mount to a descendant, or make writable access read-only; it cannot widen its parent Sandbox. This makes one parent policy reusable by Tools with different least-privilege views:
-
-```ruby
-read_reports = run.sandbox.scope(
-  mounts: [{target: "/workspace/reports", access: :read_only}],
-  capabilities: LittleGhost::Sandbox::Capabilities.new(
-    features: %i[filesystem_read filesystem_list]
-  )
-)
-```
-
-Applications with repeatable tool roles can name those views in configuration instead of defining a Sandbox subclass. A profile may narrow mounts, capabilities, and an allowlisted network to `:none`:
-
-```ruby
-config.sandbox = lambda do |workspace:, **|
-  LittleGhost::Sandboxes::Bubblewrap.new(
-    workspace:,
-    policy: {
-      workspace_access: :read_write,
-      mounts: [{source: "/srv/reference", target: "/reference"}],
-      network: {mode: :allowlist, allow: ["api.example.com:443"]}
-    },
-    profiles: {
-      developer: {mounts: ["/workspace", "/reference"], network: true},
-      reviewer: {
-        mounts: [{target: "/workspace", access: :read_only}, "/reference"],
-        network: false
-      }
-    }
-  )
-end
-
-reviewer_sandbox = run.sandbox.scope(:reviewer)
-```
-
-When policy depends on files that the Workspace creates in `open`, Bubblewrap's `setup:` callback runs after the Workspace is ready and returns `policy:` plus optional `profiles:`. Layout remains declarative: `runtime_roots:` (only `/usr` by default), `tmpfs:`, read-only `masks:`, `proc:`, `uid:`, `gid:`, and a trusted `command_wrapper:` customize the namespace without overriding command assembly. Add `/etc` or `/opt` only when the child runtime needs them and those trees contain no application secrets. `limits:` configures bounded `read_bytes`, `write_bytes`, `list_entries`, and per-stream `output_bytes`; explicit calls may choose a smaller process-output limit. `exec_program` provides the same validated policy path for an interactive process handoff.
-
-Selecting `:bubblewrap` on macOS, selecting a backend whose executable is missing, or selecting Docker without a reachable daemon or image raises a typed dependency or platform error. `LittleGhost::Sandbox.probe(:bubblewrap)` and `.probe(:docker)` let setup checks report availability without starting a Run.
-
-### Treat networking as part of the Sandbox
-
-An isolated Sandbox defaults to `network: :none`. Set `network: :inherit` only when the container or namespace may use ordinary outbound networking. An exact destination allowlist uses a run-scoped gateway:
-
-```ruby
-config.sandbox = {
-  provider: :docker,
-  image: "my-agent-runtime@sha256:...",
-  network: {
-    mode: :allowlist,
-    allow: ["api.example.com:443"]
-  }
-}
-```
-
-The built-in Envoy gateway accepts exact lowercase DNS names and ports, rejects private and reserved resolved addresses, and puts Docker clients on an internal network whose only egress participant is the gateway. Proxy environment variables alone are advisory; `:unrestricted` therefore rejects `:none` and `:allowlist` instead of claiming enforcement. Envoy is optional: LittleGhost uses a pinned image with Docker or an application-installed native binary, and raises clearly when the selected runtime is unavailable. `gateway_options` can customize the executable, pinned image, pull behavior, or DNS resolvers.
-
-An application that already owns an enforced proxy can select `gateway: {provider: :external, ...}` with explicit read-only mounts, child environment, proxy socket path, and a fail-closed `validate:` callback. `ExternalGateway` never starts or stops that proxy. Bubblewrap exposes its mounts, environment, and relay only to scopes that retain the allowlisted network; an offline profile receives none of them.
-
-CONNECT allowlisting sees the destination and port but not encrypted methods, paths, headers, or bodies. Native Envoy gateways can opt into `inspection: :http` with a trusted headers-only `authorizer`; `forward_headers` explicitly selects extra request headers the callback may inspect, and `mutation_headers` selects the response headers it may set upstream. That mode creates a short-lived private CA, mounts only public trust artifacts into the child, keeps private keys outside it, streams bodies without sending them to the authorizer, and fails closed. The Docker Envoy runtime currently supports CONNECT allowlisting only and reports HTTP inspection as unsupported rather than weakening it.
-
-The Run closes workspaces and sandboxes that LittleGhost creates for it after every outcome. That removes command containers, persistent containers, gateway processes and networks, sockets, and ephemeral trust material. If your application passes an existing instance instead, your application keeps ownership and must close it when its own lifecycle ends.
+[Workspaces, Sandboxes, and Tools](sandboxing.md) explains backend selection, named Workspace paths, lifecycle callbacks, mounts, Scopes, profiles, process persistence, filtered networking, hosting boundaries, and deployment validation in depth.
 
 ## Instrument without leaking the application
 

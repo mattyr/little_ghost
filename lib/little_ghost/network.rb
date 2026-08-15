@@ -2,7 +2,8 @@
 
 module LittleGhost
   # Network policy helpers used by sandbox backends. These controls apply only
-  # to processes launched through the sandbox, not to providers or Ruby tools.
+  # to processes launched through the sandbox, not to providers or Ruby Tools.
+  # A proxy enforces policy only when the Sandbox blocks every direct socket path.
   module Network
     # Normalized, headers-only request metadata passed to a trusted authorizer.
     class Request < Data.define(:method, :scheme, :host, :port, :path, :headers)
@@ -67,7 +68,8 @@ module LittleGhost
       end
     end
 
-    # Lifecycle contract implemented by filtered-egress gateways.
+    # Lifecycle contract implemented by filtered-egress gateways. A Gateway is
+    # one part of enforcement; the Sandbox must also prevent direct networking.
     class Gateway
       # Builds a gateway for a normalized network +policy+.
       def initialize(policy:)

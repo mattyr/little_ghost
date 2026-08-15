@@ -2,8 +2,10 @@
 
 module LittleGhost
   class Sandbox
-    # Normalizes backend-independent filesystem, process, environment, and
-    # network controls into one immutable policy.
+    # Normalizes requested filesystem, process, environment, and child-network
+    # controls into one immutable policy. Policy is a declaration, not proof of
+    # isolation; the selected backend exposes #effective_policy and rejects
+    # controls it cannot enforce.
     class Policy
       COMMON_KEYS = %i[
         workspace_path workspace_access root_filesystem mounts environment

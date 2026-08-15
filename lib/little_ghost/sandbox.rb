@@ -1,33 +1,27 @@
 # frozen_string_literal: true
 
 module LittleGhost
-  # A Sandbox decides what an agent may do with files and processes. Applications
-  # can place that work on the host, in a container or VM, or behind a remote
-  # execution service without changing their tools.
+  # A Sandbox governs filesystem operations and child processes that explicitly
+  # pass through it. Built-in filesystem and shell Tools use their bound
+  # Sandbox. A custom Ruby Tool remains trusted application code unless it
+  # delegates work to that Sandbox or one of its Scopes.
   #
-  #   class ContainerSandbox < LittleGhost::Sandbox
-  #     def initialize(workspace:, container:)
-  #       super(workspace:)
-  #       @container = container
-  #     end
-  #
-  #     def read(path, context: nil)
-  #       context&.check!
-  #       @container.read(path)
-  #     end
-  #
-  #     def execute_program(command, timeout:, context: nil, **)
-  #       result = @container.run(
-  #         command, timeout:, cancellation: context&.cancellation_token
-  #       )
-  #       LittleGhost::Sandbox::Execution.new(**result)
-  #     end
+  #   LittleGhost.configure do |config|
+  #     config.sandbox = {
+  #       provider: :docker,
+  #       image: "customer-support-runtime@sha256:...",
+  #       network: :none
+  #     }
   #   end
   #
-  # Implementations confine paths to #workspace, honor RunContext cancellation,
-  # enforce time and output limits, and return
+  # Implementations report their effective policy and capabilities, confine
+  # brokered paths to declared mounts, honor RunContext cancellation, enforce
+  # time and output limits, and return
   # {Execution}[rdoc-ref:LittleGhost::Sandbox::Execution] from process
-  # operations.
+  # operations. A backend's isolation mechanism still relies on its outer host,
+  # kernel or VM, dependencies, trusted configuration, and deliberately exposed
+  # mounts. Sandbox policy does not apply to provider requests or arbitrary Ruby
+  # code in the application process.
   class Sandbox
     @providers = {}
 
@@ -131,8 +125,9 @@ module LittleGhost
     # File and process output bounds enforced by this Sandbox.
     attr_reader :limits
 
-    # Policy the backend will enforce. Backends may override this when filling
-    # a documented secure default, but may not silently weaken requested rules.
+    # Policy the backend enforces. Backends may fill a documented default or
+    # report an unavoidable effective value, but reject unsupported requested
+    # rules instead of silently claiming enforcement.
     def effective_policy = policy
 
     # Operations and network modes implemented by this backend.
@@ -152,6 +147,8 @@ module LittleGhost
     end
 
     # Produces a non-owning capability-reduced view for tools or child agents.
+    # The caller must pass and use that Scope; retaining this parent Sandbox
+    # retains its broader authority.
     def scope(profile = nil, mounts: nil, capabilities: nil, network: nil)
       if profile
         if !mounts.nil? || !capabilities.nil? || !network.nil?
@@ -183,22 +180,23 @@ module LittleGhost
     # Indicates whether filesystem mutation is allowed.
     def writable? = supports?(:filesystem_write)
 
-    # Reads UTF-8 text at a workspace-relative +path+.
+    # Reads UTF-8 text at a workspace-relative or absolute virtual +path+.
     def read(path, context: nil)
       raise AbstractMethodError, "#{self.class} does not support filesystem reads"
     end
 
-    # Lists entries at a workspace-relative directory +path+.
+    # Lists entries at a workspace-relative or absolute virtual directory +path+.
     def list(path = ".", context: nil)
       raise AbstractMethodError, "#{self.class} does not support filesystem listings"
     end
 
-    # Writes +content+ to a workspace-relative +path+.
+    # Writes +content+ to a workspace-relative or absolute virtual +path+.
     def write(path, content, context: nil)
       raise AbstractMethodError, "#{self.class} does not support filesystem writes"
     end
 
-    # Replaces one exact +old_text+ occurrence with +new_text+.
+    # Replaces one exact +old_text+ occurrence at a workspace-relative or
+    # absolute virtual +path+ with +new_text+.
     def replace(path, old_text, new_text, context: nil)
       raise AbstractMethodError, "#{self.class} does not support filesystem edits"
     end
@@ -220,7 +218,8 @@ module LittleGhost
     # Executes an argument vector without shell interpretation.
     #
     # Implementations must enforce +timeout+ and +max_output_bytes+. Environment
-    # inheritance is disabled by default to avoid leaking process credentials.
+    # inheritance is disabled by default to avoid leaking process credentials;
+    # both policy and the individual call must opt in before a backend may inherit.
     def execute_program(command, timeout:, context: nil, max_output_bytes: nil, environment: {}, inherit_environment: false, **options)
       raise AbstractMethodError, "#{self.class} does not support program execution"
     end

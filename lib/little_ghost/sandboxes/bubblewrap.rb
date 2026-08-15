@@ -7,6 +7,9 @@ module LittleGhost
   module Sandboxes
     # Runs each command in a fresh Bubblewrap namespace on Linux. Bubblewrap is
     # selected explicitly and is never installed or replaced with host execution.
+    # The namespace shares the outer Linux kernel and trusts the configured
+    # runtime roots, mounts, command wrapper, and hosting environment. It governs
+    # child processes, not arbitrary Ruby code in the parent runtime.
     class Bubblewrap < Sandbox::IsolatedBackend
       DEFAULT_EXECUTABLE = "/usr/bin/bwrap" # :nodoc:
       RUNTIME_ROOTS = %w[/usr].freeze # :nodoc:

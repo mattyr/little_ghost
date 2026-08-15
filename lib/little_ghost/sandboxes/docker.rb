@@ -7,8 +7,11 @@ require_relative "../sandbox/isolated_backend"
 
 module LittleGhost
   module Sandboxes
-    # Runs commands in Docker containers with explicit mounts, environment, and
-    # network policy. Selecting this backend requires a reachable Docker daemon.
+    # Runs commands in Linux containers with explicit mounts, environment, and
+    # network policy. Selecting this backend requires a reachable Docker daemon
+    # and an application-selected image. The daemon, image, outer host or VM,
+    # and bind mounts remain trusted deployment boundaries. Do not expose the
+    # Docker socket inside a model-controlled container.
     class Docker < Sandbox::IsolatedBackend
       DEFAULT_EXECUTABLE = "docker" # :nodoc:
       PULL_POLICIES = %i[if_missing never always].freeze # :nodoc:

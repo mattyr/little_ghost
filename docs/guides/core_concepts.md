@@ -85,7 +85,7 @@ An **Invocation** is the request in LittleGhost's standard shape. Its `context` 
 
 The **RunContext** carries mutable working state in `context.state`. At the top level, saved Session state is loaded first, then current Invocation context is added. Child Assemblies may receive a copy, a mapped value, or no context at all. Recheck saved values before using them for permission decisions.
 
-A Tool's **Binding** gives the Tool access to objects created for this run, including the Agent, Run, workspace, and sandbox. These objects are separate from the arguments chosen by the model.
+A Tool's **Binding** gives the Tool access to objects created for this run, including the Agent, Run, workspace, and sandbox. These objects are separate from the arguments chosen by the model. [Workspaces, Sandboxes, and Tools](sandboxing.md) explains which operations actually cross the sandbox boundary.
 
 The final **RunResult** keeps the complete assembly result. Its `text` is the final text answer. Its `output` returns structured data when the Agent declared a result schema, and text otherwise. The top-level `Run#response` is always the caller-facing text.
 
