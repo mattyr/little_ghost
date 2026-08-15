@@ -121,7 +121,7 @@ class RuntimeTest < Minitest::Test
     end
   end
 
-  def test_runtime_builds_workspace_and_sandbox_from_configured_classes
+  def test_runtime_builds_workspace_and_sandbox_from_explicit_class_providers
     Dir.mktmpdir do |root|
       workspace_class = Class.new(LittleGhost::Workspace) do
         class << self
@@ -133,10 +133,10 @@ class RuntimeTest < Minitest::Test
         end
       end
       workspace_class.root = root
-      sandbox_class = Class.new(LittleGhost::UnrestrictedSandbox)
+      sandbox_class = Class.new(LittleGhost::Sandboxes::Unrestricted)
       configuration = LittleGhost::Configuration.new(root:)
-      configuration.workspace = workspace_class
-      configuration.sandbox = sandbox_class
+      configuration.workspace = {provider: workspace_class}
+      configuration.sandbox = {provider: sandbox_class}
       runtime = LittleGhost::Runtime.new(configuration:)
 
       built_workspace = runtime.build_workspace
@@ -148,18 +148,95 @@ class RuntimeTest < Minitest::Test
     end
   end
 
-  def test_resource_configuration_requires_component_classes
+  def test_resource_configuration_rejects_bare_classes
     configuration = LittleGhost::Configuration.new
 
     assert_raises(ArgumentError) { configuration.workspace = Object }
     assert_raises(ArgumentError) { configuration.sandbox = Object }
+    assert_raises(ArgumentError) { configuration.workspace = LittleGhost::Workspace }
+    assert_raises(ArgumentError) { configuration.sandbox = LittleGhost::Sandboxes::Unrestricted }
+    assert_raises(ArgumentError) { configuration[:workspace] = LittleGhost::Workspace }
+    assert_raises(ArgumentError) { configuration[:sandbox] = LittleGhost::Sandboxes::Unrestricted }
+    assert_raises(ArgumentError) do
+      LittleGhost::Configuration.new(workspace: LittleGhost::Workspace)
+    end
+    assert_raises(ArgumentError) do
+      LittleGhost::Configuration.new(sandbox: LittleGhost::Sandboxes::Unrestricted)
+    end
+  end
+
+  def test_runtime_builds_resources_from_provider_declarations
+    Dir.mktmpdir do |root|
+      FileUtils.mkdir_p(File.join(root, "work"))
+      configuration = LittleGhost::Configuration.new(root:)
+      configuration.workspace = {provider: :directory, root: "work"}
+      configuration.sandbox = {
+        provider: :unrestricted,
+        workspace_access: :read_write,
+        network: :inherit
+      }
+      runtime = LittleGhost::Runtime.new(configuration:)
+
+      workspace = runtime.build_workspace
+      sandbox = runtime.build_sandbox(workspace:)
+
+      assert_equal File.join(runtime.root, "work"), workspace.root
+      assert_instance_of LittleGhost::Sandboxes::Unrestricted, sandbox
+      assert sandbox.writable?
+      assert_equal :inherit, sandbox.policy.network.mode
+      assert_equal :read_write, sandbox.effective_policy.root_filesystem
+    end
+  end
+
+  def test_runtime_passes_context_to_callable_resource_providers
+    Dir.mktmpdir do |root|
+      received = []
+      workspace_provider = lambda do |runtime:, invocation:, root:|
+        received << [runtime, invocation]
+        LittleGhost::Workspace.new(root:)
+      end
+      sandbox_provider = lambda do |runtime:, invocation:, workspace:, policy:|
+        received << [runtime, invocation, workspace]
+        LittleGhost::Sandboxes::Unrestricted.new(workspace:, policy:)
+      end
+      configuration = LittleGhost::Configuration.new(root:)
+      configuration.workspace = {provider: workspace_provider, root:}
+      configuration.sandbox = {provider: sandbox_provider, network: :inherit}
+      runtime = LittleGhost::Runtime.new(configuration:)
+
+      run = runtime.build_run({message: "hello"}, agent_class: LittleGhost::Agent)
+
+      assert_same runtime, received.fetch(0).fetch(0)
+      assert_same run.invocation, received.fetch(0).fetch(1)
+      assert_same run.invocation, received.fetch(1).fetch(1)
+      assert_same run.workspace, received.fetch(1).fetch(2)
+    ensure
+      run&.close
+    end
+  end
+
+  def test_runtime_does_not_fall_back_for_an_unknown_sandbox_provider
+    configuration = LittleGhost::Configuration.new
+    configuration.sandbox = :missing
+    runtime = LittleGhost::Runtime.new(configuration:)
+    workspace = runtime.build_workspace
+
+    error = assert_raises(LittleGhost::DependencyError) do
+      runtime.build_sandbox(workspace:)
+    end
+
+    assert_match(/provider :missing is not available/, error.message)
   end
 
   def test_runtime_gives_each_run_its_own_default_workspace_and_sandbox
     Dir.mktmpdir do |root|
       workspace_class = tracked_workspace_class(root)
       sandbox_class = tracked_sandbox_class
-      configuration = LittleGhost::Configuration.new(root:, workspace: workspace_class, sandbox: sandbox_class)
+      configuration = LittleGhost::Configuration.new(
+        root:,
+        workspace: {provider: workspace_class},
+        sandbox: {provider: sandbox_class}
+      )
       runtime = LittleGhost::Runtime.new(configuration:)
 
       first = runtime.build_run({message: "first"}, agent_class: LittleGhost::Agent)
@@ -187,7 +264,11 @@ class RuntimeTest < Minitest::Test
           raise "sandbox failed"
         end
       end
-      configuration = LittleGhost::Configuration.new(root:, workspace: workspace_class, sandbox: sandbox_class)
+      configuration = LittleGhost::Configuration.new(
+        root:,
+        workspace: {provider: workspace_class},
+        sandbox: {provider: sandbox_class}
+      )
       runtime = LittleGhost::Runtime.new(configuration:)
 
       error = assert_raises(RuntimeError) do

@@ -10,6 +10,30 @@ module LittleGhost
   # Workspaces participate in the run resource lifecycle. A custom workspace can
   # provision storage in #open and release it in #close.
   class Workspace
+    @providers = {}
+
+    class << self
+      # Registers a trusted workspace provider under a configuration symbol.
+      def register_provider(name, implementation)
+        unless implementation.is_a?(Class) && implementation <= Workspace
+          raise ArgumentError, "workspace provider must be a Workspace class"
+        end
+
+        Workspace.providers[name.to_sym] = implementation
+      end
+
+      # Resolves an explicitly selected provider without changing its meaning.
+      def resolve_provider(name)
+        Workspace.providers.fetch(name.to_sym) do
+          raise DependencyError, "workspace provider :#{name} is not available"
+        end
+      end
+
+      def providers # :nodoc:
+        @providers ||= {}
+      end
+    end
+
     # Expands +root+ to an absolute path.
     def initialize(root:)
       @root = File.expand_path(root)
@@ -28,4 +52,6 @@ module LittleGhost
       nil
     end
   end
+
+  Workspace.register_provider(:directory, Workspace)
 end

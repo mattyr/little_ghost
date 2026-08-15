@@ -53,7 +53,7 @@ module LittleGhost
   # them, it closes them; if construction stops halfway through, Runtime closes
   # the partial resources. Startup failures are reported to instrumentation and
   # then raised. Session actor resolution must use authenticated application
-  # identity. The default UnrestrictedSandbox uses host permissions and is not a
+  # identity. The default Sandboxes::Unrestricted uses host permissions and is not a
   # security boundary for untrusted work.
   #
   # Runtime has no shutdown operation. Runs close resources created for their
@@ -78,10 +78,10 @@ module LittleGhost
     attr_reader :model_resolver
     # Shared store used to open per-Run Sessions.
     attr_reader :session_store
-    # Configured Workspace implementation, or +nil+ for the default.
-    attr_reader :workspace_class
-    # Configured Sandbox implementation, or +nil+ for the default.
-    attr_reader :sandbox_class
+    # Configured Workspace provider symbol, callable, or declaration.
+    attr_reader :workspace_declaration
+    # Configured Sandbox provider symbol, callable, or declaration.
+    attr_reader :sandbox_declaration
     # Runtime hooks called around request and session preparation.
     attr_reader :runtime_hooks
 
@@ -106,8 +106,8 @@ module LittleGhost
         @startup_reported = true
         @root = canonical_application_root(@settings.fetch(:root))
         @skill_resource_root = @settings[:skill_resource_root]
-        @workspace_class = @settings.fetch(:workspace)
-        @sandbox_class = @settings.fetch(:sandbox)
+        @workspace_declaration = @settings.fetch(:workspace)
+        @sandbox_declaration = @settings.fetch(:sandbox)
         @runtime_hooks = build_runtime_hooks(@settings[:runtime_hooks])
 
         @startup_phase = "instrumentation"
@@ -187,10 +187,11 @@ module LittleGhost
       execution_class ||= assembly_class || entrypoint_class
       agent_class ||= entrypoint_class if entrypoint_class <= Agent
       owned_resources = []
-      workspace ||= build_workspace.tap { |resource| owned_resources << resource }
-      sandbox ||= build_sandbox(workspace:).tap { |resource| owned_resources << resource }
+      invocation = parse(payload)
+      workspace ||= build_workspace(invocation:).tap { |resource| owned_resources << resource }
+      sandbox ||= build_sandbox(workspace:, invocation:).tap { |resource| owned_resources << resource }
       run = Run.new(
-        invocation: parse(payload),
+        invocation:,
         runtime: self,
         agent_class:,
         entrypoint_class:,
@@ -211,18 +212,32 @@ module LittleGhost
     end
 
     # Instantiates the configured workspace, or a root-scoped Workspace by default.
-    def build_workspace
-      return workspace_class.new if workspace_class
+    def build_workspace(invocation: nil)
+      declaration = workspace_declaration
+      return Workspace.new(root: root) unless declaration
 
-      Workspace.new(root: root)
+      provider, options = component_provider(declaration)
+      provider = Workspace.resolve_provider(provider) if provider.is_a?(Symbol)
+      options[:root] = resolve_component_path(options[:root]) if options.key?(:root)
+      options[:root] ||= root.to_s if provider == Workspace
+      build_component(provider, options, runtime: self, invocation:)
     end
 
     # Instantiates the configured sandbox around +workspace+, or an unrestricted
     # sandbox by default.
-    def build_sandbox(workspace:)
-      return sandbox_class.new(workspace:) if sandbox_class
+    def build_sandbox(workspace:, invocation: nil)
+      declaration = sandbox_declaration
+      return Sandboxes::Unrestricted.new(workspace:) unless declaration
 
-      UnrestrictedSandbox.new(workspace:)
+      provider, options = component_provider(declaration)
+      provider = Sandbox.resolve_provider(provider) if provider.is_a?(Symbol)
+      policy_options = options.slice(*Sandbox::Policy::COMMON_KEYS)
+      policy_options.each_key { |key| options.delete(key) }
+      policy_value = options.delete(:policy)
+      if policy_value || !policy_options.empty?
+        options[:policy] = Sandbox::Policy.coerce(policy_value, root: root.to_s, **policy_options)
+      end
+      build_component(provider, options, runtime: self, invocation:, workspace:)
     end
 
     # :nodoc:
@@ -358,6 +373,31 @@ module LittleGhost
     end
 
     private
+
+    def component_provider(declaration)
+      return [declaration, {}] unless declaration.is_a?(Hash)
+
+      options = declaration.dup
+      [options.delete(:provider), options]
+    end
+
+    def build_component(provider, options, **context)
+      component = if provider.is_a?(Class)
+        provider.new(**context.slice(:workspace), **options)
+      else
+        provider.call(**context, **options)
+      end
+      expected = context.key?(:workspace) ? Sandbox : Workspace
+      return component if component.is_a?(expected)
+
+      raise ConfigurationError, "#{expected.name.split("::").last.downcase} provider returned #{component.class}, expected #{expected}"
+    end
+
+    def resolve_component_path(value)
+      path = Pathname.new(value.to_s)
+      path = root.join(path) unless path.absolute?
+      path.to_s
+    end
 
     def close_resources(resources)
       resources.reverse_each do |resource|
