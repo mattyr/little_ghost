@@ -47,6 +47,14 @@ module LittleGhost
       end
 
       # Builds a Docker sandbox for +image+.
+      #
+      # :call-seq:
+      #   new(workspace:, image:, policy: nil, profiles: {}, limits: {},
+      #       docker: "docker", pull: :if_missing, labels: {},
+      #       gateway_options: {}, user: "#{Process.uid}:#{Process.gid}",
+      #       pids_limit: 256)
+      #
+      # By default, +user+ is the current process UID and GID joined by a colon.
       def initialize(workspace:, image:, policy: nil, profiles: {}, limits: {}, docker: DEFAULT_EXECUTABLE, pull: :if_missing,
         labels: {}, gateway_options: {}, user: "#{Process.uid}:#{Process.gid}", pids_limit: 256)
         super(workspace:, policy:, profiles:, limits:)

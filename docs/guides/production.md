@@ -149,8 +149,19 @@ A **Workspace** names the host paths associated with a Run. A **Sandbox** govern
 The dependency-free default is an application-root Workspace with `LittleGhost::Sandboxes::Unrestricted`. It is not process or network isolation. Select an enforcing backend explicitly when a model can influence commands; LittleGhost raises when that backend is unavailable instead of silently falling back:
 
 ```ruby
+require "fileutils"
+require "tmpdir"
+
 LittleGhost.configure do |config|
-  config.workspace = {provider: :directory, root: "/var/lib/my_agent/work"}
+  config.workspace = lambda do |**|
+    root = Dir.mktmpdir("little-ghost-support-")
+    LittleGhost::Workspace.new(
+      root:,
+      teardown: lambda do |workspace:, **|
+        FileUtils.remove_entry_secure(workspace.root) if File.exist?(workspace.root)
+      end
+    )
+  end
   config.sandbox = {
     provider: :docker,
     image: "my-agent-runtime@sha256:...",
@@ -164,7 +175,9 @@ LittleGhost.configure do |config|
 end
 ```
 
-The Run opens a Runtime-created Workspace before its Sandbox and closes them in reverse order after every outcome. Closing a Workspace invokes its configured teardown; it does not delete files by default. Cleanup failures raise because LittleGhost cannot promise that every owned resource was removed. Existing instances passed by the application remain caller-owned.
+The temporary Workspace above is useful when files should live for one Run. Use application-managed storage, with tenant isolation and concurrency control, when files must persist or several Runs share a root.
+
+The Run opens a Runtime-created Workspace before its Sandbox and closes them in reverse order after every outcome. Closing a Workspace invokes its configured teardown; it does not delete files by default. Cleanup failures raise because LittleGhost cannot confirm a clean shutdown of every owned resource. Existing instances passed by the application remain caller-owned.
 
 [Workspaces, Sandboxes, and Tools](sandboxing.md) explains backend selection, named Workspace paths, lifecycle callbacks, mounts, Scopes, profiles, process persistence, filtered networking, hosting boundaries, and deployment validation in depth.
 

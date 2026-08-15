@@ -1,13 +1,14 @@
 # Workspaces, Sandboxes, and Tools
 
-LittleGhost can give model-directed work a bounded filesystem and process view,
-but “sandboxed” is not one blanket guarantee. The result depends on which code
-uses the Sandbox, which backend enforces its policy, what the outer runtime
-allows, and whether networking has a path around the configured gateway.
+This guide helps you decide where model-directed file and process work runs,
+what it can reach, and what survives after a Run. You will connect four pieces:
+a Workspace names host paths, a Sandbox governs access through those paths, a
+Scope narrows that access, and a Tool chooses whether to use it.
 
-This guide helps you choose those boundaries deliberately. It begins with the
-objects involved, then follows one command from trusted Ruby code into an
-isolated child process.
+“Sandboxed” is not one blanket guarantee. The result also depends on the
+backend that enforces the policy, the outer runtime, and whether networking has
+a path around the configured gateway. The sections below make each boundary
+visible so you can choose and test it deliberately.
 
 ## Start with an explicit boundary
 
@@ -21,26 +22,21 @@ trusted. Path checks, read-only scopes, and output limits are useful application
 guardrails, but a host command can bypass them.
 
 Choose an enforcing backend when a model can influence commands. Docker is the
-built-in choice that can be used from both macOS and Linux hosts:
+built-in choice that can be used from both macOS and Linux hosts. This example
+gives each Run a temporary writable directory and removes it during teardown:
 
 ```ruby
 require "fileutils"
-require "securerandom"
+require "tmpdir"
 
 LittleGhost.configure do |config|
   config.workspace = lambda do |**|
-    root = File.join(
-      "/var/lib/customer_support/runs",
-      SecureRandom.uuid
-    )
+    root = Dir.mktmpdir("little-ghost-support-")
 
     LittleGhost::Workspace.new(
       root:,
-      setup: ->(workspace:, **) { FileUtils.mkdir_p(workspace.root) },
       teardown: lambda do |workspace:, **|
-        if File.exist?(workspace.root)
-          FileUtils.remove_entry_secure(workspace.root)
-        end
+        FileUtils.remove_entry_secure(workspace.root) if File.exist?(workspace.root)
       end
     )
   end
@@ -56,6 +52,10 @@ LittleGhost.configure do |config|
   }
 end
 ```
+
+Use application-managed durable storage instead when files must outlive the
+Run. The Workspace lifecycle section below shows how to name additional paths
+and handle shared roots safely.
 
 LittleGhost does not install Docker, Bubblewrap, Socat, or Envoy. Selecting a
 backend or gateway makes that dependency part of your deployment. An unavailable

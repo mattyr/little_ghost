@@ -48,7 +48,7 @@ $ ruby customer_support_agent.rb
 
 `CustomerSupportAgent.ask` creates a `LittleGhost::Run` for this request. When the work finishes, the Run holds the outcome and response.
 
-The inline prompt keeps this first example easy to see in one place. When the instructions grow, [Prompts as Views](prompt_views.md) moves them into a conventional ERB file without adding setup to the Agent.
+The inline prompt keeps this first example visible in one place. When the instructions grow, [Prompts as Views](prompt_views.md) moves them into a conventional ERB file without adding setup to the Agent.
 
 The selected external provider may receive system instructions, caller input, conversation history, tool results, and attachments. Model wording can vary, so use application code—not a prompt—when a rule must always hold.
 

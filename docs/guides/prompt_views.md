@@ -2,7 +2,7 @@
 
 A short prompt fits nicely inside an Agent class. As the instructions grow, move them into a **prompt view**: an ERB file that LittleGhost finds and renders for the Agent.
 
-This keeps the Agent easy to scan. It also gives shared instructions and application values a natural home.
+This keeps the Agent definition focused. It also gives shared instructions and application values a natural home.
 
 ## Start with the inline prompt
 
@@ -129,4 +129,6 @@ MESSAGE
 
 The Workflow is composing this request. `CustomerSupportAgent` still receives its own system prompt view when it runs.
 
-Continue with [Running in Production](production.md) to configure model roles, preserve sessions, supervise execution, and connect observability.
+Continue with [Workspaces, Sandboxes, and Tools](sandboxing.md) to decide where
+tool-backed file and process work runs, what it can reach, and which boundaries
+your deployment enforces.
