@@ -209,7 +209,7 @@ class SupportFlowGraph < LittleGhost::Graph
 end
 ```
 
-Graph nodes do not receive caller history or application context unless they opt in. They still receive the original request and the outputs routed to them. Use edge input mappers to choose or redact what moves forward.
+Graph nodes do not receive caller history or application context unless they opt in. They still receive the original request and the outputs routed to them. The first nodes after a fork receive the complete fork source output, and a join target receives the terminal branch outputs. Only fork to participants allowed to receive both the original request and source output. A trusted redaction node before the fork can narrow the source output; give the graph a redacted request from trusted application code when the original also needs narrowing. Edge and join input mappers can choose or redact data at those boundaries.
 
 ## Class definitions first, builders when needed
 

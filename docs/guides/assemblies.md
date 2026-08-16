@@ -186,14 +186,21 @@ class InvestigationGraph < LittleGhost::Graph
 
   start :triage
   fork :triage, to: [:ledger, :policy], max_concurrency: 2
-  join(
-    [:ledger, :policy],
-    to: :respond,
-    input: ->(state) { state.branch_results.transform_values(&:output) }
-  )
+  join [:ledger, :policy], to: :respond
   finish :respond
 end
 ```
+
+Each first branch receives the original request plus the fork source's output.
+The join target receives the original request plus each terminal branch output
+in declaration order. Use an `input` mapper when the target needs a different
+shape or a redacted subset; the mapper replaces the default input.
+
+The original request and complete fork source output cross into every branch.
+Treat both as untrusted, and only fork to participants and providers allowed to
+receive them. A trusted redaction assembly before the fork can narrow the source
+output. If the original request also needs narrowing, give the graph a redacted
+request from trusted application code.
 
 An error edge can send an expected failure to a recovery Assembly. Call `validate!` before the first run.
 
