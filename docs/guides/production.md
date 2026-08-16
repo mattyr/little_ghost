@@ -116,6 +116,8 @@ end
 record_outcome(run.outcome, error_type: run.error&.class&.name)
 ```
 
+For a trusted operational interface that needs intermediate and nested Agent work, pass `include_agent_events: true` and filter for `:agent_stream`. Enable the option only from trusted application code, never from unchecked request or model input. Those events include complete routed inputs, reasoning, tool arguments and results, model output, errors, and final results. They are untrusted and may be sensitive. Redact them before logging or transport, and authorize the destination for every participant and provider involved. LittleGhost's AG-UI adapter intentionally ignores these contextual wrappers unless the application translates them itself.
+
 Use `start_execution` when the caller must stay free for other work, or when you want to deliver an interjection to an active response:
 
 ```ruby

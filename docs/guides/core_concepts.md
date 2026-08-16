@@ -242,6 +242,8 @@ run.result.trajectory.transitions
 
 This shows callers which participants ran without including raw provider responses. A Swarm or Graph may hide intermediate model events from the public stream so the response stays coherent. That is a presentation choice, not a privacy boundary: routed outputs and step summaries still exist.
 
+When a trusted interface needs the live work from every Agent, pass `include_agent_events: true` to `.stream_ask` and handle `:agent_stream` events. Each one includes a detached, deeply immutable snapshot of the Agent event plus its Agent identity, subagent path, operation IDs, enclosing assembly path, and routed input snapshot at invocation start. This view includes sensitive and untrusted inputs, reasoning, tool data, outputs, and errors, so filter it before it crosses a logging, transport, or user-interface boundary. [Compose Agents](assemblies.md) shows the complete pattern.
+
 The pieces now fit together: Agents define behavior. Tools connect them to Ruby. Runs record one execution. Assemblies let the system grow without changing the caller.
 
 Continue with [Compose Agents](assemblies.md) to put several agents to work together. If you are ready to connect the feature to a real application, jump to [Running in Production](production.md).

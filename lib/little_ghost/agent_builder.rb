@@ -29,17 +29,18 @@ module LittleGhost
       model: nil,
       tools: [],
       conversation_id: nil,
-      agent_path: Subagents::AgentPath::ROOT
+      agent_path: Subagents::AgentPath::ROOT,
+      agent_stream_path: []
     )
       agent_class = @resolve_agent.call(agent_class_or_name)
-      build_agent(agent_class, run:, model:, tools:, conversation_id:, agent_path:)
+      build_agent(agent_class, run:, model:, tools:, conversation_id:, agent_path:, agent_stream_path:)
     end
 
     private
 
     attr_reader :runtime, :prompt_paths
 
-    def instantiate(agent_class, run:, tools:, model:, delegation_activity:, agent_path:)
+    def instantiate(agent_class, run:, tools:, model:, delegation_activity:, agent_path:, agent_stream_path:)
       agent_class.new(
         model:,
         runtime:,
@@ -51,7 +52,7 @@ module LittleGhost
         delegation_activity:,
         agent_path:,
         **agent_class.limits
-      )
+      ).bind_agent_stream_path(agent_stream_path)
     end
 
     def build_agent(
@@ -60,12 +61,13 @@ module LittleGhost
       model:,
       tools:,
       conversation_id: nil,
-      agent_path: Subagents::AgentPath::ROOT
+      agent_path: Subagents::AgentPath::ROOT,
+      agent_stream_path: []
     )
       delegation_activity = ActivityRelay.new
       configured_tools = Array(tools).dup
       configured_tools.concat(
-        delegation_tools(agent_class, run, conversation_id:, delegation_activity:, agent_path:)
+        delegation_tools(agent_class, run, conversation_id:, delegation_activity:, agent_path:, agent_stream_path:)
       )
       resolved_model = model || runtime.model_for(agent_class, run)
       transferred = true
@@ -75,25 +77,33 @@ module LittleGhost
         model: resolved_model,
         tools: configured_tools,
         delegation_activity:,
-        agent_path:
+        agent_path:,
+        agent_stream_path:
       )
     rescue
       close_tools(configured_tools) unless transferred
       raise
     end
 
-    def delegation_tools(agent_class, run, conversation_id:, delegation_activity:, agent_path:)
-      tools = agent_tools(agent_class, run)
-      tools.concat(subagent_tools(agent_class, run, conversation_id:, delegation_activity:, agent_path:))
+    def delegation_tools(agent_class, run, conversation_id:, delegation_activity:, agent_path:, agent_stream_path:)
+      tools = agent_tools(agent_class, run, agent_stream_path:)
+      tools.concat(subagent_tools(
+        agent_class,
+        run,
+        conversation_id:,
+        delegation_activity:,
+        agent_path:,
+        agent_stream_path:
+      ))
     rescue
       close_tools(tools)
       raise
     end
 
-    def agent_tools(agent_class, run)
+    def agent_tools(agent_class, run, agent_stream_path:)
       tools = []
       agent_class.assembly_tool_declarations.each do |declaration|
-        child = declared_assembly(declaration, run)
+        child = declared_assembly(declaration, run, agent_stream_path:)
         begin
           tools << child.as_tool(
             name: declaration.fetch(:name),
@@ -111,18 +121,18 @@ module LittleGhost
       raise
     end
 
-    def declared_assembly(declaration, run)
+    def declared_assembly(declaration, run, agent_stream_path:)
       assembly_class = declaration.fetch(:assembly)
       if assembly_class.is_a?(AssemblyDefinition) && assembly_class.kind == :agent
-        declared_agent(declaration.merge(agent: assembly_class.implementation), run)
+        declared_agent(declaration.merge(agent: assembly_class.implementation), run, agent_stream_path:)
       elsif assembly_class <= Agent
-        declared_agent(declaration.merge(agent: assembly_class), run)
+        declared_agent(declaration.merge(agent: assembly_class), run, agent_stream_path:)
       else
-        runtime.build_assembly(assembly_class, run:)
+        runtime.build_assembly(assembly_class, run:, agent_stream_path:)
       end
     end
 
-    def subagent_tools(agent_class, run, conversation_id:, delegation_activity:, agent_path:)
+    def subagent_tools(agent_class, run, conversation_id:, delegation_activity:, agent_path:, agent_stream_path:)
       definitions = agent_class.subagent_declarations.map do |declaration|
         Subagents::Definition.new(
           kind: declaration.fetch(:kind),
@@ -132,13 +142,16 @@ module LittleGhost
           factory: lambda do |subagent_id, child_conversation_id = nil|
             factory = declaration[:factory]
             if factory
-              invoke_factory(factory, subagent_id, run)
+              invoke_factory(factory, subagent_id, run).tap do |agent|
+                agent.bind_agent_stream_path(agent_stream_path) if agent.respond_to?(:bind_agent_stream_path)
+              end
             else
               declared_agent(
                 declaration,
                 run,
                 conversation_id: child_conversation_id,
-                agent_path: subagent_id
+                agent_path: subagent_id,
+                agent_stream_path:
               )
             end
           end
@@ -150,7 +163,11 @@ module LittleGhost
         unless resolved.all? { |definition| definition.is_a?(Subagents::Definition) }
           raise ConfigurationError, "Subagent resolvers must return LittleGhost::Subagents::Definition objects"
         end
-        definitions.concat(resolved.reject { |definition| declared_kinds.include?(definition.kind) })
+        definitions.concat(
+          resolved
+            .reject { |definition| declared_kinds.include?(definition.kind) }
+            .map { |definition| stream_bound_definition(definition, agent_stream_path) }
+        )
       end
       return [] if definitions.empty?
 
@@ -169,7 +186,13 @@ module LittleGhost
       ).tools
     end
 
-    def declared_agent(declaration, run, conversation_id: nil, agent_path: Subagents::AgentPath::ROOT)
+    def declared_agent(
+      declaration,
+      run,
+      conversation_id: nil,
+      agent_path: Subagents::AgentPath::ROOT,
+      agent_stream_path: []
+    )
       reference = declaration.fetch(:agent)
       agent_class = if reference.is_a?(AssemblyDefinition)
         reference.implementation
@@ -181,7 +204,23 @@ module LittleGhost
         model: resolve(declaration[:model], run),
         tools: Array(resolve(declaration[:tools], run)),
         conversation_id:,
-        agent_path:
+        agent_path:,
+        agent_stream_path:
+      )
+    end
+
+    def stream_bound_definition(definition, agent_stream_path)
+      factory = definition.factory
+      Subagents::Definition.new(
+        kind: definition.kind,
+        description: definition.description,
+        persist: definition.persist,
+        accepts_conversation_id: definition.accepts_conversation_id,
+        factory: lambda do |*arguments, **_options|
+          invoke_factory(factory, *arguments).tap do |agent|
+            agent.bind_agent_stream_path(agent_stream_path) if agent.respond_to?(:bind_agent_stream_path)
+          end
+        end
       )
     end
 

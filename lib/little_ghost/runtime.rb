@@ -246,7 +246,8 @@ module LittleGhost
       run:,
       model: nil,
       tools: [],
-      agent_path: Subagents::AgentPath::ROOT
+      agent_path: Subagents::AgentPath::ROOT,
+      agent_stream_path: []
     )
       agent_class_or_name = agent_class_or_name.definition if agent_class_or_name.is_a?(AgentBuilder)
       if agent_class_or_name.is_a?(AssemblyDefinition)
@@ -255,11 +256,12 @@ module LittleGhost
         end
         agent_class_or_name = agent_class_or_name.implementation
       end
-      @agent_factory.build(agent_class_or_name, run:, model:, tools:, agent_path:)
+      @agent_factory.build(agent_class_or_name, run:, model:, tools:, agent_path:, agent_stream_path:)
     end
 
     # Builds an Agent through AgentFactory or constructs another Assembly for +run+.
     def build_assembly(assembly_class_or_name, run:, **options) # :nodoc:
+      agent_stream_path = options.delete(:agent_stream_path) || []
       if assembly_class_or_name.is_a?(AssemblyBuilder)
         assembly_class_or_name = assembly_class_or_name.definition
       end
@@ -267,13 +269,13 @@ module LittleGhost
         assembly_class_or_name = assembly_class_or_name.definition
       end
       if assembly_class_or_name.is_a?(AssemblyDefinition)
-        return build_agent(assembly_class_or_name, run:, **options) if assembly_class_or_name.kind == :agent
+        return build_agent(assembly_class_or_name, run:, agent_stream_path:, **options) if assembly_class_or_name.kind == :agent
         raise ArgumentError, "composite assembly definitions do not accept agent build options" unless options.empty?
 
-        return assembly_class_or_name.implementation.new(run:, runtime: self)
+        return assembly_class_or_name.implementation.new(run:, runtime: self).bind_agent_stream_path(agent_stream_path)
       end
       if !assembly_class_or_name.is_a?(Class) || assembly_class_or_name <= Agent
-        return build_agent(assembly_class_or_name, run:, **options)
+        return build_agent(assembly_class_or_name, run:, agent_stream_path:, **options)
       end
       unless assembly_class_or_name <= Assembly
         raise ConfigurationError, "assembly must inherit from LittleGhost::Assembly"
@@ -282,7 +284,7 @@ module LittleGhost
         raise ArgumentError, "composite assemblies do not accept agent build options"
       end
 
-      assembly_class_or_name.new(run:, runtime: self)
+      assembly_class_or_name.new(run:, runtime: self).bind_agent_stream_path(agent_stream_path)
     end
 
     # The stable service name attached to runtime telemetry.

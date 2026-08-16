@@ -906,6 +906,12 @@ module LittleGhost
     )
       started_at = monotonic_time
       operation_id = SecureRandom.uuid
+      events = agent_stream_events(
+        events,
+        input:,
+        operation_id:,
+        parent_operation_id:
+      )
       context.bind_agent_operation_id(operation_id)
       @assembly_transitions_mutex.synchronize { @assembly_transition = nil }
       interjections.bind(operation_id, target_operation_id: parent_operation_id)
@@ -1974,6 +1980,19 @@ module LittleGhost
 
     def emit(events, type, **data)
       events << StreamEvent.build(type, **data)
+    end
+
+    def agent_stream_events(events, input:, operation_id:, parent_operation_id:)
+      return events unless run&.include_agent_events?
+
+      source = AgentStreamSource.build(
+        agent_id: self.class.agent_id,
+        agent_path:,
+        operation_id:,
+        parent_operation_id:,
+        assembly_path: agent_stream_path
+      )
+      AgentStreamSink.new(destination: events, run:, source:, input:)
     end
 
     def instrument(name, **attributes)

@@ -56,6 +56,9 @@ module LittleGhost
       #
       # Enumeration yields StreamEvent objects and returns the terminal Run.
       # The same Invocation fields accepted by .ask may be supplied as +options+.
+      # Set <tt>include_agent_events: true</tt> to also receive an
+      # +:agent_stream+ event for every normalized event from every Agent in the
+      # run, including intermediate and nested participants.
       def stream_ask(message, **options)
         snapshot = definition
         stream = nil
@@ -144,6 +147,7 @@ module LittleGhost
     attr_reader :workspace
     # Sandbox supplied to this Assembly, when present.
     attr_reader :sandbox
+    attr_reader :agent_stream_path # :nodoc:
 
     def initialize(run: nil, runtime: nil, workspace: nil, sandbox: nil, standalone: run.nil?) # :nodoc:
       @run = run
@@ -154,6 +158,12 @@ module LittleGhost
       @assembly_mutex = Mutex.new
       @assembly_closed = false
       @active_assemblies = []
+      @agent_stream_path = [].freeze
+    end
+
+    def bind_agent_stream_path(path) # :nodoc:
+      @agent_stream_path = Array(path).dup.freeze
+      self
     end
 
     # Builds the top-level Run used by a standalone assembly.
@@ -204,7 +214,8 @@ module LittleGhost
     #
     # A standalone stream returns its terminal Run after enumeration. A
     # run-scoped stream finishes with an +invocation_stop+ event containing its
-    # RunResult.
+    # RunResult. A standalone caller may set <tt>include_agent_events: true</tt>
+    # to receive contextual +:agent_stream+ events from every Agent in the Run.
     def stream_ask(message, **options)
       if standalone?
         options[:deadline_at] = options.delete(:deadline) if options.key?(:deadline)
@@ -245,7 +256,7 @@ module LittleGhost
           target = if assembly.is_a?(Agent)
             assembly
           elsif assembly.run
-            assembly.runtime.build_assembly(assembly.class, run: assembly.run)
+            assembly.send(:build_tool_assembly)
           else
             assembly.class.new(runtime: assembly.runtime)
           end
@@ -254,7 +265,7 @@ module LittleGhost
             context: context&.state || {},
             cancellation_token: context&.cancellation_token || Support::CancellationToken.new,
             deadline: context&.deadline,
-            parent_operation_id: assembly.run&.operation_id
+            parent_operation_id: context&.agent_operation_id || assembly.run&.operation_id
           }
           if target.is_a?(Agent)
             options[:interjection_metadata] = context&.interjection_metadata
@@ -337,6 +348,18 @@ module LittleGhost
     end
 
     private
+
+    def build_tool_assembly
+      builder = runtime.method(:build_assembly)
+      accepts_path = builder.parameters.any? do |kind, name|
+        kind == :keyrest || (%i[key keyreq].include?(kind) && name == :agent_stream_path)
+      end
+      options = {run:}
+      options[:agent_stream_path] = agent_stream_path if accepts_path
+      child = builder.call(self.class, **options)
+      child.bind_agent_stream_path(agent_stream_path) if child.respond_to?(:bind_agent_stream_path)
+      child
+    end
 
     def ensure_standalone!
       raise Error, "Only a standalone assembly can start an execution" unless standalone?

@@ -193,14 +193,23 @@ module LittleGhost
       policy = normalize_step_policy(policies)
       attempts = []
       usage = Usage.new
+      stream_path = agent_stream_path + [
+        AgentStreamStep.build(
+          assembly_id: self.class.assembly_id,
+          assembly_kind: self.class.assembly_kind,
+          participant:,
+          step_id:,
+          branch_id:
+        )
+      ]
 
       (policy.fetch(:retries) + 1).times do |index|
         attempt_number = index + 1
         started_at = Time.now
         child = if build_options.any? && runtime.respond_to?(:build_agent)
-          runtime.build_agent(reference, run:, **build_options)
+          build_stream_participant(:build_agent, reference, stream_path, **build_options)
         else
-          runtime.build_assembly(reference, run:, **build_options)
+          build_stream_participant(:build_assembly, reference, stream_path, **build_options)
         end
         child_deadline = step_deadline(deadline, policy[:timeout])
         attempt_events = []
@@ -327,6 +336,18 @@ module LittleGhost
           end
         end
       end
+    end
+
+    def build_stream_participant(builder_name, reference, stream_path, **options)
+      builder = runtime.method(builder_name)
+      parameters = builder.parameters
+      accepts_path = parameters.any? do |kind, name|
+        kind == :keyrest || (%i[key keyreq].include?(kind) && name == :agent_stream_path)
+      end
+      options[:agent_stream_path] = stream_path if accepts_path
+      child = builder.call(reference, run:, **options)
+      child.bind_agent_stream_path(stream_path) if child.respond_to?(:bind_agent_stream_path)
+      child
     end
 
     def normalize_step_policy(values)

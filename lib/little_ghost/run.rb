@@ -43,6 +43,16 @@ module LittleGhost
   # closes registered resources in reverse order. +register+ adds application
   # resources to that lifecycle. Interjection is available only while one Agent
   # entrypoint is active.
+  #
+  # Set <tt>include_agent_events: true</tt> on a standalone streaming call to
+  # observe every Agent that shares the Run. Each additional +:agent_stream+
+  # event carries an AgentStreamSource in +data[:source]+, a detached and deeply
+  # immutable snapshot of the Agent's StreamEvent in +data[:event]+, and the
+  # routed Message snapshot in +data[:input]+ when the inner event is
+  # +:invocation_start+. Parallel Agents may interleave, but the Run invokes the
+  # stream consumer serially. This opt-in is trusted application configuration
+  # and must not come from unchecked request or model input because it exposes
+  # data from every participating Agent.
   class Run
     include Enumerable
 
@@ -110,6 +120,11 @@ module LittleGhost
       @active_interjections = 0
       @entrypoint = nil
       @usage = Usage.new
+      include_agent_events = invocation[:include_agent_events]
+      unless include_agent_events.nil? || include_agent_events == true || include_agent_events == false
+        raise InvocationError, "include_agent_events must be true or false"
+      end
+      @include_agent_events = include_agent_events == true
     end
 
     # Consumes the event stream and returns +self+.
@@ -125,9 +140,11 @@ module LittleGhost
       return enum_for(__method__) unless block_given?
 
       begin_execution!
-      @emitter = ->(event) { yield_event(event) { |value| yield value } }
+      @emitter = lambda do |event|
+        @event_mutex.synchronize { yield_event(event) { |value| yield value } }
+      end
       Instrumentation.with_context(correlation_attributes.except(:operation_id)) do
-        execute { |event| yield event }
+        execute { |event| @emitter.call(event) }
       end
       self
     ensure
@@ -145,6 +162,10 @@ module LittleGhost
 
     # True when cancellation stopped the run without a response.
     def cancelled? = outcome == "cancelled"
+
+    # Indicates whether the stream includes contextual events from every Agent
+    # that executes as part of this Run.
+    def include_agent_events? = @include_agent_events
 
     # Adds an interjection to the active entrypoint and waits for its response.
     #
@@ -211,7 +232,7 @@ module LittleGhost
 
     def publish(type, **data) # :nodoc:
       event = StreamEvent.build(type, **data)
-      @event_mutex.synchronize { @emitter&.call(event) }
+      @emitter&.call(event)
       instrument_event(type, data)
       event
     end
