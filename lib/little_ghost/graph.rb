@@ -153,6 +153,14 @@ module LittleGhost
 
       # Starts two or more independent branches with bounded concurrency.
       #
+      # Each first branch node receives the original request plus the fork
+      # source output, using the same default input as an ordinary edge.
+      # The original request and complete source output cross into every
+      # branch. Only fork to participants allowed to receive both. A trusted
+      # redaction node before the fork can narrow the source output; provide a
+      # redacted request to the graph when the original request also needs
+      # narrowing.
+      #
       # +to+ names the first node in each branch. The matching
       # Graph.join[rdoc-ref:LittleGhost::Graph.join] collects the terminal result
       # from every branch.
@@ -169,6 +177,10 @@ module LittleGhost
       end
 
       # Joins the terminal results of one declared fork.
+      #
+      # Without +input+, the target receives the original request plus each
+      # terminal branch output in declaration order. A mapper replaces that
+      # default input.
       #
       # +input+ receives Graph::State and returns the value passed to the target
       # node. Read each completed branch through +state.branch_results+.
@@ -541,7 +553,8 @@ module LittleGhost
             branch_outputs = run_graph_branches(
               fork:, join:, nodes:, edges:, error_edges:,
               original_input:, original_history:, original_context:,
-              results:, cancellation_token:, deadline:, settings:,
+              results:, source_step_id: previous_step_id,
+              cancellation_token:, deadline:, settings:,
               template_locals:, template_paths:, parent_operation_id:, events:
             )
             unless join.from.sort == branch_outputs.map(&:terminal).sort
@@ -648,8 +661,8 @@ module LittleGhost
     end
 
     def run_graph_branches(fork:, join:, nodes:, edges:, error_edges:, original_input:,
-      original_history:, original_context:, results:, cancellation_token:, deadline:,
-      settings:, template_locals:, template_paths:, parent_operation_id:, events:)
+      original_history:, original_context:, results:, source_step_id:, cancellation_token:,
+      deadline:, settings:, template_locals:, template_paths:, parent_operation_id:, events:)
       token = cancellation_token.child
       queue = SizedQueue.new(1_000)
       worker = Thread.new do
@@ -660,7 +673,8 @@ module LittleGhost
           on_result: ->(_index, result) { completed << result }
         ) do |start|
           run_graph_branch(
-            start:, join:, nodes:, edges:, error_edges:, original_input:,
+            start:, source: fork.from, source_step_id:, join:, nodes:, edges:,
+            error_edges:, original_input:,
             original_history:, original_context:, parent_results: results,
             cancellation_token: token, deadline:, settings:, template_locals:,
             template_paths:, parent_operation_id:,
@@ -686,11 +700,12 @@ module LittleGhost
       worker&.join
     end
 
-    def run_graph_branch(start:, join:, nodes:, edges:, error_edges:, original_input:,
-      original_history:, original_context:, parent_results:, cancellation_token:,
-      deadline:, settings:, template_locals:, template_paths:, parent_operation_id:, event_consumer:)
+    def run_graph_branch(start:, source:, source_step_id:, join:, nodes:, edges:,
+      error_edges:, original_input:, original_history:, original_context:, parent_results:,
+      cancellation_token:, deadline:, settings:, template_locals:, template_paths:,
+      parent_operation_id:, event_consumer:)
       current = start
-      previous = nil
+      previous = source
       incoming_edge = nil
       local_results = {}
       local_steps = []
@@ -698,7 +713,7 @@ module LittleGhost
       local_events = EventSink.new(event_consumer)
       join_sources = join.from.to_set
       terminal = nil
-      previous_step_id = nil
+      previous_step_id = source_step_id
       routed_error = nil
 
       loop do

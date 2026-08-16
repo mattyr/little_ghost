@@ -227,22 +227,65 @@ class GraphTest < Minitest::Test
       join [:research, :verify], to: :answer
       finish :answer
     end
-    runtime = Runtime.new(
-      plan: [FakeAssembly.new(result("plan", input_tokens: 1))],
-      research: [FakeAssembly.new(result("facts", input_tokens: 2))],
-      verify: [FakeAssembly.new(result("checked", input_tokens: 3))],
-      answer: [FakeAssembly.new(result("done", input_tokens: 4))]
-    )
+    plan = FakeAssembly.new(result("plan", input_tokens: 1))
+    research = FakeAssembly.new(result("facts", input_tokens: 2))
+    verify = FakeAssembly.new(result("checked", input_tokens: 3))
+    answer = FakeAssembly.new(result("done", input_tokens: 4))
+    runtime = Runtime.new(plan: [plan], research: [research], verify: [verify], answer: [answer])
 
     events = graph_class.new(run: Run.new(runtime), runtime:).stream("request").to_a
     final = events.find { |event| event.type == :invocation_stop }.data.fetch(:result)
-    answer = runtime.built.find { |declaration, _| declaration == :answer }
 
     assert_includes events.map(&:type), :assembly_fork
     assert_includes events.map(&:type), :assembly_join
     assert_equal %w[plan research verify answer], final.steps.map(&:participant)
     assert_equal 10, final.usage.input_tokens
-    refute_nil answer
+    assert_includes research.calls.first.first.text, "request"
+    assert_includes research.calls.first.first.text, "plan output:\nplan"
+    assert_includes verify.calls.first.first.text, "request"
+    assert_includes verify.calls.first.first.text, "plan output:\nplan"
+    answer_input = answer.calls.first.first.text
+    assert_includes answer_input, "request"
+    assert_includes answer_input, "research output:\nfacts"
+    assert_includes answer_input, "verify output:\nchecked"
+    assert_operator answer_input.index("research output:"), :<, answer_input.index("verify output:")
+    refute_includes answer_input, "plan output:"
+
+    steps = final.steps.to_h { |step| [step.participant, step] }
+    assert_equal [steps.fetch("plan").id], steps.fetch("research").predecessor_ids
+    assert_equal [steps.fetch("plan").id], steps.fetch("verify").predecessor_ids
+    assert_equal(
+      [steps.fetch("research").id, steps.fetch("verify").id].sort,
+      steps.fetch("answer").predecessor_ids.sort
+    )
+  end
+
+  def test_join_input_mapper_replaces_the_default_input
+    graph_class = Class.new(LittleGhost::Graph) do
+      node :plan, :plan
+      node :research, :research
+      node :verify, :verify
+      node :answer, :answer
+      start :plan
+      fork :plan, to: [:research, :verify]
+      join(
+        [:research, :verify],
+        to: :answer,
+        input: ->(state) { "#{state.branch_results.fetch(:research).output} + #{state.branch_results.fetch(:verify).output}" }
+      )
+      finish :answer
+    end
+    answer = FakeAssembly.new(result("done"))
+    runtime = Runtime.new(
+      plan: [FakeAssembly.new(result("plan"))],
+      research: [FakeAssembly.new(result("facts"))],
+      verify: [FakeAssembly.new(result("checked"))],
+      answer: [answer]
+    )
+
+    graph_class.new(run: Run.new(runtime), runtime:).stream("request").to_a
+
+    assert_equal "facts + checked", answer.calls.first.first
   end
 
   def test_max_steps_is_shared_across_parallel_branches
