@@ -56,7 +56,7 @@ class AgentStreamTest < Minitest::Test
   end
 
   class Runtime
-    attr_reader :models
+    attr_reader :models, :nested_agent_events, :prepared_agent_events
 
     def initialize(models)
       @models = models.transform_values { |values| Array(values).dup }
@@ -86,24 +86,64 @@ class AgentStreamTest < Minitest::Test
     end
 
     def model_for(agent_class, _run) = models.fetch(agent_class).shift
+
+    def build_run(payload, **options)
+      include_agent_events_by_default = options.delete(:include_agent_events_by_default) == true
+      auxiliary_options = {
+        invocation: LittleGhost::Invocation.new(message: "policy check"),
+        runtime: self,
+        agent_class: LittleGhost::Agent,
+        entrypoint_class: LittleGhost::Agent
+      }
+      nested_before = LittleGhost::Run.new(**auxiliary_options).include_agent_events?
+      same_entrypoint_options = options.merge(runtime: self)
+      same_entrypoint_before = LittleGhost::Run.new(
+        invocation: LittleGhost::Invocation.new(message: "nested composite"),
+        **same_entrypoint_options
+      ).include_agent_events?
+      explicit_opt_out_before = LittleGhost::Run.new(
+        invocation: LittleGhost::Invocation.new(message: "nested composite", include_agent_events: false),
+        **same_entrypoint_options
+      ).include_agent_events?
+      run = LittleGhost::Run.new(
+        invocation: payload.is_a?(LittleGhost::Invocation) ? payload : LittleGhost::Invocation.new(payload),
+        runtime: self,
+        include_agent_events_by_default:,
+        **options
+      )
+      nested_after = LittleGhost::Run.new(**auxiliary_options).include_agent_events?
+      @nested_agent_events = [
+        nested_before,
+        same_entrypoint_before,
+        explicit_opt_out_before,
+        nested_after
+      ]
+      @prepared_agent_events = run.include_agent_events?
+      run
+    end
+
     def open_session(_run) = nil
     def service_name = "agent-stream-test"
     def template_locals(run:, agent:) = {run:, agent:}
     def error_message(error, _run) = "Agent failed: #{error.class}"
   end
 
-  def test_contextual_agent_events_are_opt_in
+  def test_standalone_agent_contextual_events_are_opt_in
     support_agent = agent_class("support")
 
-    ordinary = run_for(support_agent, models: {
+    direct = run_for(support_agent, models: {
       support_agent => ScriptedModel.new(response("hello"))
     }).to_a
     contextual = run_for(support_agent, include_agent_events: true, models: {
       support_agent => ScriptedModel.new(response("hello"))
     }).to_a
 
-    refute_includes ordinary.map(&:type), :agent_stream
-    assert_equal ordinary.map(&:type), contextual.reject { |event| event.type == :agent_stream }.map(&:type)
+    expected = %i[
+      run_start invocation_start model_start message_start text_delta message_stop
+      model_stop invocation_stop run_stop
+    ]
+    assert_equal expected, direct.map(&:type)
+    assert_equal expected, contextual.reject { |event| event.type == :agent_stream }.map(&:type)
     wrappers = contextual.select { |event| event.type == :agent_stream }
     assert_equal %i[
       invocation_start model_start message_start text_delta message_stop model_stop invocation_stop
@@ -114,6 +154,65 @@ class AgentStreamTest < Minitest::Test
       index > contextual.index(wrappers.last) && contextual.fetch(index).type == :invocation_stop
     end
     assert_operator contextual.index(wrappers.last), :<, raw_stop
+  end
+
+  def test_composite_assembly_contextual_events_are_on_by_default_and_can_be_disabled
+    participant = agent_class("participant")
+    graph = Class.new(LittleGhost::Graph) do
+      assembly_id "default_stream_graph"
+      node :participant, participant
+      start :participant
+      finish :participant
+    end
+
+    contextual_runtime = Runtime.new(
+      participant => ScriptedModel.new(response("hello"))
+    )
+    contextual = graph.new(runtime: contextual_runtime).stream_ask("request").to_a
+    public_events = graph.new(runtime: Runtime.new(
+      participant => ScriptedModel.new(response("hello"))
+    )).stream_ask("request", include_agent_events: false).to_a
+    string_keyed = graph.new(runtime: Runtime.new(
+      participant => ScriptedModel.new(response("hello"))
+    )).stream_ask("request", **{"include_agent_events" => false}).to_a
+    non_streaming = graph.new(runtime: Runtime.new(
+      participant => ScriptedModel.new(response("hello"))
+    )).ask("request")
+    execution_events = []
+    execution = graph.new(runtime: Runtime.new(
+      participant => ScriptedModel.new(response("hello"))
+    )).start_execution({message: "request"}) { |event| execution_events << event }
+    execution.wait
+    trusted_invocation_class = Class.new(LittleGhost::Invocation) do
+      attr_reader :trusted_marker
+
+      def initialize(payload)
+        @trusted_marker = Object.new
+        super
+      end
+    end
+    trusted_invocation = trusted_invocation_class.new(message: "request")
+    trusted_execution = graph.new(runtime: Runtime.new(
+      participant => ScriptedModel.new(response("hello"))
+    )).start_execution(trusted_invocation)
+    trusted_run = trusted_execution.wait
+
+    assert_includes contextual.map(&:type), :agent_stream
+    assert_equal true, contextual_runtime.prepared_agent_events
+    assert_equal [false, false, false, false], contextual_runtime.nested_agent_events
+    expected_public_types = %i[
+      run_start assembly_step_start assembly_step_stop invocation_start model_start
+      message_start text_delta message_stop model_stop invocation_stop run_stop
+    ]
+    assert_equal expected_public_types, public_events.map(&:type)
+    assert_equal expected_public_types, string_keyed.map(&:type)
+    assert_equal expected_public_types,
+      contextual.reject { |event| event.type == :agent_stream }.map(&:type)
+    assert_equal false, non_streaming.include_agent_events?
+    assert_includes execution_events.map(&:type), :agent_stream
+    assert_same trusted_invocation, trusted_run.invocation
+    assert_same trusted_invocation.trusted_marker, trusted_run.invocation.trusted_marker
+    assert_equal true, trusted_run.include_agent_events?
   end
 
   def test_graph_events_include_routed_inputs_and_assembly_paths
@@ -484,7 +583,7 @@ class AgentStreamTest < Minitest::Test
     end
   end
 
-  def run_for(entrypoint, models:, include_agent_events: false)
+  def run_for(entrypoint, models:, include_agent_events: nil)
     invocation = LittleGhost::Invocation.new(message: "request", include_agent_events:)
     LittleGhost::Run.new(
       invocation:,

@@ -44,15 +44,16 @@ module LittleGhost
   # resources to that lifecycle. Interjection is available only while one Agent
   # entrypoint is active.
   #
-  # Set <tt>include_agent_events: true</tt> on a standalone streaming call to
-  # observe every Agent that shares the Run. Each additional +:agent_stream+
-  # event carries an AgentStreamSource in +data[:source]+, a detached and deeply
-  # immutable snapshot of the Agent's StreamEvent in +data[:event]+, and the
-  # routed Message snapshot in +data[:input]+ when the inner event is
-  # +:invocation_start+. Parallel Agents may interleave, but the Run invokes the
-  # stream consumer serially. This opt-in is trusted application configuration
-  # and must not come from unchecked request or model input because it exposes
-  # data from every participating Agent.
+  # A composite assembly stream observes every Agent that shares the Run. Each
+  # +:agent_stream+ event carries an AgentStreamSource in +data[:source]+ and a
+  # detached, deeply immutable snapshot of the Agent's StreamEvent in
+  # +data[:event]+. An inner +:invocation_start+ also includes the routed Message
+  # snapshot in +data[:input]+.
+  #
+  # Parallel Agents may interleave, but the Run invokes the stream consumer
+  # serially. Contextual events expose data from every participating Agent, so
+  # applications must keep +include_agent_events+ under trusted control and
+  # authorize the stream destination for every participant.
   class Run
     include Enumerable
 
@@ -88,7 +89,8 @@ module LittleGhost
     # Creates a dormant run for +invocation+.
     def initialize(invocation:, runtime:, agent_class: nil, assembly_class: nil, entrypoint_class: nil,
       execution_class: nil,
-      cancellation_token: Support::CancellationToken.new, workspace: nil, sandbox: nil)
+      cancellation_token: Support::CancellationToken.new, workspace: nil, sandbox: nil,
+      include_agent_events_by_default: false)
       entrypoint_class ||= assembly_class || agent_class
       raise ArgumentError, "entrypoint_class is required" unless entrypoint_class
       execution_class ||= assembly_class || entrypoint_class
@@ -124,7 +126,7 @@ module LittleGhost
       unless include_agent_events.nil? || include_agent_events == true || include_agent_events == false
         raise InvocationError, "include_agent_events must be true or false"
       end
-      @include_agent_events = include_agent_events == true
+      @include_agent_events = include_agent_events.nil? ? include_agent_events_by_default : include_agent_events
     end
 
     # Consumes the event stream and returns +self+.

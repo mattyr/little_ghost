@@ -8,7 +8,7 @@ module LittleGhost
     :step_id,
     :branch_id
   ) do
-    def self.build(assembly_id:, assembly_kind:, participant:, step_id:, branch_id: nil)
+    def self.build(assembly_id:, assembly_kind:, participant:, step_id:, branch_id: nil) # :nodoc:
       new(
         assembly_id: assembly_id.to_s.dup.freeze,
         assembly_kind: assembly_kind.to_sym,
@@ -42,13 +42,6 @@ module LittleGhost
     ##
     # :attr_reader: branch_id
     # String branch identifier for a graph branch, or +nil+.
-
-    ##
-    # :singleton-method: build
-    # :call-seq:
-    #   build(assembly_id:, assembly_kind:, participant:, step_id:, branch_id: nil) -> AgentStreamStep
-    #
-    # Creates an immutable, normalized path step.
   end
 
   AgentStreamSource = Data.define( # :nodoc:
@@ -58,7 +51,7 @@ module LittleGhost
     :parent_operation_id,
     :assembly_path
   ) do
-    def self.build(agent_id:, agent_path:, operation_id:, parent_operation_id:, assembly_path:)
+    def self.build(agent_id:, agent_path:, operation_id:, parent_operation_id:, assembly_path:) # :nodoc:
       new(
         agent_id: agent_id.to_s.dup.freeze,
         agent_path: agent_path.to_s.dup.freeze,
@@ -95,13 +88,6 @@ module LittleGhost
     ##
     # :attr_reader: assembly_path
     # Frozen Array of AgentStreamStep values from the outermost assembly inward.
-
-    ##
-    # :singleton-method: build
-    # :call-seq:
-    #   build(agent_id:, agent_path:, operation_id:, parent_operation_id:, assembly_path:) -> AgentStreamSource
-    #
-    # Creates an immutable, normalized source description.
   end
 
   module AgentStreamSnapshot # :nodoc: all

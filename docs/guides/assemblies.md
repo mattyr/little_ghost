@@ -226,13 +226,10 @@ Retries start at zero. When `retries` is greater than zero, `retry_on` must list
 
 ## Watch every agent in an assembly
 
-The default stream keeps one coherent public answer while assembly lifecycle events show which participants ran. Opt in to contextual agent events when a console, debugger, or trusted application interface also needs the work from intermediate, nested, or delegated Agents:
+Follow each participant while a composite assembly runs by handling its contextual `:agent_stream` events. These events arrive alongside the coherent public answer and assembly lifecycle events:
 
 ```ruby
-stream = SupportFlowGraph.stream_ask(
-  "Why was I charged twice?",
-  include_agent_events: true
-)
+stream = SupportFlowGraph.stream_ask("Why was I charged twice?")
 
 run = stream.each do |event|
   next unless event.type == :agent_stream
@@ -244,20 +241,26 @@ run = stream.each do |event|
   case agent_event.type
   when :invocation_start
     routed_input = event.data.fetch(:input)
-    audit_input(participant, routed_input)
+    render_input(participant, routed_input)
   when :text_delta
     publish_progress(participant, agent_event.data.fetch(:text))
   when :invocation_stop
     record_result(participant, agent_event.data.fetch(:result))
   end
 end
+
+run.completed? # => true
 ```
 
-`source.agent_id` identifies the Agent class, `source.agent_path` distinguishes managed subagents, and `source.operation_id` groups one invocation. `source.assembly_path` lists the enclosing Workflow, Swarm, or Graph steps from the outside inward. The routed input and inner event are detached, deeply immutable snapshots, so an observer cannot change live execution. Parallel participants can interleave, but events from each Agent retain their order, and LittleGhost never calls the stream block concurrently.
+`source.agent_id` identifies the Agent class, `source.agent_path` distinguishes managed subagents, and `source.operation_id` groups one invocation. `source.assembly_path` lists the enclosing Workflow, Swarm, or Graph steps from the outside inward.
 
-The contextual wrapper arrives before the corresponding ordinary event. The top-level Agent and an assembly's final Agent therefore appear both as a contextual event and through the existing public stream. Filter for `:agent_stream` when building an all-agent view; continue handling ordinary events when rendering only the final answer. The AG-UI adapter ignores contextual wrappers, so an application must explicitly translate the nested view if its interface should receive it.
+The routed input and inner event are detached, deeply immutable snapshots, so an observer cannot change live execution. Parallel participants can interleave. Events from each Agent retain their order, and LittleGhost never calls the stream block concurrently.
 
-**Warning:** This option exposes routed inputs, reasoning, tool arguments and results, model output, errors, and completed results from every participating Agent. Enable it only from trusted application code, never from unchecked request or model input. Treat all exposed content as untrusted and potentially sensitive. Authorize the destination for the complete stream, and filter or redact it before logging, telemetry, transport, or display.
+The contextual wrapper arrives before the corresponding ordinary event. An assembly's final Agent therefore appears through both projections. Filter for `:agent_stream` when building an all-agent view, or handle ordinary events when rendering only the final answer. Pass `include_agent_events: false` when a composite assembly caller only wants the ordinary public stream. Standalone Agent streams keep their ordinary events by default and accept `include_agent_events: true` when source metadata is useful.
+
+The AG-UI adapter ignores contextual wrappers. Translate them explicitly if an AG-UI client should receive participant activity.
+
+**Warning:** A composite assembly stream exposes routed inputs, reasoning, tool arguments and results, model output, errors, and completed results from every participating Agent. Treat that content as untrusted and potentially sensitive. Authorize the destination for the complete stream, and filter or redact events before logging, telemetry, transport, or display. Keep `include_agent_events` under trusted application control.
 
 ## Inspect what the assembly did
 
