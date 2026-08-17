@@ -163,9 +163,9 @@ end
 SupportFlowGraph.validate!
 ```
 
-Conditions and input mappers read an immutable `Graph::State`. At most one conditional edge may match. If several match, LittleGhost raises `AssemblyRoutingError` instead of guessing which one wins. One unconditional edge can catch the request when none match.
+Conditions and input mappers read an immutable `Graph::State`. At most one conditional route may match. If several match, LittleGhost raises `AssemblyRoutingError` instead of guessing which one wins. One unconditional edge can catch the request when none match.
 
-Graph nodes start without caller history or application context. They still receive the original input or the output routed from an earlier node. Map or redact that data before it moves to a provider or participant that should see less.
+Graph nodes start without caller history or application context. The start node receives the original input. By default, each downstream node receives the original task plus its immediate predecessor results. Use an input mapper to replace or redact that data before it moves to a provider or participant that should see less.
 
 Opt in for a trusted node when it needs caller context:
 
@@ -173,9 +173,9 @@ Opt in for a trusted node when it needs caller context:
 node :account_lookup, AccountLookupAgent, context: true
 ```
 
-### Fork and join bounded parallel paths
+### Run bounded parallel paths
 
-Use a fork when one result should start several independent branches. A join brings their answers back together:
+Give one node several unconditional edges when its result should start independent branches. LittleGhost finds their first unambiguous common successor and waits for every branch before running it:
 
 ```ruby
 class InvestigationGraph < LittleGhost::Graph
@@ -185,22 +185,85 @@ class InvestigationGraph < LittleGhost::Graph
   node :respond, CustomerSupportAgent
 
   start :triage
-  fork :triage, to: [:ledger, :policy], max_concurrency: 2
-  join [:ledger, :policy], to: :respond
+  edge :triage, :ledger
+  edge :triage, :policy
+  edge :ledger, :respond
+  edge :policy, :respond
   finish :respond
 end
 ```
 
-Each first branch receives the original request plus the fork source's output.
-The join target receives the original request plus each terminal branch output
-in declaration order. Use an `input` mapper when the target needs a different
-shape or a redacted subset; the mapper replaces the default input.
+Set `max_concurrency` on the Graph to bound every parallel group. An edge with
+an array target can declare the group explicitly and override that bound:
 
-The original request and complete fork source output cross into every branch.
-Treat both as untrusted, and only fork to participants and providers allowed to
-receive them. A trusted redaction assembly before the fork can narrow the source
-output. If the original request also needs narrowing, give the graph a redacted
-request from trusted application code.
+```ruby
+max_concurrency 4
+edge :triage, [:ledger, :policy], max_concurrency: 2
+edge [:ledger, :policy], :respond
+```
+
+An array source declares a wait-for-all convergence. Use it when the common
+successor cannot be inferred or when the convergence needs its own input
+mapper. Parallel groups cannot nest. `validate!` raises `ConfigurationError`
+when inference has no single convergence, finds competing routes at a branch
+boundary, or encounters overlapping or nested groups.
+
+The first nodes in a parallel group receive the original task and the source
+result. The convergence target receives the original task and each immediate
+predecessor result in declaration order. LittleGhost labels them as context:
+
+```text
+Original Task:
+Why is transfer 481 pending?
+
+Inputs from previous nodes:
+
+From ledger:
+The ledger entry is awaiting settlement.
+
+From policy:
+Pending transfers usually settle within two business days.
+```
+
+An `input` mapper replaces this default with the exact value returned by the
+mapper. Put it on an edge to control one transition, or on a node to control
+every route into that target. A selected edge or edge-group mapper takes
+precedence over the target node mapper:
+
+```ruby
+edge :triage, :ledger, input: lambda { |state|
+  "Investigate this transfer:\n#{state.result(:triage).output}"
+}
+```
+
+Conditions and mappers receive a detached, deeply immutable `Graph::State`.
+For a condition, `state.current` names the completed source node whose route is
+being selected. For an edge, node, or error-edge input mapper, it names the
+destination node whose input is being built. `state.input` is the original
+request, and `state.results` contains every completed node.
+`state.incoming_results` contains only the immediate predecessor results, in
+the same order as `state.predecessors`. `state.previous` and
+`state.previous_result` are available only when there is one predecessor.
+Error-edge mappers can also read `state.error`.
+
+Conditions and mappers are trusted application code. Their state includes
+snapshots of caller history and application context, even when the destination
+node does not opt in to receiving those values.
+
+Use an explicit array-source edge when a fan-in needs one mapper:
+
+```ruby
+edge [:ledger, :policy], :respond, input: lambda { |state|
+  JSON.generate(state.incoming_results.transform_values(&:output))
+}
+```
+
+By default, the original request and complete source output cross into every
+parallel branch. Treat both as untrusted, and only connect participants and
+providers allowed to receive them. A trusted input mapper can replace the
+branch input. A trusted redaction assembly before the fan-out can narrow the
+source output. If the original request also needs narrowing, give the graph a
+redacted request from trusted application code.
 
 An error edge can send an expected failure to a recovery Assembly. Call `validate!` before the first run.
 

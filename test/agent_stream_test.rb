@@ -234,7 +234,7 @@ class AgentStreamTest < Minitest::Test
 
     assert_equal %w[planner writer], starts.map { |event| event.data.fetch(:source).agent_id }
     assert_equal "request", starts.first.data.fetch(:input).text
-    assert_includes starts.last.data.fetch(:input).text, "plan output:\ncollect evidence"
+    assert_includes starts.last.data.fetch(:input).text, "From plan:\ncollect evidence"
     assert_equal(%w[plan write], starts.map do |event|
       event.data.fetch(:source).assembly_path.fetch(0).participant
     end)
@@ -454,8 +454,8 @@ class AgentStreamTest < Minitest::Test
       node :verify, verifier
       node :write, writer
       start :plan
-      fork :plan, to: [:research, :verify], max_concurrency: 2
-      join [:research, :verify], to: :write
+      edge :plan, [:research, :verify], max_concurrency: 2
+      edge [:research, :verify], :write
       finish :write
     end
     barrier = Barrier.new(2)

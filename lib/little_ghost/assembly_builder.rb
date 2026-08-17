@@ -458,7 +458,7 @@ module LittleGhost
       @declarations = []
     end
 
-    %i[node start edge finish max_steps fork join error_edge].each do |name|
+    %i[node start edge finish max_steps max_concurrency error_edge].each do |name|
       define_method(name) do |*arguments, **keywords, &block|
         @mutex.synchronize { @declarations << [name, arguments, keywords, block] }
         self
@@ -470,7 +470,7 @@ module LittleGhost
 
     protected
 
-    def snapshot_mutators = super + %i[node start edge finish max_steps fork join error_edge]
+    def snapshot_mutators = super + %i[node start edge finish max_steps max_concurrency error_edge]
 
     def snapshot_state = super.merge(declarations: @declarations.map { |value| value.dup.freeze }.freeze)
 

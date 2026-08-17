@@ -209,7 +209,11 @@ class SupportFlowGraph < LittleGhost::Graph
 end
 ```
 
-Graph nodes do not receive caller history or application context unless they opt in. They still receive the original request and the outputs routed to them. The first nodes after a fork receive the complete fork source output, and a join target receives the terminal branch outputs. Only fork to participants allowed to receive both the original request and source output. A trusted redaction node before the fork can narrow the source output; give the graph a redacted request from trusted application code when the original also needs narrowing. Edge and join input mappers can choose or redact data at those boundaries.
+Graph nodes do not receive caller history or application context unless they opt in. They receive the original task and immediate predecessor results as labeled context.
+
+Multiple unconditional edges fan out in parallel and converge at their first unambiguous common successor. Array endpoints declare an explicit fan-out or wait-for-all fan-in. Edge and node input mappers receive immutable `Graph::State` and can replace the default input with an exact value.
+
+Only connect parallel participants allowed to receive both the original request and source output. A trusted redaction node before the fan-out can narrow the source output. Give the graph a redacted request from trusted application code when the original also needs narrowing.
 
 ## Class definitions first, builders when needed
 
