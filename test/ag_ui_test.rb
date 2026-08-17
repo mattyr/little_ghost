@@ -238,4 +238,27 @@ class AGUITest < Minitest::Test
     assert_equal 6, translated.first.dig(:value, :usage, :total_tokens)
     assert_equal({trace_id: "abc"}, translated.last[:value])
   end
+
+  def test_ignores_contextual_agent_events
+    source = LittleGhost::AgentStreamSource.build(
+      agent_id: "researcher",
+      agent_path: "/root",
+      operation_id: "agent-1",
+      parent_operation_id: "run-1",
+      assembly_path: []
+    )
+    events = [
+      LittleGhost::StreamEvent.build(:run_start),
+      LittleGhost::StreamEvent.build(
+        :agent_stream,
+        source:,
+        event: LittleGhost::StreamEvent.build(:text_delta, text: "private work")
+      ),
+      LittleGhost::StreamEvent.build(:run_stop, response: "done")
+    ]
+
+    translated = LittleGhost::AGUI::Adapter.new.stream(events, thread_id: "thread", run_id: "run").to_a
+
+    assert_equal %w[RUN_STARTED RUN_FINISHED], translated.map { |event| event[:type] }
+  end
 end

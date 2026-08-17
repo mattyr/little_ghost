@@ -43,6 +43,17 @@ module LittleGhost
   # closes registered resources in reverse order. +register+ adds application
   # resources to that lifecycle. Interjection is available only while one Agent
   # entrypoint is active.
+  #
+  # A composite assembly stream observes every Agent that shares the Run. Each
+  # +:agent_stream+ event carries an AgentStreamSource in +data[:source]+ and a
+  # detached, deeply immutable snapshot of the Agent's StreamEvent in
+  # +data[:event]+. An inner +:invocation_start+ also includes the routed Message
+  # snapshot in +data[:input]+.
+  #
+  # Parallel Agents may interleave, but the Run invokes the stream consumer
+  # serially. Contextual events expose data from every participating Agent, so
+  # applications must keep +include_agent_events+ under trusted control and
+  # authorize the stream destination for every participant.
   class Run
     include Enumerable
 
@@ -78,7 +89,8 @@ module LittleGhost
     # Creates a dormant run for +invocation+.
     def initialize(invocation:, runtime:, agent_class: nil, assembly_class: nil, entrypoint_class: nil,
       execution_class: nil,
-      cancellation_token: Support::CancellationToken.new, workspace: nil, sandbox: nil)
+      cancellation_token: Support::CancellationToken.new, workspace: nil, sandbox: nil,
+      include_agent_events_by_default: false)
       entrypoint_class ||= assembly_class || agent_class
       raise ArgumentError, "entrypoint_class is required" unless entrypoint_class
       execution_class ||= assembly_class || entrypoint_class
@@ -110,6 +122,11 @@ module LittleGhost
       @active_interjections = 0
       @entrypoint = nil
       @usage = Usage.new
+      include_agent_events = invocation[:include_agent_events]
+      unless include_agent_events.nil? || include_agent_events == true || include_agent_events == false
+        raise InvocationError, "include_agent_events must be true or false"
+      end
+      @include_agent_events = include_agent_events.nil? ? include_agent_events_by_default : include_agent_events
     end
 
     # Consumes the event stream and returns +self+.
@@ -125,9 +142,11 @@ module LittleGhost
       return enum_for(__method__) unless block_given?
 
       begin_execution!
-      @emitter = ->(event) { yield_event(event) { |value| yield value } }
+      @emitter = lambda do |event|
+        @event_mutex.synchronize { yield_event(event) { |value| yield value } }
+      end
       Instrumentation.with_context(correlation_attributes.except(:operation_id)) do
-        execute { |event| yield event }
+        execute { |event| @emitter.call(event) }
       end
       self
     ensure
@@ -145,6 +164,10 @@ module LittleGhost
 
     # True when cancellation stopped the run without a response.
     def cancelled? = outcome == "cancelled"
+
+    # Indicates whether the stream includes contextual events from every Agent
+    # that executes as part of this Run.
+    def include_agent_events? = @include_agent_events
 
     # Adds an interjection to the active entrypoint and waits for its response.
     #
@@ -211,7 +234,7 @@ module LittleGhost
 
     def publish(type, **data) # :nodoc:
       event = StreamEvent.build(type, **data)
-      @event_mutex.synchronize { @emitter&.call(event) }
+      @emitter&.call(event)
       instrument_event(type, data)
       event
     end

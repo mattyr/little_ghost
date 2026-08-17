@@ -116,6 +116,10 @@ end
 record_outcome(run.outcome, error_type: run.error&.class&.name)
 ```
 
+Composite assembly streams include intermediate and nested Agent work as `:agent_stream` events. This default also applies to the event consumer passed to `start_execution`. Pass `include_agent_events: false` when only the ordinary public stream is needed.
+
+**Warning:** Contextual events include complete routed inputs, reasoning, tool arguments and results, model output, errors, and final results. Treat them as untrusted and potentially sensitive. Authorize the destination for every participant and provider involved, and redact events before logging or transport. Keep `include_agent_events` under trusted application control. LittleGhost's AG-UI adapter ignores these events unless the application translates them explicitly.
+
 Use `start_execution` when the caller must stay free for other work, or when you want to deliver an interjection to an active response:
 
 ```ruby

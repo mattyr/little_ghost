@@ -9,7 +9,10 @@ module LittleGhost
   # +:reasoning_delta+, +:tool_call_start+, +:tool_call_delta+,
   # +:tool_call_stop+, +:usage+, +:model_retry+, and +:message_stop+. The
   # terminal event carries a {ModelResponse}[rdoc-ref:LittleGhost::ModelResponse]
-  # in +data[:response]+.
+  # in +data[:response]+. An +:agent_stream+ event wraps a detached,
+  # deeply immutable snapshot of an Agent event with an
+  # AgentStreamSource[rdoc-ref:LittleGhost::AgentStreamSource] when a Run exposes
+  # nested work.
   StreamEvent = Data.define(:type, :data) do # :nodoc:
     # Creates an immutable event with a symbol +type+ and keyword payload.
     def self.build(type, **data)
@@ -25,7 +28,10 @@ module LittleGhost
   # +:reasoning_delta+, +:tool_call_start+, +:tool_call_delta+,
   # +:tool_call_stop+, +:usage+, +:model_retry+, and +:message_stop+. The
   # terminal event carries a {ModelResponse}[rdoc-ref:LittleGhost::ModelResponse]
-  # in +data[:response]+.
+  # in +data[:response]+. An +:agent_stream+ event wraps a detached,
+  # deeply immutable snapshot of an Agent event with an
+  # AgentStreamSource[rdoc-ref:LittleGhost::AgentStreamSource] when a Run exposes
+  # nested work.
   #
   #   event = LittleGhost::StreamEvent.build(:text_delta, text: "Hello")
   #   event.type        # => :text_delta

@@ -56,6 +56,11 @@ module LittleGhost
       #
       # Enumeration yields StreamEvent objects and returns the terminal Run.
       # The same Invocation fields accepted by .ask may be supplied as +options+.
+      # Composite assemblies also emit an +:agent_stream+ event for every
+      # normalized event from every Agent in the run, including intermediate
+      # and nested participants. Set <tt>include_agent_events: false</tt> to
+      # keep only the ordinary public stream. A standalone Agent retains its
+      # ordinary stream by default and accepts +true+ to opt in.
       def stream_ask(message, **options)
         snapshot = definition
         stream = nil
@@ -144,6 +149,7 @@ module LittleGhost
     attr_reader :workspace
     # Sandbox supplied to this Assembly, when present.
     attr_reader :sandbox
+    attr_reader :agent_stream_path # :nodoc:
 
     def initialize(run: nil, runtime: nil, workspace: nil, sandbox: nil, standalone: run.nil?) # :nodoc:
       @run = run
@@ -154,28 +160,39 @@ module LittleGhost
       @assembly_mutex = Mutex.new
       @assembly_closed = false
       @active_assemblies = []
+      @agent_stream_path = [].freeze
+    end
+
+    def bind_agent_stream_path(path) # :nodoc:
+      @agent_stream_path = Array(path).dup.freeze
+      self
     end
 
     # Builds the top-level Run used by a standalone assembly.
-    def build_run(payload) # :nodoc:
+    def build_run(payload = nil, include_agent_events_by_default: false, **payload_options) # :nodoc:
+      payload = entrypoint_payload(payload, payload_options) unless payload_options.empty?
       payload = payload.dup if payload.is_a?(Hash)
       cancellation_token = if payload.is_a?(Hash)
         payload.delete(:cancellation_token) || payload.delete("cancellation_token")
       end
-      source_class = self.class.respond_to?(:assembly_source_class) ? self.class.assembly_source_class : self.class
+      source_class = run_entrypoint_class
       options = {entrypoint_class: source_class}
       options[:execution_class] = self.class unless source_class.equal?(self.class)
       options[:agent_class] = source_class if is_a?(Agent)
       options[:cancellation_token] = cancellation_token if cancellation_token
       options[:workspace] = workspace if workspace
       options[:sandbox] = sandbox if sandbox
+      options[:include_agent_events_by_default] = true if include_agent_events_by_default
       runtime.build_run(payload, **options)
     end
 
     # Starts +payload+ on a supervised worker and returns an Execution.
+    # Composite assemblies include contextual +:agent_stream+ events in the
+    # consumer by default. Set +include_agent_events+ to +false+ in +payload+
+    # to keep only the ordinary public stream.
     def start_execution(payload, &event_consumer)
       ensure_standalone!
-      Execution.start(build_run(payload), &event_consumer)
+      Execution.start(build_stream_run(payload), &event_consumer)
     end
 
     # Runs +input+ to completion.
@@ -204,13 +221,17 @@ module LittleGhost
     #
     # A standalone stream returns its terminal Run after enumeration. A
     # run-scoped stream finishes with an +invocation_stop+ event containing its
-    # RunResult.
+    # RunResult. A standalone composite Assembly receives contextual
+    # +:agent_stream+ events from every Agent in the Run by default and may set
+    # <tt>include_agent_events: false</tt> to omit them. A standalone Agent may
+    # set the option to +true+ to include its contextual wrapper.
     def stream_ask(message, **options)
       if standalone?
         options[:deadline_at] = options.delete(:deadline) if options.key?(:deadline)
+        payload = entrypoint_payload(message, options)
         stream = nil
         return Enumerator.new do |events|
-          stream ||= build_run(entrypoint_payload(message, options)).each
+          stream ||= build_stream_run(payload).each
           stream.each { |event| events << event }
         end
       end
@@ -245,7 +266,7 @@ module LittleGhost
           target = if assembly.is_a?(Agent)
             assembly
           elsif assembly.run
-            assembly.runtime.build_assembly(assembly.class, run: assembly.run)
+            assembly.send(:build_tool_assembly)
           else
             assembly.class.new(runtime: assembly.runtime)
           end
@@ -254,7 +275,7 @@ module LittleGhost
             context: context&.state || {},
             cancellation_token: context&.cancellation_token || Support::CancellationToken.new,
             deadline: context&.deadline,
-            parent_operation_id: assembly.run&.operation_id
+            parent_operation_id: context&.agent_operation_id || assembly.run&.operation_id
           }
           if target.is_a?(Agent)
             options[:interjection_metadata] = context&.interjection_metadata
@@ -337,6 +358,30 @@ module LittleGhost
     end
 
     private
+
+    def build_stream_run(payload) # :nodoc:
+      return build_run(payload) if is_a?(Agent)
+
+      build_run(payload, include_agent_events_by_default: true)
+    end
+
+    def run_entrypoint_class # :nodoc:
+      return self.class.assembly_source_class if self.class.respond_to?(:assembly_source_class)
+
+      self.class
+    end
+
+    def build_tool_assembly
+      builder = runtime.method(:build_assembly)
+      accepts_path = builder.parameters.any? do |kind, name|
+        kind == :keyrest || (%i[key keyreq].include?(kind) && name == :agent_stream_path)
+      end
+      options = {run:}
+      options[:agent_stream_path] = agent_stream_path if accepts_path
+      child = builder.call(self.class, **options)
+      child.bind_agent_stream_path(agent_stream_path) if child.respond_to?(:bind_agent_stream_path)
+      child
+    end
 
     def ensure_standalone!
       raise Error, "Only a standalone assembly can start an execution" unless standalone?

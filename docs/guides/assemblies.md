@@ -224,6 +224,44 @@ A timeout asks the running code to stop; it cannot forcibly end arbitrary Ruby o
 
 Retries start at zero. When `retries` is greater than zero, `retry_on` must list the exception classes that are safe to try again. LittleGhost does not retry every failure by default.
 
+## Watch every agent in an assembly
+
+Follow each participant while a composite assembly runs by handling its contextual `:agent_stream` events. These events arrive alongside the coherent public answer and assembly lifecycle events:
+
+```ruby
+stream = SupportFlowGraph.stream_ask("Why was I charged twice?")
+
+run = stream.each do |event|
+  next unless event.type == :agent_stream
+
+  source = event.data.fetch(:source)
+  agent_event = event.data.fetch(:event)
+  participant = source.assembly_path.last&.participant || source.agent_id
+
+  case agent_event.type
+  when :invocation_start
+    routed_input = event.data.fetch(:input)
+    render_input(participant, routed_input)
+  when :text_delta
+    publish_progress(participant, agent_event.data.fetch(:text))
+  when :invocation_stop
+    record_result(participant, agent_event.data.fetch(:result))
+  end
+end
+
+run.completed? # => true
+```
+
+`source.agent_id` identifies the Agent class, `source.agent_path` distinguishes managed subagents, and `source.operation_id` groups one invocation. `source.assembly_path` lists the enclosing Workflow, Swarm, or Graph steps from the outside inward.
+
+The routed input and inner event are detached, deeply immutable snapshots, so an observer cannot change live execution. Parallel participants can interleave. Events from each Agent retain their order, and LittleGhost never calls the stream block concurrently.
+
+The contextual wrapper arrives before the corresponding ordinary event. An assembly's final Agent therefore appears through both projections. Filter for `:agent_stream` when building an all-agent view, or handle ordinary events when rendering only the final answer. Pass `include_agent_events: false` when a composite assembly caller only wants the ordinary public stream. Standalone Agent streams keep their ordinary events by default and accept `include_agent_events: true` when source metadata is useful.
+
+The AG-UI adapter ignores contextual wrappers. Translate them explicitly if an AG-UI client should receive participant activity.
+
+**Warning:** A composite assembly stream exposes routed inputs, reasoning, tool arguments and results, model output, errors, and completed results from every participating Agent. Treat that content as untrusted and potentially sensitive. Authorize the destination for the complete stream, and filter or redact events before logging, telemetry, transport, or display. Keep `include_agent_events` under trusted application control.
+
 ## Inspect what the assembly did
 
 A composite result remembers the steps it took. `trajectory` lets you explore them:
