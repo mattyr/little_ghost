@@ -2,8 +2,30 @@
 
 require "test_helper"
 require_relative "../rakelib/little_ghost_docs"
+require "cgi/escape"
 
 class LittleGhostDocsTest < Minitest::Test
+  def test_homepage_graph_demo_uses_generic_edges
+    homepage = File.read(File.expand_path("../site/index.html", __dir__))
+    graph_demo = homepage.match(/<section class="demo-section" id="agent-graph".*?<\/section>/m).to_s
+    visible_lines = graph_demo.scan(/<span class="typed-text"[^>]*>(.*?)<\/span><\/div>/m).flatten.map do |line|
+      CGI.unescapeHTML(line.gsub(/<[^>]+>/, ""))
+    end
+
+    expected_edges = [
+      "  edge :plan, :research",
+      "  edge :plan, :logistics",
+      "  edge :research, :write",
+      "  edge :logistics, :write"
+    ]
+    expected_edges.each do |edge|
+      assert_includes graph_demo, %(data-plain="#{edge}")
+      assert_includes visible_lines, edge
+    end
+    refute_match(/data-plain="  (?:fork|join) /, graph_demo)
+    refute visible_lines.any? { |line| line.match?(/^  (?:fork|join) /) }
+  end
+
   def test_snapshot_adds_edge_selector_assets_and_catalog_location
     Dir.mktmpdir("little-ghost-docs") do |directory|
       site = build_site(directory, "site", version: "0.3.0")
