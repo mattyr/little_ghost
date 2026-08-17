@@ -8,17 +8,20 @@ module LittleGhost
   #
   # A graph is an Assembly for flows whose allowed paths should be visible in
   # application code. A node may contain an Agent, Workflow, Swarm, or another
-  # Graph. Ordinary edges choose one next node; explicit forks and joins add
-  # bounded parallel work.
+  # Graph. Scalar edges choose one next node. Multiple unconditional edges fan
+  # out in parallel and converge at their first unambiguous common successor.
   #
   #   class SupportFlowGraph < LittleGhost::Graph
   #     node :triage, TriageAgent
-  #     node :research, ResearchAgent
+  #     node :ledger, LedgerResearchAgent
+  #     node :policy, PolicyResearchAgent
   #     node :respond, CustomerSupportAgent
   #
   #     start :triage
-  #     edge :triage, :research
-  #     edge :research, :respond
+  #     edge :triage, :ledger
+  #     edge :triage, :policy
+  #     edge :ledger, :respond
+  #     edge :policy, :respond
   #     finish :respond
   #   end
   #
@@ -29,17 +32,21 @@ module LittleGhost
   # Run, or the streaming entrypoint[rdoc-ref:LittleGhost::Assembly.stream_ask]
   # for routing and final-response events.
   #
+  # Multiple unconditional edges from one source run in parallel and converge
+  # at their first unambiguous common successor. Array endpoints declare an
+  # explicit fan-out or wait-for-all fan-in. Parallel groups cannot nest.
   # Conditions and input mappers receive immutable Graph::State. Nodes do not
-  # receive caller history or application context unless their declaration opts
-  # in with <tt>history: true</tt> or <tt>context: true</tt>. Validate the
-  # topology before execution; +to_mermaid+ renders the same definition as a
-  # flowchart.
+  # receive caller history or application context unless their declaration
+  # opts in with <tt>history: true</tt> or <tt>context: true</tt>. Validate the
+  # topology before execution. Conditions and mappers remain trusted
+  # application code and can inspect snapshots of both values. +to_mermaid+
+  # renders the same definition as a flowchart.
   class Graph < Assembly
-    Node = Data.define(:name, :assembly, :policies, :inherit_history, :inherit_context) # :nodoc:
-    Edge = Data.define(:from, :to, :condition, :input_mapper) # :nodoc:
+    Node = Data.define(:name, :assembly, :policies, :inherit_history, :inherit_context, :input_mapper) # :nodoc:
+    Edge = Data.define(:from, :to, :condition, :input_mapper, :max_concurrency) # :nodoc:
     ErrorEdge = Data.define(:from, :to, :errors, :input_mapper) # :nodoc:
-    Fork = Data.define(:from, :to, :max_concurrency) # :nodoc:
-    Join = Data.define(:from, :to, :input_mapper) # :nodoc:
+    Fork = Data.define(:from, :to, :condition, :max_concurrency, :input_mappers) # :nodoc:
+    Join = Data.define(:from, :to, :input_mapper, :fork) # :nodoc:
     BranchResult = Data.define(:terminal, :results, :steps, :usage, :events) # :nodoc:
     EventSink = Data.define(:consumer) do # :nodoc:
       def <<(event)
@@ -49,14 +56,35 @@ module LittleGhost
     end
 
     # Immutable routing data passed to conditions and input mappers.
+    #
+    # +results+ contains every completed node result. +incoming_results+
+    # contains only the immediate predecessors supplying the current node.
+    # +previous+ and #previous_result are present for a single predecessor;
+    # +predecessors+ preserves declaration order for fan-in execution.
     class State
-      # Original request data, current routing position, completed results,
-      # parallel predecessors, branch results, and the routed failure if any.
-      attr_reader :input, :history, :context, :step, :current, :previous,
-        :predecessors, :results, :branch_results, :error
+      # The original request as a detached Message snapshot.
+      attr_reader :input
+      # The caller history snapshot available to the condition or mapper.
+      attr_reader :history
+      # The application context snapshot available to the condition or mapper.
+      attr_reader :context
+      # The one-based execution count assigned to the current node.
+      attr_reader :step
+      # The source node for a condition, or destination node for an input mapper.
+      attr_reader :current
+      # The predecessor name when exactly one result supplies the current node.
+      attr_reader :previous
+      # The immediate predecessor names in declaration order.
+      attr_reader :predecessors
+      # The completed RunResult snapshots keyed by node name.
+      attr_reader :results
+      # The immediate predecessor RunResult snapshots keyed by node name.
+      attr_reader :incoming_results
+      # The routed exception snapshot available to an error-edge mapper.
+      attr_reader :error
 
       def initialize(input:, history:, context:, step:, current:, previous:, results:,
-        predecessors: [], branch_results: {}, error: nil) # :nodoc:
+        predecessors: [], incoming_results: {}, error: nil) # :nodoc:
         @input = input
         @history = history
         @context = context
@@ -65,7 +93,7 @@ module LittleGhost
         @previous = previous
         @predecessors = Array(predecessors).map(&:to_sym).freeze
         @results = results.dup.freeze
-        @branch_results = branch_results.dup.freeze
+        @incoming_results = incoming_results.dup.freeze
         @error = error
         freeze
       end
@@ -81,27 +109,33 @@ module LittleGhost
     class_attribute :graph_nodes_value, default: {}.freeze
     class_attribute :graph_edges_value, default: [].freeze
     class_attribute :graph_error_edges_value, default: [].freeze
-    class_attribute :graph_forks_value, default: [].freeze
-    class_attribute :graph_joins_value, default: [].freeze
     class_attribute :graph_start_value
     class_attribute :graph_finish_value
     class_attribute :graph_max_steps_value, default: 20
+    class_attribute :graph_max_concurrency_value, default: 8
 
     class << self
       # Declares an Assembly node and its optional execution policy.
+      #
+      # An +input+ mapper receives Graph::State and replaces the default input
+      # whenever the selected edge or edge group does not declare its own
+      # mapper. +history+ and +context+ opt this node into the corresponding
+      # caller data; both default to +false+.
       def node(name, assembly, timeout: nil, retries: 0, retry_on: nil, retry_delay: 0,
-        history: false, context: false)
+        history: false, context: false, input: nil)
         name = normalize_node_name(name)
         raise ConfigurationError, "graph node #{name.inspect} is already declared" if graph_nodes_value.key?(name)
         unless [history, context].all? { |value| value == true || value == false }
           raise ArgumentError, "graph node history and context options must be true or false"
         end
+        validate_callable!(input, "node input mapper")
 
         policies = {timeout:, retries:, retry_on:, retry_delay:}.freeze
         declaration = Node.new(
           name:, assembly:, policies:,
           inherit_history: history,
-          inherit_context: context
+          inherit_context: context,
+          input_mapper: input
         )
         self.graph_nodes_value = graph_nodes_value.merge(name => declaration).freeze
       end
@@ -113,19 +147,43 @@ module LittleGhost
         self.graph_start_value = normalize_node_name(name)
       end
 
-      # Declares one possible next route with an optional condition and input mapper.
+      # Declares one route or one bounded parallel edge group.
       #
       # +input+ receives Graph::State and returns the value passed to the target
-      # node. At most one conditional edge may match from the current node; one
-      # unconditional edge may act as the fallback.
-      def edge(from, to, input: nil, **options, &condition)
+      # node or nodes. A scalar source and Array target fan out; an Array source
+      # and scalar target wait for every listed predecessor. At most one
+      # conditional scalar or grouped route may match from the current node;
+      # one unconditional route may act as the fallback. Multiple unconditional
+      # scalar edges with the same source infer one fan-out when no conditional
+      # route is present. Supply a condition with +if:+ or a block.
+      #
+      # +max_concurrency+ overrides Graph.max_concurrency for a scalar-to-Array
+      # fan-out. The original request and complete source output cross to every
+      # branch unless an input mapper replaces them. Array-to-Array edges,
+      # conditional fan-in edges, and +max_concurrency+ on other edge shapes
+      # raise ArgumentError.
+      def edge(from, to, input: nil, max_concurrency: nil, **options, &condition)
         condition = extract_condition(options, condition)
         validate_callable!(input, "edge input mapper")
+        from = normalize_endpoint(from, "edge source")
+        to = normalize_endpoint(to, "edge target")
+        if from.is_a?(Array) && to.is_a?(Array)
+          raise ArgumentError, "graph edges cannot use arrays for both source and target"
+        end
+        if from.is_a?(Array) && condition
+          raise ArgumentError, "fan-in edges cannot be conditional"
+        end
+        unless max_concurrency.nil?
+          raise ArgumentError, "max_concurrency is only valid for a fan-out edge" unless to.is_a?(Array)
+
+          max_concurrency = normalize_max_concurrency(max_concurrency)
+        end
         declaration = Edge.new(
-          from: normalize_node_name(from),
-          to: normalize_node_name(to),
+          from:,
+          to:,
           condition:,
-          input_mapper: input
+          input_mapper: input,
+          max_concurrency:
         )
         self.graph_edges_value = (graph_edges_value + [declaration]).freeze
         declaration
@@ -151,53 +209,6 @@ module LittleGhost
         declaration
       end
 
-      # Starts two or more independent branches with bounded concurrency.
-      #
-      # Each first branch node receives the original request plus the fork
-      # source output, using the same default input as an ordinary edge.
-      # The original request and complete source output cross into every
-      # branch. Only fork to participants allowed to receive both. A trusted
-      # redaction node before the fork can narrow the source output; provide a
-      # redacted request to the graph when the original request also needs
-      # narrowing.
-      #
-      # +to+ names the first node in each branch. The matching
-      # Graph.join[rdoc-ref:LittleGhost::Graph.join] collects the terminal result
-      # from every branch.
-      def fork(from, to:, max_concurrency: 8)
-        targets = Array(to).map { |name| normalize_node_name(name) }
-        raise ArgumentError, "fork requires at least two targets" if targets.length < 2
-        raise ArgumentError, "fork targets must be unique" unless targets.uniq.length == targets.length
-        max_concurrency = Integer(max_concurrency)
-        raise ArgumentError, "max_concurrency must be at least 1" if max_concurrency < 1
-
-        declaration = Fork.new(from: normalize_node_name(from), to: targets.freeze, max_concurrency:)
-        self.graph_forks_value = (graph_forks_value + [declaration]).freeze
-        declaration
-      end
-
-      # Joins the terminal results of one declared fork.
-      #
-      # Without +input+, the target receives the original request plus each
-      # terminal branch output in declaration order. A mapper replaces that
-      # default input.
-      #
-      # +input+ receives Graph::State and returns the value passed to the target
-      # node. Read each completed branch through +state.branch_results+.
-      def join(from, to:, input: nil)
-        sources = Array(from).map { |name| normalize_node_name(name) }
-        raise ArgumentError, "join requires at least two sources" if sources.length < 2
-        raise ArgumentError, "join sources must be unique" unless sources.uniq.length == sources.length
-        validate_callable!(input, "join input mapper")
-        declaration = Join.new(
-          from: sources.freeze,
-          to: normalize_node_name(to),
-          input_mapper: input
-        )
-        self.graph_joins_value = (graph_joins_value + [declaration]).freeze
-        declaration
-      end
-
       # Reads or assigns the terminal node.
       def finish(name = nil)
         return graph_finish_value if name.nil?
@@ -215,7 +226,20 @@ module LittleGhost
         self.graph_max_steps_value = value
       end
 
-      # Validates the current topology and returns this Graph class.
+      # Reads or assigns the concurrency bound for parallel groups.
+      #
+      # The default is 8. A scalar-to-Array edge may override it for one group.
+      def max_concurrency(value = nil)
+        return graph_max_concurrency_value if value.nil?
+
+        self.graph_max_concurrency_value = normalize_max_concurrency(value)
+      end
+
+      # Validates the topology and returns this Graph class.
+      #
+      # Raises ConfigurationError for undeclared or unreachable nodes,
+      # ambiguous convergence, competing routes at an inferred branch
+      # boundary, and overlapping or nested parallel groups.
       def validate!
         graph_definition!
         self
@@ -233,9 +257,9 @@ module LittleGhost
         nodes.each_value { |node| validate_step_policy!(node.policies) }
 
         graph_edges_value.each do |declaration|
-          validate_declared_node!(nodes, declaration.from, "edge source")
-          validate_declared_node!(nodes, declaration.to, "edge target")
-          if declaration.from == finish_name
+          Array(declaration.from).each { |name| validate_declared_node!(nodes, name, "edge source") }
+          Array(declaration.to).each { |name| validate_declared_node!(nodes, name, "edge target") }
+          if Array(declaration.from).include?(finish_name)
             raise ConfigurationError, "graph finish node #{finish_name.inspect} cannot have outgoing edges"
           end
         end
@@ -243,23 +267,14 @@ module LittleGhost
           validate_declared_node!(nodes, declaration.from, "error edge source")
           validate_declared_node!(nodes, declaration.to, "error edge target")
         end
-        graph_forks_value.each do |declaration|
-          validate_declared_node!(nodes, declaration.from, "fork source")
-          declaration.to.each { |target| validate_declared_node!(nodes, target, "fork target") }
-          if graph_forks_value.count { |fork| fork.from == declaration.from } > 1
-            raise ConfigurationError, "graph node #{declaration.from.inspect} has more than one fork"
-          end
-        end
-        graph_joins_value.each do |declaration|
-          declaration.from.each { |source| validate_declared_node!(nodes, source, "join source") }
-          validate_declared_node!(nodes, declaration.to, "join target")
-        end
-        validate_parallel_structure!
-        validate_success_routes!(nodes, finish_name)
-        validate_reachability!(nodes, start_name, finish_name)
+        edges, forks, joins = compile_edges
+        validate_routes!(edges, forks)
+        validate_parallel_structure!(edges, forks, joins)
+        validate_success_routes!(nodes, finish_name, edges, forks, joins)
+        validate_reachability!(nodes, start_name, finish_name, edges, forks, joins)
         [
-          nodes, graph_edges_value, graph_error_edges_value,
-          graph_forks_value, graph_joins_value, start_name, finish_name
+          nodes, edges.freeze, graph_error_edges_value,
+          forks.freeze, joins.freeze, start_name, finish_name
         ]
       end
 
@@ -270,7 +285,10 @@ module LittleGhost
         nodes.each_key { |name| lines << "  #{mermaid_id(name)}[#{name}]" }
         lines << "  START((start)) --> #{mermaid_id(start_name)}"
         lines << "  #{mermaid_id(finish_name)} --> FINISH((finish))"
+        fan_in_pairs = joins.flat_map { |join| join.from.map { |source| [source, join.to] } }.to_set
         edges.each do |edge|
+          next if fan_in_pairs.include?([edge.from, edge.to])
+
           label = edge.condition ? "condition" : nil
           lines << mermaid_edge(edge.from, edge.to, label:)
         end
@@ -285,6 +303,134 @@ module LittleGhost
       end
 
       private
+
+      def compile_edges
+        scalar_edges = []
+        forks = []
+        explicit_joins = []
+        graph_edges_value.each do |edge|
+          if edge.to.is_a?(Array)
+            input_mappers = edge.to.to_h { |target| [target, edge.input_mapper] }.freeze
+            forks << Fork.new(
+              from: edge.from, to: edge.to, condition: edge.condition,
+              max_concurrency: edge.max_concurrency || graph_max_concurrency_value,
+              input_mappers:
+            )
+          elsif edge.from.is_a?(Array)
+            explicit_joins << Join.new(from: edge.from, to: edge.to, input_mapper: edge.input_mapper, fork: nil)
+          else
+            scalar_edges << edge
+          end
+        end
+
+        inferred_edges = []
+        scalar_edges.group_by(&:from).each do |source, candidates|
+          unconditional = candidates.reject(&:condition)
+          next unless unconditional.length > 1
+
+          if candidates.any?(&:condition)
+            raise ConfigurationError,
+              "graph node #{source.inspect} cannot mix conditional routes with inferred fan-out edges"
+          end
+          targets = unconditional.map(&:to)
+          raise ConfigurationError, "graph fan-out targets from #{source.inspect} must be unique" unless targets.uniq == targets
+
+          forks << Fork.new(
+            from: source, to: targets.freeze, condition: nil,
+            max_concurrency: graph_max_concurrency_value,
+            input_mappers: unconditional.to_h { |edge| [edge.to, edge.input_mapper] }.freeze
+          )
+          inferred_edges.concat(unconditional)
+        end
+        scalar_edges -= inferred_edges
+
+        used_explicit_joins = []
+        joins = forks.map do |fork|
+          matches = explicit_joins.select { |join| join_matches_fork?(join, fork, scalar_edges) }
+          if matches.length > 1
+            raise ConfigurationError,
+              "graph fan-out at #{fork.from.inspect} has more than one matching fan-in"
+          end
+
+          if matches.one?
+            join = matches.first
+            used_explicit_joins << join
+            Join.new(from: join.from, to: join.to, input_mapper: join.input_mapper, fork:)
+          else
+            join, = infer_join(fork, scalar_edges, forks)
+            Join.new(from: join.from, to: join.to, input_mapper: nil, fork:)
+          end
+        end
+        unused = explicit_joins - used_explicit_joins
+        if unused.any?
+          raise ConfigurationError,
+            "graph fan-in to #{unused.first.to.inspect} has no matching fan-out"
+        end
+
+        [scalar_edges, forks, joins]
+      end
+
+      def infer_join(fork, edges, forks)
+        adjacency = adjacency_for(edges)
+        reachable_sets = fork.to.map { |target| reachable_nodes(target, adjacency) }
+        common = reachable_sets.reduce { |left, right| left & right } || Set.new
+        earliest = common.reject do |candidate|
+          common.any? { |other| other != candidate && reachable?(other, candidate, adjacency) }
+        end
+        candidates = earliest.filter_map do |target|
+          incoming = edges.select { |edge| edge.to == target }
+          assignments = fork.to.map do |branch|
+            incoming.select { |edge| reachable?(branch, edge.from, adjacency) }
+          end
+          next unless assignments.all?(&:one?)
+
+          selected = assignments.flatten
+          next unless selected.map(&:from).uniq.length == fork.to.length
+          if selected.any?(&:condition)
+            raise ConfigurationError,
+              "graph inferred fan-in to #{target.inspect} cannot use conditional incoming edges; " \
+              "route each branch before its fan-in predecessor"
+          end
+          alternate = selected.find do |edge|
+            edges.any? { |candidate| candidate.from == edge.from && !candidate.equal?(edge) } ||
+              forks.any? { |candidate| candidate.from == edge.from }
+          end
+          if alternate
+            raise ConfigurationError,
+              "graph cannot infer fan-in at #{alternate.from.inspect} because it has another successful route; " \
+              "route the branch before that predecessor or declare an explicit array-source edge"
+          end
+          if selected.any?(&:input_mapper)
+            raise ConfigurationError,
+              "graph inferred fan-in to #{target.inspect} cannot use input mappers on its incoming scalar edges; " \
+              "map the target node or declare an explicit array-source edge"
+          end
+
+          [Join.new(from: selected.map(&:from).freeze, to: target, input_mapper: nil, fork:), selected]
+        end
+        unless candidates.one?
+          detail = candidates.empty? ? "no unambiguous fan-in" : "more than one possible fan-in"
+          raise ConfigurationError,
+            "graph fan-out at #{fork.from.inspect} has #{detail}; declare an explicit array-source edge"
+        end
+
+        candidates.first
+      end
+
+      def join_matches_fork?(join, fork, edges)
+        adjacency = adjacency_for(edges)
+        assignments = fork.to.map do |target|
+          join.from.select { |source| reachable?(target, source, adjacency) }
+        end
+        assignments.all?(&:one?) && assignments.flatten.uniq.length == fork.to.length
+      end
+
+      def adjacency_for(edges)
+        Hash.new { |hash, key| hash[key] = [] }.tap do |adjacency|
+          edges.each { |edge| adjacency[edge.from] << edge.to }
+          graph_error_edges_value.each { |edge| adjacency[edge.from] << edge.to }
+        end
+      end
 
       def extract_condition(options, block)
         if options.key?(:if)
@@ -305,44 +451,35 @@ module LittleGhost
         raise ConfigurationError, "graph #{label} #{name.inspect} is not declared" unless nodes.key?(name)
       end
 
-      def validate_parallel_structure!
+      def validate_routes!(edges, forks)
+        (edges + forks).group_by(&:from).each do |source, candidates|
+          fallback = candidates.reject(&:condition)
+          if fallback.length > 1
+            raise ConfigurationError, "graph node #{source.inspect} has more than one unconditional route"
+          end
+        end
+      end
+
+      def validate_parallel_structure!(edges, forks, joins)
         used = Set.new
-        graph_forks_value.each do |fork|
+        forks.each do |fork|
           overlap = fork.to.select { |target| used.include?(target) }
-          raise ConfigurationError, "graph fork branches overlap at #{overlap.first.inspect}" if overlap.any?
+          raise ConfigurationError, "graph fan-out branches overlap at #{overlap.first.inspect}" if overlap.any?
 
           used.merge(fork.to)
         end
-        graph_forks_value.each do |fork|
-          if graph_edges_value.any? { |edge| edge.from == fork.from }
-            raise ConfigurationError, "graph fork node #{fork.from.inspect} cannot also declare ordinary edges"
-          end
-          matches = matching_joins_for(fork)
-          unless matches.one?
-            detail = matches.empty? ? "no matching join" : "more than one matching join"
-            raise ConfigurationError, "graph fork at #{fork.from.inspect} has #{detail}"
-          end
-        end
-        graph_joins_value.each do |join|
-          matches = graph_forks_value.select { |fork| matching_joins_for(fork).include?(join) }
-          unless matches.one?
-            detail = matches.empty? ? "no matching fork" : "more than one matching fork"
-            raise ConfigurationError, "graph join to #{join.to.inspect} has #{detail}"
-          end
-        end
-        validate_no_nested_forks!
+        validate_no_nested_forks!(edges, forks, joins)
       end
 
-      def validate_no_nested_forks!
-        adjacency = Hash.new { |hash, key| hash[key] = [] }
-        graph_edges_value.each { |edge| adjacency[edge.from] << edge.to }
-        graph_forks_value.each do |outer|
-          join = matching_join_for(outer)
+      def validate_no_nested_forks!(edges, forks, joins)
+        adjacency = adjacency_for(edges)
+        forks.each do |outer|
+          join = joins.find { |candidate| candidate.fork == outer }
           outer.to.each do |target|
             reachable = reachable_nodes(target, adjacency, stop_at: join.from)
-            nested = graph_forks_value.find { |candidate| candidate != outer && reachable.include?(candidate.from) }
+            nested = forks.find { |candidate| candidate != outer && reachable.include?(candidate.from) }
             if nested
-              raise ConfigurationError, "graph fork #{nested.from.inspect} cannot be nested inside another fork branch"
+              raise ConfigurationError, "graph fan-out #{nested.from.inspect} cannot be nested inside another parallel branch"
             end
           end
         end
@@ -361,28 +498,12 @@ module LittleGhost
         seen
       end
 
-      def matching_join_for(fork)
-        matching_joins_for(fork).first
-      end
-
-      def matching_joins_for(fork)
-        adjacency = Hash.new { |hash, key| hash[key] = [] }
-        graph_edges_value.each { |edge| adjacency[edge.from] << edge.to }
-        graph_error_edges_value.each { |edge| adjacency[edge.from] << edge.to }
-        graph_joins_value.select do |join|
-          assignments = fork.to.map do |target|
-            join.from.select { |source| reachable?(target, source, adjacency) }
-          end
-          assignments.all?(&:one?) && assignments.flatten.uniq.length == fork.to.length
-        end
-      end
-
-      def validate_success_routes!(nodes, finish_name)
+      def validate_success_routes!(nodes, finish_name, edges, forks, joins)
         nodes.each_key do |name|
           next if name == finish_name
-          next if graph_edges_value.any? { |edge| edge.from == name }
-          next if graph_forks_value.any? { |fork| fork.from == name }
-          next if graph_joins_value.any? { |join| join.from.include?(name) }
+          next if edges.any? { |edge| edge.from == name }
+          next if forks.any? { |fork| fork.from == name }
+          next if joins.any? { |join| join.from.include?(name) }
 
           raise ConfigurationError, "graph node #{name.inspect} has no successful outgoing route"
         end
@@ -401,12 +522,12 @@ module LittleGhost
         false
       end
 
-      def validate_reachability!(nodes, start_name, finish_name)
+      def validate_reachability!(nodes, start_name, finish_name, edges, forks, joins)
         adjacency = Hash.new { |hash, key| hash[key] = [] }
-        graph_edges_value.each { |edge| adjacency[edge.from] << edge.to }
+        edges.each { |edge| adjacency[edge.from] << edge.to }
         graph_error_edges_value.each { |edge| adjacency[edge.from] << edge.to }
-        graph_forks_value.each { |fork| adjacency[fork.from].concat(fork.to) }
-        graph_joins_value.each { |join| join.from.each { |source| adjacency[source] << join.to } }
+        forks.each { |fork| adjacency[fork.from].concat(fork.to) }
+        joins.each { |join| join.from.each { |source| adjacency[source] << join.to } }
         reachable = Set.new
         queue = [start_name]
         until queue.empty?
@@ -427,6 +548,23 @@ module LittleGhost
         value
       rescue NoMethodError
         raise ArgumentError, "graph node name must be a String or Symbol"
+      end
+
+      def normalize_endpoint(value, label)
+        return normalize_node_name(value) unless value.is_a?(Array)
+
+        names = value.map { |name| normalize_node_name(name) }
+        raise ArgumentError, "#{label} array requires at least two nodes" if names.length < 2
+        raise ArgumentError, "#{label} nodes must be unique" unless names.uniq == names
+
+        names.freeze
+      end
+
+      def normalize_max_concurrency(value)
+        value = Integer(value)
+        raise ArgumentError, "max_concurrency must be at least 1" if value < 1
+
+        value
       end
 
       def mermaid_id(name) = "n_#{name.to_s.gsub(/[^a-zA-Z0-9_]/, "_")}"
@@ -471,7 +609,7 @@ module LittleGhost
       error_emitted = false
       Enumerator.new do |events|
         definition = self.class.graph_definition!
-        nodes, edges, error_edges, forks, _joins, current, finish = definition
+        nodes, edges, error_edges, forks, joins, current, finish = definition
         results = {}
         steps = []
         previous = nil
@@ -486,13 +624,13 @@ module LittleGhost
             input: original_input, history: original_history, context: original_context,
             step: count, current:, previous:, results:,
             predecessors: join_context&.fetch(:predecessors, []),
-            branch_results: join_context&.fetch(:results, {}) || {},
+            incoming_results: join_context&.fetch(:results, {}) || {},
             error: routed_error
           )
           node_input = if join_context
-            join_input_for(state, join_context.fetch(:join))
+            join_input_for(state, join_context.fetch(:join), nodes.fetch(current))
           else
-            node_input_for(state, incoming_edge)
+            node_input_for(state, incoming_edge, nodes.fetch(current))
           end
           terminal = current == finish
           begin
@@ -517,7 +655,10 @@ module LittleGhost
             )
             steps << failed
             previous_step_id = failed.id
-            incoming_edge = Edge.new(from: current, to: route.to, condition: nil, input_mapper: route.input_mapper)
+            incoming_edge = Edge.new(
+              from: current, to: route.to, condition: nil,
+              input_mapper: route.input_mapper, max_concurrency: nil
+            )
             events << transition_event(count, current, route.to, error: true)
             previous = current
             current = route.to
@@ -540,9 +681,17 @@ module LittleGhost
             break
           end
 
-          fork = forks.find { |declaration| declaration.from == current }
-          if fork
-            join = self.class.send(:matching_join_for, fork)
+          state = routing_state(
+            input: original_input, history: original_history, context: original_context,
+            step: count, current:, previous:, results:
+          )
+          selected = select_edge(
+            edges.select { |edge| edge.from == current } + forks.select { |fork| fork.from == current },
+            state
+          )
+          if selected.is_a?(Fork)
+            fork = selected
+            join = joins.find { |candidate| candidate.fork == fork }
             events << StreamEvent.build(
               :assembly_fork,
               assembly_id: self.class.assembly_id,
@@ -558,7 +707,7 @@ module LittleGhost
               template_locals:, template_paths:, parent_operation_id:, events:
             )
             unless join.from.sort == branch_outputs.map(&:terminal).sort
-              raise AssemblyRoutingError, "graph fork at #{current.inspect} did not reach its declared join"
+              raise AssemblyRoutingError, "graph fan-out at #{current.inspect} did not reach its inferred fan-in"
             end
 
             branch_outputs.each do |branch|
@@ -574,7 +723,7 @@ module LittleGhost
               from: join.from,
               to: join.to
             )
-            previous = current
+            previous = nil
             current = join.to
             incoming_edge = nil
             join_context = {
@@ -587,11 +736,6 @@ module LittleGhost
             next
           end
 
-          state = routing_state(
-            input: original_input, history: original_history, context: original_context,
-            step: count, current:, previous:, results:
-          )
-          selected = select_edge(edges.select { |edge| edge.from == current }, state)
           events << transition_event(count, current, selected.to)
           previous = current
           current = selected.to
@@ -706,7 +850,10 @@ module LittleGhost
       parent_operation_id:, event_consumer:)
       current = start
       previous = source
-      incoming_edge = nil
+      incoming_edge = Edge.new(
+        from: source, to: start, condition: nil,
+        input_mapper: join.fork.input_mappers.fetch(start), max_concurrency: nil
+      )
       local_results = {}
       local_steps = []
       local_usage = Usage.new
@@ -725,7 +872,7 @@ module LittleGhost
         )
         begin
           execution = execute_graph_node(
-            node: nodes.fetch(current), input: node_input_for(state, incoming_edge),
+            node: nodes.fetch(current), input: node_input_for(state, incoming_edge, nodes.fetch(current)),
             history: original_history, context: original_context, cancellation_token:,
             deadline:, settings:, template_locals:, template_paths:, parent_operation_id:,
             predecessor_ids: Array(previous_step_id),
@@ -748,7 +895,10 @@ module LittleGhost
           previous_step_id = failed.id
           previous = current
           current = route.to
-          incoming_edge = Edge.new(from: previous, to: current, condition: nil, input_mapper: route.input_mapper)
+          incoming_edge = Edge.new(
+            from: previous, to: current, condition: nil,
+            input_mapper: route.input_mapper, max_concurrency: nil
+          )
           routed_error = error
           next
         end
@@ -803,31 +953,36 @@ module LittleGhost
       end
     end
 
-    def node_input_for(state, incoming_edge)
-      return state.input unless state.previous
+    def node_input_for(state, incoming_edge, node)
       return incoming_edge.input_mapper.call(state) if incoming_edge&.input_mapper
+      return node.input_mapper.call(state) if node.input_mapper
+      return state.input unless state.previous
 
       result = state.previous_result
       if state.error && !result
-        return Message.new(
-          role: :user,
-          content: state.input.content + [Content::Text.new(text: "\n\n#{state.previous} failed: #{state.error.class.name}")]
-        )
+        return contextual_input(state, {state.previous => "Failed with #{state.error.class.name}."})
       end
-      label = state.previous.to_s.tr("_", " ")
-      Message.new(
-        role: :user,
-        content: state.input.content + [Content::Text.new(text: "\n\n#{label} output:\n#{output_text(result.output)}")]
+      contextual_input(state, {state.previous => result.output})
+    end
+
+    def join_input_for(state, join, node)
+      return join.input_mapper.call(state) if join.input_mapper
+      return node.input_mapper.call(state) if node.input_mapper
+
+      contextual_input(
+        state,
+        join.from.to_h { |name| [name, state.incoming_results.fetch(name).output] }
       )
     end
 
-    def join_input_for(state, join)
-      return join.input_mapper.call(state) if join.input_mapper
-
-      additions = join.from.map do |name|
-        "\n\n#{name.to_s.tr("_", " ")} output:\n#{output_text(state.branch_results.fetch(name).output)}"
-      end.join
-      Message.new(role: :user, content: state.input.content + [Content::Text.new(text: additions)])
+    def contextual_input(state, values)
+      content = [Content::Text.new(text: "Original Task:\n")]
+      content.concat(state.input.content)
+      content << Content::Text.new(text: "\n\nInputs from previous nodes:")
+      values.each do |name, value|
+        content << Content::Text.new(text: "\n\nFrom #{name}:\n#{output_text(value)}")
+      end
+      Message.new(role: :user, content:, metadata: state.input.metadata)
     end
 
     def output_text(output)
@@ -913,32 +1068,23 @@ module LittleGhost
     end
 
     def routing_state(input:, history:, context:, step:, current:, previous:, results:,
-      predecessors: [], branch_results: {}, error: nil)
-      immutable_results = results.to_h { |name, result| [name, immutable_result(result)] }
-      immutable_branches = branch_results.to_h { |name, result| [name, immutable_result(result)] }
-      State.new(
-        input:, history:, context:, step:, current:, previous:,
-        predecessors:, results: immutable_results,
-        branch_results: immutable_branches, error:
-      )
-    end
-
-    def immutable_result(result)
-      structured = result.structured_result
-      if structured
-        structured = StructuredResult.new(
-          schema_name: structured.schema_name,
-          value: frozen_state(structured.value)
-        )
+      predecessors: [], incoming_results: {}, error: nil)
+      predecessors ||= []
+      incoming_results ||= {}
+      if previous && predecessors.empty?
+        predecessors = [previous]
+        incoming_results = {previous => results.fetch(previous)} if results.key?(previous)
       end
-      RunResult.new(
-        message: result.message,
-        stop_reason: result.stop_reason,
-        usage: result.usage,
-        messages: result.messages.dup.freeze,
-        state: frozen_state(result.state),
-        structured_result: structured,
-        steps: result.steps
+      immutable_results = results.to_h { |name, result| [name, AgentStreamSnapshot.copy(result)] }
+      immutable_incoming = incoming_results.to_h { |name, result| [name, AgentStreamSnapshot.copy(result)] }
+      State.new(
+        input: AgentStreamSnapshot.message(input),
+        history: AgentStreamSnapshot.copy(history),
+        context: AgentStreamSnapshot.copy(context),
+        step:, current:, previous:,
+        predecessors:, results: immutable_results,
+        incoming_results: immutable_incoming,
+        error: error && AgentStreamSnapshot.copy(error)
       )
     end
   end

@@ -77,8 +77,8 @@ class GraphTest < Minitest::Test
     assert_equal "request", classifier.calls.first.first.text
     assert_empty classifier.calls.first.last.fetch(:history)
     assert_empty classifier.calls.first.last.fetch(:context)
-    assert_includes refund.calls.first.first.text, "classify output:\nrefund"
-    assert_includes answer.calls.first.first.text, "refund output:\napproved"
+    assert_includes refund.calls.first.first.text, "From classify:\nrefund"
+    assert_includes answer.calls.first.first.text, "From refund:\napproved"
     refute events.any? { |event| event.type == :text_delta && event.data[:text] == "refund" }
     refute events.any? { |event| event.type == :text_delta && event.data[:text] == "approved" }
     assert classifier.closed?
@@ -223,8 +223,8 @@ class GraphTest < Minitest::Test
       node :verify, :verify
       node :answer, :answer
       start :plan
-      fork :plan, to: [:research, :verify], max_concurrency: 2
-      join [:research, :verify], to: :answer
+      edge :plan, [:research, :verify], max_concurrency: 2
+      edge [:research, :verify], :answer
       finish :answer
     end
     plan = FakeAssembly.new(result("plan", input_tokens: 1))
@@ -240,16 +240,29 @@ class GraphTest < Minitest::Test
     assert_includes events.map(&:type), :assembly_join
     assert_equal %w[plan research verify answer], final.steps.map(&:participant)
     assert_equal 10, final.usage.input_tokens
-    assert_includes research.calls.first.first.text, "request"
-    assert_includes research.calls.first.first.text, "plan output:\nplan"
-    assert_includes verify.calls.first.first.text, "request"
-    assert_includes verify.calls.first.first.text, "plan output:\nplan"
+    assert_equal <<~TEXT.chomp, research.calls.first.first.text
+      Original Task:
+      request
+
+      Inputs from previous nodes:
+
+      From plan:
+      plan
+    TEXT
+    assert_equal research.calls.first.first.text, verify.calls.first.first.text
     answer_input = answer.calls.first.first.text
-    assert_includes answer_input, "request"
-    assert_includes answer_input, "research output:\nfacts"
-    assert_includes answer_input, "verify output:\nchecked"
-    assert_operator answer_input.index("research output:"), :<, answer_input.index("verify output:")
-    refute_includes answer_input, "plan output:"
+    assert_equal <<~TEXT.chomp, answer_input
+      Original Task:
+      request
+
+      Inputs from previous nodes:
+
+      From research:
+      facts
+
+      From verify:
+      checked
+    TEXT
 
     steps = final.steps.to_h { |step| [step.participant, step] }
     assert_equal [steps.fetch("plan").id], steps.fetch("research").predecessor_ids
@@ -260,18 +273,17 @@ class GraphTest < Minitest::Test
     )
   end
 
-  def test_join_input_mapper_replaces_the_default_input
+  def test_fan_in_input_mapper_replaces_the_default_input
     graph_class = Class.new(LittleGhost::Graph) do
       node :plan, :plan
       node :research, :research
       node :verify, :verify
       node :answer, :answer
       start :plan
-      fork :plan, to: [:research, :verify]
-      join(
-        [:research, :verify],
-        to: :answer,
-        input: ->(state) { "#{state.branch_results.fetch(:research).output} + #{state.branch_results.fetch(:verify).output}" }
+      edge :plan, [:research, :verify]
+      edge(
+        [:research, :verify], :answer,
+        input: ->(state) { "#{state.incoming_results.fetch(:research).output} + #{state.incoming_results.fetch(:verify).output}" }
       )
       finish :answer
     end
@@ -288,6 +300,374 @@ class GraphTest < Minitest::Test
     assert_equal "facts + checked", answer.calls.first.first
   end
 
+  def test_infers_fan_out_and_fan_in_from_scalar_edges
+    graph_class = Class.new(LittleGhost::Graph) do
+      node :plan, :plan
+      node :research, :research
+      node :verify, :verify
+      node :answer, :answer
+      start :plan
+      edge :plan, :research
+      edge :plan, :verify
+      edge :research, :answer
+      edge :verify, :answer
+      finish :answer
+    end
+    answer = FakeAssembly.new(result("done"))
+    runtime = Runtime.new(
+      plan: [FakeAssembly.new(result("plan"))],
+      research: [FakeAssembly.new(result("facts"))],
+      verify: [FakeAssembly.new(result("checked"))],
+      answer: [answer]
+    )
+
+    events = graph_class.new(run: Run.new(runtime), runtime:).stream("request").to_a
+
+    assert_includes events.map(&:type), :assembly_fork
+    assert_includes events.map(&:type), :assembly_join
+    assert_includes answer.calls.first.first.text, "From research:\nfacts"
+    assert_includes answer.calls.first.first.text, "From verify:\nchecked"
+  end
+
+  def test_infers_fan_in_after_uneven_branch_paths
+    graph_class = Class.new(LittleGhost::Graph) do
+      node :plan, :plan
+      node :research, :research
+      node :edit, :edit
+      node :verify, :verify
+      node :answer, :answer
+      start :plan
+      edge :plan, :research
+      edge :plan, :verify
+      edge :research, :edit
+      edge :edit, :answer
+      edge :verify, :answer
+      finish :answer
+    end
+    answer = FakeAssembly.new(result("done"))
+    runtime = Runtime.new(
+      plan: [FakeAssembly.new(result("plan"))],
+      research: [FakeAssembly.new(result("facts"))],
+      edit: [FakeAssembly.new(result("edited"))],
+      verify: [FakeAssembly.new(result("checked"))],
+      answer: [answer]
+    )
+
+    graph_class.new(run: Run.new(runtime), runtime:).stream("request").to_a
+
+    assert_includes answer.calls.first.first.text, "From edit:\nedited"
+    assert_includes answer.calls.first.first.text, "From verify:\nchecked"
+  end
+
+  def test_node_mapper_receives_immediate_results_and_edge_mapper_takes_precedence
+    observed = []
+    graph_class = Class.new(LittleGhost::Graph) do
+      node :first, :first
+      node :last, :last, input: lambda { |state|
+        observed << [state.previous, state.predecessors, state.incoming_results.keys]
+        "node mapped"
+      }
+      start :first
+      edge :first, :last, input: ->(_state) { "edge mapped" }
+      finish :last
+    end
+    last = FakeAssembly.new(result("done"))
+    runtime = Runtime.new(first: [FakeAssembly.new(result("evidence"))], last: [last])
+
+    graph_class.new(run: Run.new(runtime), runtime:).stream("request").to_a
+
+    assert_equal "edge mapped", last.calls.first.first
+    assert_empty observed
+
+    node_mapped = Class.new(LittleGhost::Graph) do
+      node :first, :first
+      node :last, :last, input: lambda { |state|
+        observed << [state.previous, state.predecessors, state.incoming_results.keys]
+        "node mapped"
+      }
+      start :first
+      edge :first, :last
+      finish :last
+    end
+    last = FakeAssembly.new(result("done"))
+    runtime = Runtime.new(first: [FakeAssembly.new(result("evidence"))], last: [last])
+
+    node_mapped.new(run: Run.new(runtime), runtime:).stream("request").to_a
+
+    assert_equal "node mapped", last.calls.first.first
+    assert_equal [[:first, [:first], [:first]]], observed
+  end
+
+  def test_inferred_fan_out_keeps_each_edge_input_mapper
+    graph_class = Class.new(LittleGhost::Graph) do
+      node :plan, :plan
+      node :research, :research
+      node :verify, :verify
+      node :answer, :answer
+      start :plan
+      edge :plan, :research, input: ->(state) { "research: #{state.previous_result.output}" }
+      edge :plan, :verify, input: ->(state) { "verify: #{state.previous_result.output}" }
+      edge [:research, :verify], :answer
+      finish :answer
+    end
+    research = FakeAssembly.new(result("facts"))
+    verify = FakeAssembly.new(result("checked"))
+    runtime = Runtime.new(
+      plan: [FakeAssembly.new(result("plan"))], research: [research], verify: [verify],
+      answer: [FakeAssembly.new(result("done"))]
+    )
+
+    graph_class.new(run: Run.new(runtime), runtime:).stream("request").to_a
+
+    assert_equal "research: plan", research.calls.first.first
+    assert_equal "verify: plan", verify.calls.first.first
+  end
+
+  def test_fan_in_node_mapper_receives_all_immediate_results
+    observed = nil
+    graph_class = Class.new(LittleGhost::Graph) do
+      node :plan, :plan
+      node :research, :research
+      node :verify, :verify
+      node :answer, :answer, input: lambda { |state|
+        observed = [state.previous, state.predecessors, state.incoming_results.transform_values(&:output)]
+        "mapped fan-in"
+      }
+      start :plan
+      edge :plan, :research
+      edge :plan, :verify
+      edge :research, :answer
+      edge :verify, :answer
+      finish :answer
+    end
+    answer = FakeAssembly.new(result("done"))
+    runtime = Runtime.new(
+      plan: [FakeAssembly.new(result("plan"))],
+      research: [FakeAssembly.new(result("facts"))],
+      verify: [FakeAssembly.new(result("checked"))],
+      answer: [answer]
+    )
+
+    graph_class.new(run: Run.new(runtime), runtime:).stream("request").to_a
+
+    assert_equal "mapped fan-in", answer.calls.first.first
+    assert_nil observed.fetch(0)
+    assert_equal [:research, :verify], observed.fetch(1)
+    assert_equal({research: "facts", verify: "checked"}, observed.fetch(2))
+  end
+
+  def test_default_input_preserves_original_content_blocks_and_metadata
+    graph_class = Class.new(LittleGhost::Graph) do
+      node :first, :first
+      node :last, :last
+      start :first
+      edge :first, :last
+      finish :last
+    end
+    image = LittleGhost::Content::Image.new(data: "image", media_type: "image/png")
+    input = LittleGhost::Message.new(
+      role: :user,
+      content: [LittleGhost::Content::Text.new(text: "request"), image],
+      metadata: {request_id: "one"}
+    )
+    last = FakeAssembly.new(result("done"))
+    runtime = Runtime.new(first: [FakeAssembly.new(result("evidence"))], last: [last])
+
+    graph_class.new(run: Run.new(runtime), runtime:).stream(input).to_a
+
+    routed = last.calls.first.first
+    assert_equal image, routed.content.fetch(2)
+    refute_same image, routed.content.fetch(2)
+    assert_equal "one", routed.metadata[:request_id]
+    assert_equal "Original Task:\nrequest\n\nInputs from previous nodes:\n\nFrom first:\nevidence", routed.text
+  end
+
+  def test_parallel_mapper_state_is_detached_and_deeply_immutable
+    mutation_errors = Queue.new
+    observations = Queue.new
+    graph_class = Class.new(LittleGhost::Graph) do
+      node :plan, :plan
+      node :research, :research
+      node :verify, :verify
+      node :answer, :answer
+      start :plan
+      edge :plan, :research, input: lambda { |state|
+        [
+          -> { state.input.content.first.text.replace("changed") },
+          -> { state.input.metadata[:nested] << "changed" },
+          -> { state.previous_result.message.content.first.text.replace("changed") }
+        ].each do |mutation|
+          mutation.call
+        rescue => error
+          mutation_errors << error.class
+        end
+        "research"
+      }
+      edge :plan, :verify, input: lambda { |state|
+        observations << [state.input.text, state.input.metadata[:nested], state.previous_result.text]
+        "verify"
+      }
+      edge [:research, :verify], :answer
+      finish :answer
+    end
+    request_text = +"request"
+    metadata = {nested: ["original"]}
+    input = LittleGhost::Message.new(role: :user, content: request_text, metadata:)
+    plan_text = +"plan"
+    plan_result = result(plan_text)
+    runtime = Runtime.new(
+      plan: [FakeAssembly.new(plan_result)],
+      research: [FakeAssembly.new(result("facts"))],
+      verify: [FakeAssembly.new(result("checked"))],
+      answer: [FakeAssembly.new(result("done"))]
+    )
+
+    graph_class.new(run: Run.new(runtime), runtime:).stream(input).to_a
+
+    assert_equal [FrozenError, FrozenError, FrozenError], 3.times.map { mutation_errors.pop }
+    assert_equal ["request", ["original"], "plan"], observations.pop
+    assert_equal "request", input.text
+    assert_equal ["original"], input.metadata[:nested]
+    assert_equal "plan", plan_result.text
+  end
+
+  def test_graph_and_group_concurrency_defaults_compile_into_fan_outs
+    graph_class = Class.new(LittleGhost::Graph) do
+      max_concurrency 3
+      node :plan, :plan
+      node :research, :research
+      node :verify, :verify
+      node :answer, :answer
+      start :plan
+      edge :plan, [:research, :verify], max_concurrency: 1
+      edge [:research, :verify], :answer
+      finish :answer
+    end
+
+    fork = graph_class.graph_definition!.fetch(3).first
+
+    assert_equal 1, fork.max_concurrency
+    assert_equal 3, graph_class.max_concurrency
+  end
+
+  def test_conditional_group_is_one_exclusive_route_with_a_scalar_fallback
+    graph_class = Class.new(LittleGhost::Graph) do
+      node :plan, :plan
+      node :research, :research
+      node :verify, :verify
+      node :answer, :answer
+      start :plan
+      edge :plan, [:research, :verify], if: ->(state) { state.result(:plan).output == "parallel" }
+      edge :plan, :answer
+      edge [:research, :verify], :answer
+      finish :answer
+    end
+    answer = FakeAssembly.new(result("done"))
+    runtime = Runtime.new(plan: [FakeAssembly.new(result("direct"))], answer: [answer])
+
+    events = graph_class.new(run: Run.new(runtime), runtime:).stream("request").to_a
+
+    refute_includes events.map(&:type), :assembly_fork
+    assert_equal %i[assembly_step_start assembly_step_stop assembly_transition assembly_step_start assembly_step_stop
+      text_delta invocation_stop], events.map(&:type)
+    assert_includes answer.calls.first.first.text, "From plan:\ndirect"
+  end
+
+  def test_inferred_fan_in_edges_remain_available_to_non_parallel_routes
+    graph_class = Class.new(LittleGhost::Graph) do
+      node :start_node, :start_node
+      node :parallel, :parallel
+      node :other, :other
+      node :left, :left
+      node :right, :right
+      node :done, :done
+      start :start_node
+      edge :start_node, :parallel, if: ->(state) { state.result(:start_node).output == "parallel" }
+      edge :start_node, :other
+      edge :parallel, :left
+      edge :parallel, :right
+      edge :left, :done
+      edge :right, :done
+      edge :other, :left
+      finish :done
+    end
+    done = FakeAssembly.new(result("finished"))
+    runtime = Runtime.new(
+      start_node: [FakeAssembly.new(result("direct"))],
+      other: [FakeAssembly.new(result("other"))],
+      left: [FakeAssembly.new(result("left"))],
+      done: [done]
+    )
+
+    events = graph_class.new(run: Run.new(runtime), runtime:).stream("request").to_a
+
+    refute_includes events.map(&:type), :assembly_fork
+    assert_includes done.calls.first.first.text, "From left:\nleft"
+  end
+
+  def test_rejects_input_mappers_on_scalar_edges_consumed_by_inferred_fan_in
+    graph_class = Class.new(LittleGhost::Graph) do
+      node :plan, :plan
+      node :research, :research
+      node :verify, :verify
+      node :answer, :answer
+      start :plan
+      edge :plan, :research
+      edge :plan, :verify
+      edge :research, :answer, input: ->(_state) { "research" }
+      edge :verify, :answer
+      finish :answer
+    end
+
+    error = assert_raises(LittleGhost::ConfigurationError) { graph_class.validate! }
+
+    assert_includes error.message, "target node"
+    assert_includes error.message, "array-source edge"
+  end
+
+  def test_rejects_conditional_edges_consumed_by_inferred_fan_in
+    graph_class = Class.new(LittleGhost::Graph) do
+      node :plan, :plan
+      node :left, :left
+      node :right, :right
+      node :done, :done
+      start :plan
+      edge :plan, :left
+      edge :plan, :right
+      edge :left, :done, if: ->(_state) { false }
+      edge :right, :done
+      finish :done
+    end
+
+    error = assert_raises(LittleGhost::ConfigurationError) { graph_class.validate! }
+
+    assert_includes error.message, "conditional incoming edges"
+    assert_includes error.message, "before its fan-in predecessor"
+  end
+
+  def test_rejects_inferred_fan_in_when_a_predecessor_has_an_alternate_route
+    graph_class = Class.new(LittleGhost::Graph) do
+      node :plan, :plan
+      node :left, :left
+      node :right, :right
+      node :detour, :detour
+      node :done, :done
+      start :plan
+      edge :plan, :left
+      edge :plan, :right
+      edge :left, :detour, if: ->(_state) { true }
+      edge :left, :done
+      edge :detour, :detour
+      edge :right, :done
+      finish :done
+    end
+
+    error = assert_raises(LittleGhost::ConfigurationError) { graph_class.validate! }
+
+    assert_includes error.message, "another successful route"
+    assert_includes error.message, "route the branch"
+  end
+
   def test_max_steps_is_shared_across_parallel_branches
     graph_class = Class.new(LittleGhost::Graph) do
       node :plan, :plan
@@ -295,8 +675,8 @@ class GraphTest < Minitest::Test
       node :verify, :verify
       node :answer, :answer
       start :plan
-      fork :plan, to: [:research, :verify], max_concurrency: 2
-      join [:research, :verify], to: :answer
+      edge :plan, [:research, :verify], max_concurrency: 2
+      edge [:research, :verify], :answer
       finish :answer
       max_steps 2
     end
@@ -362,7 +742,7 @@ class GraphTest < Minitest::Test
     refute_includes fallback.calls.first.first.text, "secret failure detail"
   end
 
-  def test_fork_branches_follow_edges_to_their_join_sources
+  def test_fan_out_branches_follow_edges_to_their_fan_in_sources
     graph_class = Class.new(LittleGhost::Graph) do
       node :plan, :plan
       node :research_start, :research_start
@@ -371,10 +751,10 @@ class GraphTest < Minitest::Test
       node :verify_done, :verify_done
       node :answer, :answer
       start :plan
-      fork :plan, to: [:research_start, :verify_start]
+      edge :plan, [:research_start, :verify_start]
       edge :research_start, :research_done
       edge :verify_start, :verify_done
-      join [:research_done, :verify_done], to: :answer
+      edge [:research_done, :verify_done], :answer
       finish :answer
     end
     runtime = Runtime.new(
@@ -408,14 +788,14 @@ class GraphTest < Minitest::Test
     assert_includes error.message, "retry_on"
   end
 
-  def test_rejects_orphan_ambiguous_and_nested_joins
+  def test_rejects_orphan_ambiguous_and_nested_fan_ins
     orphan = Class.new(LittleGhost::Graph) do
       node :first, :first
       node :second, :second
       node :last, :last
       start :first
       edge :first, :second
-      join [:first, :second], to: :last
+      edge [:first, :second], :last
       finish :last
     end
     assert_raises(LittleGhost::ConfigurationError) { orphan.validate! }
@@ -427,9 +807,9 @@ class GraphTest < Minitest::Test
       node :first_join, :first_join
       node :second_join, :second_join
       start :start
-      fork :start, to: [:left, :right]
-      join [:left, :right], to: :first_join
-      join [:left, :right], to: :second_join
+      edge :start, [:left, :right]
+      edge [:left, :right], :first_join
+      edge [:left, :right], :second_join
       finish :first_join
     end
     assert_raises(LittleGhost::ConfigurationError) { ambiguous.validate! }
@@ -444,11 +824,11 @@ class GraphTest < Minitest::Test
       node :left_done, :left_done
       node :done, :done
       start :start
-      fork :start, to: [:left, :right]
+      edge :start, [:left, :right]
       edge :left, :nested
-      fork :nested, to: [:nested_left, :nested_right]
-      join [:nested_left, :nested_right], to: :left_done
-      join [:left_done, :right], to: :done
+      edge :nested, [:nested_left, :nested_right]
+      edge [:nested_left, :nested_right], :left_done
+      edge [:left_done, :right], :done
       finish :done
     end
     assert_raises(LittleGhost::ConfigurationError) { nested.validate! }
@@ -481,8 +861,8 @@ class GraphTest < Minitest::Test
       node :answer, :answer
       node :fallback, :fallback
       start :plan
-      fork :plan, to: [:research, :verify]
-      join [:research, :verify], to: :answer
+      edge :plan, [:research, :verify]
+      edge [:research, :verify], :answer
       error_edge :research, :fallback, on: [RuntimeError]
       edge :fallback, :research
       finish :answer
