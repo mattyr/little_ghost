@@ -16,7 +16,7 @@ module LittleGhost
       attr_reader :effective_policy
 
       def writable?
-        capabilities.supports?(:filesystem_write) && effective_policy.effective_mounts(workspace).any?(&:writable?)
+        capabilities.supports?(:filesystem_write) && effective_policy.process_grants(workspace).any?(&:writable?)
       end
 
       def read(path, context: nil) = default_scope.read(path, context:)
@@ -34,19 +34,17 @@ module LittleGhost
         return configured if configured.network
 
         Policy.new(
-          workspace_path: configured.workspace_path,
-          workspace_access: configured.workspace_access,
+          files: configured.files,
+          runtime_paths: configured.runtime_paths,
           root_filesystem: configured.root_filesystem,
-          mounts: configured.mounts,
           environment: configured.environment,
-          network: :none,
-          execution_scope: configured.execution_scope
+          network: :none
         )
       end
 
       def execution_environment(additional, inherit_environment)
         inherit = effective_policy.environment.inherit? && inherit_environment
-        [effective_policy.environment.to_h.merge(string_environment(additional)), inherit]
+        [workspace.environment.merge(effective_policy.environment.to_h).merge(string_environment(additional)), inherit]
       end
 
       def string_environment(environment)
@@ -56,7 +54,7 @@ module LittleGhost
       def execution_mounts(selected_scope)
         selected_scope&.validate!
         validate_mount_identities!
-        mounts = selected_scope ? selected_scope.mounts : effective_mounts
+        mounts = selected_scope ? selected_scope.process_grants : effective_mounts
         protect_execution_mounts(mounts)
       end
 
@@ -109,7 +107,7 @@ module LittleGhost
         raise PolicyError, "sandbox mount source changed after opening"
       end
 
-      def effective_mounts = effective_policy.effective_mounts(workspace)
+      def effective_mounts = effective_policy.process_grants(workspace)
 
       def canonical_mount_root(mount)
         @mount_identities.fetch(mount).first
@@ -133,7 +131,12 @@ module LittleGhost
           when :envoy
             Network::EnvoyGateway.new(policy: effective_policy.network, transport:, **defaults.merge(values))
           when :external
-            Network::ExternalGateway.new(policy: effective_policy.network, **values)
+            requested_paths = Array(values[:runtime_paths]).map(&:to_sym)
+            missing_paths = requested_paths - effective_policy.runtime_paths.keys
+            unless missing_paths.empty?
+              raise PolicyError, "external gateway runtime paths are not process grants: #{missing_paths.join(", ")}"
+            end
+            Network::ExternalGateway.new(policy: effective_policy.network, workspace:, **values)
           else
             raise PolicyError, "unknown network gateway provider: #{provider.inspect}"
           end

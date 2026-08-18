@@ -49,7 +49,9 @@ class RDoc::Generator::LittleGhost < RDoc::Generator::Aliki
     "docs/guides/core_concepts.md" => "core_concepts.html",
     "docs/guides/assemblies.md" => "assemblies.html",
     "docs/guides/prompt_views.md" => "prompt_views.html",
+    "docs/guides/tools.md" => "tools.html",
     "docs/guides/sandboxing.md" => "sandboxing.html",
+    "docs/guides/code_mode.md" => "code_mode.html",
     "docs/guides/production.md" => "production.html"
   }.freeze
   GUIDE_TITLES = {
@@ -57,15 +59,25 @@ class RDoc::Generator::LittleGhost < RDoc::Generator::Aliki
     "docs/guides/core_concepts.md" => "Core Concepts",
     "docs/guides/assemblies.md" => "Compose Agents",
     "docs/guides/prompt_views.md" => "Prompts as Views",
-    "docs/guides/sandboxing.md" => "Workspaces, Sandboxes, and Tools",
+    "docs/guides/tools.md" => "Tools",
+    "docs/guides/sandboxing.md" => "Workspaces and Sandboxes",
+    "docs/guides/code_mode.md" => "Code Mode",
     "docs/guides/production.md" => "Running in Production"
+  }.freeze
+  GUIDE_SECTIONS = {
+    "Learn" => %w[docs/guides/getting_started.md docs/guides/core_concepts.md],
+    "Build with agents" => %w[docs/guides/assemblies.md docs/guides/prompt_views.md],
+    "Capabilities and isolation" => %w[docs/guides/tools.md docs/guides/sandboxing.md docs/guides/code_mode.md],
+    "Operate" => %w[docs/guides/production.md]
   }.freeze
   LEGACY_GUIDE_LINKS = {
     %r{(?:docs/guides/)?getting_started_md\.html} => "getting_started.html",
     %r{(?:docs/guides/)?prompt_views_md\.html} => "prompt_views.html",
     %r{(?:docs/guides/)?core_concepts_md\.html} => "core_concepts.html",
     %r{(?:docs/guides/)?assemblies_md\.html} => "assemblies.html",
+    %r{(?:docs/guides/)?tools_md\.html} => "tools.html",
     %r{(?:docs/guides/)?sandboxing_md\.html} => "sandboxing.html",
+    %r{(?:docs/guides/)?code_mode_md\.html} => "code_mode.html",
     %r{(?:docs/guides/)?production_md\.html} => "production.html"
   }.freeze
   ALIKI_TEMPLATE = Pathname.new(
@@ -181,7 +193,9 @@ class LittleGhostSiteChecker
     "docs/prompt_views.html",
     "docs/core_concepts.html",
     "docs/assemblies.html",
+    "docs/tools.html",
     "docs/sandboxing.html",
+    "docs/code_mode.html",
     "docs/production.html"
   ].freeze
   LANDING_NAVIGATION_LABELS = %w[Docs GitHub].freeze
@@ -191,7 +205,9 @@ class LittleGhostSiteChecker
     "Core Concepts",
     "Compose Agents",
     "Prompts as Views",
-    "Workspaces, Sandboxes, and Tools",
+    "Tools",
+    "Workspaces and Sandboxes",
+    "Code Mode",
     "Running in Production"
   ].freeze
   ESSENTIAL_API_LABELS = %w[Agent Tool Run Assembly Workflow Swarm Graph].freeze
@@ -200,7 +216,7 @@ class LittleGhostSiteChecker
   NAVIGATION_LINK_PATTERN = /<a\b([^>]*)>(.*?)<\/a>/mi
   ATTRIBUTE_PATTERN = /\b(?:href|src)=["']([^"']+)["']/i
   ANCHOR_PATTERN = /\b(?:id|name)=["']([^"']+)["']/i
-  LEGACY_GUIDE_REFERENCE_PATTERN = /(?:Core%20Concepts|Getting%20Started|Prompts%20as%20Views|Compose%20Agents|Workspaces%2C%20Sandboxes%2C%20and%20Tools|Running%20in%20Production|_md\.html)/
+  LEGACY_GUIDE_REFERENCE_PATTERN = /(?:Core%20Concepts|Code%20Mode|Getting%20Started|Prompts%20as%20Views|Compose%20Agents|Workspaces%2C%20Sandboxes%2C%20and%20Tools|Running%20in%20Production|_md\.html)/
   MODIFIED_THEME_CREDIT = "using a modified version of the Aliki theme by"
 
   def initialize(root)
@@ -251,6 +267,18 @@ class LittleGhostSiteChecker
     errors << "Landing page is missing the single-agent demo" unless html.include?('id="first-agent"') && html.include?('data-demo="agent"')
     errors << "Landing page is missing the agent-graph demo" unless html.include?('id="agent-graph"') && html.include?('data-demo="graph"')
     errors << "Landing page is missing the batteries section" unless html.include?('id="batteries"')
+    unless html.include?("CustomerSupportAgent") && html.include?("SupportFlowGraph")
+      errors << "Landing page does not continue the documentation example journey"
+    end
+    unless html.include?("OpenRouter API key")
+      errors << "Landing page does not state the first demo's credential prerequisite"
+    end
+    if html.match?(/Docker backends|Move from bind mounts|direct_tools/)
+      errors << "Landing page contains obsolete sandbox or code-mode guidance"
+    end
+    unless html.include?("Seatbelt on macOS or Bubblewrap on Linux")
+      errors << "Landing page does not describe the native sandbox backend"
+    end
     check_version(page, html)
     check_navigation(page, html, LANDING_NAVIGATION_LABELS)
   end
@@ -271,6 +299,27 @@ class LittleGhostSiteChecker
       GUIDE_NAVIGATION_LABELS.each do |label|
         unless html.match?(/>\s*#{Regexp.escape(label)}\s*<\/a>/)
           errors << "#{page.relative_path_from(site_root)} is missing the #{label} guide navigation"
+        end
+      end
+      RDoc::Generator::LittleGhost::GUIDE_SECTIONS.each do |section, paths|
+        section_content = file_index&.match(
+          /<h2>\s*#{Regexp.escape(section)}\s*<\/h2>(.*?)(?=<h2>|\z)/m
+        )&.captures&.first
+        unless section_content
+          errors << "#{page.relative_path_from(site_root)} is missing the #{section} guide section"
+          next
+        end
+
+        expected_labels = paths.map { |path| RDoc::Generator::LittleGhost::GUIDE_TITLES.fetch(path) }
+        expected_labels.each do |label|
+          unless section_content.match?(/>\s*#{Regexp.escape(label)}\s*<\/a>/)
+            errors << "#{page.relative_path_from(site_root)} has #{label} outside the #{section} guide section"
+          end
+        end
+        (GUIDE_NAVIGATION_LABELS - expected_labels).each do |label|
+          if section_content.match?(/>\s*#{Regexp.escape(label)}\s*<\/a>/)
+            errors << "#{page.relative_path_from(site_root)} unexpectedly has #{label} in the #{section} guide section"
+          end
         end
       end
       guide_positions = GUIDE_NAVIGATION_LABELS.filter_map do |label|

@@ -44,12 +44,17 @@ require_relative "little_ghost/model_resolver"
 require_relative "little_ghost/run_context"
 require_relative "little_ghost/workspace"
 require_relative "little_ghost/sandbox"
+require_relative "little_ghost/sandbox/process_session"
 require_relative "little_ghost/sandboxes/unrestricted"
 require_relative "little_ghost/sandboxes/bubblewrap"
-require_relative "little_ghost/sandboxes/docker"
+require_relative "little_ghost/sandboxes/seatbelt"
+require_relative "little_ghost/sandboxes/native"
 require_relative "little_ghost/tool"
 require_relative "little_ghost/tool_execution"
 require_relative "little_ghost/tool_registry"
+require_relative "little_ghost/code_mode"
+require_relative "little_ghost/code_mode/ruby_engine"
+require_relative "little_ghost/code_mode/runtime"
 require_relative "little_ghost/structured_output"
 require_relative "little_ghost/prompt_resolver"
 require_relative "little_ghost/session_store"
@@ -75,9 +80,9 @@ require_relative "little_ghost/agent_factory"
 require_relative "little_ghost/runtime/hook"
 require_relative "little_ghost/runtime"
 
-# LittleGhost is a Ruby library for building AI features with reusable agents
-# and composable assemblies. It can sit inside an existing Ruby system or
-# support a dedicated AI service.
+# Build AI features as ordinary Ruby classes. An Agent owns one model
+# conversation. Larger units called Assemblies coordinate several Agents while
+# keeping the same +ask+ and +stream_ask+ entrypoints.
 #
 # Start with one model-driven behavior:
 #
@@ -92,15 +97,13 @@ require_relative "little_ghost/runtime"
 #   run.response
 #   # One possible response: Transfer 481 is waiting for the receiving bank.
 #
-# Agent subclasses hold reusable behavior, Invocation objects carry one request,
-# and Run objects own execution and cleanup. When one model loop is not enough,
-# Assembly gives Agent, Workflow, Swarm, and Graph the same caller interface
-# while each type owns a different coordination policy.
+# The class holds reusable behavior. Each call creates a Run, which records the
+# result and closes the resources opened for that request. Workflow, Swarm, and
+# Graph are Assembly types for coordinating more than one participant.
 #
-# LittleGhost.configuration is process-wide unless LittleGhost.with_configuration
-# supplies an execution-scoped replacement. The first standalone call lazily
-# builds one shared Runtime from that configuration, so make application changes
-# before invoking an Agent or Assembly.
+# Configure LittleGhost before the first call. The first standalone call builds
+# a shared Runtime from that configuration. +with_configuration+ can select an
+# independent configuration for one execution context.
 module LittleGhost
   class << self
     # The configuration active in the current execution context, falling back to

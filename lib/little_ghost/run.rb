@@ -12,13 +12,9 @@ module LittleGhost
   #   run.outcome    # => "completed"
   #   run.response   # => "Transfer 481 is waiting for the receiving bank."
   #
-  # The class-level ask helper[rdoc-ref:LittleGhost::Assembly.ask] and standalone
-  # ask method[rdoc-ref:LittleGhost::Assembly#ask] return the Run after work
-  # finishes. For a live interface, use the class-level streaming
-  # helper[rdoc-ref:LittleGhost::Assembly.stream_ask] or standalone streaming
-  # method[rdoc-ref:LittleGhost::Assembly#stream_ask]. The stream yields
-  # StreamEvent objects, and enumeration returns the same Run with its final
-  # outcome and response. A Run executes only once.
+  # +ask+ returns the Run after work finishes. +stream_ask+ yields StreamEvent
+  # objects as work happens, then returns the same finished Run. A Run executes
+  # only once.
   #
   #   stream = CustomerSupportAgent.stream_ask("Where is transfer 481?")
   #   run = stream.each do |event|
@@ -27,6 +23,8 @@ module LittleGhost
   #
   #   run.completed? # => true
   #   run.response
+  #
+  # == Outcomes
   #
   # Completion, failure, deadline, and cancellation become the +completed+,
   # +failed+, +partial+, and +cancelled+ outcomes. Ordinary execution failures
@@ -39,12 +37,16 @@ module LittleGhost
   # construction can raise before a Run exists. Once execution begins, terminal
   # events are +run_stop+, +run_error+, +run_partial+, and +run_cancel+.
   #
+  # == Owned resources
+  #
   # The Run opens its workspace, sandbox, Session, and Assembly entrypoint, then
   # closes registered resources in reverse order. +register+ adds application
   # resources to that lifecycle. Interjection is available only while one Agent
   # entrypoint is active.
   #
-  # A composite assembly stream observes every Agent that shares the Run. Each
+  # == Nested Agent events
+  #
+  # A composite Assembly stream observes every Agent that shares the Run. Each
   # +:agent_stream+ event carries an AgentStreamSource in +data[:source]+ and a
   # detached, deeply immutable snapshot of the Agent's StreamEvent in
   # +data[:event]+. An inner +:invocation_start+ also includes the routed Message

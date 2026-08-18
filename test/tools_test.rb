@@ -105,6 +105,6 @@ class ToolsTest < Minitest::Test
   end
 
   def writable_policy
-    {workspace_access: :read_write, network: :inherit}
+    {files: {root: :read_write}, network: :inherit}
   end
 end

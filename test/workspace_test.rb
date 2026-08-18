@@ -42,6 +42,51 @@ class WorkspaceTest < Minitest::Test
     assert_equal [[:setup, workspace, run], [:teardown, workspace, run]], events
   end
 
+  def test_resolves_and_formats_logical_paths_without_exposing_absolute_paths
+    Dir.mktmpdir do |root|
+      workspace = LittleGhost::Workspace.new(root:, paths: {skills: "skills"}).open
+
+      assert_equal File.join(root, "guide.md"), workspace.resolve("guide.md")
+      assert_equal File.join(root, "skills", "guide.md"), workspace.resolve("workspace://skills/guide.md")
+      assert_equal "workspace://skills/guide.md", workspace.reference(File.join(root, "skills", "guide.md"))
+      assert_raises(ArgumentError) { workspace.resolve(File.join(root, "guide.md")) }
+      assert_raises(ArgumentError) { workspace.resolve("../secret") }
+    ensure
+      workspace&.close
+    end
+  end
+
+  def test_open_materializes_paths_and_rejects_physical_aliases
+    Dir.mktmpdir do |root|
+      workspace = LittleGhost::Workspace.new(root:, paths: {cache: "cache"}).open
+
+      assert File.directory?(workspace.path(:cache))
+      assert_equal root, workspace.environment.fetch("LITTLE_GHOST_WORKSPACE_ROOT")
+      assert_equal workspace.path(:cache), workspace.environment.fetch("LITTLE_GHOST_WORKSPACE_CACHE")
+    ensure
+      workspace&.close
+    end
+
+    Dir.mktmpdir do |root|
+      FileUtils.mkdir_p(File.join(root, "shared"))
+      aliased = LittleGhost::Workspace.new(root:, paths: {one: "shared", two: "shared"})
+
+      assert_raises(ArgumentError) { aliased.open }
+    end
+  end
+
+  def test_open_requires_absolute_named_paths_to_exist_without_creating_them
+    Dir.mktmpdir do |root|
+      external = File.join(root, "missing-external")
+      workspace = LittleGhost::Workspace.new(root: File.join(root, "workspace"), paths: {runtime: external})
+
+      error = assert_raises(ArgumentError) { workspace.open }
+
+      assert_includes error.message, "must already exist"
+      refute File.exist?(external)
+    end
+  end
+
   def test_tears_down_partially_opened_workspace
     events = []
     workspace = LittleGhost::Workspace.new(

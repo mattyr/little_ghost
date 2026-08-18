@@ -8,78 +8,58 @@ module LittleGhost
     # controls it cannot enforce.
     class Policy
       COMMON_KEYS = %i[
-        workspace_path workspace_access root_filesystem mounts environment
-        network execution_scope
+        files runtime_paths root_filesystem environment network
       ].freeze # :nodoc:
       ACCESS_MODES = %i[read_only read_write].freeze # :nodoc:
-      ROOT_FILESYSTEM_MODES = %i[read_only read_write].freeze # :nodoc:
-      EXECUTION_SCOPES = %i[command sandbox].freeze # :nodoc:
-
+      ROOT_FILESYSTEM_MODES = %i[isolated read_only read_write].freeze # :nodoc:
       # Returns an existing policy or builds one from a Hash and keyword options.
-      def self.coerce(value = nil, root: nil, **options)
+      def self.coerce(value = nil, **options)
         return value if value.is_a?(self) && options.empty?
         values = value.nil? ? {} : value
         raise PolicyError, "sandbox policy must be a Hash or Sandbox::Policy" unless values.is_a?(Hash)
 
-        new(**values.transform_keys(&:to_sym).merge(options), root:)
+        new(**values.transform_keys(&:to_sym).merge(options))
       end
 
-      # Builds a backend-independent policy. Relative mount sources resolve
-      # beneath +root+.
+      # Builds a backend-independent policy from named Workspace paths.
       def initialize(
-        workspace_path: "/workspace",
-        workspace_access: :read_only,
-        root_filesystem: :read_only,
-        mounts: [],
+        files: {root: :read_only},
+        runtime_paths: {},
+        root_filesystem: :isolated,
         environment: {},
-        network: nil,
-        execution_scope: :command,
-        root: nil
+        network: nil
       )
-        @workspace_path = Mount.send(:normalize_virtual_path, workspace_path).freeze
-        @workspace_access = enum!(workspace_access, ACCESS_MODES, "workspace access")
+        @files = normalize_paths(files, "files")
+        @runtime_paths = normalize_paths(runtime_paths, "runtime_paths")
         @root_filesystem = enum!(root_filesystem, ROOT_FILESYSTEM_MODES, "root filesystem")
-        @execution_scope = enum!(execution_scope, EXECUTION_SCOPES, "execution scope")
-        @mounts = Array(mounts).map { |mount| Mount.coerce(mount, root:) }.freeze
-        validate_mount_targets!
         @environment = EnvironmentPolicy.coerce(environment)
         @network = NetworkPolicy.coerce(network)
         freeze
       end
 
-      # Absolute virtual path assigned to the workspace.
-      attr_reader :workspace_path
-      # Workspace access mode.
-      attr_reader :workspace_access
-      # Requested root-filesystem access mode.
+      # Named Workspace paths visible to tools and child processes.
+      attr_reader :files
+      # Named workspace paths visible only to sandboxed processes.
+      attr_reader :runtime_paths
+      # Requested host-root access: +:isolated+, +:read_only+, or +:read_write+.
       attr_reader :root_filesystem
-      # Additional immutable virtual mounts.
-      attr_reader :mounts
       # Environment inheritance and explicit values.
       attr_reader :environment
       # Network policy, or +nil+ for a backend-specific secure default.
       attr_reader :network
-      # Process environment lifetime, +:command+ or +:sandbox+.
-      attr_reader :execution_scope
+      def workspace_writable? = files.fetch(:root, :read_only) == :read_write
 
-      # Indicates that the workspace accepts filesystem mutations.
-      def workspace_writable? = workspace_access == :read_write
-      # Indicates that each execution gets a fresh environment.
-      def command_scoped? = execution_scope == :command
-      # Indicates that executions share one sandbox-lifetime environment.
-      def sandbox_scoped? = execution_scope == :sandbox
-
-      # Returns the virtual mounts including the workspace itself.
-      def effective_mounts(workspace)
-        [
-          Mount.new(
-            source: workspace.root,
-            target: workspace_path,
-            access: workspace_access,
-            protect_aliases: true
-          ),
-          *mounts
-        ].sort_by { |mount| -mount.target.length }.freeze
+      # Builds internal identity grants for a concrete Workspace.
+      def process_grants(workspace) # :nodoc:
+        file_mounts = files.map do |name, access|
+          source = workspace_directory(workspace, name)
+          Mount.new(source:, target: source, access:, protect_aliases: true)
+        end
+        process_mounts = runtime_paths.map do |name, access|
+          source = workspace_directory(workspace, name)
+          Mount.new(source:, target: source, access:, protect_aliases: true, tools: false)
+        end
+        (file_mounts + process_mounts).sort_by { |mount| -mount.target.length }.freeze
       end
 
       private
@@ -91,12 +71,16 @@ module LittleGhost
         value
       end
 
-      def validate_mount_targets!
-        duplicates = mounts.group_by(&:target).select { |_, entries| entries.length > 1 }.keys
-        raise PolicyError, "mount targets must be unique: #{duplicates.join(", ")}" unless duplicates.empty?
-        if mounts.any? { |mount| mount.target == workspace_path }
-          raise PolicyError, "an additional mount cannot replace the workspace target"
-        end
+      def normalize_paths(value, label)
+        raise PolicyError, "sandbox #{label} must be a Hash" unless value.respond_to?(:each_pair)
+
+        value.each_pair.to_h do |name, access|
+          [name.to_sym, enum!(access, ACCESS_MODES, "#{label} access")]
+        end.freeze
+      end
+
+      def workspace_directory(workspace, name)
+        (name.to_sym == :root) ? workspace.root : workspace.path(name)
       end
     end
   end

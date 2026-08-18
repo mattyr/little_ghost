@@ -5,7 +5,12 @@ require_relative "vertex_ai/credential_resolver"
 
 module LittleGhost
   module Providers
-    # Google Vertex AI variant of the Gemini wire protocol.
+    # Connects a Model to Gemini models hosted by Google Vertex AI.
+    #
+    # It sends the same request content as the Gemini adapter to the configured
+    # Google Cloud project and location. A trusted credential resolver supplies
+    # each access token. Cancellation, deadlines, normalized streaming events,
+    # and ProviderError behavior match Providers::Gemini.
     class VertexAI < Gemini
       # Creates a Vertex AI client for a Google Cloud +project+ and +location+.
       def initialize(model:, project:, location: "global", access_token: nil, credential_resolver: nil,

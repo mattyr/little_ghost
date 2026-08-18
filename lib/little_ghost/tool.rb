@@ -43,6 +43,10 @@ module LittleGhost
   #     end
   #   end
   #
+  #   class OrderSupportAgent < LittleGhost::Agent
+  #     tools OrderStatusTool
+  #   end
+  #
   #   OrderSupportAgent.ask(
   #     "Where is order 481?",
   #     actor_id: authenticated_user.id,
@@ -80,6 +84,10 @@ module LittleGhost
   # Cancellation, deadlines, and cleanup errors propagate instead of becoming
   # ordinary tool output. The configured sandbox, not Tool itself, enforces
   # filesystem and process isolation.
+  #
+  # See the {Tools guide}[rdoc-ref:docs/guides/tools.md] for the complete path
+  # from model-selected input to trusted application context, sandbox
+  # delegation, concurrency, and code mode.
   class Tool
     # Supply run-scoped collaborators when tools are instantiated outside an agent.
     # A binding can be copied with selected collaborators replaced.

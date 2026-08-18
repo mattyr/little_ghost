@@ -9,9 +9,10 @@ module LittleGhost
     # shell syntax.
     #
     # The child environment is cleared, runtime is limited to 30 seconds, and
-    # each output stream is limited to 1 MB. These defaults reduce accidental
-    # exposure but do not create an isolation boundary; the configured sandbox
-    # remains responsible for security.
+    # each output stream is limited to 1 MB. Commands may spawn children when
+    # the backend supports them. These defaults reduce accidental exposure but
+    # do not create an isolation boundary; the configured sandbox remains
+    # responsible for security.
     class Shell < Tool
       DEFAULT_TIMEOUT = 30 # :nodoc:
       MAX_OUTPUT_BYTES = 1_000_000 # :nodoc:

@@ -2,6 +2,7 @@
 
 require "test_helper"
 require "little_ghost/sandbox/process_runner"
+require "little_ghost/sandbox/process_session"
 
 class SandboxProcessRunnerTest < Minitest::Test
   def test_captures_exit_status_and_bounded_output
@@ -46,5 +47,71 @@ class SandboxProcessRunnerTest < Minitest::Test
     end
 
     assert_includes error.message, "timed out"
+  end
+
+  def test_process_session_enforces_parent_supervised_memory
+    session = LittleGhost::Sandbox::ProcessSession.new(
+      command: [Gem.ruby, "-e", "sleep 30"],
+      memory_bytes: 1,
+      memory_reader: ->(_pid) { 2 }
+    )
+
+    error = assert_raises(LittleGhost::ToolError) { session.wait(timeout: 2) }
+
+    assert_match(/memory exceeded/, error.message)
+  ensure
+    session&.close
+  end
+
+  def test_process_session_fails_closed_when_memory_supervision_fails
+    session = LittleGhost::Sandbox::ProcessSession.new(
+      command: [Gem.ruby, "-e", "sleep 30"],
+      memory_bytes: 1,
+      memory_reader: ->(_pid) { raise "unavailable" }
+    )
+
+    error = assert_raises(LittleGhost::ToolError) { session.wait(timeout: 2) }
+
+    assert_match(/supervisor failed/, error.message)
+  ensure
+    session&.close
+  end
+
+  def test_process_session_cleans_the_group_after_its_leader_exits
+    session = LittleGhost::Sandbox::ProcessSession.new(
+      command: [Gem.ruby, "-e", "child = fork { sleep 30 }; puts child; STDOUT.flush; exit!"]
+    )
+    child_pid = nil
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 2
+    until child_pid || Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+      output = session.read(timeout: 0.05).stdout
+      child_pid = Integer(output, exception: false) unless output.empty?
+    end
+
+    refute_nil child_pid
+    assert_predicate session, :alive?
+    session.terminate
+
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 2
+    while process_alive?(child_pid) && Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
+      sleep(0.01)
+    end
+    refute process_alive?(child_pid)
+  ensure
+    session&.close
+    begin
+      Process.kill("KILL", child_pid) if child_pid && process_alive?(child_pid)
+    rescue Errno::ESRCH
+      nil
+    end
+  end
+
+  private
+
+  def process_alive?(pid)
+    Process.kill(0, pid)
+    true
+  rescue Errno::ESRCH
+    false
   end
 end

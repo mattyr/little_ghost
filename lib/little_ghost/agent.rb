@@ -45,10 +45,6 @@ module LittleGhost
   # as skills, context management, loop detection, and delegation stay inactive
   # until their DSL is used.
   #
-  # Calling LittleGhost::Agent itself uses <tt>You are a helpful agent.</tt> as
-  # the system prompt. Subclasses use the inline or conventional prompt they
-  # declare.
-  #
   # Models may return text or locally validated structured data. LittleGhost
   # hides unexpected Tool exception messages from the model. See
   # Run[rdoc-ref:LittleGhost::Run] for outcomes, cancellation, and cleanup, and
@@ -84,6 +80,7 @@ module LittleGhost
     class_attribute :system_prompt_value
     class_attribute :system_prompt_builder_value
     class_attribute :tool_declarations_value, default: []
+    class_attribute :code_mode_configuration_value
     class_attribute :prompt_local_values, default: {}
     class_attribute :callback_values, default: Support::Callbacks.new(*CALLBACKS)
 
@@ -269,6 +266,19 @@ module LittleGhost
 
       def tool_declarations = tool_declarations_value # :nodoc:
 
+      # Enables code mode for this agent. +except+ names the ordinary Tools that
+      # remain model-facing; every other ordinary Tool moves into the engine
+      # catalog and is called through the parent-process Broker.
+      def code_mode(engine: nil, except: nil, **options)
+        unknown = options.keys - %i[sandbox limits]
+        raise ArgumentError, "unknown keyword: #{unknown.first.inspect}" unless unknown.empty?
+
+        declaration = options.merge(engine:, except:).compact
+        self.code_mode_configuration_value = declaration.freeze
+      end
+
+      def code_mode_configuration = code_mode_configuration_value # :nodoc:
+
       # Adds a named value or resolver to every prompt rendered for the agent.
       def prompt_local(name, *values, &resolver)
         raise ArgumentError, "Provide a prompt local value or block" if values.empty? && !resolver
@@ -300,8 +310,9 @@ module LittleGhost
       ##
       # Runs before one invocation begins.
       #
-      # The payload may be continued, replaced, or cancelled with a decision
-      # from Support::Callbacks.
+      # The payload is <tt>{messages: Array<Message>}</tt>. A replacement must
+      # contain +:messages+. Cancellation stops the invocation. A callback may
+      # also accept <tt>context:</tt> to receive the current RunContext.
       #
       # :singleton-method: before_invocation
       # :call-seq:
@@ -310,12 +321,21 @@ module LittleGhost
       ##
       # Observes or transforms the terminal invocation payload.
       #
+      # The payload is <tt>{result: RunResult}</tt>. A replacement must contain
+      # +:result+. Cancellation stops result delivery. A callback may accept
+      # <tt>context:</tt>.
+      #
       # :singleton-method: after_invocation
       # :call-seq:
       #   after_invocation(callable = nil, prepend: false) { |payload| ... } -> self
 
       ##
       # Runs before a model request is sent.
+      #
+      # The payload contains +:request+ (ModelRequest), zero-based +:turn+, and
+      # +:parent_operation_id+. A replacement must contain +:request+.
+      # Cancellation stops the invocation. A callback may accept
+      # <tt>context:</tt>.
       #
       # :singleton-method: before_model
       # :call-seq:
@@ -324,12 +344,22 @@ module LittleGhost
       ##
       # Observes or transforms a successful model response.
       #
+      # The payload contains +:request+, +:response+ (ModelResponse), and
+      # zero-based +:turn+. A replacement must contain +:response+.
+      # Cancellation stops the invocation. A callback may accept
+      # <tt>context:</tt>.
+      #
       # :singleton-method: after_model
       # :call-seq:
       #   after_model(callable = nil, prepend: false) { |payload| ... } -> self
 
       ##
       # Handles a model error before it leaves the agent loop.
+      #
+      # The payload contains +:request+, +:error+, zero-based +:turn+, and
+      # +:parent_operation_id+. Replacing +:request+ with a ModelRequest retries
+      # the model call, up to the framework recovery limit. Cancellation stops
+      # the invocation. A callback may accept <tt>context:</tt>.
       #
       # :singleton-method: after_model_error
       # :call-seq:
@@ -338,12 +368,21 @@ module LittleGhost
       ##
       # Runs after validation but before a tool call starts.
       #
+      # The payload contains +:tool_use+, the bound +:tool+, +:operation_id+,
+      # and +:parent_operation_id+. Cancellation returns a model-visible Tool
+      # error, so its reason must be safe to disclose. Replacements are not
+      # consumed. A callback may accept <tt>context:</tt>.
+      #
       # :singleton-method: before_tool
       # :call-seq:
       #   before_tool(callable = nil, prepend: false) { |payload| ... } -> self
 
       ##
       # Observes or transforms a completed tool result.
+      #
+      # The payload contains the before-tool fields plus +:result+
+      # (Tool::ExecutionResult). A replacement must contain +:result+.
+      # Cancellation is not consumed. A callback may accept <tt>context:</tt>.
       #
       # :singleton-method: after_tool
       # :call-seq:
@@ -539,6 +578,7 @@ module LittleGhost
       self.class.tool_declarations.each do |declaration|
         @tool_registry.register(declaration, replace: true)
       end
+      initialize_code_mode
       @structured_output_strategy = StructuredOutput.resolve(
         self.class.result_schema,
         model:,
@@ -567,6 +607,7 @@ module LittleGhost
       apply_cancellation_decision!(run_callbacks(:after_initialize, self))
     rescue
       @tool_registry&.close
+      @code_mode_runtime&.close
       raise
     end
 
@@ -576,7 +617,13 @@ module LittleGhost
     def entrypoint_name = self.class.agent_id # :nodoc:
 
     def dispatch_tools(tool_uses, context:, events:, parent_operation_id:, parent_trace_context: nil) # :nodoc:
+      counted = tool_uses.count { |tool_use| !code_mode_control_tool?(tool_use) }
+      context.record_tool_calls!(counted, maximum: @max_tool_calls) if counted.positive?
       execute_tools(tool_uses, context, events, parent_operation_id:, parent_trace_context:)
+    end
+
+    def code_mode_runtime # :nodoc:
+      @code_mode_runtime || raise(ConfigurationError, "code mode is not enabled for this agent")
     end
 
     def request_assembly_transition(value, context:) # :nodoc:
@@ -747,6 +794,7 @@ module LittleGhost
           interjections.close(error)
           raise
         ensure
+          @code_mode_runtime&.close(context: run_context)
           interjections.close(AgentInterjectionError.new("Agent finished before the interjection was delivered"))
           unregister_interjections(interjections)
         end
@@ -776,7 +824,7 @@ module LittleGhost
 
         @closed = true
         [
-          [tool_registry, (@sandbox if @owns_resources), (@workspace if @owns_resources)],
+          [@code_mode_runtime, tool_registry, (@sandbox if @owns_resources), (@workspace if @owns_resources)],
           @interjections_mutex.synchronize { @active_interjections.dup }
         ]
       end
@@ -805,7 +853,13 @@ module LittleGhost
     # Returns the tools exposed to the model for +turn+. Subclasses may override
     # this hook to filter the already-authorized tool list.
     def model_tools(tools, context:, turn:)
-      tools
+      return tools unless @code_mode_runtime
+
+      exceptions = Array(@code_mode_declaration[:except]).map(&:to_s)
+      tools.select do |specification|
+        name = specification.fetch(:name, specification["name"]).to_s
+        exceptions.include?(name) || %w[exec wait].include?(name) || !tool_registry.names.include?(name)
+      end
     end
 
     # :doc:
@@ -929,7 +983,6 @@ module LittleGhost
       prompt = rendered_system_prompt(template_locals, template_paths)
       messages.unshift(Message.new(role: :system, content: prompt)) unless prompt.to_s.empty?
       messages << (input.is_a?(Message) ? input : Message.new(role: :user, content: input))
-      tool_call_count = 0
       structured_result_repair_due = false
 
       decision = run_callbacks(:before_invocation, {messages: messages}, context: context)
@@ -1146,9 +1199,6 @@ module LittleGhost
             )
           end
 
-          tool_call_count += tool_uses.length
-          raise ProtocolError, "The agent reached its maximum tool calls" if tool_call_count > @max_tool_calls
-
           executed_tools = with_assembly_tool_batch(context, tool_uses.length) do
             dispatch_tools(
               tool_uses,
@@ -1334,6 +1384,7 @@ module LittleGhost
       response = nil
       time_to_first_token = nil
       buffered_events = strategy ? [] : nil
+      code_mode_control_indexes = {}
 
       model.stream(request).each do |event|
         context.check!
@@ -1354,7 +1405,9 @@ module LittleGhost
             **model_attributes
           )
         end
-        buffered_events ? buffered_events << event : events << event
+        unless code_mode_control_event?(event, code_mode_control_indexes)
+          buffered_events ? buffered_events << event : events << event
+        end
         response = event.data[:response] if event.type == :message_stop
       end
       raise ProtocolError, "The model stream ended without a response" unless response
@@ -1477,7 +1530,7 @@ module LittleGhost
         raise ProtocolError, "The model returned duplicate tool use ids"
       end
 
-      tool_uses.each { |tool_use| emit(events, :tool_start, tool_use: tool_use) }
+      tool_uses.each { |tool_use| emit(events, :tool_start, tool_use: tool_use) unless code_mode_control_tool?(tool_use) }
       pairs = tool_uses.map do |tool_use|
         [tool_use, tool_registry.fetch(tool_use.name)]
       rescue ToolError => error
@@ -1561,14 +1614,20 @@ module LittleGhost
           parent_trace_context:
         )
         invoke = lambda do
-          with_tool_execution(execution_context) do
-            invoke_tool(
-              tool_use, tool, context,
-              operation_id:, parent_operation_id:
-            )
+          ExecutionState.with(tool_execution: execution_context) do
+            with_tool_execution(execution_context) do
+              invoke_tool(
+                tool_use, tool, context,
+                operation_id:, parent_operation_id:
+              )
+            end
           end
         end
-        tool_result = tool.exclusive? ? synchronize_exclusive_tools(&invoke) : invoke.call
+        tool_result = if tool.exclusive? && !code_mode_control_tool?(tool_use)
+          synchronize_exclusive_tools(&invoke)
+        else
+          invoke.call
+        end
         after_decision = run_callbacks(
           :after_tool,
           callback_payload.merge(result: tool_result),
@@ -1628,7 +1687,7 @@ module LittleGhost
       if tools.any?(&:exclusive?)
         pairs.map do |tool_use, tool|
           executed_tool = execution.call(tool_use, tool)
-          emit(events, :tool_stop, tool_use:, result: executed_tool.result)
+          emit(events, :tool_stop, tool_use:, result: executed_tool.result) unless code_mode_control_tool?(tool_use)
           executed_tool
         end
       else
@@ -1636,7 +1695,8 @@ module LittleGhost
           pairs,
           cancellation_token: context.cancellation_token,
           on_result: lambda do |index, executed_tool|
-            emit(events, :tool_stop, tool_use: tool_uses.fetch(index), result: executed_tool.result)
+            tool_use = tool_uses.fetch(index)
+            emit(events, :tool_stop, tool_use:, result: executed_tool.result) unless code_mode_control_tool?(tool_use)
           end
         ) do |tool_use, tool|
           execution.call(tool_use, tool)
@@ -1646,6 +1706,27 @@ module LittleGhost
 
     def invoke_tool(tool_use, tool, context, operation_id:, parent_operation_id:)
       tool.execute(tool_use.input, context:)
+    end
+
+    def code_mode_control_tool?(tool_use)
+      @code_mode_runtime && %w[exec wait].include?(tool_use.name)
+    end
+
+    def code_mode_control_event?(event, indexes)
+      return false unless @code_mode_runtime
+
+      index = event.data[:index]
+      case event.type
+      when :tool_call_start
+        indexes[index] = true if %w[exec wait].include?(event.data[:name])
+        indexes.key?(index)
+      when :tool_call_delta
+        indexes.key?(index)
+      when :tool_call_stop
+        indexes.delete(index)
+      else
+        false
+      end
     end
 
     def parent_trace_attributes(trace_context)
@@ -1944,19 +2025,38 @@ module LittleGhost
 
     def rendered_system_prompt(locals, invocation_paths)
       prompt = self.class.system_prompt
-      return prompt.call(locals) if prompt.respond_to?(:call)
-      return prompt if prompt
+      prompt = prompt.call(locals) if prompt.respond_to?(:call)
+      return append_code_mode_instructions(prompt) if prompt
       template = self.class.system_template
-      return DEFAULT_SYSTEM_PROMPT if instance_of?(Agent) && run && !template
+      return append_code_mode_instructions(DEFAULT_SYSTEM_PROMPT) if instance_of?(Agent) && run && !template
 
       template ||= "#{self.class.logical_path}/system" if run
       return nil unless template
 
-      @template_resolver.render(
+      append_code_mode_instructions(@template_resolver.render(
         template,
         locals: locals,
         invocation_paths: invocation_paths
-      )
+      ))
+    end
+
+    def initialize_code_mode
+      declaration = self.class.code_mode_configuration
+      return unless declaration
+
+      defaults = @runtime.respond_to?(:code_mode_configuration) ? @runtime.code_mode_configuration : nil
+      @code_mode_declaration = (defaults || {}).merge(declaration).transform_keys(&:to_sym).freeze
+      unknown = @code_mode_declaration.keys - %i[engine except sandbox limits]
+      raise ConfigurationError, "Unknown code-mode option: #{unknown.first.inspect}" unless unknown.empty?
+      @code_mode_runtime = CodeMode::AgentRuntime.new(agent: self, declaration: @code_mode_declaration)
+      @tool_registry.register(CodeMode::ExecTool)
+      @tool_registry.register(CodeMode::WaitTool)
+    end
+
+    def append_code_mode_instructions(prompt)
+      return prompt unless @code_mode_runtime
+
+      [prompt, @code_mode_runtime.instructions].compact.reject(&:empty?).join("\n\n")
     end
 
     def default_template_resolver(paths)

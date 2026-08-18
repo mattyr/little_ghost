@@ -1,6 +1,6 @@
 # Core Concepts
 
-Build one model-driven behavior in a Ruby class, then call it like Ruby. That is the idea LittleGhost grows from.
+Define an Agent in a Ruby class, then call it with `.ask`.
 
 ```ruby
 class CustomerSupportAgent < LittleGhost::Agent
@@ -29,7 +29,8 @@ CustomerSupportAgent
 └── limits and optional capabilities
 ```
 
-An Agent can return text or checked, structured data. Later, you can add streaming, sessions, or callbacks. None of them are required to begin.
+An Agent can return text or checked, structured data. You can add streaming,
+saved conversations, or callbacks later. None of them are required to begin.
 
 ## A Tool connects the model to Ruby
 
@@ -53,6 +54,9 @@ end
 ```
 
 LittleGhost checks the model's arguments, calls the tool, and gives the result back to the model. The schema checks shape, not permission. Authorize sensitive reads and actions inside the tool with trusted application context.
+
+[Tools](tools.md) follows that boundary from model input to application code,
+including run-scoped bindings, concurrency, retries, and sandbox delegation.
 
 ## A Run owns one top-level execution
 
@@ -83,9 +87,13 @@ Run
 
 An **Invocation** is the request in LittleGhost's standard shape. Its `context` contains current request values supplied by your application. A Tool can read those values through `run.invocation.context` when it authorizes work.
 
-The **RunContext** carries mutable working state in `context.state`. At the top level, saved Session state is loaded first, then current Invocation context is added. Child Assemblies may receive a copy, a mapped value, or no context at all. Recheck saved values before using them for permission decisions.
+A **Session** stores conversation state between Runs when persistence is
+configured. The **RunContext** carries mutable working state in `context.state`
+during one Run. LittleGhost loads saved Session state before adding the current
+Invocation context. Recheck saved values before using them for permission
+decisions.
 
-A Tool's **Binding** gives the Tool access to objects created for this run, including the Agent, Run, workspace, and sandbox. These objects are separate from the arguments chosen by the model. [Workspaces, Sandboxes, and Tools](sandboxing.md) explains which operations actually cross the sandbox boundary.
+A Tool's **Binding** gives the Tool access to objects created for this run, including the Agent, Run, workspace, and sandbox. These objects are separate from the arguments chosen by the model. [Tools](tools.md) explains the binding and application authority; [Workspaces and Sandboxes](sandboxing.md) explains which delegated operations cross the process boundary.
 
 The final **RunResult** keeps the complete assembly result. Its `text` is the final text answer. Its `output` returns structured data when the Agent declared a result schema, and text otherwise. The top-level `Run#response` is always the caller-facing text.
 
@@ -209,30 +217,12 @@ class SupportFlowGraph < LittleGhost::Graph
 end
 ```
 
-Graph nodes do not receive caller history or application context unless they opt in. They receive the original task and immediate predecessor results as labeled context.
+Graph nodes receive the original task and results from the nodes immediately
+before them. They do not receive caller history or application context unless
+their declarations opt in. [Compose Agents](assemblies.md) explains parallel
+routes, joins, input mapping, and data boundaries.
 
-Multiple unconditional edges fan out in parallel and converge at their first unambiguous common successor. Array endpoints declare an explicit fan-out or wait-for-all fan-in. Edge and node input mappers receive immutable `Graph::State` and can replace the default input with an exact value.
-
-Only connect parallel participants allowed to receive both the original request and source output. A trusted redaction node before the fan-out can narrow the source output. Give the graph a redacted request from trusted application code when the original also needs narrowing.
-
-## Class definitions first, builders when needed
-
-Named classes are the default way to organize reusable behavior. They are readable, load through normal Ruby conventions, and give the coordination style a visible name such as `ResponseWorkflow` or `SupportFlowGraph`.
-
-Every assembly class can also produce a mutable builder:
-
-```ruby
-graph = SupportFlowGraph.to_builder
-graph.node :audit, AuditAgent
-graph.edge :respond, :audit
-graph.finish :audit
-graph.validate!
-run = graph.ask("Review order 481")
-```
-
-Use a builder when trusted application configuration decides the participants or routes. Each run gets a fixed copy of the builder as it looked when the run began, so later edits affect later runs. Ruby callbacks still see any application objects they captured.
-
-## One result, including the journey
+## One result, even when several agents help
 
 Every assembly produces the same top-level `Run` and final `RunResult`. Composite assemblies also keep a size-limited record of the participants that ran:
 
@@ -244,11 +234,8 @@ run.result.steps
 run.result.trajectory.transitions
 ```
 
-This shows callers which participants ran without including raw provider responses. The ordinary Swarm or Graph event projection keeps the final response coherent, but that presentation choice is not a privacy boundary. Routed outputs and step summaries still exist.
-
-Composite assemblies also emit `:agent_stream` events by default so an interface can follow the live work from every Agent. Each event carries source metadata and a detached, deeply immutable snapshot of the Agent event. Invocation-start events also carry the routed input snapshot.
-
-Pass `include_agent_events: false` when only the ordinary public stream is needed. The contextual view includes sensitive and untrusted inputs, reasoning, tool data, outputs, and errors. Filter it before it crosses a logging, transport, or user-interface boundary. [Compose Agents](assemblies.md) shows the complete pattern.
+This record shows which participants ran. [Compose Agents](assemblies.md)
+explains builders, detailed routing records, and live events from nested Agents.
 
 The pieces now fit together: Agents define behavior. Tools connect them to Ruby. Runs record one execution. Assemblies let the system grow without changing the caller.
 

@@ -8,16 +8,16 @@ module LittleGhost
     # claiming ownership of its lifecycle or attesting what it enforces. The
     # application owns proxy policy, credentials, readiness, logging, and cleanup.
     class ExternalGateway < Gateway
-      # Builds a gateway around existing mounts and a proxy socket path.
-      def initialize(policy:, mounts:, proxy_mount_path:, environment: {}, validate: nil)
+      # Builds a gateway around existing process-only workspace paths and a
+      # physical proxy socket path. No path remapping is performed.
+      def initialize(policy:, workspace:, runtime_paths:, proxy_mount_path:, environment: {}, validate: nil)
         super(policy:)
-        @mounts = Array(mounts).map { |mount| Sandbox::Mount.coerce(mount) }.freeze
-        if @mounts.empty? || @mounts.any?(&:writable?)
-          raise PolicyError, "external gateway mounts must be non-empty and read-only"
-        end
-        @proxy_mount_path = Sandbox::Mount.send(:normalize_virtual_path, proxy_mount_path).freeze
-        unless @mounts.any? { |mount| mount.covers?(@proxy_mount_path) }
-          raise PolicyError, "external gateway proxy path must be inside a declared mount"
+        @runtime_paths = Array(runtime_paths).map(&:to_sym).freeze
+        raise PolicyError, "external gateway runtime_paths must not be empty" if @runtime_paths.empty?
+        @roots = @runtime_paths.map { |name| (name == :root) ? workspace.root : workspace.path(name) }.freeze
+        @proxy_mount_path = File.expand_path(proxy_mount_path).freeze
+        unless @roots.any? { |root| @proxy_mount_path == root || @proxy_mount_path.start_with?("#{root}#{File::SEPARATOR}") }
+          raise PolicyError, "external gateway proxy path must be inside a runtime path"
         end
         unless validate.nil? || validate.respond_to?(:call)
           raise PolicyError, "external gateway validator must be callable"
@@ -29,19 +29,19 @@ module LittleGhost
 
       # Returns child-scoped proxy and trust variables.
       attr_reader :environment
-      # Returns application-managed files mounted read-only by the backend.
-      attr_reader :mounts
+      # Named process-only workspace paths used by the gateway.
+      attr_reader :runtime_paths
       # Returns the proxy socket path visible inside the sandbox.
       attr_reader :proxy_mount_path
 
       # Pins application-managed mount roots without taking lifecycle ownership.
       def open(run: nil)
-        @mount_identities = mounts.to_h do |mount|
-          root = File.realpath(mount.source)
+        @path_identities = @roots.to_h do |path|
+          root = File.realpath(path)
           stat = File.stat(root)
-          raise PolicyError, "external gateway mount source must be a directory" unless stat.directory?
+          raise PolicyError, "external gateway runtime path must be a directory" unless stat.directory?
 
-          [mount, [root, stat.dev, stat.ino]]
+          [path, [root, stat.dev, stat.ino]]
         end.freeze
         self
       rescue Errno::ENOENT, Errno::EACCES
@@ -50,18 +50,18 @@ module LittleGhost
 
       # Runs the application's readiness assertion before each child process.
       def validate!
-        open unless @mount_identities
-        mounts.each do |mount|
-          root = File.realpath(mount.source)
+        open unless @path_identities
+        @roots.each do |path|
+          root = File.realpath(path)
           stat = File.stat(root)
-          unless [root, stat.dev, stat.ino] == @mount_identities.fetch(mount)
-            raise DependencyError, "external gateway mount source changed after opening"
+          unless [root, stat.dev, stat.ino] == @path_identities.fetch(path)
+            raise DependencyError, "external gateway runtime path changed after opening"
           end
         end
         @validator&.call
         self
       rescue Errno::ENOENT, Errno::EACCES
-        raise DependencyError, "external gateway mount source changed after opening"
+        raise DependencyError, "external gateway runtime path changed after opening"
       end
     end
   end

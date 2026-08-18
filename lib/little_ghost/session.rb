@@ -33,9 +33,14 @@ module LittleGhost
   # identity. A nil actor provides no tenant isolation and is appropriate only
   # for a store that serves one actor.
   class Session
-    # The store key, explicit actor identity, backing store, and telemetry
-    # operation used by this session.
-    attr_reader :id, :actor_id, :store, :operation_id
+    # The key used to load and save this Session.
+    attr_reader :id
+    # The trusted application identity that owns this Session, when supplied.
+    attr_reader :actor_id
+    # The SessionStore that loads and saves snapshots.
+    attr_reader :store
+    # The telemetry operation associated with this Session, when supplied.
+    attr_reader :operation_id
 
     # No store access occurs until the session is read or written.
     def initialize(id:, store:, actor_id: nil, metadata: {}, operation_id: nil)

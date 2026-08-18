@@ -1,9 +1,19 @@
 # frozen_string_literal: true
 
 module LittleGhost
-  # Resolves logical profiles, canonical +provider:model-id+ targets, and inline
-  # model mappings into executable Model objects. Subclasses may override
-  # #resolve, #details, or #refresh! while preserving those public signatures.
+  # Maps an application model role to an executable Model.
+  #
+  #   resolver = LittleGhost::ModelResolver.new(
+  #     profiles: {
+  #       customer_support: {target: "openrouter:openai/gpt-5.6-luna"}
+  #     }
+  #   )
+  #   # With OPENROUTER_API_KEY set:
+  #   model = resolver.resolve(:customer_support)
+  #
+  # A role is an application-facing name such as +:customer_support+. Callers
+  # may also pass a +provider:model-id+ target or an inline configuration
+  # mapping.
   class ModelResolver
     DEFAULT_CREDENTIALS = [ # :nodoc:
       ["LITTLEGHOST_OPENROUTER_API_KEY", "openrouter"],

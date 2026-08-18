@@ -155,7 +155,7 @@ class RuntimeTest < Minitest::Test
       configuration.workspace = {provider: :directory, root: "work"}
       configuration.sandbox = {
         provider: :unrestricted,
-        workspace_access: :read_write,
+        files: {root: :read_write},
         network: :inherit
       }
       runtime = LittleGhost::Runtime.new(configuration:)

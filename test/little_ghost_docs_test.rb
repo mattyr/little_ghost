@@ -13,10 +13,10 @@ class LittleGhostDocsTest < Minitest::Test
     end
 
     expected_edges = [
-      "  edge :plan, :research",
-      "  edge :plan, :logistics",
-      "  edge :research, :write",
-      "  edge :logistics, :write"
+      "  edge :triage, :order",
+      "  edge :triage, :policy",
+      "  edge :order, :respond",
+      "  edge :policy, :respond"
     ]
     expected_edges.each do |edge|
       assert_includes graph_demo, %(data-plain="#{edge}")

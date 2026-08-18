@@ -8,7 +8,14 @@ require_relative "anthropic/catalog_source"
 
 module LittleGhost
   module Providers
-    # Zero-dependency Anthropic Messages API adapter.
+    # Connects a Model to Anthropic's Messages API.
+    #
+    # Requests send messages, Tool definitions, attachments, and model settings
+    # to the configured Anthropic endpoint. The adapter reads its credential
+    # from trusted configuration, honors cancellation and deadlines, and emits
+    # LittleGhost StreamEvents. HTTP and response-shape failures become
+    # ProviderError subclasses. It uses the built-in HTTP client and does not
+    # require Anthropic's SDK.
     class Anthropic < Base
       # Request policy supported by the Anthropic HTTP client.
       def self.request_options = %i[max_response_bytes open_timeout read_timeout].freeze

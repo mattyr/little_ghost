@@ -6,10 +6,9 @@ require_relative "assembly"
 module LittleGhost
   # Routes a request through named Assembly nodes and declared edges.
   #
-  # A graph is an Assembly for flows whose allowed paths should be visible in
+  # A Graph is an Assembly for flows whose allowed paths should be visible in
   # application code. A node may contain an Agent, Workflow, Swarm, or another
-  # Graph. Scalar edges choose one next node. Multiple unconditional edges fan
-  # out in parallel and converge at their first unambiguous common successor.
+  # Graph. Edges declare which node may run next.
   #
   #   class SupportFlowGraph < LittleGhost::Graph
   #     node :triage, TriageAgent

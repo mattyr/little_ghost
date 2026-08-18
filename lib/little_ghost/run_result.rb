@@ -4,13 +4,6 @@ module LittleGhost
   # Associates a validated structured value with its declared schema name.
   StructuredResult = Data.define(:schema_name, :value) # :nodoc:
 
-  # RunResult gives callers one final view of an assembly invocation.
-  # It includes the response, usage, updated conversation, state, coordination
-  # steps, and any validated structured value.
-  #
-  # Use #output when the caller should accept either structured or textual
-  # agents. It returns the validated structured value when present and #text
-  # otherwise.
   RunResult = Data.define(:message, :stop_reason, :usage, :messages, :state, :structured_result, :steps) do # :nodoc:
     def initialize(message:, stop_reason:, usage:, messages:, state:, structured_result: nil, steps: [])
       super(message:, stop_reason:, usage:, messages:, state:, structured_result:, steps: Array(steps).freeze)

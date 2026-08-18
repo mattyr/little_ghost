@@ -6,6 +6,16 @@ require "test_helper"
 require "little_ghost/ag_ui"
 
 class ConfigurationTest < Minitest::Test
+  def test_code_mode_configuration_is_explicit_and_frozen
+    configuration = LittleGhost::Configuration.new
+
+    configuration.code_mode = {engine: :ruby, sandbox: :native, limits: {cells: 4}}
+
+    assert_equal :ruby, configuration.code_mode.fetch(:engine)
+    assert_predicate configuration.code_mode, :frozen?
+    assert_raises(ArgumentError) { configuration.code_mode = :ruby }
+  end
+
   class SharedRuntimeResolver < LittleGhost::ModelResolver
     class << self
       attr_accessor :provider

@@ -33,6 +33,7 @@ Gem::Specification.new do |spec|
   spec.add_dependency "opentelemetry-api", "~> 1.0"
 
   spec.add_development_dependency "minitest", "~> 5.25"
+  spec.add_development_dependency "mini_racer", "~> 0.21"
   spec.add_development_dependency "rake", "~> 13.2"
   spec.add_development_dependency "rdoc", "~> 8.0"
   spec.add_development_dependency "standard", "~> 1.44"

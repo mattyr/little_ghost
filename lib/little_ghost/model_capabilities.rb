@@ -5,9 +5,10 @@ module LittleGhost
   # It keeps structured results and tool selection from relying on provider
   # guesswork.
   #
-  # A +nil+ +supported_parameters+ list means parameter support is not restricted.
-  # Use +ModelCapabilities.unknown+ when capability metadata is unavailable and
-  # callers should avoid assuming support.
+  # A +nil+ +supported_parameters+ list means the parameter list is not
+  # restricted. Use +ModelCapabilities.unknown+ when metadata is unavailable.
+  # Callers must check +known?+ before treating +supports_parameter?+ as evidence
+  # that a provider supports a feature.
   ModelCapabilities = Data.define( # :nodoc:
     :native_structured_output,
     :tools,
@@ -59,7 +60,8 @@ module LittleGhost
 
   # Describes the optional features a model can use. Providers expose this value
   # so structured results and tool selection do not rely on provider guesswork.
-  # A +nil+ supported-parameter list means support is unrestricted.
+  # A +nil+ supported-parameter list means the list itself is unrestricted.
+  # Check +known?+ before treating that as known provider support.
   class ModelCapabilities < Data # :doc:
     ##
     # :singleton-method: new
@@ -112,8 +114,9 @@ module LittleGhost
     # :call-seq:
     #   supports_parameter?(*names) -> boolean
     #
-    # Checks whether any supplied parameter name is supported. An unrestricted
-    # capability set supports every name.
+    # Checks only the parameter-list restriction. It returns true for every name
+    # when the list is +nil+, including on an unknown capability value. Check
+    # +known?+ when the caller needs evidence of provider support.
 
     ##
     # :singleton-method: permissive

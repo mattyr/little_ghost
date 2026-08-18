@@ -60,7 +60,7 @@ module LittleGhost
         context&.check!
         mount, relative = resolve(path)
         with_file(mount, relative, flags: read_flags, mode: "r") do |file|
-          raise ToolError, "Path is not a file" unless file.stat.file?
+          validate_regular_file!(file)
 
           content = file.read(@max_read_bytes + 1)
           raise ToolError, "File exceeds the read limit" if content.bytesize > @max_read_bytes
@@ -110,7 +110,7 @@ module LittleGhost
         raise ToolError, "Content exceeds the write limit" if content.bytesize > @max_write_bytes
 
         with_file(mount, relative, flags: write_flags, mode: "w", permissions: 0o644) do |file|
-          raise ToolError, "Path is not a file" unless file.stat.file?
+          validate_regular_file!(file)
 
           file.truncate(0)
           file.write(content)
@@ -313,6 +313,12 @@ module LittleGhost
       rescue
         IO.for_fd(descriptor).close
         raise
+      end
+
+      def validate_regular_file!(file)
+        stat = file.stat
+        raise ToolError, "Path is not a file" unless stat.file?
+        raise ToolError, "Multiply-linked files are not accessible through sandbox tools" if stat.nlink > 1
       end
 
       def contained?(path, root) = path == root || path.start_with?("#{root}#{File::SEPARATOR}")

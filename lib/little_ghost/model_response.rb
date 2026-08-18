@@ -1,11 +1,6 @@
 # frozen_string_literal: true
 
 module LittleGhost
-  # ModelResponse is the final result shared by every provider stream. It keeps
-  # provider-specific response shapes out of the agent loop.
-  #
-  # +message+ is the assistant Message, +stop_reason+ is a normalized symbol,
-  # and +usage+ contains provider-independent token counts.
   ModelResponse = Data.define(:message, :stop_reason, :usage, :metadata) do # :nodoc:
     # Creates an immutable response and coerces +message+ into a Message.
     def initialize(message:, stop_reason:, usage: Usage.new, metadata: {})
@@ -27,7 +22,7 @@ module LittleGhost
     #   new(message:, stop_reason:, usage: Usage.new, metadata: {}) -> ModelResponse
     #
     # Coerces +message+ to Message, normalizes +stop_reason+ to a Symbol, and
-    # freezes +metadata+.
+    # freezes the outer +metadata+ Hash.
 
     ##
     # :attr_reader: message
@@ -43,6 +38,7 @@ module LittleGhost
 
     ##
     # :attr_reader: metadata
-    # Frozen provider-specific response metadata.
+    # Provider-specific response metadata with a frozen outer Hash. Nested
+    # values are retained and must not be mutated by callers.
   end
 end

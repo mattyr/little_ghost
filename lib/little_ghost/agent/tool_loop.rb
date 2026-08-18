@@ -110,6 +110,7 @@ module LittleGhost
 
       def track_tool_call(payload, context: nil)
         tool_use = payload.fetch(:tool_use)
+        return Support::Callbacks.continue if code_mode_control_tool?(tool_use)
         return Support::Callbacks.continue if @tool_loop_except.include?(tool_use.name)
 
         key = [tool_use.name, tool_loop_digest(tool_use.input)]

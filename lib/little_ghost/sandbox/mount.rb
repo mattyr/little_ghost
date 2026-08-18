@@ -5,11 +5,11 @@ require "pathname"
 module LittleGhost
   class Sandbox
     # Maps one trusted host directory into the sandbox's virtual filesystem.
-    # Process and direct-tool visibility are separate: +tools: false+ keeps the
+    # Process and Filesystem Tool visibility are separate: +tools: false+ keeps the
     # mount available to child processes while denying it to the filesystem
     # broker. +protect_aliases+ preserves restrictive access when the same host
     # files are reachable through a broader mount.
-    class Mount
+    class Mount # :nodoc:
       ACCESS_MODES = %i[read_only read_write].freeze # :nodoc:
 
       # Returns +value+ unchanged or builds a mount from a Hash.
