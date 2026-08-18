@@ -1595,7 +1595,11 @@ module LittleGhost
             end
           end
         end
-        tool_result = tool.exclusive? ? synchronize_exclusive_tools(&invoke) : invoke.call
+        tool_result = if tool.exclusive? && !code_mode_control_tool?(tool_use)
+          synchronize_exclusive_tools(&invoke)
+        else
+          invoke.call
+        end
         after_decision = run_callbacks(
           :after_tool,
           callback_payload.merge(result: tool_result),

@@ -39,15 +39,17 @@ class CodeModeTest < Minitest::Test
   end
 
   class AgentSession < LittleGhost::CodeMode::Session
-    attr_reader :results
+    attr_reader :results, :sources
 
     def initialize(broker:)
       @broker = broker
       @results = []
+      @sources = []
       @closed = false
     end
 
     def execute(source:, catalog:, context:, **)
+      sources << source
       Integer(source).times do |index|
         results << @broker.call("nested", {"value" => "same"}, id: "nested-#{index}")
       end
@@ -56,6 +58,31 @@ class CodeModeTest < Minitest::Test
 
     def close = @closed = true
     def closed? = @closed
+  end
+
+  class BlockingCloseAgentEngine < AgentEngine
+    def open_session(broker:, **)
+      BlockingCloseAgentSession.new(broker:).tap { |session| sessions << session }
+    end
+  end
+
+  class BlockingCloseAgentSession < AgentSession
+    attr_reader :close_entered, :close_release
+    attr_accessor :close_error
+
+    def initialize(**)
+      super
+      @close_entered = Queue.new
+      @close_release = Queue.new
+    end
+
+    def close
+      close_entered << true
+      close_release.pop
+      raise close_error if close_error
+
+      super
+    end
   end
 
   class DefaultOptionsEngine < LittleGhost::CodeMode::Engine
@@ -81,6 +108,70 @@ class CodeModeTest < Minitest::Test
       @wait_options = {yield_time_ms:, max_output_tokens:, terminate:}
       LittleGhost::CodeMode::CellResult.new
     end
+  end
+
+  class SerialEngine < LittleGhost::CodeMode::Engine
+    attr_reader :session
+
+    def language = :test
+    def instructions(catalog:) = "Test serialization."
+
+    def open_session(**)
+      @session ||= SerialSession.new
+    end
+  end
+
+  class SerialSession < LittleGhost::CodeMode::Session
+    attr_reader :max_active
+
+    def initialize
+      @mutex = Mutex.new
+      @active = 0
+      @max_active = 0
+    end
+
+    def execute(**)
+      @mutex.synchronize do
+        @active += 1
+        @max_active = [@max_active, @active].max
+      end
+      sleep 0.05
+      LittleGhost::CodeMode::CellResult.new
+    ensure
+      @mutex.synchronize { @active -= 1 }
+    end
+
+    def close = nil
+  end
+
+  class BlockingEngine < LittleGhost::CodeMode::Engine
+    attr_reader :session
+
+    def language = :test
+    def instructions(catalog:) = "Test close races."
+
+    def open_session(**)
+      @session ||= BlockingSession.new
+    end
+  end
+
+  class BlockingSession < LittleGhost::CodeMode::Session
+    attr_reader :entered, :release
+
+    def initialize
+      @entered = Queue.new
+      @release = Queue.new
+      @closed = false
+    end
+
+    def execute(**)
+      entered << true
+      release.pop
+      LittleGhost::CodeMode::CellResult.new
+    end
+
+    def close = @closed = true
+    def closed? = @closed
   end
 
   def test_engine_registration_accepts_only_engine_classes_and_instances
@@ -464,6 +555,203 @@ class CodeModeTest < Minitest::Test
     assert_includes error.message, "maximum tool calls"
     assert_equal 1, engine.sessions.first.results.length
   ensure
+    agent&.close
+  end
+
+  def test_brokered_exclusive_tool_does_not_deadlock_behind_exec
+    engine = AgentEngine.new
+    nested = Class.new(LittleGhost::Tool) do
+      tool_name "nested"
+      description "Nested"
+      exclusive true
+
+      def call(input) = input.fetch("value")
+    end
+    agent_class = Class.new(LittleGhost::Agent) { code_mode(engine:) }
+    exec = LittleGhost::Content::ToolUse.new(id: "exec-1", name: "exec", input: {"source" => "1"})
+    model = ScriptedModel.new(response([exec], stop_reason: :tool_use), response("done"))
+    agent = agent_class.new(model:, tools: [nested])
+
+    assert_equal "done", agent.call("go").text
+    assert_equal ["same"], engine.sessions.first.results.map(&:value)
+  ensure
+    agent&.close
+  end
+
+  def test_brokered_tool_cannot_reenter_code_mode_close
+    engine = AgentEngine.new
+    nested = Class.new(LittleGhost::Tool) do
+      tool_name "nested"
+      description "Nested"
+
+      def call(_input)
+        agent.code_mode_runtime.close(context:)
+        "unexpected"
+      end
+    end
+    agent_class = Class.new(LittleGhost::Agent) { code_mode(engine:) }
+    exec = LittleGhost::Content::ToolUse.new(id: "exec-1", name: "exec", input: {"source" => "1"})
+    model = ScriptedModel.new(response([exec], stop_reason: :tool_use), response("done"))
+    agent = agent_class.new(model:, tools: [nested])
+
+    assert_equal "done", agent.call("go").text
+    assert_match(/cannot close code mode/, engine.sessions.first.results.fetch(0).error)
+    assert_predicate engine.sessions.first, :closed?
+  ensure
+    agent&.close
+  end
+
+  def test_external_close_waits_for_deferred_brokered_cleanup
+    contexts = Queue.new
+    engine = BlockingCloseAgentEngine.new
+    nested = Class.new(LittleGhost::Tool) do
+      tool_name "nested"
+      description "Nested"
+
+      define_method(:call) do |_input|
+        contexts << context
+        agent.code_mode_runtime.close(context:)
+        "unexpected"
+      end
+    end
+    agent_class = Class.new(LittleGhost::Agent) { code_mode(engine:) }
+    exec = LittleGhost::Content::ToolUse.new(id: "exec-1", name: "exec", input: {"source" => "1"})
+    model = ScriptedModel.new(response([exec], stop_reason: :tool_use), response("done"))
+    agent = agent_class.new(model:, tools: [nested])
+    invocation = Thread.new { agent.call("go") }
+    context = contexts.pop
+    engine.sessions.first.close_entered.pop
+    closing = Thread.new { agent.code_mode_runtime.close(context:) }
+
+    refute closing.join(0.05), "external close returned before deferred session cleanup"
+    engine.sessions.first.close_release << true
+
+    assert_equal "done", invocation.value.text
+    closing.value
+    assert_predicate engine.sessions.first, :closed?
+  ensure
+    engine&.sessions&.first&.close_release&.push(true)
+    invocation&.join
+    closing&.join
+    agent&.close
+  end
+
+  def test_external_close_observes_deferred_cleanup_failure
+    contexts = Queue.new
+    engine = BlockingCloseAgentEngine.new
+    nested = Class.new(LittleGhost::Tool) do
+      tool_name "nested"
+      description "Nested"
+
+      define_method(:call) do |_input|
+        contexts << context
+        agent.code_mode_runtime.close(context:)
+        "unexpected"
+      end
+    end
+    agent_class = Class.new(LittleGhost::Agent) { code_mode(engine:) }
+    exec = LittleGhost::Content::ToolUse.new(id: "exec-1", name: "exec", input: {"source" => "1"})
+    model = ScriptedModel.new(response([exec], stop_reason: :tool_use), response("done"))
+    agent = agent_class.new(model:, tools: [nested])
+    invocation = Thread.new do
+      agent.call("go")
+    rescue => error
+      error
+    end
+    context = contexts.pop
+    engine.sessions.first.close_error = LittleGhost::CleanupError.new("cleanup failed")
+    engine.sessions.first.close_entered.pop
+    closing = Thread.new do
+      agent.code_mode_runtime.close(context:)
+    rescue => error
+      error
+    end
+    refute closing.join(0.05), "external close returned before deferred session cleanup"
+    engine.sessions.first.close_release << true
+
+    invocation_error = invocation.value
+    closing_error = closing.value
+
+    assert_instance_of LittleGhost::CleanupError, invocation_error
+    assert_instance_of LittleGhost::CleanupError, closing_error
+    assert_equal "cleanup failed", invocation_error.message
+    assert_equal "cleanup failed", closing_error.message
+  ensure
+    engine&.sessions&.first&.close_release&.push(true)
+    invocation&.join
+    closing&.join
+    begin
+      agent&.close
+    rescue LittleGhost::CleanupError
+      nil
+    end
+  end
+
+  def test_batched_control_calls_preserve_model_order
+    engine = AgentEngine.new
+    nested = LittleGhost::Tool.define(name: "nested", description: "Nested") { |input| input.fetch("value") }
+    agent_class = Class.new(LittleGhost::Agent) { code_mode(engine:) }
+    controls = [
+      LittleGhost::Content::ToolUse.new(id: "exec-1", name: "exec", input: {"source" => "1"}),
+      LittleGhost::Content::ToolUse.new(id: "exec-2", name: "exec", input: {"source" => "2"})
+    ]
+    model = ScriptedModel.new(response(controls, stop_reason: :tool_use), response("done"))
+    agent = agent_class.new(model:, tools: [nested])
+
+    assert_equal "done", agent.call("go").text
+    assert_equal %w[1 2], engine.sessions.first.sources
+  ensure
+    agent&.close
+  end
+
+  def test_runtime_rejects_overlapping_control_calls_without_running_them_concurrently
+    engine = SerialEngine.new
+    agent_class = Class.new(LittleGhost::Agent) { code_mode(engine:) }
+    agent = agent_class.new(model: ScriptedModel.new)
+    context = LittleGhost::RunContext.new
+
+    threads = 2.times.map do
+      Thread.new do
+        agent.code_mode_runtime.execute(source: "1", context:)
+        :completed
+      rescue => error
+        error
+      end
+    end
+    results = threads.map(&:value)
+
+    assert_equal 1, engine.session.max_active
+    assert_equal 1, results.count(:completed)
+    assert_equal 1, results.count { |result| result.is_a?(LittleGhost::ToolError) }
+    assert_predicate LittleGhost::CodeMode::ExecTool, :exclusive
+  ensure
+    agent&.close
+  end
+
+  def test_close_prevents_same_context_state_resurrection
+    engine = BlockingEngine.new
+    agent_class = Class.new(LittleGhost::Agent) { code_mode(engine:) }
+    agent = agent_class.new(model: ScriptedModel.new)
+    runtime = agent.code_mode_runtime
+    context = LittleGhost::RunContext.new
+    execution = Thread.new { runtime.execute(source: "1", context:) }
+    Thread.pass until engine.session
+    engine.session.entered.pop
+    state = runtime.send(:existing_state, context)
+    closing = Thread.new { runtime.close(context:) }
+    Thread.pass until state.mutex.synchronize { state.closing }
+
+    error = assert_raises(LittleGhost::ToolError) { runtime.execute(source: "2", context:) }
+    engine.session.release << true
+    execution.value
+    closing.value
+
+    assert_match(/clos/, error.message)
+    assert_predicate engine.session, :closed?
+  ensure
+    2.times { engine&.session&.release&.push(true) }
+    execution&.join
+    closing&.join
     agent&.close
   end
 

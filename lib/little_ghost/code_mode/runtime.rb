@@ -3,7 +3,9 @@
 module LittleGhost
   module CodeMode
     class AgentRuntime # :nodoc:
-      State = Struct.new(:broker, :session, :mutex)
+      State = Struct.new(
+        :broker, :session, :mutex, :condition, :active, :closing, :deferred_close, :cleaning, :cleanup_error
+      )
 
       def initialize(agent:, declaration:)
         @agent = agent
@@ -16,6 +18,7 @@ module LittleGhost
         @catalog_broker = Broker.new(agent:, direct_tools: @direct_tools)
         @states = {}
         @states_mutex = Mutex.new
+        @closed = false
       end
 
       attr_reader :engine
@@ -26,27 +29,41 @@ module LittleGhost
 
       def execute(source:, context:, **options)
         state = state_for(context)
-        bind_broker(state.broker, context)
-        session_for(state).execute(source:, catalog: state.broker.catalog, context:, **options)
+        with_control(state) do
+          bind_broker(state.broker, context)
+          session_for(state).execute(source:, catalog: state.broker.catalog, context:, **options)
+        end
       end
 
       def wait(context:, **options)
         state = existing_state(context)
         raise ToolError, "there is no active code-mode cell" unless state
 
-        bind_broker(state.broker, context)
-        session_for(state).wait(context:, **options)
+        with_control(state) do
+          bind_broker(state.broker, context)
+          session_for(state).wait(context:, **options)
+        end
       end
 
       def close(context: nil)
         states = @states_mutex.synchronize do
-          if context
-            [@states.delete(context)].compact
+          selected = if context
+            [@states[context]].compact
           else
-            @states.values.tap { @states.clear }
+            @closed = true
+            @states.values
+          end
+          selected.each { |state| state.mutex.synchronize { state.closing = true } }
+          selected
+        end
+        states.reverse_each { |state| close_state(state) }
+        @states_mutex.synchronize do
+          if context
+            @states.delete(context) if states.include?(@states[context])
+          else
+            states.each { |state| @states.delete_if { |_key, current| current.equal?(state) } }
           end
         end
-        states.reverse_each { |state| state.session&.close }
       end
 
       private
@@ -63,10 +80,18 @@ module LittleGhost
 
       def state_for(context)
         @states_mutex.synchronize do
+          raise ToolError, "code-mode runtime is closed" if @closed
+
           @states[context] ||= State.new(
             Broker.new(agent: @agent, direct_tools: @direct_tools),
             nil,
-            Mutex.new
+            Mutex.new,
+            ConditionVariable.new,
+            false,
+            false,
+            false,
+            false,
+            nil
           )
         end
       end
@@ -76,13 +101,72 @@ module LittleGhost
       end
 
       def session_for(state)
+        state.session ||= engine.open_session(
+          broker: state.broker,
+          sandbox_factory: sandbox_factory,
+          limits: @limits
+        )
+      end
+
+      def with_control(state)
+        acquired = false
         state.mutex.synchronize do
-          state.session ||= engine.open_session(
-            broker: state.broker,
-            sandbox_factory: sandbox_factory,
-            limits: @limits
-          )
+          raise ToolError, "code-mode session is closing" if state.closing
+          raise ToolError, "a code-mode control call is already active" if state.active
+
+          state.active = true
+          acquired = true
         end
+        yield
+      ensure
+        if acquired
+          session = state.mutex.synchronize do
+            state.active = false
+            if state.deferred_close
+              state.cleaning = true if state.session
+              state.session.tap { state.session = nil }
+            end
+          ensure
+            state.condition.broadcast
+          end
+          close_session(state, session)
+        end
+      end
+
+      def close_state(state)
+        session = state.mutex.synchronize do
+          if state.active && brokered_lifecycle_reentry?
+            state.deferred_close = true
+            raise ToolError, "cannot close code mode from a brokered tool while a cell is active"
+          end
+          state.condition.wait(state.mutex) while state.active || state.cleaning
+          raise state.cleanup_error if state.cleanup_error
+
+          state.cleaning = true if state.session
+          state.session.tap { state.session = nil }
+        end
+        close_session(state, session)
+      end
+
+      def close_session(state, session)
+        return unless session
+
+        session.close
+      rescue => error
+        state.mutex.synchronize { state.cleanup_error ||= error }
+        raise
+      ensure
+        if session
+          state.mutex.synchronize do
+            state.cleaning = false
+            state.condition.broadcast
+          end
+        end
+      end
+
+      def brokered_lifecycle_reentry?
+        execution = ExecutionState[:tool_execution]
+        execution && !%w[exec wait].include?(execution.tool_use.name)
       end
 
       def sandbox_factory
