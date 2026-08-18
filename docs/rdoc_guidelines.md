@@ -85,6 +85,10 @@ For example, “you do not need to store a second object anymore” is confusing
 complete instruction. Introduce a name before depending on it. If a sentence
 needs three new terms, split the idea or move it later.
 
+Before 1.0, reader-facing guides describe the current contract directly. Do not
+add migration sections, removed option lists, or replacement histories. Keep
+that context in release notes or maintainers' records when it is useful.
+
 Treat every sentence as part of a path of discovery. Lead with the result, then
 add the mechanism or boundary that helps the reader use it. Prefer two short
 sentences over one sentence that compresses setup, lifecycle, concurrency, and
@@ -124,7 +128,9 @@ rewrite it in approachable language rather than hiding it in a late disclaimer.
 | Core Concepts | “How do these pieces relate, and when do I choose each one?” | A durable mental model from Agent to Assembly, contrasting adjacent choices without cataloguing their options. |
 | Assembly guide | “How do I compose several participants?” | Connected, runnable examples of Workflow, Swarm, Graph, nesting, trajectories, and builders. |
 | Prompts as Views | “Where do growing instructions and shared prompt pieces live?” | Move one inline prompt into a conventional ERB view, then introduce locals, partials, lookup, and trust boundaries. |
-| Workspaces, Sandboxes, and Tools | “What runs where, what persists, and which boundaries are enforced?” | Workspace and resource lifecycle, Tool delegation, scoped capabilities, backend tradeoffs, networking, hosting layers, and explicit limitations. |
+| Tools | “What can an agent do, where does that code run, and where is it authorized?” | Tool definition and binding, trusted context, direct application authority, sandbox delegation, concurrency, retries, failures, and the bridge to code mode. |
+| Workspaces and Sandboxes | “What runs where, what persists, and which process boundaries are enforced?” | Workspace and resource lifecycle, logical paths, scoped capabilities, backend tradeoffs, networking, hosting layers, and explicit limitations. |
+| Code Mode | “How can a model compose Tools without gaining their authority?” | One useful Ruby program, trusted Tool boundary, execution lifecycle, excluded Tools, limits, optional JavaScript, engine extensions, and sandbox requirements. |
 | Production guide | “How does this live in a real application?” | Configuration, runtime reuse, sessions, supervision, observability, ownership, and trust boundaries. |
 | Class or module comment | “What responsibility does this object own?” | A purpose sentence, lifecycle or extension contract, and a short canonical example for a core type. |
 | Method comment | “What happens if I call this?” | Usually one sentence plus non-obvious arguments, return value, side effects, exceptions, or constraints. |
@@ -354,7 +360,7 @@ Check both content and generated metadata:
 
 - The landing-page browser title is “LittleGhost API Documentation”; guide and API page titles also include that configured project title.
 - The landing-page description begins with LittleGhost's capability, not project history or development status.
-- `README.md` is the landing page; Getting Started, Core Concepts, Compose Agents, Prompts as Views, Workspaces, Sandboxes, and Tools, and Running in Production appear under Pages in that order; and this contributor guideline does not.
+- `README.md` is the landing page; Getting Started, Core Concepts, Compose Agents, Prompts as Views, Tools, Workspaces and Sandboxes, Code Mode, and Running in Production appear in that learning order; Tools, Workspaces and Sandboxes, and Code Mode form a “Capabilities and isolation” group; and this contributor guideline does not.
 - Page titles, headings, code blocks, tables, navigation, and explicit cross-references render correctly.
 - Public method signatures match the source, with no duplicate generated entries.
 - Pages navigation contains the intended guides, and search data contains the expected public API names without exposing internal-only pages.

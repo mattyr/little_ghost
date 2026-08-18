@@ -1,18 +1,6 @@
 # frozen_string_literal: true
 
 module LittleGhost
-  # ModelRequest carries everything a provider needs for one model stream. It
-  # keeps messages, tools, settings, structured-output requirements, and
-  # cooperative execution controls together.
-  #
-  # Messages are coerced into Message objects, and required capabilities are
-  # normalized to unique symbols. The messages, tools, settings, and capability
-  # containers are frozen; output schema and tool choice values are retained as
-  # supplied.
-  #
-  # Only those outer containers are frozen. Do not mutate retained output
-  # schemas, tool choices, or nested settings after construction, and do not
-  # share mutable control values across concurrent requests.
   ModelRequest = Data.define( # :nodoc:
     :messages,
     :tools,

@@ -17,6 +17,9 @@ module LittleGhost
   # application configuration provision run-scoped resources without a
   # Workspace subclass. Applications that share a writable root between Runs
   # must provide their own concurrency and tenant isolation.
+  #
+  # See the {Workspaces and Sandboxes guide}[rdoc-ref:docs/guides/sandboxing.md]
+  # for logical paths, Sandbox policy, process ownership, and networking.
   class Workspace
     @providers = {}
 
@@ -68,7 +71,11 @@ module LittleGhost
       paths.fetch(name.to_sym)
     end
 
-    # Resolves a model-safe logical path to its physical workspace path.
+    # Converts a logical path to its physical workspace path. This method checks
+    # lexical containment but does not make direct filesystem access safe for
+    # untrusted input. Pass model-selected paths through Sandbox file operations,
+    # which reject symlinks while opening each path component.
+    #
     # Relative paths belong to +root+; named paths use
     # <tt>workspace://name/path</tt>. Physical absolute paths are deliberately
     # rejected so brokered tools do not teach callers host filesystem layout.

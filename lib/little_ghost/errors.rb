@@ -1,9 +1,11 @@
 # frozen_string_literal: true
 
 module LittleGhost
-  # Base class for errors raised by LittleGhost.
+  # Base class for LittleGhost domain errors. Public APIs may also raise Ruby
+  # errors such as ArgumentError for invalid method arguments.
   class Error < StandardError; end
-  # Raised for invalid framework or application configuration.
+  # Raised for invalid framework or application configuration. Correct the
+  # configuration before retrying the request.
   class ConfigurationError < Error; end
   # Base class for sandbox setup failures that trusted application code can
   # diagnose before model-controlled work starts.
@@ -34,7 +36,9 @@ module LittleGhost
   class AssemblyStepTimeoutError < AssemblyError; end
   # Raised when an invocation contains an unsupported input form.
   class UnsupportedInputError < InvocationError; end
-  # Base class for provider response and protocol failures.
+  # Base class for provider request, response, and protocol failures. Agent Runs
+  # normally record these as failed outcomes; provider retry policy may handle a
+  # retryable failure before it reaches the Run.
   class ProviderError < Error; end
   # Raised when a provider violates the expected request-response protocol.
   class ProtocolError < ProviderError; end
@@ -60,14 +64,18 @@ module LittleGhost
 
   # Raised when repeated identical tool calls reach the configured termination limit.
   class ToolLoopError < ProtocolError; end
-  # Base class for failures while executing a tool.
+  # Base class for expected failures while executing a Tool. Its message may be
+  # returned to the model, so it must be safe to disclose.
   class ToolError < Error; end
   # Raised when an active run cannot accept an interjection.
   class AgentInterjectionError < InvocationError; end
-  # Raised when cancellation stops an operation.
+  # Raised when cancellation stops an operation. A started top-level Run
+  # normally records a cancelled outcome.
   class CancelledError < Error; end
-  # Raised when an operation reaches its deadline.
+  # Raised when an operation reaches its deadline. A started top-level Run
+  # normally records a partial outcome.
   class DeadlineExceededError < Error; end
-  # Raised when one or more managed resources fail to close.
+  # Raised when one or more managed resources fail to close. Treat the operation
+  # as not cleanly terminated and escalate to the application's supervisor.
   class CleanupError < Error; end
 end

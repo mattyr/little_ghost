@@ -5,8 +5,11 @@ module LittleGhost
     # Normalizes a trusted Tool catalog for a guest language and rejects names
     # that would collide or shadow code-mode controls.
     class Catalog
+      # Frozen normalized Tool definitions in declaration order.
       attr_reader :definitions
 
+      # Normalizes trusted Tool +specifications+ with +normalize+. Names in
+      # +reserved+ and names that collide after normalization are rejected.
       def initialize(specifications, normalize:, reserved: %w[exec wait])
         aliases = {}
         @definitions = Array(specifications).map do |specification|
@@ -32,7 +35,9 @@ module LittleGhost
         @by_name = @definitions.to_h { |definition| [definition.fetch("name"), definition] }.freeze
       end
 
+      # Returns the normalized definition for +name+.
       def fetch(name) = @by_name.fetch(name.to_s)
+      # Indicates whether +name+ is present in the catalog.
       def key?(name) = @by_name.key?(name.to_s)
 
       private

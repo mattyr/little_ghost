@@ -8,9 +8,15 @@ class CodeModeTest < Minitest::Test
   class ScriptedModel
     include LittleGhost::ModelInterface
 
-    def initialize(*responses) = @responses = responses
+    attr_reader :requests
 
-    def stream(_request)
+    def initialize(*responses)
+      @responses = responses
+      @requests = []
+    end
+
+    def stream(request)
+      requests << request
       response = @responses.shift
       events = [LittleGhost::StreamEvent.build(:message_start)]
       response.message.content.grep(LittleGhost::Content::ToolUse).each_with_index do |use, index|
@@ -270,11 +276,11 @@ class CodeModeTest < Minitest::Test
     registry&.close
   end
 
-  def test_direct_tools_remain_model_facing_and_are_excluded_from_broker_catalog
-    direct = LittleGhost::Tool.define(name: "confirm", description: "Confirm.") { "yes" }
+  def test_except_tools_remain_model_facing_and_are_excluded_from_broker_catalog
+    exception = LittleGhost::Tool.define(name: "confirm", description: "Confirm.") { "yes" }
     coded = LittleGhost::Tool.define(name: "lookup", description: "Look up.") { "value" }
-    registry = LittleGhost::ToolRegistry.new([direct, coded])
-    broker = LittleGhost::CodeMode::Broker.new(registry:, direct_tools: ["confirm"])
+    registry = LittleGhost::ToolRegistry.new([exception, coded])
+    broker = LittleGhost::CodeMode::Broker.new(registry:, except: ["confirm"])
 
     assert_equal ["lookup"], broker.catalog.map { |tool| tool.fetch(:name) }
     assert broker.call("lookup").error.nil?
@@ -371,14 +377,15 @@ class CodeModeTest < Minitest::Test
     assert_includes instructions, "# @return [Array[Hash[String, untyped]]]"
     assert_includes instructions, "ALL_TOOLS"
     assert_includes instructions, "fresh process"
+    assert_includes instructions, "Each submitted program is"
     assert_includes instructions, "do not persist between exec calls"
     assert_includes instructions, "resumed with wait continues in the same process"
     assert_includes instructions, "Filesystem, network, subprocess, and optional-library"
     assert_includes instructions, "JSON values as ordinary Ruby values"
     assert_includes instructions, "callable order"
-    assert_includes instructions, "FRAME"
-    assert_includes instructions, "final expression is its structured result"
-    assert_includes instructions, "keeping the cell alive"
+    refute_includes instructions, "FRAME"
+    assert_includes instructions, "final expression is the value returned by exec"
+    assert_includes instructions, "cell alive for a later wait call"
   end
 
   def test_ruby_engine_enforces_source_output_cell_and_tool_call_limits
@@ -538,21 +545,22 @@ class CodeModeTest < Minitest::Test
     registry&.close
   end
 
-  def test_agent_uses_one_tool_budget_for_direct_and_brokered_calls_while_excluding_exec
+  def test_agent_uses_one_tool_budget_for_model_facing_and_brokered_calls_while_excluding_exec
     engine = AgentEngine.new
     nested = LittleGhost::Tool.define(name: "nested", description: "Nested") { |input| input.fetch("value") }
-    direct = LittleGhost::Tool.define(name: "direct", description: "Direct") { "done" }
+    exception = LittleGhost::Tool.define(name: "confirm", description: "Confirm") { "done" }
     agent_class = Class.new(LittleGhost::Agent) do
-      code_mode engine:, direct_tools: ["direct"]
+      code_mode engine:, except: ["confirm"]
     end
     exec = LittleGhost::Content::ToolUse.new(id: "exec-1", name: "exec", input: {"source" => "1"})
-    direct_use = LittleGhost::Content::ToolUse.new(id: "direct-1", name: "direct", input: {})
-    model = ScriptedModel.new(response([exec], stop_reason: :tool_use), response([direct_use], stop_reason: :tool_use))
-    agent = agent_class.new(model:, tools: [nested, direct], max_tool_calls: 1)
+    confirm = LittleGhost::Content::ToolUse.new(id: "confirm-1", name: "confirm", input: {})
+    model = ScriptedModel.new(response([exec], stop_reason: :tool_use), response([confirm], stop_reason: :tool_use))
+    agent = agent_class.new(model:, tools: [nested, exception], max_tool_calls: 1)
 
     error = assert_raises(LittleGhost::ProtocolError) { agent.call("go") }
 
     assert_includes error.message, "maximum tool calls"
+    assert_equal %w[confirm exec wait], model.requests.first.tools.map { |tool| tool.fetch(:name) }.sort
     assert_equal 1, engine.sessions.first.results.length
   ensure
     agent&.close

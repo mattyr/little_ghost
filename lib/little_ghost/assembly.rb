@@ -14,18 +14,19 @@ module LittleGhost
   #   agent_run.response
   #   graph_run.response
   #
-  # Named subclasses are the usual form. +to_builder+ creates a mutable dynamic
-  # definition seeded by the class, while +definition+ returns the immutable
-  # snapshot used for one execution. Composite results expose Assembly::Step
-  # records through RunResult#trajectory.
+  # Applications normally subclass Agent, Workflow, Swarm, or Graph rather
+  # than Assembly directly. Each standalone call returns a top-level Run.
+  # Participants called inside another Assembly return a RunResult to their
+  # parent.
   #
-  # A standalone assembly owns a top-level Run. An assembly built by a Runtime
-  # participates in the existing run and returns a RunResult. Applications
-  # normally subclass Agent, Workflow, Swarm, or Graph rather than Assembly
-  # directly. Standalone calls automatically reuse the active Configuration's
-  # shared Runtime while keeping each Run and its resources independent.
+  # == Advanced construction
   #
-  # == What each calling form returns
+  # Named subclasses are the usual form. +to_builder+ creates a mutable
+  # definition for applications that discover participants at runtime.
+  # +definition+ returns the fixed snapshot used by one execution. Composite
+  # results record their steps in RunResult#trajectory.
+  #
+  # == Return values
   #
   # [<tt>CustomerSupportAgent.ask(...)</tt>]
   #   A named class creates and returns a top-level Run.

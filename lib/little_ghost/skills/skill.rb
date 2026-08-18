@@ -3,9 +3,6 @@
 module LittleGhost
   # Skills give agents focused instructions and supporting resources on demand.
   module Skills
-    # Skill holds the metadata and instructions loaded from one +SKILL.md+ file.
-    # +path+ is shown to the model; +source_path+ is the local file used for
-    # boundary validation and resource discovery.
     Skill = Data.define( # :nodoc:
       :name,
       :description,

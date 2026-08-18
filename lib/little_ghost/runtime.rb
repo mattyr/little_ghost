@@ -33,14 +33,10 @@ module LittleGhost
   # Explicit construction snapshots the supplied Configuration but does not
   # replace LittleGhost's shared default Runtime.
   #
-  # A Runtime may build independent Runs concurrently. Each Run gets its own
-  # bound participants and Tools. By default, Runtime also creates a workspace
-  # and sandbox owned by that Run. Existing workspace or sandbox instances
-  # passed by the application remain caller-owned. Other supplied objects may
-  # receive calls from several threads, so custom stores, resolvers, hooks,
-  # subscribers, providers, and resource factories must be thread-safe. One
-  # SessionStore instance serializes calls sharing a Session; multi-process
-  # deployments need coordination provided by their store.
+  # A Runtime may build independent Runs concurrently. Each Run gets fresh
+  # participants and Tools. By default, it also gets a Runtime-created Workspace
+  # and Sandbox that the Run owns. Instances supplied by the application remain
+  # caller-owned.
   #
   # == Advanced construction and ownership
   #
@@ -55,6 +51,11 @@ module LittleGhost
   # then raised. Session actor resolution must use authenticated application
   # identity. The default Sandboxes::Unrestricted uses host permissions and is not a
   # security boundary for untrusted work.
+  #
+  # Shared stores, resolvers, hooks, subscribers, providers, and resource
+  # factories may receive calls from several threads and must be thread-safe.
+  # One SessionStore instance serializes calls for the same Session. A store
+  # must provide its own coordination across processes.
   #
   # Runtime has no shutdown operation. Runs close resources created for their
   # request. The application shuts down shared services and process-wide

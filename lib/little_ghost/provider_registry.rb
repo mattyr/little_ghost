@@ -27,9 +27,9 @@ module LittleGhost
 
     # Constructs the configured provider for +model+.
     #
-    # Connection +configuration+ remains authoritative. The trusted per-profile
-    # +request+ mapping may adjust bounded request behavior, but cannot replace
-    # endpoints or credentials.
+    # +configuration+ supplies the connection, including its endpoint and
+    # credentials. The trusted +request+ mapping may change only the bounded
+    # request options accepted by the selected adapter.
     def build(adapter:, model:, configuration:, request: {}, **context)
       factory = @adapters.fetch(adapter.to_s) do
         raise AdapterLoadError, "Unknown provider adapter: #{adapter}"

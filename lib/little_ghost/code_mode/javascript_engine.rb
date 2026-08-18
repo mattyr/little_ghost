@@ -29,7 +29,7 @@ require_relative "javascript/host"
 module LittleGhost
   module CodeMode
     # Runs code-mode cells in an isolated V8 context supplied by the optional
-    # MiniRacer integration.
+    # MiniRacer integration. A cell is one program submitted by the model.
     class JavascriptEngine < Engine
       DEFAULT_LIMITS = {
         output_bytes: 64 * 1024 * 1024,
@@ -40,22 +40,26 @@ module LittleGhost
         max_concurrency: 8
       }.freeze
 
+      # Returns the +:javascript+ language identifier.
       def language = :javascript
 
+      # Builds JavaScript usage instructions and TypeScript declarations for
+      # +catalog+.
       def instructions(catalog:)
         javascript_catalog = Javascript::Catalog.new(catalog)
         <<~INSTRUCTIONS.strip
-          Run JavaScript in a fresh V8 context to call the available tools and compose their results. The context has no
-          Node.js APIs, filesystem, network, console, or WebAssembly. Tool functions return Promises; use await or
-          Promise.all. JSON tool results become objects or arrays and other results remain strings. Unawaited tool calls
-          are completed before the cell exits. Report output with text(value), use yield_control() to yield accumulated
-          output while continuing, and use exit() to complete early. ALL_TOOLS is the complete catalog available inside
-          this context.
+          Run JavaScript in a fresh V8 context to call the available tools and compose their results. Each submitted
+          program is a cell. The context has no Node.js APIs, filesystem, network, console, or WebAssembly. Tool
+          functions return Promises; use await or Promise.all. JSON tool results become objects or arrays and other
+          results remain strings. Unawaited tool calls are completed before the cell exits. Report output with
+          text(value), use yield_control() to yield accumulated output while continuing, and use exit() to complete
+          early. ALL_TOOLS is the complete catalog available inside this context.
 
           #{javascript_catalog.declarations}
         INSTRUCTIONS
       end
 
+      # Opens a JavaScript Session with engine defaults merged with +limits+.
       def open_session(broker:, sandbox_factory:, limits: {})
         configured_limits = DEFAULT_LIMITS.merge(limits.transform_keys(&:to_sym))
         root = Dir.mktmpdir("little-ghost-javascript-")

@@ -7,26 +7,31 @@ module LittleGhost
   module CodeMode
     # Keeps tool authorization and execution in the trusted parent process.
     class Broker
+      # Builds a broker for an Agent's Tool registry. +except+ removes names from
+      # the code-mode catalog. +dispatch+ is a trusted adapter hook used by
+      # custom hosts; ordinary Agent integrations should let the broker dispatch
+      # through +agent+.
       def initialize(agent: nil, registry: nil, context: RunContext.new, events: [],
-        parent_operation_id: nil, parent_trace_context: nil, direct_tools: nil, dispatch: nil, max_calls: nil)
+        parent_operation_id: nil, parent_trace_context: nil, except: nil, dispatch: nil, max_calls: nil)
         @agent = agent
         @registry = registry || agent&.tool_registry
         @context = context
         @events = events
         @parent_operation_id = parent_operation_id
         @parent_trace_context = parent_trace_context
-        @direct_tools = Array(direct_tools).map(&:to_s).freeze
+        @except = Array(except).map(&:to_s).freeze
         @dispatch = dispatch
         @max_calls = max_calls && Integer(max_calls)
         @call_count = 0
         @call_mutex = Mutex.new
       end
 
+      # Returns the Tool specifications available to model-authored code.
       def catalog
         specifications = @registry&.specifications || []
         specifications.reject do |specification|
           name = specification.fetch(:name, specification["name"]).to_s
-          @direct_tools.include?(name) || %w[exec wait].include?(name)
+          @except.include?(name) || %w[exec wait].include?(name)
         end
       end
 
@@ -40,6 +45,10 @@ module LittleGhost
         self
       end
 
+      # Calls an available Tool by model-visible +name+. The returned CallResult
+      # has +id+, decoded +value+, and model-safe +error+ fields. +arguments+
+      # remains untrusted until the ordinary Tool path validates and authorizes
+      # it.
       def call(name, arguments = {}, id: SecureRandom.uuid)
         @call_mutex.synchronize do
           @call_count += 1

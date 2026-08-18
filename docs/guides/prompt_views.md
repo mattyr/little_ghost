@@ -90,7 +90,7 @@ You are a customer support agent for <%= company_name %>.
 
 The underscore marks a partial. Its locals are explicit, so it does not quietly inherit everything available to the parent view.
 
-## Override the convention when it helps
+## Choose a different template path
 
 Most named Agents can rely on their conventional path. Use `system_template` when a class should read a differently named view:
 
@@ -114,7 +114,7 @@ Prompt views run as ERB inside the Ruby process. They can call Ruby, so keep eve
 
 `TrustedPath` exists for the uncommon case where trusted application code selects a request-specific root. It records a trust decision; it does not make an untrusted directory safe.
 
-## Keep request composition separate
+## Build request-specific input in a Workflow
 
 A prompt view defines reusable instructions for one Agent. A Workflow may still build request-specific input for that Agent:
 
@@ -129,6 +129,6 @@ MESSAGE
 
 The Workflow is composing this request. `CustomerSupportAgent` still receives its own system prompt view when it runs.
 
-Continue with [Workspaces, Sandboxes, and Tools](sandboxing.md) to decide where
-tool-backed file and process work runs, what it can reach, and which boundaries
-your deployment enforces.
+Continue with [Tools](tools.md) to give those Agents application capabilities
+while keeping model input, trusted context, and delegated sandbox operations
+distinct.

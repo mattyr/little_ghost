@@ -2,7 +2,7 @@
 
 An Assembly lets several participants answer through the same familiar calls as one Agent. This guide grows the customer-support example through each coordination style, then shows how to nest and construct assemblies dynamically.
 
-## Start with the shared contract
+## Call every assembly the same way
 
 Callers do not need a branch for each implementation:
 
@@ -202,6 +202,8 @@ edge :triage, [:ledger, :policy], max_concurrency: 2
 edge [:ledger, :policy], :respond
 ```
 
+#### Join parallel branches
+
 An array source declares a wait-for-all convergence. Use it when the common
 successor cannot be inferred or when the convergence needs its own input
 mapper. Parallel groups cannot nest. `validate!` raises `ConfigurationError`
@@ -225,6 +227,8 @@ From policy:
 Pending transfers usually settle within two business days.
 ```
 
+#### Map inputs between nodes
+
 An `input` mapper replaces this default with the exact value returned by the
 mapper. Put it on an edge to control one transition, or on a node to control
 every route into that target. A selected edge or edge-group mapper takes
@@ -237,14 +241,9 @@ edge :triage, :ledger, input: lambda { |state|
 ```
 
 Conditions and mappers receive a detached, deeply immutable `Graph::State`.
-For a condition, `state.current` names the completed source node whose route is
-being selected. For an edge, node, or error-edge input mapper, it names the
-destination node whose input is being built. `state.input` is the original
-request, and `state.results` contains every completed node.
-`state.incoming_results` contains only the immediate predecessor results, in
-the same order as `state.predecessors`. `state.previous` and
-`state.previous_result` are available only when there is one predecessor.
-Error-edge mappers can also read `state.error`.
+Use `state.input` for the original request, `state.results` for completed nodes,
+and `state.incoming_results` for the immediate predecessors. The
+`LittleGhost::Graph::State` API reference lists every routing value.
 
 Conditions and mappers are trusted application code. Their state includes
 snapshots of caller history and application context, even when the destination
@@ -258,12 +257,16 @@ edge [:ledger, :policy], :respond, input: lambda { |state|
 }
 ```
 
+#### Control data crossing branches
+
 By default, the original request and complete source output cross into every
 parallel branch. Treat both as untrusted, and only connect participants and
 providers allowed to receive them. A trusted input mapper can replace the
 branch input. A trusted redaction assembly before the fan-out can narrow the
 source output. If the original request also needs narrowing, give the graph a
 redacted request from trusted application code.
+
+#### Recover and review
 
 An error edge can send an expected failure to a recovery Assembly. Call `validate!` before the first run.
 

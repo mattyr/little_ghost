@@ -2,9 +2,11 @@
 
 module LittleGhost
   class Sandbox
-    # Owns one sandboxed child process and its bounded duplex streams. Sessions
-    # terminate the whole child process group on timeout, cancellation, or
-    # close, so callers cannot accidentally leave descendants behind.
+    # Owns one sandboxed child process and its bounded input and output streams.
+    # Timeout, cancellation, and close terminate the original process group and
+    # its ordinary descendants. A descendant that creates another process group
+    # can outlive this session. Use a backend with +process_tree_ownership+ or an
+    # outer supervisor when complete descendant ownership is required.
     class ProcessSession
       Chunk = Data.define(:stdout, :stderr, :eof) # :nodoc:
 

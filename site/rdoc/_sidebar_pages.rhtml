@@ -1,6 +1,7 @@
 <%- guide_order = RDoc::Generator::LittleGhost::GUIDE_PATHS.keys %>
 <%- pages = @files.select { |file| file.text? && file.full_name != @options.main_page } %>
 <%- pages = pages.sort_by { |file| guide_order.index(file.full_name) || guide_order.length } %>
+<%- guide_sections = RDoc::Generator::LittleGhost::GUIDE_SECTIONS %>
 
 <%- unless pages.empty? %>
   <div id="fileindex-section" class="nav-section">
@@ -8,13 +9,19 @@
       <li>
         <a href="<%= rel_prefix %>/index.html">Docs home</a>
       </li>
-      <%- pages.each do |page| %>
-        <li>
-          <a href="<%= rel_prefix %>/<%= h page.path %>"<%= ' aria-current="page"' if defined?(current) && current == page %>>
-            <%= h page.page_name %>
-          </a>
-        </li>
-      <%- end %>
     </ul>
+
+    <%- guide_sections.each do |section, paths| %>
+      <h2><%= h section %></h2>
+      <ul class="nav-list">
+        <%- pages.select { |page| paths.include?(page.full_name) }.each do |page| %>
+          <li>
+            <a href="<%= rel_prefix %>/<%= h page.path %>"<%= ' aria-current="page"' if defined?(current) && current == page %>>
+              <%= h page.page_name %>
+            </a>
+          </li>
+        <%- end %>
+      </ul>
+    <%- end %>
   </div>
 <%- end %>

@@ -18,8 +18,7 @@ module LittleGhost
   # cooperative cancellation and waits for both the worker and in-flight
   # interjection calls.
   class Execution
-    # The supervised Run and an exception raised outside the Run's ordinary
-    # terminal outcome, such as event delivery or cleanup failure.
+    # The supervised Run.
     attr_reader :run
 
     class << self

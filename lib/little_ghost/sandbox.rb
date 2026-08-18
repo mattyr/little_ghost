@@ -15,14 +15,19 @@ module LittleGhost
   #     }
   #   end
   #
-  # Implementations report their effective policy and capabilities, confine
-  # brokered paths to declared Workspace paths, honor RunContext cancellation, enforce
-  # time and output limits, and return
-  # {Execution}[rdoc-ref:LittleGhost::Sandbox::Execution] from process
-  # operations. A backend's isolation mechanism still relies on its outer host,
+  # A backend reports the policy and capabilities it actually enforces. File
+  # operations stay within declared Workspace paths. Process operations honor
+  # cancellation and configured limits, then return an
+  # {Execution}[rdoc-ref:LittleGhost::Sandbox::Execution].
+  #
+  # A backend's isolation mechanism still relies on its outer host,
   # kernel or VM, dependencies, trusted configuration, and deliberately exposed
   # paths. Sandbox policy does not apply to provider requests or arbitrary Ruby
   # code in the application process.
+  #
+  # See the {Workspaces and Sandboxes guide}[rdoc-ref:docs/guides/sandboxing.md]
+  # for the path model, built-in backends, Scopes, process ownership, and
+  # networking boundaries.
   class Sandbox
     @providers = {}
 

@@ -9,8 +9,8 @@ module LittleGhost
   #   state.dig("plan", :status) # => "active"
   #   state.to_h                  # => {"plan" => {"status" => "active"}}
   #
-  # State and metadata exposed by Sessions and RunContexts use DataMap so they
-  # remain easy to work with in Ruby and portable across session stores. Values
+  # State and metadata exposed by Sessions and RunContexts use DataMap so Ruby
+  # code can use either key form while session stores keep one portable shape. Values
   # are limited to JSON primitives, Arrays, and mappings. A mapping that
   # supplies both a String and Symbol form of the same key is ambiguous and
   # raises ArgumentError.

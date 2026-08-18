@@ -1,9 +1,14 @@
 # frozen_string_literal: true
 
 module LittleGhost
-  # Runs model-authored orchestration code without moving tool authority into
-  # the child process. Engines are pluggable; every tool call returns to a
-  # trusted Broker for catalog validation and ordinary Agent dispatch.
+  # Runs model-authored orchestration code in a child interpreter. Built-in
+  # engines keep Tool authority in the parent process: each Tool call returns to
+  # a trusted Broker for catalog validation and ordinary Agent dispatch. Custom
+  # engines must preserve the Engine and Session containment contracts.
+  #
+  # See the {Code Mode guide}[rdoc-ref:docs/guides/code_mode.md] for the first
+  # Ruby cell, Broker boundary, lifecycle, limits, optional JavaScript engine,
+  # and extension contract.
   module CodeMode
     @engines = {}
 

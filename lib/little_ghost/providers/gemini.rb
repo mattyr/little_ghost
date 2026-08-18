@@ -9,7 +9,14 @@ require_relative "gemini/catalog_source"
 
 module LittleGhost
   module Providers
-    # Zero-dependency Gemini generateContent adapter.
+    # Connects a Model to Google's Gemini generateContent API.
+    #
+    # Requests send messages, Tool definitions, attachments, and model settings
+    # to the configured Google endpoint. The adapter reads its API key from
+    # trusted configuration, honors cancellation and deadlines, and emits
+    # LittleGhost StreamEvents. HTTP and response-shape failures become
+    # ProviderError subclasses. It uses the built-in HTTP client and does not
+    # require Google's SDK.
     class Gemini < Base
       # Request policy supported by Gemini and Vertex AI HTTP clients.
       def self.request_options = %i[max_response_bytes open_timeout read_timeout].freeze
@@ -29,6 +36,7 @@ module LittleGhost
         @transport = transport || Support::HTTPClient.new(base_url:, open_timeout:, read_timeout:, max_response_bytes:)
       end
 
+      # Streams normalized events for +request+.
       def stream(request)
         return enum_for(__method__, request) unless block_given?
 
@@ -49,6 +57,7 @@ module LittleGhost
         raise ProtocolError, "Google returned invalid JSON: #{error.message}"
       end
 
+      # Reports Tool and structured-output support from model metadata.
       def capabilities(metadata: {})
         ModelCapabilities.new(native_structured_output: true, tools: true, tool_choice: true,
           supported_parameters: metadata[:supported_parameters])

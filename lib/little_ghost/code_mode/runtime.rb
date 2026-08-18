@@ -12,10 +12,10 @@ module LittleGhost
         @declaration = declaration.transform_keys(&:to_sym)
         implementation = CodeMode.resolve_engine(@declaration.fetch(:engine, :ruby))
         @engine = implementation.is_a?(Class) ? implementation.new : implementation
-        @direct_tools = @declaration[:direct_tools]
+        @except = @declaration[:except]
         @limits = @declaration.fetch(:limits, {})
         @sandbox_declaration = @declaration.fetch(:sandbox, :native)
-        @catalog_broker = Broker.new(agent:, direct_tools: @direct_tools)
+        @catalog_broker = Broker.new(agent:, except: @except)
         @states = {}
         @states_mutex = Mutex.new
         @closed = false
@@ -83,7 +83,7 @@ module LittleGhost
           raise ToolError, "code-mode runtime is closed" if @closed
 
           @states[context] ||= State.new(
-            Broker.new(agent: @agent, direct_tools: @direct_tools),
+            Broker.new(agent: @agent, except: @except),
             nil,
             Mutex.new,
             ConditionVariable.new,

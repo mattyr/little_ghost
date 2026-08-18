@@ -16,7 +16,9 @@ module LittleGhost
     # concrete class.
     #
     #   callbacks = LittleGhost::Support::Callbacks.new(:prepare)
-    #   callbacks.on(:prepare) { |payload| Callbacks.replace(payload.merge(debug: true)) }
+    #   callbacks.on(:prepare) do |payload|
+    #     LittleGhost::Support::Callbacks.replace(payload.merge(debug: true))
+    #   end
     #   decision = callbacks.run(:prepare, {})
     #   decision.value # => {debug: true}
     class Callbacks

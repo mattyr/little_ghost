@@ -67,7 +67,7 @@
           <h1 id="hero-title">Agents and agent <span>coordination in Ruby.</span></h1>
           <p>LittleGhost is a Ruby library for defining and coordinating AI agents. Call one from your application, or compose graphs and swarms when the work needs a team.</p>
           <div class="intro-actions">
-            <div class="install-command" aria-label="Install LittleGhost with Bundler"><code><span>$</span> bundle add little_ghost</code><small>Ruby 3.3+</small></div>
+            <div class="install-command" aria-label="Install LittleGhost with Bundler"><code><span>$</span> bundle add little_ghost</code><small>Ruby 3.3+ · OpenRouter API key</small></div>
             <a class="intro-docs-link" href="./docs/">Docs →</a>
           </div>
         </div>
@@ -85,87 +85,88 @@
         </div>
       </section>
 
-      <section class="demo-section" id="first-agent" data-demo="agent" data-command="$ ruby idea_agent.rb&#10;" data-run-label="Run idea_agent.rb →" data-response="Start with one page: name the club, choose the first book, and give neighbors one date to join." aria-labelledby="first-agent-title">
+      <section class="demo-section" id="first-agent" data-demo="agent" data-command="$ ruby customer_support_agent.rb&#10;" data-run-label="Run customer_support_agent.rb →" data-response="Hi! Tell me what happened, and I'll help you find the next step." aria-labelledby="first-agent-title">
         <div class="demo-heading"><h2 id="first-agent-title">Your first agent</h2><button class="replay-button" type="button">Replay demo ↻</button></div>
         <div class="recording">
-          <div class="file-bar"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>idea_agent.rb</span><span class="recording-light"><i></i> ghost recording</span></div>
-          <div class="editor" aria-label="IdeaAgent code being typed">
+          <div class="file-bar"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>customer_support_agent.rb</span><span class="recording-light"><i></i> ghost recording</span></div>
+          <div class="editor" aria-label="CustomerSupportAgent code being typed">
             <div class="code-line" data-line="1"><span class="typed-text" data-demo-line data-plain='require "little_ghost"'><span class="syntax-keyword">require</span> <span class="syntax-string">"little_ghost"</span></span></div>
             <div class="code-line" data-line="2"><span class="typed-text" data-demo-line data-plain=""></span></div>
-            <div class="code-line" data-line="3"><span class="typed-text" data-demo-line data-plain="class IdeaAgent &lt; LittleGhost::Agent"><span class="syntax-keyword">class</span> <span class="syntax-constant">IdeaAgent</span> &lt; <span class="syntax-constant">LittleGhost::Agent</span></span></div>
+            <div class="code-line" data-line="3"><span class="typed-text" data-demo-line data-plain="class CustomerSupportAgent &lt; LittleGhost::Agent"><span class="syntax-keyword">class</span> <span class="syntax-constant">CustomerSupportAgent</span> &lt; <span class="syntax-constant">LittleGhost::Agent</span></span></div>
             <div class="code-line" data-line="4"><span class="typed-text" data-demo-line data-plain='  model "openrouter:openai/gpt-5.6-luna"'>  <span class="syntax-method">model</span> <span class="syntax-string">"openrouter:openai/gpt-5.6-luna"</span></span></div>
-            <div class="code-line" data-line="5"><span class="typed-text" data-demo-line data-plain='  system_prompt "Turn a rough idea into practical next steps."'>  <span class="syntax-method">system_prompt</span> <span class="syntax-string">"Turn a rough idea into practical next steps."</span></span></div>
+            <div class="code-line" data-line="5"><span class="typed-text" data-demo-line data-plain='  system_prompt "Answer customer questions clearly and concisely."'>  <span class="syntax-method">system_prompt</span> <span class="syntax-string">"Answer customer questions clearly and concisely."</span></span></div>
             <div class="code-line" data-line="6"><span class="typed-text" data-demo-line data-plain="end"><span class="syntax-keyword">end</span></span></div>
             <div class="code-line" data-line="7"><span class="typed-text" data-demo-line data-plain=""></span></div>
-            <div class="code-line" data-line="8"><span class="typed-text" data-demo-line data-plain='run = IdeaAgent.ask("Help me start a neighborhood book club")'>run = <span class="syntax-constant">IdeaAgent</span>.<span class="syntax-method">ask</span>(<span class="syntax-string">"Help me start a neighborhood book club"</span>)</span></div>
+            <div class="code-line" data-line="8"><span class="typed-text" data-demo-line data-plain='run = CustomerSupportAgent.ask("Can you help with my order?")'>run = <span class="syntax-constant">CustomerSupportAgent</span>.<span class="syntax-method">ask</span>(<span class="syntax-string">"Can you help with my order?"</span>)</span></div>
             <div class="code-line" data-line="9"><span class="typed-text" data-demo-line data-plain="puts run.response"><span class="syntax-method">puts</span> run.response</span></div>
             <svg class="typing-ghost" viewBox="0 0 120 140" aria-hidden="true"><defs><linearGradient id="agent-cursor-fill" x1="18" y1="10" x2="103" y2="132" gradientUnits="userSpaceOnUse"><stop stop-color="#fffdf7"></stop><stop offset="1" stop-color="#bca8ff"></stop></linearGradient></defs><path fill="url(#agent-cursor-fill)" d="M60 8C31 8 13 31 13 62v60c0 6.6 7.8 9.9 13.2 4.9L38.3 116l10.1 10.1c5.5 5.5 17.7 5.5 23.2 0L81.7 116l12.1 10.9c5.4 5 13.2 1.7 13.2-4.9V62C107 31 89 8 60 8Z"></path><ellipse cx="45" cy="69" rx="6" ry="8" fill="#191a28"></ellipse><ellipse cx="75" cy="69" rx="6" ry="8" fill="#191a28"></ellipse></svg>
             <span class="typing-spark" aria-hidden="true"></span>
           </div>
-          <div class="underhood" aria-label="A book club idea passes through IdeaAgent and becomes practical next steps" aria-hidden="false">
+          <div class="underhood" aria-label="A customer question passes through CustomerSupportAgent and becomes a clear answer" aria-hidden="false">
             <span class="underhood-label">under the hood</span>
             <div class="flow-stage linear-flow">
-              <span class="flow-endpoint flow-request">book club idea</span>
+              <span class="flow-endpoint flow-request">customer question</span>
               <span class="flow-link" data-flow-edge data-flow-step="1" aria-hidden="true"></span>
-              <span class="agent-node agent-idea" data-flow-node data-flow-step="1"><span class="agent-bubble">I'm finding the next steps!</span><svg class="mini-agent-ghost ghost-violet" viewBox="0 0 120 140" aria-hidden="true"><use href="#flow-ghost"></use></svg><span class="agent-label">IdeaAgent</span></span>
+              <span class="agent-node agent-idea" data-flow-node data-flow-step="1"><span class="agent-bubble">I'm preparing a clear answer!</span><svg class="mini-agent-ghost ghost-violet" viewBox="0 0 120 140" aria-hidden="true"><use href="#flow-ghost"></use></svg><span class="agent-label">CustomerSupportAgent</span></span>
               <span class="flow-link" data-flow-edge data-flow-step="2" aria-hidden="true"></span>
-              <span class="flow-endpoint flow-response">practical next steps</span>
+              <span class="flow-endpoint flow-response">clear answer</span>
             </div>
           </div>
           <div class="terminal">
-            <div class="terminal-bar"><span>terminal</span><button class="run-button" type="button">Run idea_agent.rb →</button></div>
-            <pre class="output"><code><span class="output-command">$ ruby idea_agent.rb
-</span><span class="output-text">Start with one page: name the club, choose the first book, and give neighbors one date to join.</span></code><span class="output-caret" aria-hidden="true"></span></pre>
+            <div class="terminal-bar"><span>terminal</span><button class="run-button" type="button">Run customer_support_agent.rb →</button></div>
+            <pre class="output"><code><span class="output-command">$ ruby customer_support_agent.rb
+</span><span class="output-text">Hi! Tell me what happened, and I'll help you find the next step.</span></code><span class="output-caret" aria-hidden="true"></span></pre>
             <span class="demo-announcement visually-hidden" aria-live="polite"></span>
           </div>
         </div>
         <nav class="demo-links" aria-label="First agent getting started links"><a href="./docs/getting_started.html">Getting started →</a><a href="./docs/">Read the docs →</a></nav>
       </section>
 
-      <section class="demo-section" id="agent-graph" data-demo="graph" data-command="$ ruby launch_graph.rb&#10;" data-run-label="Run launch_graph.rb →" data-response="Meet at the library next Thursday. Start with Why's Poignant Guide to Ruby, and invite neighbors through one shared signup page." aria-labelledby="agent-graph-title">
+      <section class="demo-section" id="agent-graph" data-demo="graph" data-command="$ bundle exec ruby app.rb&#10;" data-run-label="Run the application →" data-response="Your order is delayed at the regional hub. The support team will email an updated delivery date today." aria-labelledby="agent-graph-title">
         <div class="demo-heading"><h2 id="agent-graph-title">Grow your agent team</h2><button class="replay-button" type="button">Replay demo ↻</button></div>
+        <p>This recording focuses on the graph itself. The four Agent classes are defined elsewhere in the application.</p>
         <div class="recording">
-          <div class="file-bar"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>launch_graph.rb</span><span class="recording-light"><i></i> ghost recording</span></div>
-          <div class="editor" aria-label="LaunchGraph code being typed">
-            <div class="code-line" data-line="1"><span class="typed-text" data-demo-line data-plain="class LaunchGraph &lt; LittleGhost::Graph"><span class="syntax-keyword">class</span> <span class="syntax-constant">LaunchGraph</span> &lt; <span class="syntax-constant">LittleGhost::Graph</span></span></div>
-            <div class="code-line" data-line="2"><span class="typed-text" data-demo-line data-plain="  node :plan, PlannerAgent">  <span class="syntax-method">node</span> <span class="syntax-string">:plan</span>, <span class="syntax-constant">PlannerAgent</span></span></div>
-            <div class="code-line" data-line="3"><span class="typed-text" data-demo-line data-plain="  node :research, ResearchAgent">  <span class="syntax-method">node</span> <span class="syntax-string">:research</span>, <span class="syntax-constant">ResearchAgent</span></span></div>
-            <div class="code-line" data-line="4"><span class="typed-text" data-demo-line data-plain="  node :logistics, LogisticsAgent">  <span class="syntax-method">node</span> <span class="syntax-string">:logistics</span>, <span class="syntax-constant">LogisticsAgent</span></span></div>
-            <div class="code-line" data-line="5"><span class="typed-text" data-demo-line data-plain="  node :write, WriterAgent">  <span class="syntax-method">node</span> <span class="syntax-string">:write</span>, <span class="syntax-constant">WriterAgent</span></span></div>
+          <div class="file-bar"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>support_flow_graph.rb</span><span class="recording-light"><i></i> ghost recording</span></div>
+          <div class="editor" aria-label="SupportFlowGraph code being typed">
+            <div class="code-line" data-line="1"><span class="typed-text" data-demo-line data-plain="class SupportFlowGraph &lt; LittleGhost::Graph"><span class="syntax-keyword">class</span> <span class="syntax-constant">SupportFlowGraph</span> &lt; <span class="syntax-constant">LittleGhost::Graph</span></span></div>
+            <div class="code-line" data-line="2"><span class="typed-text" data-demo-line data-plain="  node :triage, TriageAgent">  <span class="syntax-method">node</span> <span class="syntax-string">:triage</span>, <span class="syntax-constant">TriageAgent</span></span></div>
+            <div class="code-line" data-line="3"><span class="typed-text" data-demo-line data-plain="  node :order, OrderResearchAgent">  <span class="syntax-method">node</span> <span class="syntax-string">:order</span>, <span class="syntax-constant">OrderResearchAgent</span></span></div>
+            <div class="code-line" data-line="4"><span class="typed-text" data-demo-line data-plain="  node :policy, PolicyResearchAgent">  <span class="syntax-method">node</span> <span class="syntax-string">:policy</span>, <span class="syntax-constant">PolicyResearchAgent</span></span></div>
+            <div class="code-line" data-line="5"><span class="typed-text" data-demo-line data-plain="  node :respond, CustomerSupportAgent">  <span class="syntax-method">node</span> <span class="syntax-string">:respond</span>, <span class="syntax-constant">CustomerSupportAgent</span></span></div>
             <div class="code-line" data-line="6"><span class="typed-text" data-demo-line data-plain=""></span></div>
-            <div class="code-line" data-line="7"><span class="typed-text" data-demo-line data-plain="  start :plan">  <span class="syntax-method">start</span> <span class="syntax-string">:plan</span></span></div>
-            <div class="code-line" data-line="8"><span class="typed-text" data-demo-line data-plain="  edge :plan, :research">  <span class="syntax-method">edge</span> <span class="syntax-string">:plan</span>, <span class="syntax-string">:research</span></span></div>
-            <div class="code-line" data-line="9"><span class="typed-text" data-demo-line data-plain="  edge :plan, :logistics">  <span class="syntax-method">edge</span> <span class="syntax-string">:plan</span>, <span class="syntax-string">:logistics</span></span></div>
-            <div class="code-line" data-line="10"><span class="typed-text" data-demo-line data-plain="  edge :research, :write">  <span class="syntax-method">edge</span> <span class="syntax-string">:research</span>, <span class="syntax-string">:write</span></span></div>
-            <div class="code-line" data-line="11"><span class="typed-text" data-demo-line data-plain="  edge :logistics, :write">  <span class="syntax-method">edge</span> <span class="syntax-string">:logistics</span>, <span class="syntax-string">:write</span></span></div>
-            <div class="code-line" data-line="12"><span class="typed-text" data-demo-line data-plain="  finish :write">  <span class="syntax-method">finish</span> <span class="syntax-string">:write</span></span></div>
+            <div class="code-line" data-line="7"><span class="typed-text" data-demo-line data-plain="  start :triage">  <span class="syntax-method">start</span> <span class="syntax-string">:triage</span></span></div>
+            <div class="code-line" data-line="8"><span class="typed-text" data-demo-line data-plain="  edge :triage, :order">  <span class="syntax-method">edge</span> <span class="syntax-string">:triage</span>, <span class="syntax-string">:order</span></span></div>
+            <div class="code-line" data-line="9"><span class="typed-text" data-demo-line data-plain="  edge :triage, :policy">  <span class="syntax-method">edge</span> <span class="syntax-string">:triage</span>, <span class="syntax-string">:policy</span></span></div>
+            <div class="code-line" data-line="10"><span class="typed-text" data-demo-line data-plain="  edge :order, :respond">  <span class="syntax-method">edge</span> <span class="syntax-string">:order</span>, <span class="syntax-string">:respond</span></span></div>
+            <div class="code-line" data-line="11"><span class="typed-text" data-demo-line data-plain="  edge :policy, :respond">  <span class="syntax-method">edge</span> <span class="syntax-string">:policy</span>, <span class="syntax-string">:respond</span></span></div>
+            <div class="code-line" data-line="12"><span class="typed-text" data-demo-line data-plain="  finish :respond">  <span class="syntax-method">finish</span> <span class="syntax-string">:respond</span></span></div>
             <div class="code-line" data-line="13"><span class="typed-text" data-demo-line data-plain="end"><span class="syntax-keyword">end</span></span></div>
             <div class="code-line" data-line="14"><span class="typed-text" data-demo-line data-plain=""></span></div>
-            <div class="code-line" data-line="15"><span class="typed-text" data-demo-line data-plain='run = LaunchGraph.ask("Launch a neighborhood book club")'>run = <span class="syntax-constant">LaunchGraph</span>.<span class="syntax-method">ask</span>(<span class="syntax-string">"Launch a neighborhood book club"</span>)</span></div>
+            <div class="code-line" data-line="15"><span class="typed-text" data-demo-line data-plain='run = SupportFlowGraph.ask("Why is my order late?")'>run = <span class="syntax-constant">SupportFlowGraph</span>.<span class="syntax-method">ask</span>(<span class="syntax-string">"Why is my order late?"</span>)</span></div>
             <div class="code-line" data-line="16"><span class="typed-text" data-demo-line data-plain="puts run.response"><span class="syntax-method">puts</span> run.response</span></div>
             <svg class="typing-ghost" viewBox="0 0 120 140" aria-hidden="true"><defs><linearGradient id="graph-cursor-fill" x1="18" y1="10" x2="103" y2="132" gradientUnits="userSpaceOnUse"><stop stop-color="#fffdf7"></stop><stop offset="1" stop-color="#bca8ff"></stop></linearGradient></defs><path fill="url(#graph-cursor-fill)" d="M60 8C31 8 13 31 13 62v60c0 6.6 7.8 9.9 13.2 4.9L38.3 116l10.1 10.1c5.5 5.5 17.7 5.5 23.2 0L81.7 116l12.1 10.9c5.4 5 13.2 1.7 13.2-4.9V62C107 31 89 8 60 8Z"></path><ellipse cx="45" cy="69" rx="6" ry="8" fill="#191a28"></ellipse><ellipse cx="75" cy="69" rx="6" ry="8" fill="#191a28"></ellipse></svg>
             <span class="typing-spark" aria-hidden="true"></span>
           </div>
-          <div class="underhood underhood-branching" aria-label="The planner forks the specific request into independent research and logistics work, then the writer joins both results into a launch plan" aria-hidden="false">
+          <div class="underhood underhood-branching" aria-label="Triage sends the request to order and policy research, then the support agent joins both results into an answer" aria-hidden="false">
             <span class="underhood-label">under the hood</span>
             <div class="flow-stage branch-flow">
               <svg class="flow-lines" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"><path class="flow-path" data-flow-edge data-flow-step="1" d="M11 41H21"></path><path class="flow-path" data-flow-edge data-flow-step="2" d="M29 41H36V13H43"></path><path class="flow-path" data-flow-edge data-flow-step="2" d="M36 41V76H43"></path><path class="flow-path" data-flow-edge data-flow-step="3" d="M51 13H58V41H70"></path><path class="flow-path" data-flow-edge data-flow-step="3" d="M51 76H58V41"></path><path class="flow-path" data-flow-edge data-flow-step="4" d="M78 41H89"></path></svg>
-              <span class="flow-endpoint flow-request">launch brief</span>
-              <span class="agent-node branch-plan" data-flow-node data-flow-step="1"><span class="agent-bubble">I'm splitting up the work!</span><svg class="mini-agent-ghost ghost-violet" viewBox="0 0 120 140" aria-hidden="true"><use href="#flow-ghost"></use></svg><span class="agent-label">plan</span></span>
-              <span class="agent-node branch-research" data-flow-node data-flow-step="2"><span class="agent-bubble">I'm researching options!</span><svg class="mini-agent-ghost ghost-pink" viewBox="0 0 120 140" aria-hidden="true"><use href="#flow-ghost"></use></svg><span class="agent-label">research</span></span>
-              <span class="agent-node branch-logistics" data-flow-node data-flow-step="2"><span class="agent-bubble">I'm planning logistics!</span><svg class="mini-agent-ghost ghost-mint" viewBox="0 0 120 140" aria-hidden="true"><use href="#flow-ghost"></use></svg><span class="agent-label">logistics</span></span>
-              <span class="agent-node branch-write" data-flow-node data-flow-step="3"><span class="agent-bubble">I'm writing the plan!</span><svg class="mini-agent-ghost ghost-paper" viewBox="0 0 120 140" aria-hidden="true"><use href="#flow-ghost"></use></svg><span class="agent-label">write</span></span>
-              <span class="flow-endpoint flow-response">launch plan</span>
+              <span class="flow-endpoint flow-request">order question</span>
+              <span class="agent-node branch-plan" data-flow-node data-flow-step="1"><span class="agent-bubble">I'm routing the question!</span><svg class="mini-agent-ghost ghost-violet" viewBox="0 0 120 140" aria-hidden="true"><use href="#flow-ghost"></use></svg><span class="agent-label">triage</span></span>
+              <span class="agent-node branch-research" data-flow-node data-flow-step="2"><span class="agent-bubble">I'm checking the order!</span><svg class="mini-agent-ghost ghost-pink" viewBox="0 0 120 140" aria-hidden="true"><use href="#flow-ghost"></use></svg><span class="agent-label">order</span></span>
+              <span class="agent-node branch-logistics" data-flow-node data-flow-step="2"><span class="agent-bubble">I'm checking the policy!</span><svg class="mini-agent-ghost ghost-mint" viewBox="0 0 120 140" aria-hidden="true"><use href="#flow-ghost"></use></svg><span class="agent-label">policy</span></span>
+              <span class="agent-node branch-write" data-flow-node data-flow-step="3"><span class="agent-bubble">I'm writing the answer!</span><svg class="mini-agent-ghost ghost-paper" viewBox="0 0 120 140" aria-hidden="true"><use href="#flow-ghost"></use></svg><span class="agent-label">respond</span></span>
+              <span class="flow-endpoint flow-response">support answer</span>
             </div>
           </div>
           <div class="terminal">
-            <div class="terminal-bar"><span>terminal</span><button class="run-button" type="button">Run launch_graph.rb →</button></div>
-            <pre class="output"><code><span class="output-command">$ ruby launch_graph.rb
-</span><span class="output-text">Meet at the library next Thursday. Start with Why's Poignant Guide to Ruby, and invite neighbors through one shared signup page.</span></code><span class="output-caret" aria-hidden="true"></span></pre>
+            <div class="terminal-bar"><span>terminal</span><button class="run-button" type="button">Run the application →</button></div>
+            <pre class="output"><code><span class="output-command">$ bundle exec ruby app.rb
+</span><span class="output-text">Your order is delayed at the regional hub. The support team will email an updated delivery date today.</span></code><span class="output-caret" aria-hidden="true"></span></pre>
             <span class="demo-announcement visually-hidden" aria-live="polite"></span>
           </div>
         </div>
-        <nav class="demo-links" aria-label="Getting started links"><a href="./docs/getting_started.html">Getting started →</a><a href="./docs/">Read the docs →</a></nav>
+        <nav class="demo-links" aria-label="Agent composition links"><a href="./docs/assemblies.html">Compose agents →</a><a href="./docs/">Read the docs →</a></nav>
       </section>
 
       <section class="batteries-section" id="batteries" aria-labelledby="batteries-title">
@@ -186,7 +187,7 @@
 
           <article class="battery-item battery-sandbox">
             <svg class="battery-icon" viewBox="0 0 72 58" aria-hidden="true"><g class="battery-flair battery-sandbox-shield"><path d="M36 3 61 12v16c0 14-10 23-25 28C21 51 11 42 11 28V12Z"></path><path d="M17 17h8M47 17h8M17 42h8M47 42h8"></path></g><g class="battery-ghost-piece"><use href="#flow-ghost" x="23" y="14" width="26" height="31"></use></g></svg>
-            <div><h3>Configurable sandboxes</h3><p>Choose unrestricted, Bubblewrap, or Docker backends, then define filesystem, process, environment, and network policy.</p></div>
+            <div><h3>Configurable sandboxes</h3><p>Use the native backend for deny-by-default Seatbelt on macOS or Bubblewrap on Linux, then declare the files, processes, environment, and network access each child needs.</p></div>
           </article>
 
           <article class="battery-item battery-providers">

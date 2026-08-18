@@ -4,12 +4,17 @@ require "json"
 
 module LittleGhost
   module CodeMode
+    # Length-prefixed JSON framing shared by code-mode parent and child hosts.
+    # Frames are bounded before allocation and parsing.
     module Protocol
+      # Largest encoded JSON payload accepted by the protocol.
       MAX_FRAME_BYTES = 64 * 1024 * 1024
+      # Raised for malformed or oversized frames.
       Error = Class.new(StandardError)
 
       module_function
 
+      # Reads one complete frame from +io+, or returns +nil+ at clean EOF.
       def read(io)
         header = read_exactly(io, 4)
         return if header.nil?
@@ -22,11 +27,13 @@ module LittleGhost
         raise Error, "Code-mode frame is not valid JSON: #{error.message}"
       end
 
+      # Encodes +value+ and writes one complete frame to +io+.
       def write(io, value)
         io.write(dump(value))
         io.flush if io.respond_to?(:flush)
       end
 
+      # Returns one encoded frame for +value+.
       def dump(value)
         payload = JSON.generate(value)
         raise Error, "Code-mode frame exceeds the size limit" if payload.bytesize > MAX_FRAME_BYTES
@@ -34,6 +41,8 @@ module LittleGhost
         [payload.bytesize].pack("N") << payload
       end
 
+      # Removes and returns one complete frame from +buffer+, or returns +nil+
+      # while more bytes are required.
       def extract!(buffer)
         return if buffer.bytesize < 4
 

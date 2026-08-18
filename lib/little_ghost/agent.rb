@@ -45,10 +45,6 @@ module LittleGhost
   # as skills, context management, loop detection, and delegation stay inactive
   # until their DSL is used.
   #
-  # Calling LittleGhost::Agent itself uses <tt>You are a helpful agent.</tt> as
-  # the system prompt. Subclasses use the inline or conventional prompt they
-  # declare.
-  #
   # Models may return text or locally validated structured data. LittleGhost
   # hides unexpected Tool exception messages from the model. See
   # Run[rdoc-ref:LittleGhost::Run] for outcomes, cancellation, and cleanup, and
@@ -270,11 +266,14 @@ module LittleGhost
 
       def tool_declarations = tool_declarations_value # :nodoc:
 
-      # Enables code mode for this agent. +direct_tools+ names the ordinary
-      # Tools that remain model-facing; all other ordinary Tools move into the
-      # engine catalog and are called through the parent-process Broker.
-      def code_mode(engine: nil, direct_tools: nil, **options)
-        declaration = options.merge(engine:, direct_tools:).compact
+      # Enables code mode for this agent. +except+ names the ordinary Tools that
+      # remain model-facing; every other ordinary Tool moves into the engine
+      # catalog and is called through the parent-process Broker.
+      def code_mode(engine: nil, except: nil, **options)
+        unknown = options.keys - %i[sandbox limits]
+        raise ArgumentError, "unknown keyword: #{unknown.first.inspect}" unless unknown.empty?
+
+        declaration = options.merge(engine:, except:).compact
         self.code_mode_configuration_value = declaration.freeze
       end
 
@@ -311,8 +310,9 @@ module LittleGhost
       ##
       # Runs before one invocation begins.
       #
-      # The payload may be continued, replaced, or cancelled with a decision
-      # from Support::Callbacks.
+      # The payload is <tt>{messages: Array<Message>}</tt>. A replacement must
+      # contain +:messages+. Cancellation stops the invocation. A callback may
+      # also accept <tt>context:</tt> to receive the current RunContext.
       #
       # :singleton-method: before_invocation
       # :call-seq:
@@ -321,12 +321,21 @@ module LittleGhost
       ##
       # Observes or transforms the terminal invocation payload.
       #
+      # The payload is <tt>{result: RunResult}</tt>. A replacement must contain
+      # +:result+. Cancellation stops result delivery. A callback may accept
+      # <tt>context:</tt>.
+      #
       # :singleton-method: after_invocation
       # :call-seq:
       #   after_invocation(callable = nil, prepend: false) { |payload| ... } -> self
 
       ##
       # Runs before a model request is sent.
+      #
+      # The payload contains +:request+ (ModelRequest), zero-based +:turn+, and
+      # +:parent_operation_id+. A replacement must contain +:request+.
+      # Cancellation stops the invocation. A callback may accept
+      # <tt>context:</tt>.
       #
       # :singleton-method: before_model
       # :call-seq:
@@ -335,12 +344,22 @@ module LittleGhost
       ##
       # Observes or transforms a successful model response.
       #
+      # The payload contains +:request+, +:response+ (ModelResponse), and
+      # zero-based +:turn+. A replacement must contain +:response+.
+      # Cancellation stops the invocation. A callback may accept
+      # <tt>context:</tt>.
+      #
       # :singleton-method: after_model
       # :call-seq:
       #   after_model(callable = nil, prepend: false) { |payload| ... } -> self
 
       ##
       # Handles a model error before it leaves the agent loop.
+      #
+      # The payload contains +:request+, +:error+, zero-based +:turn+, and
+      # +:parent_operation_id+. Replacing +:request+ with a ModelRequest retries
+      # the model call, up to the framework recovery limit. Cancellation stops
+      # the invocation. A callback may accept <tt>context:</tt>.
       #
       # :singleton-method: after_model_error
       # :call-seq:
@@ -349,12 +368,21 @@ module LittleGhost
       ##
       # Runs after validation but before a tool call starts.
       #
+      # The payload contains +:tool_use+, the bound +:tool+, +:operation_id+,
+      # and +:parent_operation_id+. Cancellation returns a model-visible Tool
+      # error, so its reason must be safe to disclose. Replacements are not
+      # consumed. A callback may accept <tt>context:</tt>.
+      #
       # :singleton-method: before_tool
       # :call-seq:
       #   before_tool(callable = nil, prepend: false) { |payload| ... } -> self
 
       ##
       # Observes or transforms a completed tool result.
+      #
+      # The payload contains the before-tool fields plus +:result+
+      # (Tool::ExecutionResult). A replacement must contain +:result+.
+      # Cancellation is not consumed. A callback may accept <tt>context:</tt>.
       #
       # :singleton-method: after_tool
       # :call-seq:
@@ -827,10 +855,10 @@ module LittleGhost
     def model_tools(tools, context:, turn:)
       return tools unless @code_mode_runtime
 
-      direct = Array(@code_mode_declaration[:direct_tools]).map(&:to_s)
+      exceptions = Array(@code_mode_declaration[:except]).map(&:to_s)
       tools.select do |specification|
         name = specification.fetch(:name, specification["name"]).to_s
-        direct.include?(name) || %w[exec wait].include?(name) || !tool_registry.names.include?(name)
+        exceptions.include?(name) || %w[exec wait].include?(name) || !tool_registry.names.include?(name)
       end
     end
 
@@ -2018,6 +2046,8 @@ module LittleGhost
 
       defaults = @runtime.respond_to?(:code_mode_configuration) ? @runtime.code_mode_configuration : nil
       @code_mode_declaration = (defaults || {}).merge(declaration).transform_keys(&:to_sym).freeze
+      unknown = @code_mode_declaration.keys - %i[engine except sandbox limits]
+      raise ConfigurationError, "Unknown code-mode option: #{unknown.first.inspect}" unless unknown.empty?
       @code_mode_runtime = CodeMode::AgentRuntime.new(agent: self, declaration: @code_mode_declaration)
       @tool_registry.register(CodeMode::ExecTool)
       @tool_registry.register(CodeMode::WaitTool)

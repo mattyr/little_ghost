@@ -65,6 +65,11 @@ end
 
 The schema checks the shape of the input. Your Ruby code still decides whether the operation is allowed and safe. The result goes back to the model as context.
 
+An ordinary Tool runs in your Ruby process. When a Tool needs files or child
+processes, it can delegate that work through a Sandbox. Code mode goes one step
+further: a sandboxed interpreter can compose several Tools, while every Tool
+call still returns to trusted Ruby for validation and authorization.
+
 ## Grow without changing the caller
 
 An **agent** owns one model loop. An **assembly** is one or more agents working as a unit. You call either one the same way:
@@ -99,7 +104,8 @@ The result stays familiar too. Every call returns a `Run` with the response,
 outcome, usage, and any final error. A coordinated assembly also records which
 participants ran. Use `.stream_ask` to watch the work as it happens.
 
-**Growing in public.** LittleGhost is under active development, and interfaces may evolve between releases. Pin the gem version and review release notes when upgrading.
+LittleGhost is pre-1.0. Pin the gem version and review release notes before
+upgrading, because interfaces may change between releases.
 
 ## Keep going
 
@@ -107,10 +113,11 @@ participants ran. Use `.stream_ask` to watch the work as it happens.
 - [Core Concepts](docs/guides/core_concepts.md) builds the mental model from Agent to Assembly.
 - [Compose Agents](docs/guides/assemblies.md) walks through workflows, swarms, graphs, nesting, and builders.
 - [Prompts as Views](docs/guides/prompt_views.md) gives growing instructions, shared pieces, and application values a natural home.
-- [Workspaces, Sandboxes, and Tools](docs/guides/sandboxing.md) explains filesystem, process, network, lifecycle, and hosting boundaries without treating “sandboxed” as a blanket guarantee.
-- [Code Mode](docs/guides/code_mode.md) explains sandboxed orchestration cells, brokered Tool calls, engine plugins, and limits.
-- [Running in Production](docs/guides/production.md) covers configuration, sessions, execution, observability, and trust boundaries.
-- [API reference](rdoc-ref:LittleGhost) provides exact signatures and lifecycle contracts.
+- [Tools](docs/guides/tools.md) explains how models call Ruby code and where your application keeps control.
+- [Workspaces and Sandboxes](docs/guides/sandboxing.md) contains file access and child processes.
+- [Code Mode](docs/guides/code_mode.md) builds on those boundaries so a model can compose Tools in sandboxed Ruby or optional JavaScript.
+- [Running in Production](docs/guides/production.md) covers configuration, saved conversations, supervision, and observability.
+- [API reference](rdoc-ref:LittleGhost) provides exact method signatures and ownership rules.
 
 ### For contributors
 
