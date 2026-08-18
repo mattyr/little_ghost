@@ -122,7 +122,7 @@ module LittleGhost
       # Starts a bounded host process. This remains unrestricted host execution,
       # not a containment boundary.
       def start_program(command, context: nil, environment: {}, inherit_environment: false,
-        scope: nil, cwd: nil, output_bytes: nil, memory_bytes: nil, cpu_seconds: nil, file_bytes: nil, processes: nil,
+        scope: nil, cwd: nil, output_bytes: nil, memory_bytes: nil, cpu_seconds: nil, file_bytes: nil,
         allow_subprocesses: true)
         unless allow_subprocesses
           raise CapabilityError, "the unrestricted sandbox cannot prohibit subprocess creation"
@@ -136,8 +136,7 @@ module LittleGhost
           output_bytes: output_bytes || limits.output_bytes,
           memory_bytes:,
           cpu_seconds:,
-          file_bytes:,
-          processes:
+          file_bytes:
         )
       end
 

@@ -112,7 +112,7 @@ module LittleGhost
       end
 
       def start_program(command, context: nil, environment: {}, inherit_environment: false,
-        scope: nil, cwd: nil, output_bytes: nil, memory_bytes: nil, cpu_seconds: nil, file_bytes: nil, processes: nil,
+        scope: nil, cwd: nil, output_bytes: nil, memory_bytes: nil, cpu_seconds: nil, file_bytes: nil,
         allow_subprocesses: false)
         open unless @opened
         selected_scope = scope || self.scope
@@ -133,8 +133,7 @@ module LittleGhost
           output_bytes: output_bytes || limits.output_bytes,
           memory_bytes:,
           cpu_seconds:,
-          file_bytes:,
-          processes:
+          file_bytes:
         )
       end
 

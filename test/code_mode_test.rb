@@ -204,6 +204,18 @@ class CodeModeTest < Minitest::Test
     end
   end
 
+  def test_ruby_engine_rejects_unsupported_limits
+    error = assert_raises(ArgumentError) do
+      LittleGhost::CodeMode::RubyEngine.new.open_session(
+        broker: Object.new,
+        sandbox_factory: Object.new,
+        limits: {processes: 8}
+      )
+    end
+
+    assert_includes error.message, ":processes"
+  end
+
   def test_ruby_engine_brokers_tools_and_returns_the_final_expression
     calls = []
     tool = LittleGhost::Tool.define(

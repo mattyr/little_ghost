@@ -11,7 +11,7 @@ module LittleGhost
       Chunk = Data.define(:stdout, :stderr, :eof) # :nodoc:
 
       def initialize(command:, environment: {}, inherit_environment: false, chdir: nil,
-        output_bytes: 1_000_000, memory_bytes: nil, memory_reader: nil, cpu_seconds: nil, file_bytes: nil, processes: nil)
+        output_bytes: 1_000_000, memory_bytes: nil, memory_reader: nil, cpu_seconds: nil, file_bytes: nil)
         @output_bytes = Integer(output_bytes)
         raise ArgumentError, "output_bytes must be positive" unless @output_bytes.positive?
         @memory_bytes = memory_bytes && Integer(memory_bytes)
@@ -30,7 +30,6 @@ module LittleGhost
         options[:chdir] = chdir if chdir
         options[:rlimit_cpu] = [Integer(cpu_seconds), Integer(cpu_seconds)] if cpu_seconds
         options[:rlimit_fsize] = [Integer(file_bytes), Integer(file_bytes)] if file_bytes
-        options[:rlimit_nproc] = [Integer(processes), Integer(processes)] if processes && Process.const_defined?(:RLIMIT_NPROC)
         @pid = Process.spawn(
           environment.transform_keys(&:to_s).transform_values(&:to_s),
           *Array(command).map(&:to_s),

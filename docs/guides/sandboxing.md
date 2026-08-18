@@ -201,7 +201,7 @@ do not turn it into a security boundary.
 and output, `alive?`, bounded `wait(timeout:)`, `terminate`, and `close`. The
 session starts the command in a process group so cleanup can stop it and its
 ordinary descendants together. It applies available CPU, memory, file, and
-process limits, requests termination, and then forces termination when needed.
+output limits, requests termination, and then forces termination when needed.
 
 Callers that open a ProcessSession own it and must close it. LittleGhost fails
 closed when it cannot enforce a required memory limit. A Run closes the

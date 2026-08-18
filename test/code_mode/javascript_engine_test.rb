@@ -73,8 +73,7 @@ class CodeModeEngineTest < Minitest::Test
         output_bytes:,
         memory_bytes:,
         cpu_seconds:,
-        file_bytes:,
-        processes: nil
+        file_bytes:
       ).tap { |process| @processes << process }
     end
 
@@ -111,6 +110,18 @@ class CodeModeEngineTest < Minitest::Test
     refute_includes LittleGhost::CodeMode::JavascriptEngine::DEFAULT_LIMITS, :processes
     assert_includes instructions, "echo_value(args:"
     assert_includes instructions, "Promise<unknown>"
+  end
+
+  def test_rejects_unsupported_limits
+    error = assert_raises(ArgumentError) do
+      LittleGhost::CodeMode::JavascriptEngine.new.open_session(
+        broker: Broker.new,
+        sandbox_factory: ->(**) {},
+        limits: {processes: 8}
+      )
+    end
+
+    assert_includes error.message, ":processes"
   end
 
   def test_runs_the_v8_host_through_a_process_session_and_broker

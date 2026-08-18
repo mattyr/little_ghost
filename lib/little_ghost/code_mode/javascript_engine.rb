@@ -59,8 +59,9 @@ module LittleGhost
       end
 
       # Opens a JavaScript Session with engine defaults merged with +limits+.
+      # Unsupported limit keys raise ArgumentError.
       def open_session(broker:, sandbox_factory:, limits: {})
-        configured_limits = DEFAULT_LIMITS.merge(limits.transform_keys(&:to_sym))
+        configured_limits = normalize_limits(limits, defaults: DEFAULT_LIMITS)
         root = Dir.mktmpdir("little-ghost-javascript-")
         runtime_paths = javascript_runtime_paths
         workspace = Workspace.new(

@@ -145,8 +145,7 @@ module LittleGhost
           output_bytes: output_bytes || limits.output_bytes,
           memory_bytes:,
           cpu_seconds:,
-          file_bytes:,
-          processes: nil
+          file_bytes:
         )
       end
 

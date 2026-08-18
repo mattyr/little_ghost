@@ -29,6 +29,17 @@ module LittleGhost
 
       private
 
+      def normalize_limits(limits, defaults:)
+        configured = limits.to_h.transform_keys(&:to_sym)
+        unsupported = configured.keys - defaults.keys
+        unless unsupported.empty?
+          names = unsupported.sort_by(&:to_s).map(&:inspect).join(", ")
+          raise ArgumentError, "unsupported code-mode limits: #{names}"
+        end
+
+        defaults.merge(configured)
+      end
+
       def allow_subprocesses_for(sandbox)
         capabilities = sandbox.capabilities
         return true if capabilities.supports?(:process_tree_ownership)

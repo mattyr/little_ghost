@@ -50,12 +50,13 @@ module LittleGhost
       end
 
       # Opens a Ruby Session with engine defaults merged with +limits+.
+      # Unsupported limit keys raise ArgumentError.
       def open_session(broker:, sandbox_factory:, limits: {})
         Ruby::Session.new(
           broker:,
           sandbox_factory:,
           subprocess_policy: method(:allow_subprocesses_for),
-          limits: DEFAULT_LIMITS.merge(limits.to_h.transform_keys(&:to_sym))
+          limits: normalize_limits(limits, defaults: DEFAULT_LIMITS)
         )
       end
     end
