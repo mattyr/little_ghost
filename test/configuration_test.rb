@@ -188,7 +188,7 @@ class ConfigurationTest < Minitest::Test
     Dir.mktmpdir do |root|
       service_name = +"support"
       default_model = +"first"
-      skill_resource_root = +"trusted/skills"
+      skill_resource_root = +"workspace://skills"
       configuration = LittleGhost::Configuration.new(root:, service_name:)
       configuration.default_model = default_model
       configuration.skill_resource_root = skill_resource_root
@@ -204,10 +204,29 @@ class ConfigurationTest < Minitest::Test
       assert_equal "first", configuration.default_model
       assert_same resolver, runtime.model_resolver
       assert_equal "first", runtime.model_resolver.default_model
-      assert_equal "trusted/skills", configuration.skill_resource_root
-      assert_equal "trusted/skills", runtime.skill_resource_root.to_s
+      assert_equal "workspace://skills", configuration.skill_resource_root
+      assert_equal "workspace://skills", runtime.skill_resource_root.to_s
       assert_raises(FrozenError) { configuration.service_name.replace("during") }
     end
+  end
+
+  def test_skill_resource_root_is_validated_when_configured
+    configuration = LittleGhost::Configuration.new
+
+    error = assert_raises(ArgumentError) do
+      configuration.skill_resource_root = "relative/skills"
+    end
+
+    assert_equal "resource_root must be an absolute path or workspace:// reference", error.message
+    assert_nil configuration.skill_resource_root
+  end
+
+  def test_skill_resource_root_is_validated_during_construction
+    error = assert_raises(ArgumentError) do
+      LittleGhost::Configuration.new(skill_resource_root: "relative/skills")
+    end
+
+    assert_equal "resource_root must be an absolute path or workspace:// reference", error.message
   end
 
   def test_shared_runtime_rejects_configuration_changes_from_startup_callbacks

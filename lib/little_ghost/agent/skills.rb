@@ -36,7 +36,12 @@ module LittleGhost
           end
           paths ||= binding.run.runtime.skill_paths
           catalog = LittleGhost::Skills::Catalog.new(
-            **configuration.merge(paths:, resource_root: binding.run&.runtime&.skill_resource_root)
+            **configuration.merge(
+              paths:,
+              resource_root: binding.run&.runtime&.skill_resource_root,
+              workspace: binding.workspace,
+              sandbox: binding.sandbox
+            )
           )
           return [] if catalog.names.empty?
 
