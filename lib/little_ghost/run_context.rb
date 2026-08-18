@@ -51,6 +51,8 @@ module LittleGhost
       @conversation_id = conversation_id
       @usage = Usage.new
       @usage_mutex = Mutex.new
+      @tool_call_count = 0
+      @tool_call_count_mutex = Mutex.new
       @structured_result = nil
       @structured_result_mutex = Mutex.new
       @agent_operation_id = nil
@@ -87,6 +89,13 @@ module LittleGhost
     # Takes a snapshot of accumulated usage.
     def usage
       @usage_mutex.synchronize { @usage }
+    end
+
+    def record_tool_calls!(count, maximum:) # :nodoc:
+      @tool_call_count_mutex.synchronize do
+        @tool_call_count += Integer(count)
+        raise ProtocolError, "The agent reached its maximum tool calls" if @tool_call_count > Integer(maximum)
+      end
     end
 
     # Calculates seconds remaining before the deadline.

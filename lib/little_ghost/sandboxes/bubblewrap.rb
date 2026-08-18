@@ -40,29 +40,23 @@ module LittleGhost
       # Describes the isolation and operations provided by this backend.
       def self.backend_capabilities
         Capabilities.new(
-          features: %i[filesystem_read filesystem_list filesystem_write filesystem_replace process_execute virtual_filesystem],
+          features: %i[filesystem_read filesystem_list filesystem_write filesystem_replace process_execute process_spawn],
           network_modes: %i[inherit none allowlist],
           isolation: :namespace
         )
       end
 
       # Builds a command-scoped Linux namespace sandbox.
-      def initialize(workspace:, policy: nil, profiles: {}, limits: {}, setup: nil,
+      def initialize(workspace:, policy: nil, profiles: {}, limits: {},
         bubblewrap: DEFAULT_EXECUTABLE, platform: RUBY_PLATFORM,
         socat: "/usr/bin/socat", gateway_options: {}, command_wrapper: nil,
         proc: :new, tmpfs: %w[/tmp /run], masks: [], runtime_roots: RUNTIME_ROOTS,
         uid: nil, gid: nil)
-        if setup && (policy || !profiles.empty?)
-          raise PolicyError, "deferred sandbox setup cannot be combined with policy or profiles"
-        end
-
         super(workspace:, policy: policy || {}, profiles:, limits:)
         @bubblewrap = File.expand_path(bubblewrap)
         @platform = platform
         @socat = File.expand_path(socat)
         @gateway_options = gateway_options
-        @setup = setup
-        @setup_applied = !setup
         @command_wrapper = command_wrapper
         @proc = normalize_proc(proc)
         @tmpfs = Array(tmpfs).map { |path| Sandbox::Mount.send(:normalize_virtual_path, path) }.uniq.freeze
@@ -80,13 +74,9 @@ module LittleGhost
       def open(run: nil)
         return self if @opened
 
-        apply_setup!(run:)
         raise UnsupportedPlatformError, "Bubblewrap sandboxing is supported only on Linux" unless @platform.include?("linux")
         unless File.file?(@bubblewrap) && File.executable?(@bubblewrap)
           raise DependencyError, "Bubblewrap sandboxing requires an executable at #{@bubblewrap}"
-        end
-        if effective_policy.sandbox_scoped?
-          raise CapabilityError, "Bubblewrap supports only execution_scope: :command"
         end
         if effective_policy.network.allowlist? && (!File.file?(@socat) || !File.executable?(@socat))
           raise DependencyError, "filtered Bubblewrap egress requires socat at #{@socat}"
@@ -131,6 +121,32 @@ module LittleGhost
         )
       end
 
+      # Starts a duplex process in a fresh Bubblewrap namespace. Descendants are
+      # allowed and remain owned by its PID namespace; Bubblewrap cannot enforce
+      # a per-program request to deny subprocess creation.
+      def start_program(command, context: nil, environment: {}, inherit_environment: false,
+        scope: nil, cwd: nil, output_bytes: nil, memory_bytes: nil, cpu_seconds: nil, file_bytes: nil, processes: nil,
+        allow_subprocesses: true)
+        unless allow_subprocesses
+          raise CapabilityError, "Bubblewrap owns subprocess descendants but cannot prohibit their creation"
+        end
+
+        open unless @opened
+        process, inherit = sandbox_process_command(
+          command, scope:, cwd:, environment:, inherit_environment:
+        )
+        Sandbox::ProcessSession.new(
+          command: process,
+          environment: inherit ? ENV.to_h : {},
+          inherit_environment: inherit,
+          output_bytes: output_bytes || limits.output_bytes,
+          memory_bytes:,
+          cpu_seconds:,
+          file_bytes:,
+          processes:
+        )
+      end
+
       # Replaces the current process with an interactively attached Bubblewrap
       # command after applying the same policy and scope validation as #execute.
       def exec_program(command, scope: nil, cwd: nil, environment: {}, inherit_environment: false)
@@ -142,7 +158,7 @@ module LittleGhost
       end
 
       # Returns the exact Bubblewrap policy arguments used before the command.
-      def bubblewrap_args(mounts: effective_policy.effective_mounts(workspace), cwd: effective_policy.workspace_path,
+      def bubblewrap_args(mounts: effective_policy.process_grants(workspace), cwd: workspace.root,
         environment: effective_policy.environment.to_h, inherit_environment: effective_policy.environment.inherit?,
         network: effective_policy.network)
         mounts = protect_execution_mounts(mounts)
@@ -171,23 +187,6 @@ module LittleGhost
 
       private
 
-      def apply_setup!(run:)
-        return if @setup_applied
-
-        values = @setup.call(workspace:, run:)
-        unless values.is_a?(Hash)
-          raise PolicyError, "deferred sandbox setup must return a Hash"
-        end
-        values = values.transform_keys(&:to_sym)
-        unknown = values.keys - %i[policy profiles]
-        raise PolicyError, "unknown deferred sandbox setup options: #{unknown.join(", ")}" unless unknown.empty?
-
-        @policy = Sandbox::Policy.coerce(values.fetch(:policy))
-        @effective_policy = policy_with_network_default(@policy)
-        configure_profiles!(values.fetch(:profiles, {}))
-        @setup_applied = true
-      end
-
       def sandbox_process_command(command, scope:, cwd:, environment:, inherit_environment:)
         configured_environment, inherit = execution_environment(environment, inherit_environment)
         selected_network = scope&.network || effective_policy.network
@@ -195,12 +194,11 @@ module LittleGhost
         gateway&.validate!
         configured_environment = gateway.environment.merge(configured_environment) if gateway
         mounts = execution_mounts(scope)
-        mounts += Array(gateway&.mounts).map { |mount| Sandbox::Mount.coerce(mount) }
         process_command = wrap_command(command, scope:)
         process_command = gateway_command(process_command) if gateway
         args = bubblewrap_args(
           mounts:,
-          cwd: cwd || effective_policy.workspace_path,
+          cwd: normalized_cwd(cwd),
           environment: configured_environment,
           inherit_environment: inherit,
           network: selected_network
@@ -246,7 +244,7 @@ module LittleGhost
       end
 
       def validate_mounts!
-        effective_policy.effective_mounts(workspace).each do |mount|
+        effective_policy.process_grants(workspace).each do |mount|
           unless File.directory?(mount.source)
             raise PolicyError, "sandbox mount source is not a directory: #{mount.source}"
           end
@@ -291,11 +289,18 @@ module LittleGhost
       end
 
       def validated_cwd(cwd, mounts)
-        value = Sandbox::Mount.send(:normalize_virtual_path, cwd)
+        value = File.expand_path(cwd)
         return value if mounts.any? { |mount| mount.covers?(value) }
         return value if @tmpfs.any? { |path| value == path || value.start_with?("#{path}/") }
 
         raise PolicyError, "sandbox working directory is outside the selected scope"
+      end
+
+      def normalized_cwd(cwd)
+        return workspace.root unless cwd
+        return workspace.resolve(cwd) unless String(cwd).start_with?(File::SEPARATOR)
+
+        File.expand_path(cwd)
       end
 
       def gateway_command(command)

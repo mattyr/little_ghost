@@ -82,6 +82,8 @@ module LittleGhost
     attr_reader :workspace_declaration
     # Configured Sandbox provider symbol, callable, or declaration.
     attr_reader :sandbox_declaration
+    # Default code-mode declaration for enabled agents.
+    attr_reader :code_mode_configuration
     # Runtime hooks called around request and session preparation.
     attr_reader :runtime_hooks
 
@@ -108,6 +110,7 @@ module LittleGhost
         @skill_resource_root = @settings[:skill_resource_root]
         @workspace_declaration = @settings.fetch(:workspace)
         @sandbox_declaration = @settings.fetch(:sandbox)
+        @code_mode_configuration = @settings[:code_mode]
         @runtime_hooks = build_runtime_hooks(@settings[:runtime_hooks])
 
         @startup_phase = "instrumentation"
@@ -242,7 +245,7 @@ module LittleGhost
       policy_options.each_key { |key| options.delete(key) }
       policy_value = options.delete(:policy)
       if policy_value || !policy_options.empty?
-        options[:policy] = Sandbox::Policy.coerce(policy_value, root: root.to_s, **policy_options)
+        options[:policy] = Sandbox::Policy.coerce(policy_value, **policy_options)
       end
       build_component(provider, options, runtime: self, invocation:, workspace:)
     end

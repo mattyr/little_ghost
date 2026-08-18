@@ -95,6 +95,7 @@ module LittleGhost
         skill_resource_root: nil,
         workspace: nil,
         sandbox: nil,
+        code_mode: nil,
         instrumentation_subscribers: [],
         runtime_hooks: []
       }.merge(values)
@@ -192,6 +193,8 @@ module LittleGhost
     def workspace = configuration_values[:workspace]
     # Sandbox declaration used for subsequently built runtimes.
     def sandbox = configuration_values[:sandbox]
+    # Default code-mode engine, sandbox, and limits for enabled agents.
+    def code_mode = configuration_values[:code_mode]
     # Session-store declaration used for subsequently built runtimes.
     def session_store = configuration_values[:session_store]
 
@@ -380,6 +383,15 @@ module LittleGhost
       end
     end
 
+    # Configures application defaults for code-mode agents.
+    def code_mode=(value)
+      change_configuration do
+        raise ArgumentError, "code_mode must be a Hash" unless value.nil? || value.is_a?(Hash)
+
+        @configuration_values[:code_mode] = value&.transform_keys(&:to_sym)&.freeze
+      end
+    end
+
     # Selects session persistence with a +:provider+ and its constructor options.
     #
     # The provider must be a SessionStore subclass. Runtime construction creates
@@ -410,6 +422,8 @@ module LittleGhost
         self.workspace = value
       when :sandbox
         self.sandbox = value
+      when :code_mode
+        self.code_mode = value
       else
         change_configuration { configuration_values[name.to_sym] = value }
       end

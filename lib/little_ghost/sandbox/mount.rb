@@ -9,7 +9,7 @@ module LittleGhost
     # mount available to child processes while denying it to the filesystem
     # broker. +protect_aliases+ preserves restrictive access when the same host
     # files are reachable through a broader mount.
-    class Mount
+    class Mount # :nodoc:
       ACCESS_MODES = %i[read_only read_write].freeze # :nodoc:
 
       # Returns +value+ unchanged or builds a mount from a Hash.

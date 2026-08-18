@@ -108,6 +108,7 @@ participants ran. Use `.stream_ask` to watch the work as it happens.
 - [Compose Agents](docs/guides/assemblies.md) walks through workflows, swarms, graphs, nesting, and builders.
 - [Prompts as Views](docs/guides/prompt_views.md) gives growing instructions, shared pieces, and application values a natural home.
 - [Workspaces, Sandboxes, and Tools](docs/guides/sandboxing.md) explains filesystem, process, network, lifecycle, and hosting boundaries without treating “sandboxed” as a blanket guarantee.
+- [Code Mode](docs/guides/code_mode.md) explains sandboxed orchestration cells, brokered Tool calls, engine plugins, and limits.
 - [Running in Production](docs/guides/production.md) covers configuration, sessions, execution, observability, and trust boundaries.
 - [API reference](rdoc-ref:LittleGhost) provides exact signatures and lifecycle contracts.
 

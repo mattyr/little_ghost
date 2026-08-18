@@ -8,19 +8,20 @@ module LittleGhost
   #
   #   LittleGhost.configure do |config|
   #     config.sandbox = {
-  #       provider: :docker,
-  #       image: "customer-support-runtime@sha256:...",
+  #       provider: :native,
+  #       files: {root: :read_write, source: :read_only},
+  #       runtime_paths: {home: :read_write},
   #       network: :none
   #     }
   #   end
   #
   # Implementations report their effective policy and capabilities, confine
-  # brokered paths to declared mounts, honor RunContext cancellation, enforce
+  # brokered paths to declared Workspace paths, honor RunContext cancellation, enforce
   # time and output limits, and return
   # {Execution}[rdoc-ref:LittleGhost::Sandbox::Execution] from process
   # operations. A backend's isolation mechanism still relies on its outer host,
   # kernel or VM, dependencies, trusted configuration, and deliberately exposed
-  # mounts. Sandbox policy does not apply to provider requests or arbitrary Ruby
+  # paths. Sandbox policy does not apply to provider requests or arbitrary Ruby
   # code in the application process.
   class Sandbox
     @providers = {}
@@ -149,9 +150,9 @@ module LittleGhost
     # Produces a non-owning capability-reduced view for tools or child agents.
     # The caller must pass and use that Scope; retaining this parent Sandbox
     # retains its broader authority.
-    def scope(profile = nil, mounts: nil, capabilities: nil, network: nil)
+    def scope(profile = nil, files: nil, runtime_paths: nil, capabilities: nil, network: nil)
       if profile
-        if !mounts.nil? || !capabilities.nil? || !network.nil?
+        if !files.nil? || !runtime_paths.nil? || !capabilities.nil? || !network.nil?
           raise ArgumentError, "scope profile cannot be combined with explicit options"
         end
 
@@ -163,13 +164,14 @@ module LittleGhost
           raise PolicyError, "sandbox scope profile must be a Hash"
         end
         values = declaration.transform_keys(&:to_sym)
-        unknown = values.keys - %i[mounts capabilities network]
+        unknown = values.keys - %i[files runtime_paths capabilities network]
         raise PolicyError, "unknown sandbox scope profile options: #{unknown.join(", ")}" unless unknown.empty?
-        mounts = values[:mounts]
+        files = values[:files]
+        runtime_paths = values[:runtime_paths]
         capabilities = values[:capabilities]
         network = values[:network]
       end
-      Scope.new(sandbox: self, mounts:, capabilities:, network:)
+      Scope.new(sandbox: self, files:, runtime_paths:, capabilities:, network:)
     end
 
     # Opens any run-scoped resources and makes the sandbox ready for tools.
@@ -222,6 +224,12 @@ module LittleGhost
     # both policy and the individual call must opt in before a backend may inherit.
     def execute_program(command, timeout:, context: nil, max_output_bytes: nil, environment: {}, inherit_environment: false, **options)
       raise AbstractMethodError, "#{self.class} does not support program execution"
+    end
+
+    # Starts an owned, duplex child process for framed protocols and other
+    # interactive programs. The returned session owns the child process group.
+    def start_program(command, context: nil, environment: {}, inherit_environment: false, **options)
+      raise AbstractMethodError, "#{self.class} does not support program sessions"
     end
 
     # Releases sandbox resources. Runs close the sandbox before its workspace.

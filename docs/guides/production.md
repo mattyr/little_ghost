@@ -167,14 +167,11 @@ LittleGhost.configure do |config|
     )
   end
   config.sandbox = {
-    provider: :docker,
-    image: "my-agent-runtime@sha256:...",
-    workspace_path: "/workspace",
-    workspace_access: :read_write,
+    provider: :native,
+    files: {root: :read_write},
     root_filesystem: :read_only,
     environment: {inherit: false, set: {"LANG" => "C.UTF-8"}},
-    network: :none,
-    execution_scope: :command
+    network: :none
   }
 end
 ```
@@ -183,7 +180,7 @@ The temporary Workspace above is useful when files should live for one Run. Use 
 
 The Run opens a Runtime-created Workspace before its Sandbox and closes them in reverse order after every outcome. Closing a Workspace invokes its configured teardown; it does not delete files by default. Cleanup failures raise because LittleGhost cannot confirm a clean shutdown of every owned resource. Existing instances passed by the application remain caller-owned.
 
-[Workspaces, Sandboxes, and Tools](sandboxing.md) explains backend selection, named Workspace paths, lifecycle callbacks, mounts, Scopes, profiles, process persistence, filtered networking, hosting boundaries, and deployment validation in depth.
+[Workspaces and Sandboxes](sandboxing.md) explains backend selection, logical Workspace paths, files, process-only runtime paths, Scopes, filtered networking, hosting boundaries, and deployment validation in depth.
 
 ## Instrument without leaking the application
 

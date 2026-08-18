@@ -9,15 +9,16 @@ module LittleGhost
     class Scope
       # Creates a view of +sandbox+. +mounts+ and +capabilities+ may only narrow
       # the parent scope or sandbox.
-      def initialize(sandbox:, mounts: nil, capabilities: nil, network: nil, parent_scope: nil)
+      def initialize(sandbox:, files: nil, runtime_paths: nil, capabilities: nil, network: nil, parent_scope: nil)
         @sandbox = sandbox
-        @parent_mounts = parent_scope&.mounts || sandbox.effective_policy.effective_mounts(sandbox.workspace)
+        @parent_mounts = parent_scope&.process_grants || sandbox.effective_policy.process_grants(sandbox.workspace)
         @parent_tool_denies = if parent_scope
           parent_scope.send(:tool_deny_mounts)
         else
           @parent_mounts.reject(&:tool_visible?)
         end
-        requested_mounts = mounts ? preserve_restrictive_overlays(normalize_mounts(mounts)) : @parent_mounts
+        requested = scoped_mounts(files, runtime_paths)
+        requested_mounts = requested ? preserve_restrictive_overlays(normalize_mounts(requested)) : @parent_mounts
         @mounts = validate_mounts(requested_mounts).sort_by { |mount| -mount.target.length }.freeze
         @tool_deny_mounts = relevant_tool_denies(@mounts).freeze
         parent_capabilities = parent_scope&.capabilities || sandbox.capabilities
@@ -37,7 +38,7 @@ module LittleGhost
         end
         @filesystem = Filesystem.new(
           mounts: (@mounts + @tool_deny_mounts).uniq,
-          relative_root: sandbox.effective_policy.workspace_path,
+          relative_root: sandbox.workspace.root,
           max_read_bytes: sandbox.limits.read_bytes,
           max_write_bytes: sandbox.limits.write_bytes,
           max_list_entries: sandbox.limits.list_entries
@@ -47,8 +48,6 @@ module LittleGhost
 
       # Sandbox that enforces process execution.
       attr_reader :sandbox
-      # Virtual mounts visible through this scope.
-      attr_reader :mounts
       # Operations exposed through this scope.
       attr_reader :capabilities
       # Outbound connectivity available to processes launched through this scope.
@@ -64,7 +63,9 @@ module LittleGhost
       # Indicates whether this scope exposes +feature+.
       def supports?(feature, value = nil) = capabilities.supports?(feature, value)
       # Indicates whether any visible mount accepts writes.
-      def writable? = supports?(:filesystem_write) && mounts.any? { |mount| mount.tool_visible? && mount.writable? }
+      def writable? = supports?(:filesystem_write) && @mounts.any? { |mount| mount.tool_visible? && mount.writable? }
+
+      def process_grants = @mounts # :nodoc:
 
       # Indicates whether +operation+ is available at optional virtual +path+.
       def allows?(operation, path = nil)
@@ -79,25 +80,25 @@ module LittleGhost
       # Reads bounded UTF-8 text through the scoped filesystem.
       def read(path, context: nil)
         require_capability!(:filesystem_read)
-        @filesystem.read(path, context:)
+        @filesystem.read(logical_path(path), context:)
       end
 
       # Lists one directory through the scoped filesystem.
       def list(path = ".", context: nil)
         require_capability!(:filesystem_list)
-        @filesystem.list(path, context:)
+        @filesystem.list(logical_path(path), context:)
       end
 
       # Writes bounded content through a writable scoped mount.
       def write(path, content, context: nil)
         require_capability!(:filesystem_write)
-        @filesystem.write(path, content, context:)
+        @filesystem.write(logical_path(path), content, context:)
       end
 
       # Replaces one unique text occurrence through a writable scoped mount.
       def replace(path, old_text, new_text, context: nil)
         require_capability!(:filesystem_replace)
-        @filesystem.replace(path, old_text, new_text, context:)
+        @filesystem.replace(logical_path(path), old_text, new_text, context:)
       end
 
       # Executes a shell command through the parent sandbox and this scope.
@@ -131,6 +132,57 @@ module LittleGhost
 
       private
 
+      def scoped_mounts(files, runtime_paths)
+        return if files.nil? && runtime_paths.nil?
+
+        selections = []
+        if files.nil?
+          selections.concat(@parent_mounts.select(&:tool_visible?))
+        else
+          normalize_path_selection(files, tool_visible: true).each do |name, access|
+            selections << narrow_parent_grant(name, access, tool_visible: true)
+          end
+        end
+        if runtime_paths.nil?
+          selections.concat(@parent_mounts.reject(&:tool_visible?))
+        else
+          normalize_path_selection(runtime_paths, tool_visible: false).each do |name, access|
+            selections << narrow_parent_grant(name, access, tool_visible: false)
+          end
+        end
+        selections
+      end
+
+      def normalize_path_selection(value, tool_visible:)
+        Array(value).to_h do |entry|
+          if entry.is_a?(Array)
+            key = entry.first.to_sym
+            matching_parent_grant(key, tool_visible:)
+            [key, entry.last.to_sym]
+          else
+            key = entry.to_sym
+            grant = matching_parent_grant(key, tool_visible:)
+            [key, grant.access]
+          end
+        end
+      end
+
+      def matching_parent_grant(name, tool_visible:)
+        target = workspace_path(name)
+        @parent_mounts.find do |mount|
+          mount.tool_visible? == tool_visible && mount.target == target
+        end || raise(CapabilityError, "sandbox scope cannot expose a path outside its parent")
+      end
+
+      def narrow_parent_grant(name, access, tool_visible:)
+        target = workspace_path(name)
+        matching_parent_grant(name, tool_visible:).narrow(target:, access:)
+      end
+
+      def workspace_path(name)
+        (name.to_sym == :root) ? workspace.root : workspace.path(name)
+      end
+
       def normalize_mounts(values)
         Array(values).map do |value|
           if value.is_a?(Mount)
@@ -147,7 +199,7 @@ module LittleGhost
 
       def validate_mounts(values)
         values.map do |mount|
-          parent = parent_mount_for(mount.target)
+          parent = parent_mount_for(mount.target, tool_visible: mount.tool_visible?)
           narrowed = parent.narrow(target: mount.target, access: mount.access)
           unless File.realpath(mount.source) == File.realpath(narrowed.source)
             raise CapabilityError, "sandbox scope mount source must come from its parent"
@@ -202,15 +254,22 @@ module LittleGhost
         raise CapabilityError, "sandbox scope mount source is unavailable"
       end
 
-      def parent_mount_for(target)
+      def parent_mount_for(target, tool_visible: nil)
         target = Mount.send(:normalize_virtual_path, target)
-        @parent_mounts.find { |mount| mount.covers?(target) } ||
+        @parent_mounts.find do |mount|
+          (tool_visible.nil? || mount.tool_visible? == tool_visible) && mount.covers?(target)
+        end ||
           raise(CapabilityError, "sandbox scope cannot expose a path outside its parent")
       end
 
       def absolute_path(path)
-        value = String(path)
-        value.start_with?(File::SEPARATOR) ? value : File.join(policy.workspace_path, value)
+        logical_path(path)
+      end
+
+      def logical_path(path)
+        workspace.resolve(path)
+      rescue ArgumentError => error
+        raise ToolError, error.message
       end
 
       def require_capability!(feature)
@@ -220,7 +279,7 @@ module LittleGhost
       end
 
       def mount_identities
-        mounts.to_h do |mount|
+        @mounts.to_h do |mount|
           root = File.realpath(mount.source)
           stat = File.stat(root)
           [mount, [root, stat.dev, stat.ino]]

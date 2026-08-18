@@ -27,22 +27,20 @@ module LittleGhost
     class Unrestricted < Sandbox
       # Configures a host sandbox with an explicit policy and resource limits.
       def initialize(workspace:, policy: nil, profiles: {}, limits: {})
-        configured_policy = policy || Sandbox::Policy.new(root_filesystem: :read_write, network: :inherit)
+        configured_policy = policy || Sandbox::Policy.new(files: {root: :read_only}, root_filesystem: :read_write, network: :inherit)
         super(workspace:, policy: configured_policy, profiles:, limits:)
         policy = self.policy
         unless policy.network.nil? || policy.network.inherit?
           raise CapabilityError, "the unrestricted sandbox cannot enforce network mode :#{policy.network.mode}"
         end
         @effective_policy = Sandbox::Policy.new(
-          workspace_path: policy.workspace_path,
-          workspace_access: policy.workspace_access,
+          files: policy.files,
+          runtime_paths: policy.runtime_paths,
           root_filesystem: :read_write,
-          mounts: policy.mounts,
           environment: policy.environment,
-          network: :inherit,
-          execution_scope: :command
+          network: :inherit
         )
-        @writable = effective_policy.effective_mounts(workspace).any?(&:writable?)
+        @writable = effective_policy.process_grants(workspace).any?(&:writable?)
         @root = File.expand_path(workspace.root)
         capture_root_identity if File.exist?(@root)
       end
@@ -69,7 +67,7 @@ module LittleGhost
       # this instance. +isolation: :none+ is deliberate: unrestricted execution
       # is not a security boundary.
       def capabilities
-        features = %i[filesystem_read filesystem_list process_execute]
+        features = %i[filesystem_read filesystem_list process_execute process_spawn]
         features.concat(%i[filesystem_write filesystem_replace]) if writable?
         Sandbox::Capabilities.new(features:, network_modes: [:inherit], isolation: :none)
       end
@@ -115,10 +113,28 @@ module LittleGhost
           timeout:,
           context:,
           max_output_bytes:,
-          environment: effective_policy.environment.values.merge(environment),
+          environment: workspace.environment.merge(effective_policy.environment.values).merge(environment),
           inherit_environment: effective_policy.environment.inherit? && inherit_environment
         )
         Sandbox::Execution.new(stdout:, stderr:, exit_code: status.exitstatus)
+      end
+
+      # Starts a bounded host process. This remains unrestricted host execution,
+      # not a containment boundary.
+      def start_program(command, context: nil, environment: {}, inherit_environment: false,
+        scope: nil, cwd: nil, output_bytes: nil, memory_bytes: nil, cpu_seconds: nil, file_bytes: nil, processes: nil,
+        allow_subprocesses: true)
+        Sandbox::ProcessSession.new(
+          command:,
+          environment: workspace.environment.merge(effective_policy.environment.values).merge(environment),
+          inherit_environment: effective_policy.environment.inherit? && inherit_environment,
+          chdir: cwd ? workspace.resolve(cwd) : workspace.root,
+          output_bytes: output_bytes || limits.output_bytes,
+          memory_bytes:,
+          cpu_seconds:,
+          file_bytes:,
+          processes:
+        )
       end
 
       private

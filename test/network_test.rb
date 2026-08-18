@@ -138,10 +138,12 @@ class NetworkTest < Minitest::Test
         mode: :allowlist,
         allow: ["example.com:443"]
       )
+      workspace = LittleGhost::Workspace.new(root:, paths: {egress: "egress"}).open
       gateway = LittleGhost::Network::ExternalGateway.new(
         policy:,
-        mounts: [{source: root, target: "/run/gateway"}],
-        proxy_mount_path: "/run/gateway/proxy.sock",
+        workspace:,
+        runtime_paths: [:egress],
+        proxy_mount_path: File.join(workspace.path(:egress), "proxy.sock"),
         environment: {HTTPS_PROXY: "http://127.0.0.1:3128"},
         validate: -> { raise LittleGhost::DependencyError, "not ready" unless ready }
       )
@@ -150,23 +152,19 @@ class NetworkTest < Minitest::Test
       ready = true
       assert_same gateway, gateway.validate!
       assert_equal({"HTTPS_PROXY" => "http://127.0.0.1:3128"}, gateway.environment)
-      assert_equal "/run/gateway", gateway.mounts.first.target
-      assert_equal "/run/gateway/proxy.sock", gateway.proxy_mount_path
+      assert_equal [:egress], gateway.runtime_paths
+      assert_equal File.join(workspace.path(:egress), "proxy.sock"), gateway.proxy_mount_path
 
       assert_raises(LittleGhost::PolicyError) do
         LittleGhost::Network::ExternalGateway.new(
           policy:,
-          mounts: [{source: root, target: "/run/gateway", access: :read_write}],
-          proxy_mount_path: "/run/gateway/proxy.sock"
-        )
-      end
-      assert_raises(LittleGhost::PolicyError) do
-        LittleGhost::Network::ExternalGateway.new(
-          policy:,
-          mounts: [{source: root, target: "/run/gateway"}],
+          workspace:,
+          runtime_paths: [:egress],
           proxy_mount_path: "/outside/proxy.sock"
         )
       end
+    ensure
+      workspace&.close
     end
   end
 
