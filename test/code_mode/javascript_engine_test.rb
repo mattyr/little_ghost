@@ -551,6 +551,31 @@ class CodeModeEngineTest < Minitest::Test
     assert_raises(LittleGhost::ToolError) { execute(session, broker, 'text("closed");') }
   end
 
+  def test_runtime_paths_follow_the_loaded_optional_gems
+    specification = Struct.new(:full_gem_path, :extension_dir, :full_require_paths)
+    specifications = {
+      "mini_racer" => specification.new(
+        "/bundle/mini_racer", "/missing/extension", ["/bundle/mini_racer/lib", "/bundle/mini_racer/ext"]
+      ),
+      "libv8-node" => specification.new(
+        "/bundle/libv8-node", "/missing/extension", ["/bundle/libv8-node/lib"]
+      )
+    }
+
+    paths = LittleGhost::CodeMode::JavascriptEngine.new.send(
+      :javascript_runtime_paths,
+      specifications:
+    )
+
+    assert_equal "/bundle/mini_racer", paths.fetch(:mini_racer_gem)
+    assert_equal "/bundle/libv8-node", paths.fetch(:libv8_node_gem)
+
+    command = LittleGhost::CodeMode::JavascriptEngine.new.send(:host_command, specifications:)
+    assert_includes command.each_cons(2).to_a, ["-I", "/bundle/mini_racer/lib"]
+    assert_includes command.each_cons(2).to_a, ["-I", "/bundle/mini_racer/ext"]
+    assert_includes command.each_cons(2).to_a, ["-I", "/bundle/libv8-node/lib"]
+  end
+
   private
 
   def execute(session, broker, source, yield_time_ms: 10_000)
@@ -565,7 +590,9 @@ class CodeModeEngineTest < Minitest::Test
   def open_session(broker, limits: {})
     engine = LittleGhost::CodeMode::JavascriptEngine.new
     sandbox_factory = lambda do |workspace:, required_runtime_paths:|
-      assert_equal({runtime: :read_only, ruby_runtime: :read_only}, required_runtime_paths)
+      assert_equal workspace.paths.keys.to_h { |name| [name, :read_only] }, required_runtime_paths
+      assert_equal Gem.loaded_specs.fetch("mini_racer").full_gem_path, workspace.path(:mini_racer_gem)
+      assert_equal Gem.loaded_specs.fetch("libv8-node").full_gem_path, workspace.path(:libv8_node_gem)
       Sandbox.new(workspace).tap { |sandbox| @sandboxes << sandbox }
     end
     engine.open_session(broker:, sandbox_factory:, limits: {cpu_seconds: nil, processes: nil}.merge(limits)).tap do |session|

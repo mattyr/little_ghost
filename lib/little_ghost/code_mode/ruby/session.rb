@@ -124,7 +124,9 @@ module LittleGhost
               return CellResult.new(output: @output.dup, status: :running, continuation: self)
             end
 
-            chunk = @session.read(timeout: 0.05)
+            read_timeout = 0.05
+            read_timeout = (slice_deadline - monotonic_time).clamp(0, read_timeout) if slice_deadline
+            chunk = @session.read(timeout: read_timeout)
             unless chunk.stderr.empty?
               @output << chunk.stderr
               enforce_output!(max_output_tokens)

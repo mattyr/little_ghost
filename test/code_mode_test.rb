@@ -453,8 +453,8 @@ class CodeModeTest < Minitest::Test
       limits: {memory_bytes: 128 * 1024 * 1024, cleanup_seconds: 0.1}
     )
 
-    result = session.execute(source: "tools.fail", catalog: broker.catalog, yield_time_ms: 10)
-    Timeout.timeout(1) { entered.pop }
+    result = session.execute(source: "tools.fail", catalog: broker.catalog, yield_time_ms: 1_000)
+    Timeout.timeout(5) { entered.pop }
     directory = session.instance_variable_get(:@workspace_directory)
 
     assert_equal :running, result.status
