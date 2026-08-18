@@ -369,6 +369,7 @@ class CodeModeTest < Minitest::Test
 
     instructions = LittleGhost::CodeMode::RubyEngine.new.instructions(catalog:)
 
+    refute_includes LittleGhost::CodeMode::RubyEngine::DEFAULT_LIMITS, :processes
     assert_includes instructions, "Find matching items."
     assert_includes instructions, "tools.find_items(query:, status: nil, filters: nil)"
     assert_includes instructions, "# @param query [String] required; Search text. (minLength=2)"

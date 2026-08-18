@@ -104,7 +104,6 @@ module LittleGhost
             memory_bytes: @limits.fetch(:memory_bytes),
             cpu_seconds: @limits.fetch(:cpu_seconds),
             file_bytes: @limits.fetch(:file_bytes),
-            processes: @limits.fetch(:processes),
             allow_subprocesses: @subprocess_policy.call(@sandbox)
           )
           @deadline = monotonic_time + @limits.fetch(:wall_seconds)

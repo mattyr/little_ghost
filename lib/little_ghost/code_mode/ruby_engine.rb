@@ -17,7 +17,6 @@ module LittleGhost
         wall_seconds: 10,
         cpu_seconds: 10,
         file_bytes: 1_000_000,
-        processes: 32,
         cells: 8,
         tool_calls: 1_000,
         concurrency: 8,

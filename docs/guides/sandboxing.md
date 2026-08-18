@@ -182,7 +182,9 @@ Bubblewrap owns descendants with a PID namespace and ends them when the
 supervising process dies. It cannot selectively deny fork inside that
 namespace, so a request for
 `allow_subprocesses: false` fails closed rather than claiming an unenforced
-restriction.
+restriction. Bubblewrap does not impose a task-count limit by itself. Use an
+outer cgroup or container supervisor when untrusted code needs a hard cap on
+the processes and threads it can create.
 
 Seatbelt can constrain spawned children, but macOS has no PID namespace. It
 terminates the command process group during cleanup; a child that deliberately

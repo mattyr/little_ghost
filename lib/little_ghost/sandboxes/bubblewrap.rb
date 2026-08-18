@@ -128,7 +128,7 @@ module LittleGhost
       # allowed and remain owned by its PID namespace; Bubblewrap cannot enforce
       # a per-program request to deny subprocess creation.
       def start_program(command, context: nil, environment: {}, inherit_environment: false,
-        scope: nil, cwd: nil, output_bytes: nil, memory_bytes: nil, cpu_seconds: nil, file_bytes: nil, processes: nil,
+        scope: nil, cwd: nil, output_bytes: nil, memory_bytes: nil, cpu_seconds: nil, file_bytes: nil,
         allow_subprocesses: true)
         unless allow_subprocesses
           raise CapabilityError, "Bubblewrap owns subprocess descendants but cannot prohibit their creation"
@@ -146,7 +146,7 @@ module LittleGhost
           memory_bytes:,
           cpu_seconds:,
           file_bytes:,
-          processes:
+          processes: nil
         )
       end
 

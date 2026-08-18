@@ -36,7 +36,6 @@ module LittleGhost
         memory_bytes: 128 * 1024 * 1024,
         cpu_seconds: 30,
         file_bytes: 1024 * 1024,
-        processes: 1,
         max_concurrency: 8
       }.freeze
 
@@ -85,7 +84,6 @@ module LittleGhost
             memory_bytes: configured_limits[:memory_bytes],
             cpu_seconds: configured_limits[:cpu_seconds],
             file_bytes: configured_limits[:file_bytes],
-            processes: configured_limits[:processes],
             allow_subprocesses: allow_subprocesses_for(sandbox)
           )
         })

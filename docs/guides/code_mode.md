@@ -158,7 +158,7 @@ consume that application Tool budget themselves.
 ## Set limits for the work you expect
 
 The Ruby engine supplies bounded defaults for source, output, memory, wall and
-CPU time, files, process count, cells, Tool calls, concurrency, and cleanup.
+CPU time, files, cells, Tool calls, concurrency, and cleanup.
 Override only the limits your workload has outgrown:
 
 ```ruby
@@ -174,6 +174,10 @@ LittleGhost.configure do |config|
   }
 end
 ```
+
+Bubblewrap owns the cell's process tree but does not cap its process or thread
+count. Use an outer cgroup or container supervisor when untrusted code needs a
+hard task-count limit.
 
 Application defaults apply to every Agent that declares `code_mode`. An Agent
 can override the engine, Sandbox, limits, or excluded Tools in its own

@@ -64,7 +64,7 @@ class CodeModeEngineTest < Minitest::Test
       )
     end
 
-    def start_program(command, cwd:, environment:, output_bytes:, memory_bytes:, cpu_seconds:, file_bytes:, processes:,
+    def start_program(command, cwd:, environment:, output_bytes:, memory_bytes:, cpu_seconds:, file_bytes:,
       allow_subprocesses:)
       LittleGhost::Sandbox::ProcessSession.new(
         command:,
@@ -74,7 +74,7 @@ class CodeModeEngineTest < Minitest::Test
         memory_bytes:,
         cpu_seconds:,
         file_bytes:,
-        processes:
+        processes: nil
       ).tap { |process| @processes << process }
     end
 
@@ -108,6 +108,7 @@ class CodeModeEngineTest < Minitest::Test
     instructions = engine.instructions(catalog: Broker.new.catalog)
 
     assert_equal :javascript, engine.language
+    refute_includes LittleGhost::CodeMode::JavascriptEngine::DEFAULT_LIMITS, :processes
     assert_includes instructions, "echo_value(args:"
     assert_includes instructions, "Promise<unknown>"
   end
@@ -595,7 +596,7 @@ class CodeModeEngineTest < Minitest::Test
       assert_equal Gem.loaded_specs.fetch("libv8-node").full_gem_path, workspace.path(:libv8_node_gem)
       Sandbox.new(workspace).tap { |sandbox| @sandboxes << sandbox }
     end
-    engine.open_session(broker:, sandbox_factory:, limits: {cpu_seconds: nil, processes: nil}.merge(limits)).tap do |session|
+    engine.open_session(broker:, sandbox_factory:, limits: {cpu_seconds: nil}.merge(limits)).tap do |session|
       @sessions << session
     end
   end
