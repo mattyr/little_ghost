@@ -124,6 +124,10 @@ module LittleGhost
       def start_program(command, context: nil, environment: {}, inherit_environment: false,
         scope: nil, cwd: nil, output_bytes: nil, memory_bytes: nil, cpu_seconds: nil, file_bytes: nil, processes: nil,
         allow_subprocesses: true)
+        unless allow_subprocesses
+          raise CapabilityError, "the unrestricted sandbox cannot prohibit subprocess creation"
+        end
+
         Sandbox::ProcessSession.new(
           command:,
           environment: workspace.environment.merge(effective_policy.environment.values).merge(environment),

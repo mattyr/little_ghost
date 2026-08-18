@@ -40,7 +40,10 @@ module LittleGhost
       # Describes the isolation and operations provided by this backend.
       def self.backend_capabilities
         Capabilities.new(
-          features: %i[filesystem_read filesystem_list filesystem_write filesystem_replace process_execute process_spawn],
+          features: %i[
+            filesystem_read filesystem_list filesystem_write filesystem_replace
+            process_execute process_spawn process_tree_ownership
+          ],
           network_modes: %i[inherit none allowlist],
           isolation: :namespace
         )
@@ -164,20 +167,26 @@ module LittleGhost
         mounts = protect_execution_mounts(mounts)
         args = %w[
           --unshare-user --unshare-pid --unshare-ipc --unshare-uts --unshare-cgroup-try
-          --new-session --die-with-parent --cap-drop ALL --tmpfs /
+          --new-session --die-with-parent --cap-drop ALL
         ]
+        args.concat(root_filesystem_args)
         args << "--unshare-net" unless network.inherit?
-        args.concat(runtime_mount_args)
+        args.concat(runtime_mount_args) if effective_policy.root_filesystem == :isolated
         args.concat(%w[--dev /dev])
         args.concat(proc_args)
         @tmpfs.each { |path| args.concat(["--tmpfs", path]) }
-        args.concat(directory_args(mounts.map(&:target) + @tmpfs + @masks + [cwd]))
+        paths = mounts.map(&:target) + @tmpfs + @masks + [cwd]
+        args.concat(if effective_policy.root_filesystem == :isolated
+          directory_args(paths)
+        else
+          tmpfs_directory_args(paths)
+        end)
         mounts.each do |mount|
           args.concat([mount.read_only? ? "--ro-bind" : "--bind", mount.source, mount.target])
         end
         @masks.each { |path| args.concat(["--tmpfs", path, "--remount-ro", path]) }
         args.concat(["--chdir", validated_cwd(cwd, mounts)])
-        args << "--remount-ro" << "/" if effective_policy.root_filesystem == :read_only
+        args << "--remount-ro" << "/" if effective_policy.root_filesystem == :isolated
         args << "--clearenv" unless inherit_environment
         environment.each { |name, value| args.concat(["--setenv", name, value]) }
         args.concat(["--uid", @uid.to_s]) if @uid
@@ -186,6 +195,14 @@ module LittleGhost
       end
 
       private
+
+      def root_filesystem_args
+        case effective_policy.root_filesystem
+        when :isolated then %w[--tmpfs /]
+        when :read_only then %w[--ro-bind / /]
+        when :read_write then %w[--bind / /]
+        end
+      end
 
       def sandbox_process_command(command, scope:, cwd:, environment:, inherit_environment:)
         configured_environment, inherit = execution_environment(environment, inherit_environment)
@@ -280,12 +297,23 @@ module LittleGhost
       end
 
       def directory_args(paths)
+        directory_paths(paths).flat_map { |path| ["--dir", path] }
+      end
+
+      def tmpfs_directory_args(paths)
+        nested = directory_paths(paths).select do |path|
+          @tmpfs.any? { |root| path.start_with?("#{root}/") }
+        end
+        nested.flat_map { |path| ["--dir", path] }
+      end
+
+      def directory_paths(paths)
         paths.flat_map do |path|
           components = path.split("/").reject(&:empty?)
           components[0...-1].each_index.map do |index|
-            ["--dir", "/#{components.first(index + 1).join("/")}"]
+            "/#{components.first(index + 1).join("/")}"
           end
-        end.uniq.flatten
+        end.uniq
       end
 
       def validated_cwd(cwd, mounts)

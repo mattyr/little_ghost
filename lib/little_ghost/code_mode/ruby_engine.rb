@@ -51,6 +51,7 @@ module LittleGhost
         Ruby::Session.new(
           broker:,
           sandbox_factory:,
+          subprocess_policy: method(:allow_subprocesses_for),
           limits: DEFAULT_LIMITS.merge(limits.to_h.transform_keys(&:to_sym))
         )
       end

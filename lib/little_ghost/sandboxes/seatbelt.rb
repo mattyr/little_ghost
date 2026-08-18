@@ -8,8 +8,8 @@ module LittleGhost
   module Sandboxes
     # Runs child programs under macOS Seatbelt. Seatbelt grants access to the
     # workspace's existing physical paths; it does not create Linux-style bind
-    # mounts or virtual path aliases. Seatbelt cannot own detached descendants,
-    # so sessions deliberately deny child-process creation.
+    # mounts or virtual path aliases. Child processes inherit the profile, but
+    # macOS cannot provide PID-namespace ownership for detached descendants.
     class Seatbelt < Sandbox::IsolatedBackend
       DEFAULT_EXECUTABLE = "/usr/bin/sandbox-exec" # :nodoc:
 
@@ -24,7 +24,10 @@ module LittleGhost
 
       def self.backend_capabilities
         Capabilities.new(
-          features: %i[filesystem_read filesystem_list filesystem_write filesystem_replace process_execute],
+          features: %i[
+            filesystem_read filesystem_list filesystem_write filesystem_replace
+            process_execute process_spawn process_spawn_denial
+          ],
           network_modes: %i[inherit none],
           isolation: :seatbelt
         )
@@ -38,7 +41,16 @@ module LittleGhost
         @opened = false
       end
 
-      def capabilities = self.class.backend_capabilities
+      def capabilities
+        supported = self.class.backend_capabilities
+        return supported unless effective_policy.root_filesystem == :isolated
+
+        Capabilities.new(
+          features: supported.features - [:process_spawn],
+          network_modes: supported.network_modes,
+          isolation: supported.isolation
+        )
+      end
 
       def open(run: nil)
         return self if @opened
@@ -66,14 +78,16 @@ module LittleGhost
 
       def execute_program(command, timeout:, context: nil, max_output_bytes: nil,
         environment: {}, inherit_environment: false, scope: nil, cwd: nil)
+        selected_scope = scope || self.scope
         session = start_program(
           command,
           context:,
           environment:,
           inherit_environment:,
-          scope:,
+          scope: selected_scope,
           cwd:,
-          output_bytes: max_output_bytes
+          output_bytes: max_output_bytes,
+          allow_subprocesses: selected_scope.supports?(:process_spawn)
         )
         session.close_write
         stdout = +""
@@ -100,13 +114,12 @@ module LittleGhost
       def start_program(command, context: nil, environment: {}, inherit_environment: false,
         scope: nil, cwd: nil, output_bytes: nil, memory_bytes: nil, cpu_seconds: nil, file_bytes: nil, processes: nil,
         allow_subprocesses: false)
-        if allow_subprocesses
-          raise CapabilityError, "Seatbelt cannot safely own subprocess descendants"
-        end
-
         open unless @opened
         selected_scope = scope || self.scope
         selected_scope.validate!
+        if allow_subprocesses && !selected_scope.supports?(:process_spawn)
+          raise CapabilityError, "sandbox scope does not allow subprocess creation"
+        end
         configured_environment = workspace.environment
           .merge(effective_policy.environment.to_h)
           .merge(environment.transform_keys(&:to_s).transform_values(&:to_s))
@@ -128,17 +141,28 @@ module LittleGhost
       private
 
       def seatbelt_profile(scope, allow_subprocesses: false)
+        root_rules = case effective_policy.root_filesystem
+        when :isolated
+          [
+            *runtime_parent_paths.map { |path| allow_literal_rule("file-read-metadata", path) },
+            *grant_parent_paths(scope).map { |path| allow_literal_rule("file-read-metadata", path) },
+            *runtime_roots.map { |path| allow_rule("file-read*", path) }
+          ]
+        when :read_only
+          ["(allow file-read*)"]
+        when :read_write
+          ["(allow file-read*)", "(allow file-write*)"]
+        end
         rules = [
           "(version 1)",
           "(deny default)",
           "(allow process-exec)",
           ("(allow process-fork)" if allow_subprocesses),
-          "(allow signal (target self))",
+          ("(allow process-info* (target same-sandbox))" if allow_subprocesses),
+          allow_subprocesses ? "(allow signal (target same-sandbox))" : "(allow signal (target self))",
           "(allow sysctl-read)",
           "(allow file-read* (literal \"/\"))",
-          *runtime_parent_paths.map { |path| allow_literal_rule("file-read-metadata", path) },
-          *grant_parent_paths(scope).map { |path| allow_literal_rule("file-read-metadata", path) },
-          *runtime_roots.map { |path| allow_rule("file-read*", path) },
+          *root_rules,
           *device_paths.map { |path| allow_literal_rule("file-read*", path) },
           *device_paths.map { |path| allow_literal_rule("file-write*", path) },
           allow_rule("file-read*", @temporary_directory),

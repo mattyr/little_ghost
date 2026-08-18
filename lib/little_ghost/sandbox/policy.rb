@@ -11,7 +11,7 @@ module LittleGhost
         files runtime_paths root_filesystem environment network
       ].freeze # :nodoc:
       ACCESS_MODES = %i[read_only read_write].freeze # :nodoc:
-      ROOT_FILESYSTEM_MODES = %i[read_only read_write].freeze # :nodoc:
+      ROOT_FILESYSTEM_MODES = %i[isolated read_only read_write].freeze # :nodoc:
       # Returns an existing policy or builds one from a Hash and keyword options.
       def self.coerce(value = nil, **options)
         return value if value.is_a?(self) && options.empty?
@@ -25,7 +25,7 @@ module LittleGhost
       def initialize(
         files: {root: :read_only},
         runtime_paths: {},
-        root_filesystem: :read_only,
+        root_filesystem: :isolated,
         environment: {},
         network: nil
       )
@@ -41,7 +41,7 @@ module LittleGhost
       attr_reader :files
       # Named workspace paths visible only to sandboxed processes.
       attr_reader :runtime_paths
-      # Requested root-filesystem access mode.
+      # Requested host-root access: +:isolated+, +:read_only+, or +:read_write+.
       attr_reader :root_filesystem
       # Environment inheritance and explicit values.
       attr_reader :environment

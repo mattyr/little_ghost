@@ -65,6 +65,18 @@ reviewer = run.sandbox.scope(
 )
 ```
 
+`root_filesystem: :isolated` exposes only the declared Workspace and required
+runtime paths. It is the default and is appropriate for untrusted interpreters.
+`root_filesystem: :read_only` additionally exposes the host filesystem for
+development commands while keeping writes confined to declared writable paths.
+This makes installed compilers, package managers, system profiles, and selected
+developer toolchains available without maintaining a platform-path allowlist,
+but it also lets the child read host files unless the hosting boundary protects
+them separately. On Seatbelt, these explicitly host-visible modes also permit
+subprocesses; a scope can remove `process_spawn` when a command does not need
+children. `:read_write` grants the host filesystem directly and should be
+treated as unrestricted host authority.
+
 ## Choose an enforcement backend
 
 | Provider | Host | Boundary |
@@ -78,13 +90,14 @@ reviewer = run.sandbox.scope(
 available. An explicit isolated backend never falls back to unrestricted
 execution. Seatbelt cannot bind or rename paths, which is why Workspace names
 are logical references instead of a second filesystem topology. Bubblewrap
-uses identity binds internally to provide the same contract. Seatbelt also
-denies child-process creation because macOS has no PID namespace with which to
-own detached descendants; use Bubblewrap when sandboxed programs must spawn.
-Bubblewrap reports `process_spawn` because its PID namespace and parent-death
-controls keep those descendants inside the owned sandbox lifecycle. It cannot
-selectively deny fork inside that namespace, so `allow_subprocesses: false`
-fails closed instead of claiming to enforce a restriction it cannot provide.
+uses identity binds internally to provide the same contract. Seatbelt lets
+development commands spawn children, and those children inherit its filesystem
+and network restrictions. macOS has no PID namespace, so cleanup of a child
+that deliberately detaches from the command's process group is best effort.
+Bubblewrap's PID namespace and parent-death controls own descendants for the
+full sandbox lifecycle. It cannot selectively deny fork inside that namespace,
+so `allow_subprocesses: false` fails closed instead of claiming to enforce a
+restriction it cannot provide.
 
 The unrestricted provider remains convenient for trusted application commands,
 but path checks and output bounds do not make it a security boundary.
@@ -96,9 +109,9 @@ I/O, `alive?`, bounded `wait(timeout:)`, `terminate`, and `close`. The session
 starts a process group with a scrubbed environment, supervises memory from the
 trusted parent, applies available CPU, file, and process limits, and terminates
 the owned process group with TERM followed by KILL. Bubblewrap adds PID-namespace
-ownership for descendants, while Seatbelt denies their creation. A missing
-memory supervisor fails closed. Callers that open a session own it and must
-close it.
+ownership for descendants. Seatbelt terminates the command process group, but
+cannot guarantee cleanup of deliberately detached descendants. A missing memory
+supervisor fails closed. Callers that open a session own it and must close it.
 
 ## Keep networking separate
 

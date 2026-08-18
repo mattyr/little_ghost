@@ -81,7 +81,7 @@ module LittleGhost
             cpu_seconds: configured_limits[:cpu_seconds],
             file_bytes: configured_limits[:file_bytes],
             processes: configured_limits[:processes],
-            allow_subprocesses: sandbox.respond_to?(:supports?) && sandbox.supports?(:process_spawn)
+            allow_subprocesses: allow_subprocesses_for(sandbox)
           )
         })
         Javascript::Session.new(

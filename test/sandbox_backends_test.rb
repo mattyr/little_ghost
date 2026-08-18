@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "shellwords"
 
 class SandboxBackendsTest < Minitest::Test
   class ProbeBubblewrap < LittleGhost::Sandboxes::Bubblewrap
@@ -25,6 +26,19 @@ class SandboxBackendsTest < Minitest::Test
 
     refute result.fetch(:available)
     assert_match(/unavailable/, result.fetch(:reason))
+  end
+
+  def test_unrestricted_rejects_claimed_subprocess_denial
+    Dir.mktmpdir do |root|
+      workspace = LittleGhost::Workspace.new(root:).open
+      sandbox = LittleGhost::Sandboxes::Unrestricted.new(workspace:)
+
+      assert_raises(LittleGhost::CapabilityError) do
+        sandbox.start_program([RbConfig.ruby, "-e", "exit"], allow_subprocesses: false)
+      end
+    ensure
+      workspace&.close
+    end
   end
 
   def test_bubblewrap_uses_identity_bindings_for_workspace_paths
@@ -68,6 +82,43 @@ class SandboxBackendsTest < Minitest::Test
         sandbox.start_program(["true"], allow_subprocesses: false)
       end
       assert_includes error.message, "cannot prohibit"
+    end
+  end
+
+  def test_bubblewrap_root_filesystem_modes_are_explicit
+    Dir.mktmpdir do |root|
+      executable = File.join(root, "bwrap")
+      File.write(executable, "#!/bin/sh\nexit 0\n")
+      File.chmod(0o755, executable)
+      workspace = LittleGhost::Workspace.new(root:).open
+
+      isolated = ProbeBubblewrap.new(
+        workspace:,
+        bubblewrap: executable,
+        platform: "x86_64-linux",
+        policy: {files: {root: :read_write}, root_filesystem: :isolated}
+      )
+      host_readable = ProbeBubblewrap.new(
+        workspace:,
+        bubblewrap: executable,
+        platform: "x86_64-linux",
+        policy: {files: {root: :read_write}, root_filesystem: :read_only}
+      )
+
+      assert_includes isolated.bubblewrap_args.each_cons(2).to_a, ["--tmpfs", "/"]
+      assert_includes host_readable.bubblewrap_args.each_cons(3).to_a, ["--ro-bind", "/", "/"]
+      assert host_readable.supports?(:process_tree_ownership)
+
+      nested = LittleGhost::Sandbox::Mount.new(
+        source: root,
+        target: "/tmp/tenant/runs/123",
+        access: :read_write
+      )
+      nested_arguments = host_readable.bubblewrap_args(mounts: [nested], cwd: nested.target)
+      assert_includes nested_arguments.each_cons(2).to_a, ["--dir", "/tmp/tenant"]
+      assert_includes nested_arguments.each_cons(2).to_a, ["--dir", "/tmp/tenant/runs"]
+    ensure
+      workspace&.close
     end
   end
 
@@ -132,6 +183,7 @@ class SandboxBackendsTest < Minitest::Test
 
       assert_equal "thread-ok:spawn-denied", output
       assert_predicate session.wait, :success?
+      refute sandbox.supports?(:process_spawn)
     ensure
       session&.close
       sandbox&.close
@@ -139,24 +191,65 @@ class SandboxBackendsTest < Minitest::Test
     end
   end
 
-  def test_seatbelt_rejects_subprocess_sessions
+  def test_seatbelt_runs_host_read_only_development_commands_with_subprocesses
     skip "Seatbelt is only available on macOS" unless RUBY_PLATFORM.include?("darwin")
     skip "sandbox-exec is unavailable" unless LittleGhost::Sandboxes::Seatbelt.probe.fetch(:available)
+    skip "Apple Git is unavailable" unless system("/usr/bin/git", "--version", out: File::NULL, err: File::NULL)
 
     Dir.mktmpdir do |root|
+      outside = Tempfile.new("little-ghost-host-read-only")
+      outside.write("before")
+      outside.flush
+      File.write(File.join(root, "check.rb"), <<~RUBY)
+        abort "uname failed" unless system("/usr/bin/uname", "-s")
+        print File.read(#{outside.path.inspect})
+        begin
+          File.write(#{outside.path.inspect}, "after")
+        rescue Errno::EPERM
+          print ":write-denied"
+        end
+      RUBY
+      system("/usr/bin/git", "init", "-q", root, exception: true)
       workspace = LittleGhost::Workspace.new(root:).open
       sandbox = LittleGhost::Sandboxes::Seatbelt.new(
         workspace:,
-        policy: {files: {root: :read_write}, network: :none}
+        policy: {
+          files: {root: :read_write},
+          root_filesystem: :read_only,
+          environment: {inherit: false, set: {"PATH" => ENV.fetch("PATH")}},
+          network: :none
+        }
       ).open
 
-      error = assert_raises(LittleGhost::CapabilityError) do
-        sandbox.start_program([RbConfig.ruby, "-e", "exit"], allow_subprocesses: true)
-      end
+      shell = sandbox.execute_program(
+        ["/bin/bash", "-lc", "#{Shellwords.escape(RbConfig.ruby)} check.rb"],
+        timeout: 10
+      )
+      git = sandbox.execute_program(["/usr/bin/git", "status", "--short"], timeout: 10)
 
-      assert_includes error.message, "cannot safely own subprocess descendants"
-      refute sandbox.supports?(:process_spawn)
+      assert_predicate shell, :success?
+      assert_includes shell.stdout, "Darwin"
+      assert_includes shell.stdout, "before:write-denied"
+      assert_equal "before", File.read(outside.path)
+      assert_predicate git, :success?
+      assert sandbox.supports?(:process_spawn)
+      refute sandbox.supports?(:process_tree_ownership)
+
+      process_only = sandbox.scope(capabilities: [:process_execute])
+      denied = process_only.execute_program(
+        [RbConfig.ruby, "-e", <<~RUBY],
+          begin
+            Process.spawn("/usr/bin/uname", "-s")
+            print "spawned"
+          rescue Errno::EPERM
+            print "denied"
+          end
+        RUBY
+        timeout: 5
+      )
+      assert_equal "denied", denied.stdout
     ensure
+      outside&.close!
       sandbox&.close
       workspace&.close
     end

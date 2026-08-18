@@ -13,6 +13,7 @@ class SandboxPolicyTest < Minitest::Test
 
     assert_equal({root: :read_write, source: :read_only}, policy.files)
     assert_equal({home: :read_write}, policy.runtime_paths)
+    assert_equal :isolated, policy.root_filesystem
     assert_equal({"MODE" => "test"}, policy.environment.to_h)
     assert_predicate policy.network, :none?
     refute_respond_to policy, :mounts
@@ -25,6 +26,9 @@ class SandboxPolicyTest < Minitest::Test
     end
     assert_raises(LittleGhost::PolicyError) do
       LittleGhost::Sandbox::Policy.new(files: {root: :execute})
+    end
+    assert_raises(LittleGhost::PolicyError) do
+      LittleGhost::Sandbox::Policy.new(root_filesystem: :host)
     end
   end
 

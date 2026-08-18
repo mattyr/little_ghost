@@ -10,9 +10,10 @@ module LittleGhost
   module CodeMode
     module Ruby
       class Session < CodeMode::Session # :nodoc:
-        def initialize(broker:, sandbox_factory:, limits:)
+        def initialize(broker:, sandbox_factory:, subprocess_policy:, limits:)
           @broker = broker
           @sandbox_factory = sandbox_factory
+          @subprocess_policy = subprocess_policy
           @limits = limits
           @session = nil
           @workspace = nil
@@ -104,7 +105,7 @@ module LittleGhost
             cpu_seconds: @limits.fetch(:cpu_seconds),
             file_bytes: @limits.fetch(:file_bytes),
             processes: @limits.fetch(:processes),
-            allow_subprocesses: @sandbox.supports?(:process_spawn)
+            allow_subprocesses: @subprocess_policy.call(@sandbox)
           )
           @deadline = monotonic_time + @limits.fetch(:wall_seconds)
           @output = +""

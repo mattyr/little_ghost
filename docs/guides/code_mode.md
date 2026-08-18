@@ -76,3 +76,9 @@ call the supplied sandbox factory with `workspace:` and
 access required by the engine; it never exposes those paths to Tools. The
 factory returns an unopened, session-owned Sandbox, and the session closes the
 process, Sandbox, and Workspace in reverse order.
+
+Sandboxed engines require a backend that either owns the complete child process
+tree or can enforce a no-child-process policy. An explicitly unrestricted
+backend may allow subprocesses, but it does not provide containment. The
+built-in native backends satisfy this contract by denying child creation in
+isolated macOS sessions and owning the process tree in Bubblewrap sessions.

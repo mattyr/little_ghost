@@ -3,6 +3,8 @@
 require "test_helper"
 
 class CodeModeTest < Minitest::Test
+  CapabilitySandbox = Data.define(:capabilities)
+
   class ScriptedModel
     include LittleGhost::ModelInterface
 
@@ -90,6 +92,19 @@ class CodeModeTest < Minitest::Test
     assert_raises(ArgumentError) { LittleGhost::CodeMode.resolve_engine(Object.new) }
   ensure
     LittleGhost::CodeMode.engines.delete(name)
+  end
+
+  def test_engine_requires_owned_subprocesses_or_enforced_denial
+    engine = AgentEngine.new
+    owned = LittleGhost::Sandbox::Capabilities.new(features: [:process_tree_ownership])
+    denied = LittleGhost::Sandbox::Capabilities.new(features: [:process_spawn_denial])
+    ambiguous = LittleGhost::Sandbox::Capabilities.new(features: [:process_spawn], isolation: :seatbelt)
+
+    assert engine.send(:allow_subprocesses_for, CapabilitySandbox.new(owned))
+    refute engine.send(:allow_subprocesses_for, CapabilitySandbox.new(denied))
+    assert_raises(LittleGhost::CapabilityError) do
+      engine.send(:allow_subprocesses_for, CapabilitySandbox.new(ambiguous))
+    end
   end
 
   def test_ruby_engine_brokers_tools_and_returns_the_final_expression

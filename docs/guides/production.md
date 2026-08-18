@@ -169,7 +169,7 @@ LittleGhost.configure do |config|
   config.sandbox = {
     provider: :native,
     files: {root: :read_write},
-    root_filesystem: :read_only,
+    root_filesystem: :isolated,
     environment: {inherit: false, set: {"LANG" => "C.UTF-8"}},
     network: :none
   }

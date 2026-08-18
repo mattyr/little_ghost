@@ -57,6 +57,13 @@ class CodeModeEngineTest < Minitest::Test
 
     def open = self
 
+    def capabilities
+      LittleGhost::Sandbox::Capabilities.new(
+        features: %i[process_execute process_spawn],
+        isolation: :none
+      )
+    end
+
     def start_program(command, cwd:, environment:, output_bytes:, memory_bytes:, cpu_seconds:, file_bytes:, processes:,
       allow_subprocesses:)
       LittleGhost::Sandbox::ProcessSession.new(

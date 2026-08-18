@@ -3,8 +3,11 @@
 module LittleGhost
   class Sandbox
     # Describes the operations, network modes, and isolation mechanism a Sandbox
-    # backend implements. Capabilities are immutable and safe to expose to
-    # tools, but are not a security certification of the surrounding deployment.
+    # backend implements. +process_spawn+ permits child creation,
+    # +process_spawn_denial+ means the backend can prohibit it for one session,
+    # and +process_tree_ownership+ means descendants remain owned through
+    # cleanup. Capabilities are immutable and safe to expose to tools, but are
+    # not a security certification of the surrounding deployment.
     class Capabilities
       DEFAULT_FEATURES = %i[filesystem_read filesystem_list process_execute].freeze # :nodoc:
       NETWORK_MODES = %i[inherit none allowlist].freeze # :nodoc:
