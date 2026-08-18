@@ -2,6 +2,7 @@
 
 require "pathname"
 require "monitor"
+require_relative "skills/resource_root"
 
 module LittleGhost
   # Configure shared services and lookup rules before agents start.
@@ -101,6 +102,9 @@ module LittleGhost
       }.merge(values)
       @configuration_values[:prompt_paths] = Array(@configuration_values[:prompt_paths]).dup
       @configuration_values[:skill_paths] = Array(@configuration_values[:skill_paths]).dup
+      @configuration_values[:skill_resource_root] = Skills::ResourceRoot.normalize(
+        @configuration_values[:skill_resource_root]
+      )
       @configuration_values[:instrumentation_subscribers] = Array(
         @configuration_values[:instrumentation_subscribers]
       ).dup
@@ -533,12 +537,19 @@ module LittleGhost
       change_configuration { configuration_values[:skill_paths] = Array(value) }
     end
 
-    # Optional trusted root exposed to skills for resource lookup.
+    # Optional model-facing root used for skill locations and resources. The
+    # value may be an absolute process-visible path. A
+    # <tt>workspace://name</tt> reference must map to the configured skill path
+    # through a read-only file grant in each Run's Workspace and Sandbox. The
+    # application must not expose the same files through another writable bind
+    # mount.
     def skill_resource_root = configuration_values[:skill_resource_root]
 
-    # Replaces the trusted skill resource root for new runtimes.
+    # Replaces and validates the skill resource root for new runtimes.
     def skill_resource_root=(value)
-      change_configuration { configuration_values[:skill_resource_root] = value }
+      change_configuration do
+        configuration_values[:skill_resource_root] = Skills::ResourceRoot.normalize(value)
+      end
     end
 
     def settings(root: nil) # :nodoc:

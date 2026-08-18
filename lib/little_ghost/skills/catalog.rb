@@ -2,7 +2,7 @@
 
 require "yaml"
 require "erb"
-require "pathname"
+require_relative "resource_root"
 
 module LittleGhost
   module Skills
@@ -25,7 +25,11 @@ module LittleGhost
     # Configured roots and their contents are fully trusted instruction sources.
     # The +allowed-tools+ field is metadata shown to the model, not an
     # authorization boundary. Applications must enforce tool access separately
-    # and keep skill roots non-user-writable.
+    # and keep skill roots non-user-writable. For a <tt>workspace://</tt>
+    # resource root, the Catalog verifies the named read-only grant and rejects
+    # direct writable aliases it can identify. LittleGhost cannot identify every
+    # alias created by an outer container or mount namespace, so the application
+    # must not expose the same files through another writable bind mount.
     class Catalog
       include Enumerable
 
@@ -40,21 +44,29 @@ module LittleGhost
       SAFE_NAME_PATTERN = /\A[a-zA-Z0-9_-]+\z/ # :nodoc:
 
       # Loads valid skills immediately using the supplied safety limits.
+      # +resource_root+ may be an absolute process-visible path. A
+      # <tt>workspace://name</tt> reference also requires +workspace+ and
+      # +sandbox+; it must resolve to every configured skill root through a
+      # read-only file-tool grant.
       def initialize(
         paths:,
         max_skills: DEFAULT_MAX_SKILLS,
         max_file_bytes: DEFAULT_MAX_FILE_BYTES,
         max_resource_files: DEFAULT_MAX_RESOURCE_FILES,
         only: nil,
-        resource_root: nil
+        resource_root: nil,
+        workspace: nil,
+        sandbox: nil
       )
         @paths = PathSet.new(paths)
         @max_skills = positive_integer(max_skills, :max_skills)
         @max_file_bytes = positive_integer(max_file_bytes, :max_file_bytes)
         @max_resource_files = positive_integer(max_resource_files, :max_resource_files)
         @only = Array(only).map(&:to_s).freeze if only
-        @resource_root = canonical_resource_root(resource_root)
+        @resource_root = ResourceRoot.normalize(resource_root)
+        validate_workspace_resource_root!(workspace, sandbox)
         @skills = load_skills
+        validate_workspace_resource_aliases!(sandbox)
       end
 
       # Yields each Skill in lookup order.
@@ -257,15 +269,83 @@ module LittleGhost
         integer
       end
 
-      def canonical_resource_root(value)
-        return unless value
-
-        path = value.to_s
-        if path.include?("\0") || !Pathname.new(path).absolute? || path.split(File::SEPARATOR).include?("..")
-          raise ArgumentError, "resource_root must be an absolute path"
+      def validate_workspace_resource_root!(workspace, sandbox)
+        return unless @resource_root&.start_with?("workspace://")
+        unless workspace && sandbox
+          raise ConfigurationError, "workspace resource_root requires a Workspace and Sandbox"
+        end
+        unless sandbox.workspace.equal?(workspace)
+          raise ConfigurationError, "workspace resource_root requires the Sandbox bound to its Workspace"
         end
 
-        File.expand_path(path).freeze
+        physical_root = File.realpath(workspace.resolve(@resource_root))
+        source_roots = @paths.filter_map do |root|
+          File.realpath(root.path) if Dir.exist?(root.path)
+        end
+        unless source_roots.all? { |source_root| source_root == physical_root }
+          raise ConfigurationError, "workspace resource_root must map to each skill path"
+        end
+        unless sandbox.allows?(:filesystem_read, @resource_root) &&
+            !sandbox.allows?(:filesystem_write, @resource_root)
+          raise ConfigurationError, "workspace resource_root must be tool-readable and read-only"
+        end
+        if writable_tool_grants(sandbox).any? do |grant|
+          source = File.realpath(grant.source)
+          source == physical_root || source.start_with?("#{physical_root}#{File::SEPARATOR}")
+        end
+          raise ConfigurationError, "workspace resource_root must not contain writable file grants"
+        end
+        @workspace_physical_root = physical_root
+      rescue Errno::ENOENT, KeyError, ArgumentError => error
+        raise ConfigurationError, "workspace resource_root is not available: #{error.message}"
+      end
+
+      def validate_workspace_resource_aliases!(sandbox)
+        return unless @workspace_physical_root
+
+        protected_identities = protected_directory_identities
+        aliased = writable_tool_grants(sandbox).any? do |grant|
+          stat = File.stat(grant.source)
+          protected_identities.include?([stat.dev, stat.ino])
+        end
+        if aliased
+          raise ConfigurationError, "workspace resource_root must not contain writable file grants"
+        end
+      rescue Errno::ENOENT, Errno::EACCES => error
+        raise ConfigurationError, "workspace resource_root is not available: #{error.message}"
+      end
+
+      def writable_tool_grants(sandbox)
+        grants = sandbox.respond_to?(:process_grants) ? sandbox.process_grants : sandbox.scope.process_grants
+        grants.select { |grant| grant.tool_visible? && grant.writable? }
+      end
+
+      def protected_directory_identities
+        directories = [@workspace_physical_root]
+        @skills.each_value do |skill|
+          skill_directory = File.dirname(skill.source_path)
+          directories << skill_directory
+          RESOURCE_DIRECTORIES.each do |name|
+            resource_root = File.join(skill_directory, name)
+            collect_resource_directories(resource_root, directories) if File.directory?(resource_root)
+          end
+        end
+        directories.uniq.to_h do |directory|
+          stat = File.stat(directory)
+          [[stat.dev, stat.ino], true]
+        end
+      end
+
+      def collect_resource_directories(directory, directories, depth = 0)
+        return if depth >= MAX_RESOURCE_DEPTH || File.symlink?(directory)
+
+        directories << directory
+        Dir.children(directory).each do |name|
+          child = File.join(directory, name)
+          collect_resource_directories(child, directories, depth + 1) if File.directory?(child)
+        rescue Errno::ENOENT, Errno::EACCES
+          next
+        end
       end
 
       def agent_path(source_path, source_root)

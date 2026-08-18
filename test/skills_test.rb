@@ -161,7 +161,249 @@ class SkillsTest < Minitest::Test
         LittleGhost::Skills::Catalog.new(paths: directory, resource_root: "skills")
       end
 
-      assert_equal "resource_root must be an absolute path", error.message
+      assert_equal "resource_root must be an absolute path or workspace:// reference", error.message
+    end
+  end
+
+  def test_maps_skill_locations_to_workspace_references
+    Dir.mktmpdir do |directory|
+      skill_directory = File.join(directory, "review")
+      FileUtils.mkdir_p(File.join(skill_directory, "references"))
+      File.write(
+        File.join(skill_directory, "SKILL.md"),
+        "---\nname: review\ndescription: Review code\n---\nRead the guide."
+      )
+      File.write(File.join(skill_directory, "references", "guide.md"), "Guide")
+
+      workspace, sandbox = workspace_resources(directory)
+      catalog = LittleGhost::Skills::Catalog.new(
+        paths: directory,
+        resource_root: "workspace://skills",
+        workspace:,
+        sandbox:
+      )
+
+      assert_equal "workspace://skills/review/SKILL.md", catalog.fetch("review").path
+      result = catalog.tool.new.execute({"skill_name" => "review"})
+      assert_includes result.content, "Location: workspace://skills/review/SKILL.md"
+      assert_includes result.content, "workspace://skills/review/references/guide.md"
+    ensure
+      workspace&.close
+    end
+  end
+
+  def test_agent_uses_the_runtime_workspace_resource_root
+    Dir.mktmpdir do |directory|
+      skill_directory = File.join(directory, "review")
+      Dir.mkdir(skill_directory)
+      File.write(
+        File.join(skill_directory, "SKILL.md"),
+        "---\nname: review\ndescription: Review code\n---\nRead the guide."
+      )
+      runtime = Struct.new(:skill_paths, :skill_resource_root).new(
+        [directory], "workspace://skills"
+      )
+      workspace, sandbox = workspace_resources(directory)
+      run = Struct.new(:runtime, :workspace, :sandbox).new(runtime, workspace, sandbox)
+      agent_class = Class.new(LittleGhost::Agent) do
+        system_prompt "Review carefully."
+        skills
+      end
+      agent = agent_class.new(
+        model: Object.new.extend(LittleGhost::ModelInterface),
+        runtime:,
+        run:
+      )
+
+      catalog = agent.tools.fetch("skills").catalog
+      assert_equal "workspace://skills/review/SKILL.md", catalog.fetch("review").path
+    ensure
+      agent&.close
+      workspace&.close
+    end
+  end
+
+  def test_rejects_workspace_resource_roots_without_a_bound_workspace
+    Dir.mktmpdir do |directory|
+      error = assert_raises(LittleGhost::ConfigurationError) do
+        LittleGhost::Skills::Catalog.new(paths: directory, resource_root: "workspace://skills")
+      end
+
+      assert_equal "workspace resource_root requires a Workspace and Sandbox", error.message
+    end
+  end
+
+  def test_rejects_workspace_resource_roots_that_map_to_different_content
+    Dir.mktmpdir do |directory|
+      Dir.mktmpdir do |other|
+        workspace, sandbox = workspace_resources(other)
+
+        error = assert_raises(LittleGhost::ConfigurationError) do
+          LittleGhost::Skills::Catalog.new(
+            paths: directory,
+            resource_root: "workspace://skills",
+            workspace:,
+            sandbox:
+          )
+        end
+
+        assert_equal "workspace resource_root must map to each skill path", error.message
+      ensure
+        workspace&.close
+      end
+    end
+  end
+
+  def test_rejects_writable_workspace_resource_roots
+    Dir.mktmpdir do |directory|
+      workspace = LittleGhost::Workspace.new(
+        root: Dir.mktmpdir,
+        paths: {skills: directory},
+        teardown: method(:remove_workspace_root)
+      ).open
+      sandbox = LittleGhost::Sandboxes::Unrestricted.new(
+        workspace:,
+        policy: {files: {skills: :read_write}, network: :inherit}
+      )
+
+      error = assert_raises(LittleGhost::ConfigurationError) do
+        LittleGhost::Skills::Catalog.new(
+          paths: directory,
+          resource_root: "workspace://skills",
+          workspace:,
+          sandbox:
+        )
+      end
+
+      assert_equal "workspace resource_root must be tool-readable and read-only", error.message
+    ensure
+      workspace&.close
+    end
+  end
+
+  def test_rejects_a_sandbox_bound_to_a_different_workspace
+    Dir.mktmpdir do |directory|
+      workspace, = workspace_resources(directory)
+      other_workspace, sandbox = workspace_resources(directory)
+
+      error = assert_raises(LittleGhost::ConfigurationError) do
+        LittleGhost::Skills::Catalog.new(
+          paths: directory,
+          resource_root: "workspace://skills",
+          workspace:,
+          sandbox:
+        )
+      end
+
+      assert_equal "workspace resource_root requires the Sandbox bound to its Workspace", error.message
+    ensure
+      workspace&.close
+      other_workspace&.close
+    end
+  end
+
+  def test_rejects_writable_grants_nested_inside_a_workspace_resource_root
+    Dir.mktmpdir do |directory|
+      skill_directory = File.join(directory, "review")
+      Dir.mkdir(skill_directory)
+      File.write(
+        File.join(skill_directory, "SKILL.md"),
+        "---\nname: review\ndescription: Review code\n---\nRead carefully."
+      )
+      workspace = LittleGhost::Workspace.new(
+        root: Dir.mktmpdir,
+        paths: {skills: directory, mutable_skill: skill_directory},
+        teardown: method(:remove_workspace_root)
+      ).open
+      sandbox = LittleGhost::Sandboxes::Unrestricted.new(
+        workspace:,
+        policy: {
+          files: {skills: :read_only, mutable_skill: :read_write},
+          network: :inherit
+        }
+      )
+
+      error = assert_raises(LittleGhost::ConfigurationError) do
+        LittleGhost::Skills::Catalog.new(
+          paths: directory,
+          resource_root: "workspace://skills",
+          workspace:,
+          sandbox:
+        )
+      end
+
+      assert_equal "workspace resource_root must not contain writable file grants", error.message
+    ensure
+      workspace&.close
+    end
+  end
+
+  def test_rejects_writable_grants_that_alias_a_skill_directory
+    Dir.mktmpdir do |directory|
+      skill_directory = File.join(directory, "review")
+      writable_alias = Dir.mktmpdir
+      Dir.mkdir(skill_directory)
+      File.write(
+        File.join(skill_directory, "SKILL.md"),
+        "---\nname: review\ndescription: Review code\n---\nRead carefully."
+      )
+      workspace = LittleGhost::Workspace.new(
+        root: Dir.mktmpdir,
+        paths: {skills: directory},
+        teardown: method(:remove_workspace_root)
+      ).open
+      sandbox = LittleGhost::Sandboxes::Unrestricted.new(
+        workspace:,
+        policy: {files: {skills: :read_only}, network: :inherit}
+      )
+      grants = sandbox.scope.process_grants
+      writable_grant = LittleGhost::Sandbox::Mount.new(
+        source: writable_alias,
+        target: "/writable-skill-alias",
+        access: :read_write
+      )
+      sandbox.define_singleton_method(:process_grants) { [*grants, writable_grant] }
+      original_stat = File.method(:stat)
+      physical_alias = File.realpath(writable_alias)
+
+      error = File.stub(:stat, lambda { |path|
+        [writable_alias, physical_alias].include?(path) ? original_stat.call(skill_directory) : original_stat.call(path)
+      }) do
+        assert_raises(LittleGhost::ConfigurationError) do
+          LittleGhost::Skills::Catalog.new(
+            paths: directory,
+            resource_root: "workspace://skills",
+            workspace:,
+            sandbox:
+          )
+        end
+      end
+
+      assert_equal "workspace resource_root must not contain writable file grants", error.message
+    ensure
+      workspace&.close
+      FileUtils.remove_entry(writable_alias) if writable_alias && Dir.exist?(writable_alias)
+    end
+  end
+
+  def test_rejects_malformed_workspace_resource_roots
+    Dir.mktmpdir do |directory|
+      invalid = [
+        "workspace://",
+        "workspace:///skills",
+        "workspace://skills/",
+        "workspace://skills/../private",
+        "workspace://skills//private",
+        "workspace://skills\\private",
+        "workspace://skills\0/private"
+      ]
+
+      invalid.each do |resource_root|
+        error = assert_raises(ArgumentError) do
+          LittleGhost::Skills::Catalog.new(paths: directory, resource_root:)
+        end
+        assert_equal "resource_root must be an absolute path or workspace:// reference", error.message
+      end
     end
   end
 
@@ -179,5 +421,24 @@ class SkillsTest < Minitest::Test
         end
       end
     end
+  end
+
+  private
+
+  def workspace_resources(skill_root)
+    workspace = LittleGhost::Workspace.new(
+      root: Dir.mktmpdir,
+      paths: {skills: skill_root},
+      teardown: method(:remove_workspace_root)
+    ).open
+    sandbox = LittleGhost::Sandboxes::Unrestricted.new(
+      workspace:,
+      policy: {files: {skills: :read_only}, network: :inherit}
+    )
+    [workspace, sandbox]
+  end
+
+  def remove_workspace_root(workspace:, **)
+    FileUtils.remove_entry(workspace.root) if Dir.exist?(workspace.root)
   end
 end

@@ -81,6 +81,35 @@ class LookupPathsTest < Minitest::Test
     end
   end
 
+  def test_runtime_resource_root_maps_skill_locations_to_workspace_references
+    Dir.mktmpdir do |application_root|
+      write(application_root, "app/skills/review/SKILL.md", skill("application"))
+      configuration = LittleGhost::Configuration.new(root: application_root)
+      configuration.skill_resource_root = "workspace://skills"
+      runtime = LittleGhost::Runtime.new(configuration:)
+      skill_root = File.join(application_root, "app", "skills")
+      workspace = LittleGhost::Workspace.new(
+        root: Dir.mktmpdir,
+        paths: {skills: skill_root},
+        teardown: ->(workspace:, **) { FileUtils.remove_entry(workspace.root) }
+      ).open
+      sandbox = LittleGhost::Sandboxes::Unrestricted.new(
+        workspace:,
+        policy: {files: {skills: :read_only}, network: :inherit}
+      )
+      catalog = LittleGhost::Skills::Catalog.new(
+        paths: runtime.skill_paths,
+        resource_root: runtime.skill_resource_root,
+        workspace:,
+        sandbox:
+      )
+
+      assert_equal "workspace://skills/review/SKILL.md", catalog.fetch("review").path
+    ensure
+      workspace&.close
+    end
+  end
+
   private
 
   def skill(instructions)
