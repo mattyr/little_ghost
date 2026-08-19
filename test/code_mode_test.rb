@@ -626,7 +626,13 @@ class CodeModeTest < Minitest::Test
     session = ruby_session(broker:, cleanup_seconds: 0.01, observation_seconds: 0.1)
 
     running = session.execute(source: "tools.slow", catalog: broker.catalog)
-    Timeout.timeout(5) { entered.pop }
+    Timeout.timeout(5) do
+      while entered.empty?
+        running = session.wait
+        assert_equal :still_working, running.status
+      end
+    end
+    entered.pop
 
     assert_equal :still_working, running.status
     assert_raises(LittleGhost::CleanupError) { session.stop }

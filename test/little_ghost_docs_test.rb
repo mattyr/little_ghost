@@ -5,7 +5,7 @@ require_relative "../rakelib/little_ghost_docs"
 require "cgi/escape"
 
 class LittleGhostDocsTest < Minitest::Test
-  def test_homepage_graph_demo_uses_generic_edges
+  def test_homepage_book_club_graph_uses_generic_edges
     homepage = File.read(File.expand_path("../site/index.html", __dir__))
     graph_demo = homepage.match(/<section class="demo-section" id="agent-graph".*?<\/section>/m).to_s
     visible_lines = graph_demo.scan(/<span class="typed-text"[^>]*>(.*?)<\/span><\/div>/m).flatten.map do |line|
@@ -13,17 +13,28 @@ class LittleGhostDocsTest < Minitest::Test
     end
 
     expected_edges = [
-      "  edge :triage, :order",
-      "  edge :triage, :policy",
-      "  edge :order, :respond",
-      "  edge :policy, :respond"
+      "  edge :plan, :research",
+      "  edge :plan, :logistics",
+      "  edge :research, :write",
+      "  edge :logistics, :write"
     ]
     expected_edges.each do |edge|
       assert_includes graph_demo, %(data-plain="#{edge}")
       assert_includes visible_lines, edge
     end
+    assert_includes graph_demo, "Launch a neighborhood book club"
+    assert_includes visible_lines, "  # Agent classes live elsewhere in the application."
     refute_match(/data-plain="  (?:fork|join) /, graph_demo)
     refute visible_lines.any? { |line| line.match?(/^  (?:fork|join) /) }
+  end
+
+  def test_homepage_linear_flow_centers_wide_agent_labels
+    stylesheet = File.read(File.expand_path("../site/assets/site.css", __dir__))
+
+    assert_match(
+      /\.linear-flow \.agent-node \{[^}]*grid-template-columns: minmax\(0, 1fr\)/,
+      stylesheet
+    )
   end
 
   def test_snapshot_adds_edge_selector_assets_and_catalog_location

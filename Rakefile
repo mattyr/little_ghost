@@ -267,8 +267,8 @@ class LittleGhostSiteChecker
     errors << "Landing page is missing the single-agent demo" unless html.include?('id="first-agent"') && html.include?('data-demo="agent"')
     errors << "Landing page is missing the agent-graph demo" unless html.include?('id="agent-graph"') && html.include?('data-demo="graph"')
     errors << "Landing page is missing the batteries section" unless html.include?('id="batteries"')
-    unless html.include?("CustomerSupportAgent") && html.include?("SupportFlowGraph")
-      errors << "Landing page does not continue the documentation example journey"
+    unless html.include?("CustomerSupportAgent") && html.include?("BookClubLaunchGraph")
+      errors << "Landing page is missing its Agent or Graph example"
     end
     unless html.include?("OpenRouter API key")
       errors << "Landing page does not state the first demo's credential prerequisite"
