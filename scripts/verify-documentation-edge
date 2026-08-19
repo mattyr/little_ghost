@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+base_url="${1:?usage: verify-documentation-edge BASE_URL EXPECTED_SHA EXPECTED_DEPLOYMENT_ID}"
+expected_sha="${2:?usage: verify-documentation-edge BASE_URL EXPECTED_SHA EXPECTED_DEPLOYMENT_ID}"
+expected_deployment_id="${3:?usage: verify-documentation-edge BASE_URL EXPECTED_SHA EXPECTED_DEPLOYMENT_ID}"
+cache_buster="deployment=${expected_deployment_id}"
+temporary_directory="$(mktemp -d)"
+trap 'rm -rf "$temporary_directory"' EXIT
+
+request() {
+  local name="$1"
+  shift
+  curl --fail --silent --show-error \
+    --retry 5 \
+    --retry-delay 2 \
+    --dump-header "${temporary_directory}/${name}.headers" \
+    --output "${temporary_directory}/${name}.body" \
+    "$@"
+}
+
+require_header() {
+  local name="$1"
+  local pattern="$2"
+  if ! tr -d '\r' < "${temporary_directory}/${name}.headers" | grep --extended-regexp --ignore-case --quiet "$pattern"; then
+    echo "Missing expected header for ${name}: ${pattern}" >&2
+    cat "${temporary_directory}/${name}.headers" >&2
+    exit 1
+  fi
+}
+
+deployment="$({
+  curl --fail --silent --show-error \
+    --retry 5 \
+    --retry-delay 2 \
+    --header 'Cache-Control: no-cache' \
+    "${base_url}/deployment.json?${cache_buster}"
+})"
+if [[ "$(jq --raw-output '.source_sha' <<< "$deployment")" != "$expected_sha" ]]; then
+  echo "Documentation deployment marker does not match ${expected_sha}" >&2
+  exit 1
+fi
+if [[ "$(jq --raw-output '.deployment_id' <<< "$deployment")" != "$expected_deployment_id" ]]; then
+  echo "Documentation deployment marker does not match ${expected_deployment_id}" >&2
+  exit 1
+fi
+
+request html "${base_url}/docs/getting_started.html?${cache_buster}"
+require_header html '^content-type: text/html; charset=utf-8$'
+require_header html '^vary: .*Accept'
+require_header html '^link: .*getting_started\.md.*type="text/markdown"'
+
+request negotiated_markdown \
+  --header 'Accept: text/markdown' \
+  "${base_url}/docs/getting_started.html?${cache_buster}"
+require_header negotiated_markdown '^content-type: text/markdown; charset=utf-8$'
+require_header negotiated_markdown '^vary: .*Accept'
+require_header negotiated_markdown '^link: .*getting_started\.html.*type="text/html"'
+
+request direct_markdown \
+  --header 'Accept: text/html' \
+  "${base_url}/docs/getting_started.md?${cache_buster}"
+require_header direct_markdown '^content-type: text/markdown; charset=utf-8$'
+if ! cmp --silent \
+  "${temporary_directory}/negotiated_markdown.body" \
+  "${temporary_directory}/direct_markdown.body"; then
+  echo "Negotiated and direct Markdown representations differ" >&2
+  exit 1
+fi
+
+status="$({
+  curl --silent --show-error \
+    --header 'Accept: application/json' \
+    --dump-header "${temporary_directory}/not_acceptable.headers" \
+    --output /dev/null \
+    --write-out '%{http_code}' \
+    "${base_url}/docs/getting_started.html?${cache_buster}"
+})"
+if [[ "$status" != "406" ]]; then
+  echo "Expected 406 for an unacceptable representation, received ${status}" >&2
+  exit 1
+fi
+require_header not_acceptable '^vary: .*Accept'
+require_header not_acceptable '^link: .*type="text/html".*type="text/markdown"'
+
+status="$({
+  curl --silent --show-error \
+    --output /dev/null \
+    --write-out '%{http_code}' \
+    "${base_url}/docs/not-a-real-document.html?${cache_buster}"
+})"
+if [[ "$status" != "404" ]]; then
+  echo "Expected a genuine 404, received ${status}" >&2
+  exit 1
+fi
+
+curl --fail --silent --show-error \
+  --head \
+  --header 'Accept: text/markdown' \
+  "${base_url}/docs/getting_started.html?${cache_buster}" >/dev/null

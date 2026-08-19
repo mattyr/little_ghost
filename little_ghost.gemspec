@@ -17,7 +17,7 @@ Gem::Specification.new do |spec|
   spec.metadata = {
     "bug_tracker_uri" => "#{spec.homepage}/issues",
     "changelog_uri" => "#{spec.homepage}/releases",
-    "documentation_uri" => "https://mattyr.github.io/little_ghost/docs/",
+    "documentation_uri" => "https://littleghostai.org/docs/",
     "source_code_uri" => spec.homepage,
     "allowed_push_host" => "https://rubygems.org",
     "rubygems_mfa_required" => "true"

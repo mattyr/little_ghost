@@ -111,11 +111,15 @@ upgrading, because interfaces may change between releases.
 
 - [Getting Started](docs/guides/getting_started.md) takes you from installation to a tool-backed, streaming agent.
 - [Core Concepts](docs/guides/core_concepts.md) builds the mental model from Agent to Assembly.
+- [Models and Providers](docs/guides/models_and_providers.md) connects application-facing model roles to provider-backed targets and credentials.
+- [Structured Outputs and Content](docs/guides/structured_outputs_and_content.md) covers schema-backed results and multimodal inputs.
 - [Compose Agents](docs/guides/assemblies.md) walks through workflows, swarms, graphs, nesting, and builders.
 - [Prompts as Views](docs/guides/prompt_views.md) gives growing instructions, shared pieces, and application values a natural home.
 - [Tools](docs/guides/tools.md) explains how models call Ruby code and where your application keeps control.
+- [Skills](docs/guides/skills.md) organizes reusable instructions and resources without granting application authority.
 - [Workspaces and Sandboxes](docs/guides/sandboxing.md) contains file access and child processes.
 - [Code Mode](docs/guides/code_mode.md) builds on those boundaries so a model can compose Tools in sandboxed Ruby or optional JavaScript.
+- [Integrations](docs/guides/integrations.md) connects MCP, AG-UI, and OpenTelemetry at their trust and lifecycle boundaries.
 - [Running in Production](docs/guides/production.md) covers configuration, saved conversations, supervision, and observability.
 - [API reference](rdoc-ref:LittleGhost) provides exact method signatures and ownership rules.
 

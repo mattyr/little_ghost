@@ -322,6 +322,74 @@ without redefining generated readers. Keep the reopening documentation-only,
 and verify both runtime behavior and the rendered page whenever the value
 changes.
 
+## Machine-readable documentation surface
+
+The published documentation is one body of content with HTML and Markdown
+representations. A representation for a model or agent is not a second set of
+documentation and must not be maintained independently from the source that
+people read.
+
+- Every content-bearing HTML page has a stable Markdown counterpart generated
+  from the same README, guide, homepage content, or RDoc object store. Do not
+  convert rendered HTML back into Markdown.
+- Each HTML page declares its Markdown counterpart with
+  `<link rel="alternate" type="text/markdown">` and an absolute, visually
+  hidden pointer. The pointer is `aria-hidden="true"`; it is machine discovery
+  metadata, not duplicate navigation for assistive technology.
+- Both representations send an HTTP `Link` header that names the other
+  representation and send `Vary: Accept` when the unqualified URL can negotiate
+  content. HTML uses `text/html`; Markdown uses
+  `text/markdown; charset=utf-8`.
+- Canonical URLs use `https://littleghostai.org`. Preview and GitHub Pages
+  mirrors must not become canonical sources.
+- A versioned page links only to content generated from the same release. Edge
+  content and historical APIs must never be combined in one Markdown page or
+  full-text corpus.
+
+Content negotiation must parse media ranges and quality values rather than
+searching for a substring. With an unqualified documentation URL:
+
+- A missing `Accept` header, `*/*`, or `text/*` alone selects HTML.
+- An explicit `text/markdown` selects Markdown when it has the highest quality.
+- A higher-quality explicit HTML preference selects HTML; an equal explicit
+  HTML and Markdown preference selects Markdown.
+- A representation with `q=0` is unacceptable. Return `406 Not Acceptable`
+  when neither representation is acceptable.
+- Direct `.md` URLs remain stable and are not negotiated.
+
+`/llms.txt` is a concise orientation document in the llmstxt.org shape. It
+states what LittleGhost is, distinguishes the learning paths, and links only to
+the most useful canonical Markdown pages. It is not a sitemap or a dump of page
+titles. `/llms-full.txt` is the deterministic Edge corpus: docs home, guides in
+navigation order, API index, essential APIs, then remaining public APIs in
+alphabetical order. Each document appears once under its canonical Markdown
+URL. Historical releases produce their own discovery files from that release.
+
+`robots.txt` must allow documentation crawlers and publish this owner-approved
+policy:
+
+```text
+Content-Signal: search=yes, ai-input=yes, ai-train=yes
+```
+
+The signal expresses permission; it does not replace access controls. Never
+publish secrets, private endpoints, customer data, or internal operational
+instructions because a crawler policy exists.
+
+Prefer content quality over model-specific markup. Define concepts directly,
+use descriptive headings, make examples complete, and cite authoritative
+primary specifications when an external contract matters. Do not invent
+statistics, testimonials, or citations. Do not add `ai.txt`, AI-specific meta
+tags, hidden prompt comments, user-agent routing, an “AI mode” toggle, a
+duplicate AI-only information page, or JSON-LD solely to attract models.
+
+Documentation review must include evidence from the built artifact. A clean
+review records the exact commit, changed source pages, applicable standards,
+rendered pages inspected, link and reference checks, Markdown counterparts,
+discovery files, MIME and negotiation probes, canonical and release isolation,
+and any limitations. Missing required source, rendered output, or protocol
+evidence is a finding, not an assumed pass.
+
 ## Review rubrics
 
 An agent preparing documentation should verify:
@@ -333,6 +401,12 @@ An agent preparing documentation should verify:
 - Security and lifecycle boundaries appear beside the API that creates them.
 - Reader-facing prose contains no documentation process, CI, coverage, publication planning, or maintainer instructions.
 - The generated page, navigation, signatures, links, and metadata were inspected rather than inferred from source rendering.
+- Every affected HTML page and its same-source Markdown counterpart agree on
+  the public contract, and discovery files point to the canonical version.
+- Alternate links, MIME types, negotiation, crawler policy, and version
+  isolation have build or request evidence when the change touches them.
+- Model-targeted anti-patterns from the machine-readable surface section are
+  absent.
 - Only owned files changed and generated output is not staged.
 
 A human reviewer should be able to answer “yes” to these questions:
@@ -344,6 +418,9 @@ A human reviewer should be able to answer “yes” to these questions:
 5. Does the text distinguish model-directed delegation from application-directed workflow control?
 6. Are warnings concrete, proportional, and paired with a safe action?
 7. Does the generated site look intentional rather than merely compile?
+8. Can a model reach the canonical Markdown without guessing or scraping HTML?
+9. Do the curated and full-text discovery files describe one internally
+   consistent release?
 
 ## Generated-site validation
 

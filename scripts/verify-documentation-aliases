@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+canonical="https://littleghostai.org"
+aliases=("https://www.littleghostai.org" "https://littleghostai-docs.pages.dev")
+paths=("/assets/social-card.png?alias=1" "/versions.json?alias=1")
+
+for alias in "${aliases[@]}"; do
+  for path in "${paths[@]}"; do
+    response="$({
+      curl --silent --show-error \
+        --head \
+        --retry 5 \
+        --retry-delay 2 \
+        --write-out $'\n%{http_code}' \
+        "${alias}${path}"
+    })"
+    status="${response##*$'\n'}"
+    headers="${response%$'\n'*}"
+
+    if [[ "$status" != "301" && "$status" != "308" ]]; then
+      echo "Expected ${alias}${path} to redirect permanently, received ${status}" >&2
+      exit 1
+    fi
+
+    location="$({ printf '%s' "$headers" | tr -d '\r' | sed -n 's/^location: //Ip' | tail -n 1; })"
+    if [[ "$location" != "${canonical}${path}" ]]; then
+      echo "Expected ${alias}${path} to redirect to ${canonical}${path}, received ${location}" >&2
+      exit 1
+    fi
+  done
+done

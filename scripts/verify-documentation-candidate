@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+site_root="${1:?usage: verify-documentation-candidate SITE_ROOT EXPECTED_SHA}"
+expected_sha="${2:?usage: verify-documentation-candidate SITE_ROOT EXPECTED_SHA}"
+temporary_directory="$(mktemp -d)"
+trap 'rm -rf "$temporary_directory"' EXIT
+
+gh api --paginate "repos/${GITHUB_REPOSITORY}/releases" \
+  --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name | ltrimstr("v")' |
+  sort > "${temporary_directory}/published-versions"
+jq --raw-output '.versions[] | select(.kind == "release") | .id' "${site_root}/versions.json" |
+  sort > "${temporary_directory}/candidate-versions"
+diff --unified \
+  "${temporary_directory}/published-versions" \
+  "${temporary_directory}/candidate-versions"
+
+for attempt in $(seq 1 12); do
+  current_sha="$({
+    gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?branch=main&event=push&status=success&per_page=20" \
+      --jq '.workflow_runs[] | select(.event == "push" and .head_branch == "main" and .head_repository.full_name == env.GITHUB_REPOSITORY) | .head_sha' |
+      head -n 1
+  })"
+  [[ "$current_sha" == "$expected_sha" ]] && exit 0
+  [[ "$attempt" == "12" ]] || sleep 5
+done
+
+echo "A newer successful main build superseded this documentation" >&2
+exit 1

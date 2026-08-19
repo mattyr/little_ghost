@@ -48,9 +48,12 @@ class LittleGhostDocsTest < Minitest::Test
       agent = File.read(File.join(site, "docs", "LittleGhost", "Agent.html"))
       assert_includes homepage, 'data-current-version="edge"'
       assert_includes homepage, 'data-versions-url="versions.json"'
+      assert_includes homepage, '<link rel="alternate" type="text/markdown" href="https://littleghostai.org/index.md">'
+      assert_includes homepage, 'class="docs-markdown-link visually-hidden"'
       refute_includes homepage, "data-docs-version-notice"
       assert_includes agent, 'data-current-page="docs/LittleGhost/Agent.html"'
       assert_includes agent, 'data-versions-url="../../versions.json"'
+      assert_includes agent, '<link rel="canonical" href="https://littleghostai.org/docs/LittleGhost/Agent.html">'
       assert_path_exists File.join(site, "assets", "version-selector.css")
       assert_path_exists File.join(site, "assets", "version-selector.js")
     end
@@ -66,8 +69,10 @@ class LittleGhostDocsTest < Minitest::Test
       agent = File.read(File.join(site, "docs", "LittleGhost", "Agent.html"))
       assert_includes homepage, 'data-current-version="0.2.0"'
       assert_includes homepage, 'data-versions-url="../../versions.json"'
-      assert_includes homepage, "https://mattyr.github.io/little_ghost/versions/0.2.0/"
+      assert_includes homepage, "https://littleghostai.org/versions/0.2.0/"
+      assert_includes homepage, 'href="https://littleghostai.org/versions/0.2.0/index.md"'
       assert_includes agent, 'data-versions-url="../../../../versions.json"'
+      assert_includes agent, '<link rel="canonical" href="https://littleghostai.org/versions/0.2.0/docs/LittleGhost/Agent.html">'
     end
   end
 
@@ -104,7 +109,7 @@ class LittleGhostDocsTest < Minitest::Test
       refute_includes release_entry.fetch("pages"), "docs/LittleGhost/Assembly.html"
 
       docs.publish_release!(release, "0.3.0")
-      File.write(File.join(release, "index.html"), "changed")
+      File.write(File.join(release, "index.md"), "changed")
       error = assert_raises(LittleGhostDocs::Error) do
         docs.publish_release!(release, "0.3.0")
       end
@@ -161,6 +166,28 @@ class LittleGhostDocsTest < Minitest::Test
       LittleGhostDocs::VersionedSite.new(archive, asset_source: current_assets).publish_release!(release, "1.0.0")
 
       assert_equal "release assets", File.read(File.join(archive, "versions", "1.0.0", "assets", "version-selector.js"))
+    end
+  end
+
+  def test_snapshot_adds_markdown_alternates_to_an_already_decorated_release
+    Dir.mktmpdir("little-ghost-docs") do |directory|
+      release = build_site(directory, "release", version: "1.0.0")
+      snapshot = LittleGhostDocs::Snapshot.new(release, id: "1.0.0", base_path: "versions/1.0.0")
+
+      snapshot.decorate!
+      agent_path = File.join(release, "docs", "LittleGhost", "Agent.html")
+      first = File.read(agent_path)
+      File.write(agent_path, first.gsub(LittleGhostDocs::SITE_URL, LittleGhostDocs::LEGACY_SITE_URL))
+      snapshot.decorate!
+      second = File.read(agent_path)
+      snapshot.decorate!
+      third = File.read(agent_path)
+
+      assert_equal first, second
+      assert_equal second, third
+      refute_includes second, LittleGhostDocs::LEGACY_SITE_URL
+      assert_includes second, '<link rel="alternate" type="text/markdown" href="https://littleghostai.org/versions/1.0.0/docs/LittleGhost/Agent.md">'
+      assert_includes second, 'href="https://littleghostai.org/versions/1.0.0/docs/LittleGhost/Agent.md" aria-hidden="true"'
     end
   end
 
@@ -389,6 +416,109 @@ class LittleGhostDocsTest < Minitest::Test
     assert_includes error.message, "Documentation release v0.3.0 failed"
   end
 
+  def test_markdown_site_builds_source_derived_version_local_documentation
+    Dir.mktmpdir("little-ghost-markdown") do |directory|
+      source = File.join(directory, "source")
+      site = File.join(directory, "site")
+      FileUtils.mkdir_p(File.join(source, "docs", "guides"))
+      FileUtils.mkdir_p(File.join(source, "lib", "little_ghost"))
+      FileUtils.mkdir_p(File.join(source, "site"))
+      FileUtils.mkdir_p(File.join(site, "docs", "LittleGhost"))
+      File.write(File.join(source, "README.md"), <<~MARKDOWN)
+        # LittleGhost
+
+        Start with [Getting Started](docs/guides/getting_started.md) and the
+        [legacy guide](docs/guides/Legacy%20Guide.md), then use the
+        [Agent](rdoc-ref:LittleGhost::Agent).
+      MARKDOWN
+      File.write(File.join(source, "docs", "guides", "getting_started.md"), <<~MARKDOWN)
+        # Getting Started
+
+        Build an [Agent](rdoc-ref:LittleGhost::Agent), then read the
+        [legacy guide](Legacy%20Guide.md).
+      MARKDOWN
+      File.write(File.join(source, "docs", "guides", "Legacy Guide.md"), <<~MARKDOWN)
+        # Legacy Guide
+
+        Historical guide filenames used spaces.
+      MARKDOWN
+      File.write(File.join(source, "lib", "little_ghost.rb"), <<~RUBY)
+        # LittleGhost fixture documentation.
+        module LittleGhost
+        end
+      RUBY
+      File.write(File.join(source, "lib", "little_ghost", "agent.rb"), <<~RUBY)
+        module LittleGhost
+          # Runs one documented behavior.
+          class Agent
+            # Returns the answer.
+            def ask(message)
+            end
+          end
+        end
+      RUBY
+      File.write(File.join(source, "site", "index.html"), <<~HTML)
+        <main>
+          <section class="home-intro"><p>Agents in Ruby.</p></section>
+          <section class="demo-section" id="first-agent"><span data-plain="Agent.new"></span></section>
+          <section class="demo-section" id="agent-graph"><span data-plain="Graph.new"></span></section>
+          <section class="batteries-section"><article><h3>Tools</h3><p>Call Ruby code.</p></article></section>
+        </main>
+      HTML
+      File.write(File.join(site, "index.html"), homepage("0.1.0"))
+      File.write(File.join(site, "docs", "index.html"), docs_page("Docs", "0.1.0"))
+      File.write(File.join(site, "docs", "LittleGhost", "Agent.html"), docs_page("Agent", "0.1.0"))
+
+      LittleGhostDocs::MarkdownSite.build_from_source(
+        source_root: source,
+        site_root: site,
+        id: "0.1.0",
+        base_path: "versions/0.1.0"
+      )
+      first_full_text = File.read(File.join(site, "llms-full.txt"))
+      LittleGhostDocs::MarkdownSite.build_from_source(
+        source_root: source,
+        site_root: site,
+        id: "0.1.0",
+        base_path: "versions/0.1.0"
+      )
+
+      docs_home = File.read(File.join(site, "docs", "index.md"))
+      agent = File.read(File.join(site, "docs", "LittleGhost", "Agent.md"))
+      discovery = File.read(File.join(site, "llms.txt"))
+      assert_includes docs_home, "(getting_started.md)"
+      assert_includes docs_home, "Canonical HTML: https://littleghostai.org/versions/0.1.0/docs/"
+      assert_includes docs_home, "(legacy_guide.md)"
+      assert_includes docs_home, "(LittleGhost/Agent.md)"
+      refute_includes docs_home, "rdoc-ref:"
+      assert_includes agent, '<a id="method-i-ask"></a>'
+      assert_includes agent, "#ask(message)"
+      assert_includes discovery, "https://littleghostai.org/versions/0.1.0/docs/LittleGhost/Agent.md"
+      assert_equal first_full_text, File.read(File.join(site, "llms-full.txt"))
+      assert_equal 1, first_full_text.scan("Source: https://littleghostai.org/versions/0.1.0/docs/LittleGhost/Agent.md").length
+      assert_path_exists File.join(site, "docs", "legacy_guide.md")
+      assert_includes File.read(File.join(site, "docs", "getting_started.md")), "(legacy_guide.md)"
+      assert_includes first_full_text, "Source: https://littleghostai.org/versions/0.1.0/docs/legacy_guide.md"
+    end
+  end
+
+  def test_markdown_anchors_include_explicit_and_duplicate_heading_targets
+    anchors = LittleGhostDocs.markdown_anchors(<<~MARKDOWN)
+      # Getting Started
+
+      ## `Agent#run` behavior
+      ## Agent behavior
+      ## Agent behavior
+      <a id="method-i-run"></a>
+    MARKDOWN
+
+    assert anchors["getting-started"]
+    assert anchors["agentrun-behavior"]
+    assert anchors["agent-behavior"]
+    assert anchors["agent-behavior-1"]
+    assert anchors["method-i-run"]
+  end
+
   def test_workflows_rebuild_the_complete_site_without_a_persistent_branch
     docs_workflow = File.read(File.expand_path("../.github/workflows/docs.yml", __dir__))
     release_workflow = File.read(File.expand_path("../.github/workflows/release.yml", __dir__))
@@ -419,10 +549,15 @@ class LittleGhostDocsTest < Minitest::Test
     FileUtils.mkdir_p(File.join(root, "docs", "LittleGhost"))
     FileUtils.mkdir_p(File.join(root, "assets"))
     File.write(File.join(root, "index.html"), homepage(version))
+    File.write(File.join(root, "index.md"), "# LittleGhost\n")
     File.write(File.join(root, "docs", "index.html"), docs_page("Docs", version))
+    File.write(File.join(root, "docs", "index.md"), "# Docs\n")
     pages.each do |page|
       File.write(File.join(root, "docs", "LittleGhost", "#{page}.html"), docs_page(page, version))
+      File.write(File.join(root, "docs", "LittleGhost", "#{page}.md"), "# #{page}\n")
     end
+    File.write(File.join(root, "llms.txt"), "# LittleGhost\n")
+    File.write(File.join(root, "llms-full.txt"), "# LittleGhost documentation\n")
     root
   end
 

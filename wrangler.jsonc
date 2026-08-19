@@ -1,0 +1,6 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "littleghostai-docs",
+  "pages_build_output_dir": "_site",
+  "compatibility_date": "2026-08-19"
+}

@@ -1,0 +1,14 @@
+{
+  "name": "little-ghost-documentation-edge",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test test/documentation_function_test.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "4.124.0"
+  }
+}

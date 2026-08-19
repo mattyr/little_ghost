@@ -10,11 +10,14 @@ require "rubygems"
 require "rubygems/package"
 require "stringio"
 require "tmpdir"
+require "uri"
 
 module LittleGhostDocs
   class Error < StandardError; end
 
-  SITE_URL = "https://mattyr.github.io/little_ghost/"
+  SITE_URL = "https://littleghostai.org/"
+  LEGACY_SITE_URL = "https://mattyr.github.io/little_ghost/"
+  UNVERSIONED_SITE_URL_PATTERN = %r{#{Regexp.escape(SITE_URL)}(?!versions(?:/|\.json))}
   EDGE_ID = "edge"
   VERSION_DIRECTORY = "versions"
   CATALOG_FILE = "versions.json"
@@ -23,6 +26,25 @@ module LittleGhostDocs
   VERSION_LINK_PATTERN = %r{
     <a\s+class="(?<class>version-badge|navbar-version)"[^>]*>\s*(?<label>v[^<]+)\s*</a>
   }x
+  GUIDES = [
+    {source: "docs/guides/getting_started.md", output: "getting_started.html", title: "Getting Started", section: "Learn"},
+    {source: "docs/guides/core_concepts.md", output: "core_concepts.html", title: "Core Concepts", section: "Learn"},
+    {source: "docs/guides/models_and_providers.md", output: "models_and_providers.html", title: "Models and Providers", section: "Learn"},
+    {source: "docs/guides/structured_outputs_and_content.md", output: "structured_outputs_and_content.html", title: "Structured Outputs and Content", section: "Build with agents"},
+    {source: "docs/guides/assemblies.md", output: "assemblies.html", title: "Compose Agents", section: "Build with agents"},
+    {source: "docs/guides/prompt_views.md", output: "prompt_views.html", title: "Prompts as Views", section: "Build with agents"},
+    {source: "docs/guides/tools.md", output: "tools.html", title: "Tools", section: "Capabilities and isolation"},
+    {source: "docs/guides/skills.md", output: "skills.html", title: "Skills", section: "Capabilities and isolation"},
+    {source: "docs/guides/sandboxing.md", output: "sandboxing.html", title: "Workspaces and Sandboxes", section: "Capabilities and isolation"},
+    {source: "docs/guides/code_mode.md", output: "code_mode.html", title: "Code Mode", section: "Capabilities and isolation"},
+    {source: "docs/guides/integrations.md", output: "integrations.html", title: "Integrations", section: "Operate"},
+    {source: "docs/guides/production.md", output: "production.html", title: "Running in Production", section: "Operate"}
+  ].freeze
+  GUIDE_PATHS = GUIDES.to_h { |guide| [guide.fetch(:source), guide.fetch(:output)] }.freeze
+  GUIDE_TITLES = GUIDES.to_h { |guide| [guide.fetch(:source), guide.fetch(:title)] }.freeze
+  GUIDE_SECTIONS = GUIDES.group_by { |guide| guide.fetch(:section) }.transform_values do |guides|
+    guides.map { |guide| guide.fetch(:source) }
+  end.freeze
 
   module_function
 
@@ -33,6 +55,25 @@ module LittleGhostDocs
     version.to_s
   rescue ArgumentError
     raise Error, "Invalid documentation version #{value.inspect}"
+  end
+
+  def markdown_anchors(markdown)
+    anchors = markdown.scan(/<a\s+[^>]*id=["']([^"']+)["'][^>]*>/i).flatten.to_h { |anchor| [anchor, true] }
+    occurrences = Hash.new(0)
+    markdown.each_line do |line|
+      match = line.match(/\A\#{1,6}\s+(.+?)\s*#*\s*\z/)
+      next unless match
+
+      label = match[1].gsub(/\[([^\]]+)\]\([^)]+\)/, "\\1").gsub(/<[^>]+>/, "").gsub(/[`*_~]/, "")
+      slug = label.downcase.gsub(/[^\p{Alnum}_\s-]/u, "").strip.gsub(/\s+/, "-")
+      next if slug.empty?
+
+      occurrence = occurrences[slug]
+      occurrences[slug] += 1
+      anchor = occurrence.zero? ? slug : "#{slug}-#{occurrence}"
+      anchors[anchor] = true
+    end
+    anchors
   end
 
   class Snapshot
@@ -46,9 +87,9 @@ module LittleGhostDocs
     def decorate!
       raise Error, "Documentation site does not exist at #{root}" unless root.directory?
 
-      decorated = false
-      html_pages.each { |page| decorated = decorate_page(page) || decorated }
-      copy_selector_assets if decorated
+      picker_added = false
+      html_pages.each { |page| picker_added = decorate_page(page) || picker_added }
+      copy_selector_assets if picker_added
       ensure_selector_assets
       root.glob("**/created.rid").each(&:delete)
       self
@@ -82,16 +123,41 @@ module LittleGhostDocs
 
     def decorate_page(page)
       html = page.read
-      if html.include?("data-docs-version-picker")
-        return false if html.include?(%(data-current-version="#{id}"))
+      relative_page = page.relative_path_from(root)
+      changed = false
+      picker_added = false
 
-        raise Error, "Documentation page #{page} is already decorated for another version"
+      if html.include?("data-docs-version-picker")
+        unless html.include?(%(data-current-version="#{id}"))
+          raise Error, "Documentation page #{page} is already decorated for another version"
+        end
+      elsif (match = html.match(VERSION_LINK_PATTERN))
+        html = add_version_picker(html, match, relative_page)
+        changed = true
+        picker_added = true
       end
 
-      match = html.match(VERSION_LINK_PATTERN)
-      return false unless match
+      rewritten_html = rewrite_public_urls(html)
+      changed = true if rewritten_html != html
+      html = rewritten_html
 
-      relative_page = page.relative_path_from(root)
+      unless relative_page.basename.to_s == "404.html"
+        canonical_html = add_canonical(html, relative_page)
+        changed = true if canonical_html != html
+        html = canonical_html
+      end
+
+      markdown_page = root.join(relative_page.sub_ext(".md"))
+      if markdown_page.file? && !html.include?('rel="alternate" type="text/markdown"')
+        html = add_markdown_alternate(html, relative_page)
+        changed = true
+      end
+
+      page.write(html) if changed
+      picker_added
+    end
+
+    def add_version_picker(html, match, relative_page)
       deployed_page = base_path.join(relative_page)
       manifest_href = Pathname(CATALOG_FILE).relative_path_from(deployed_page.dirname)
       assets_root = base_path.join("assets")
@@ -110,10 +176,45 @@ module LittleGhostDocs
 
       html = html.sub(match[0], picker)
       html = add_stylesheet(html, stylesheet_href)
-      html = html.sub("</body>", %(  <script type="module" src="#{script_href}"></script>\n</body>))
-      html = rewrite_public_urls(html) unless base_path.to_s.empty? || base_path.to_s == "."
-      page.write(html)
-      true
+      html.sub("</body>", %(  <script type="module" src="#{script_href}"></script>\n</body>))
+    end
+
+    def add_markdown_alternate(html, relative_page)
+      markdown_path = base_path.join(relative_page.sub_ext(".md"))
+      markdown_url = URI.join(SITE_URL, "#{markdown_path}/".delete_suffix("/")).to_s
+      head_link = %(<link rel="alternate" type="text/markdown" href="#{markdown_url}">)
+      hidden_link = <<~HTML.chomp
+        <a class="docs-markdown-link visually-hidden" href="#{markdown_url}" aria-hidden="true" tabindex="-1">Markdown version of this page</a>
+      HTML
+      html = if html.include?("</head>")
+        html.sub("</head>", "  #{head_link}\n</head>")
+      elsif html.match?(%r{<body\b})
+        html.sub(%r{<body\b}, "#{head_link}\n\n<body")
+      else
+        raise Error, "Documentation page has no head or body boundary"
+      end
+      html.sub("</body>", "  #{hidden_link}\n</body>")
+    end
+
+    def add_canonical(html, relative_page)
+      canonical = %(<link rel="canonical" href="#{canonical_url(relative_page)}">)
+      return html.sub(%r{<link\s+rel=["']canonical["'][^>]*>}, canonical) if html.match?(%r{<link\s+rel=["']canonical["'][^>]*>})
+      return html.sub("</head>", "  #{canonical}\n</head>") if html.include?("</head>")
+      return html.sub(%r{<body\b}, "#{canonical}\n\n<body") if html.match?(%r{<body\b})
+
+      raise Error, "Documentation page has no head or body boundary"
+    end
+
+    def canonical_url(relative_page)
+      if relative_page.basename.to_s == "index.html"
+        directory = relative_page.dirname.to_s
+        path = base_path.join((directory == ".") ? "" : directory).cleanpath.to_s
+        path = "" if path == "."
+        path = "#{path}/" unless path.empty?
+        URI.join(SITE_URL, path).to_s
+      else
+        URI.join(SITE_URL, base_path.join(relative_page).to_s).to_s
+      end
     end
 
     def add_stylesheet(html, stylesheet_href)
@@ -125,7 +226,11 @@ module LittleGhostDocs
     end
 
     def rewrite_public_urls(html)
-      html.gsub(SITE_URL, "#{SITE_URL}#{base_path}/")
+      rewritten = html.gsub(LEGACY_SITE_URL, SITE_URL)
+      return rewritten if base_path.to_s.empty? || base_path.to_s == "."
+
+      deployed_url = URI.join(SITE_URL, "#{base_path}/").to_s
+      rewritten.gsub(UNVERSIONED_SITE_URL_PATTERN, deployed_url)
     end
   end
 
@@ -526,6 +631,12 @@ module LittleGhostDocs
         else
           run_command!("bundle", "exec", "rake", "site:check", chdir: source.to_s, env: bundle_environment)
         end
+        MarkdownSite.build_from_source(
+          source_root: source,
+          site_root: source.join("_site"),
+          id: version,
+          base_path: "#{VERSION_DIRECTORY}/#{version}"
+        )
         site.publish_release!(source.join("_site"), version)
       end
       site.verify!
@@ -579,3 +690,5 @@ module LittleGhostDocs
     end
   end
 end
+
+require_relative "little_ghost_markdown"

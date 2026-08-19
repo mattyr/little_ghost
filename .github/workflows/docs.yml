@@ -17,6 +17,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: little-ghost-documentation-publish
+  cancel-in-progress: false
+
 jobs:
   resolve-source:
     if: >-
@@ -70,6 +74,14 @@ jobs:
         with:
           ruby-version: 4.0.4
           bundler-cache: true
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: npm
+      - name: Verify the documentation edge function
+        run: |
+          npm ci
+          npm test
       - name: Build Edge and every released documentation version
         env:
           EXPECTED_RELEASE: ${{ inputs.expected_release || github.event.release.tag_name }}
@@ -98,13 +110,159 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  publish-site:
+  publish-cloudflare:
     needs: [resolve-source, build-site]
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: read
+    environment:
+      name: cloudflare-pages
+      url: https://littleghostai.org/
+    steps:
+      - name: Check out the successful main commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.resolve-source.outputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install locked edge tooling
+        run: npm ci
+      - name: Download the complete site
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: edge-documentation
+          path: _candidate
+      - name: Extract the complete site
+        run: |
+          mkdir _pages
+          tar -xzf _candidate/versioned-site.tgz -C _pages
+      - name: Require the current published release set and successful main commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/verify-documentation-candidate _pages "${{ needs.resolve-source.outputs.source_sha }}"
+      - name: Add Cloudflare function routing
+        env:
+          DEPLOYMENT_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+          SOURCE_SHA: ${{ needs.resolve-source.outputs.source_sha }}
+        run: |
+          cp functions/_routes.json _pages/_routes.json
+          jq --null-input \
+            --arg deployment_id "$DEPLOYMENT_ID" \
+            --arg source_sha "$SOURCE_SHA" \
+            '{deployment_id: $deployment_id, source_sha: $source_sha}' > _pages/deployment.json
+      - name: Verify the Cloudflare Pages project
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          project_api="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/pages/projects/littleghostai-docs"
+          project="$({
+            curl --fail --silent --show-error \
+              --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+              "$project_api"
+          })"
+
+          [[ "$(jq --raw-output '.result.production_branch' <<< "$project")" == "main" ]]
+          jq --exit-status '.result.domains | index("littleghostai.org") != null' <<< "$project" >/dev/null
+
+          if ! jq --exit-status \
+            '.result.deployment_configs.preview.fail_open and .result.deployment_configs.production.fail_open' \
+            <<< "$project" >/dev/null; then
+            curl --fail --silent --show-error \
+              --request PATCH \
+              --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+              --header 'Content-Type: application/json' \
+              --data '{"deployment_configs":{"preview":{"fail_open":true},"production":{"fail_open":true}}}' \
+              "$project_api" >/dev/null
+          fi
+      - name: Deploy and verify a Cloudflare preview
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          SOURCE_SHA: ${{ needs.resolve-source.outputs.source_sha }}
+        run: |
+          preview_branch="preview-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          preview_url="https://${preview_branch}.littleghostai-docs.pages.dev"
+
+          npx --no-install wrangler pages deploy _pages \
+            --project-name=littleghostai-docs \
+            --branch="$preview_branch" \
+            --commit-hash="$SOURCE_SHA" \
+            --commit-dirty=false
+
+          for attempt in $(seq 1 12); do
+            if curl --fail --silent --show-error "$preview_url/" >/dev/null; then
+              break
+            fi
+            if [[ "$attempt" == "12" ]]; then
+              echo "Cloudflare preview did not become available" >&2
+              exit 1
+            fi
+            sleep 5
+          done
+
+          scripts/verify-documentation-edge "$preview_url" "$SOURCE_SHA" "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+      - name: Reconfirm the candidate before production
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/verify-documentation-candidate _pages "${{ needs.resolve-source.outputs.source_sha }}"
+      - name: Require canonical hostname redirects
+        run: scripts/verify-documentation-aliases
+      - name: Deploy and verify the canonical Cloudflare site
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          SOURCE_SHA: ${{ needs.resolve-source.outputs.source_sha }}
+        run: |
+          api="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/pages/projects/littleghostai-docs/deployments"
+          previous_deployment="$({
+            curl --fail --silent --show-error \
+              --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+              "${api}?env=production&per_page=1"
+          } | jq --raw-output '.result[0].id // empty')"
+
+          npx --no-install wrangler pages deploy _pages \
+            --project-name=littleghostai-docs \
+            --branch=main \
+            --commit-hash="$SOURCE_SHA" \
+            --commit-dirty=false
+
+          verified=false
+          for attempt in $(seq 1 12); do
+            if scripts/verify-documentation-edge \
+              "https://littleghostai.org" \
+              "$SOURCE_SHA" \
+              "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"; then
+              verified=true
+              break
+            fi
+            [[ "$attempt" == "12" ]] || sleep 5
+          done
+
+          if [[ "$verified" != "true" ]]; then
+            if [[ -n "$previous_deployment" ]]; then
+              echo "Production verification failed; rolling back to ${previous_deployment}" >&2
+              curl --fail --silent --show-error \
+                --request POST \
+                --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+                "${api}/${previous_deployment}/rollback" >/dev/null
+            else
+              echo "Production verification failed and no earlier deployment is available" >&2
+            fi
+            exit 1
+          fi
+
+          scripts/verify-documentation-aliases
+
+  publish-site:
+    needs: [resolve-source, build-site, publish-cloudflare]
+    runs-on: ubuntu-latest
     timeout-minutes: 10
-    concurrency:
-      group: little-ghost-documentation-publish
-      cancel-in-progress: false
     permissions:
       actions: read
       contents: read
@@ -123,35 +281,6 @@ jobs:
         run: |
           mkdir _pages
           tar -xzf _candidate/versioned-site.tgz -C _pages
-      - name: Require the current published release set
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh api --paginate "repos/${GITHUB_REPOSITORY}/releases" \
-            --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name | ltrimstr("v")' |
-            sort > "$RUNNER_TEMP/published-versions"
-          jq --raw-output '.versions[] | select(.kind == "release") | .id' _pages/versions.json |
-            sort > "$RUNNER_TEMP/candidate-versions"
-          diff --unified "$RUNNER_TEMP/published-versions" "$RUNNER_TEMP/candidate-versions"
-      - name: Require the newest successful main commit
-        env:
-          EXPECTED_SHA: ${{ needs.resolve-source.outputs.source_sha }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          for attempt in $(seq 1 12); do
-            current_sha="$(
-              gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?branch=main&event=push&status=success&per_page=20" \
-                --jq '.workflow_runs[] | select(.event == "push" and .head_branch == "main" and .head_repository.full_name == env.GITHUB_REPOSITORY) | .head_sha' |
-                head -n 1
-            )"
-            [[ "$current_sha" == "$EXPECTED_SHA" ]] && break
-            [[ "$attempt" == "12" ]] && break
-            sleep 5
-          done
-          if [[ "$current_sha" != "$EXPECTED_SHA" ]]; then
-            echo "A newer successful main build superseded this documentation" >&2
-            exit 1
-          fi
       - name: Configure GitHub Pages
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
       - name: Upload GitHub Pages artifact

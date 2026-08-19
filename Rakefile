@@ -13,6 +13,7 @@ require "webrick"
 
 require_relative "lib/little_ghost/version"
 require_relative "rakelib/little_ghost_docs"
+require_relative "rakelib/little_ghost_markdown"
 
 task "release:trusted_publishing_guard" do
   expected_ref = "refs/tags/v#{LittleGhost::VERSION}"
@@ -44,42 +45,13 @@ SITE_TEMPLATE_ROOT = "#{SITE_SOURCE}/rdoc"
 
 class RDoc::Generator::LittleGhost < RDoc::Generator::Aliki
   DESCRIPTION = "Aliki with LittleGhost navigation"
-  GUIDE_PATHS = {
-    "docs/guides/getting_started.md" => "getting_started.html",
-    "docs/guides/core_concepts.md" => "core_concepts.html",
-    "docs/guides/assemblies.md" => "assemblies.html",
-    "docs/guides/prompt_views.md" => "prompt_views.html",
-    "docs/guides/tools.md" => "tools.html",
-    "docs/guides/sandboxing.md" => "sandboxing.html",
-    "docs/guides/code_mode.md" => "code_mode.html",
-    "docs/guides/production.md" => "production.html"
-  }.freeze
-  GUIDE_TITLES = {
-    "docs/guides/getting_started.md" => "Getting Started",
-    "docs/guides/core_concepts.md" => "Core Concepts",
-    "docs/guides/assemblies.md" => "Compose Agents",
-    "docs/guides/prompt_views.md" => "Prompts as Views",
-    "docs/guides/tools.md" => "Tools",
-    "docs/guides/sandboxing.md" => "Workspaces and Sandboxes",
-    "docs/guides/code_mode.md" => "Code Mode",
-    "docs/guides/production.md" => "Running in Production"
-  }.freeze
-  GUIDE_SECTIONS = {
-    "Learn" => %w[docs/guides/getting_started.md docs/guides/core_concepts.md],
-    "Build with agents" => %w[docs/guides/assemblies.md docs/guides/prompt_views.md],
-    "Capabilities and isolation" => %w[docs/guides/tools.md docs/guides/sandboxing.md docs/guides/code_mode.md],
-    "Operate" => %w[docs/guides/production.md]
-  }.freeze
-  LEGACY_GUIDE_LINKS = {
-    %r{(?:docs/guides/)?getting_started_md\.html} => "getting_started.html",
-    %r{(?:docs/guides/)?prompt_views_md\.html} => "prompt_views.html",
-    %r{(?:docs/guides/)?core_concepts_md\.html} => "core_concepts.html",
-    %r{(?:docs/guides/)?assemblies_md\.html} => "assemblies.html",
-    %r{(?:docs/guides/)?tools_md\.html} => "tools.html",
-    %r{(?:docs/guides/)?sandboxing_md\.html} => "sandboxing.html",
-    %r{(?:docs/guides/)?code_mode_md\.html} => "code_mode.html",
-    %r{(?:docs/guides/)?production_md\.html} => "production.html"
-  }.freeze
+  GUIDE_PATHS = LittleGhostDocs::GUIDE_PATHS
+  GUIDE_TITLES = LittleGhostDocs::GUIDE_TITLES
+  GUIDE_SECTIONS = LittleGhostDocs::GUIDE_SECTIONS
+  LEGACY_GUIDE_LINKS = GUIDE_PATHS.to_h do |source, output|
+    basename = File.basename(source, ".md")
+    [%r{(?:docs/guides/)?#{Regexp.escape(basename)}_md\.html}, output]
+  end.freeze
   ALIKI_TEMPLATE = Pathname.new(
     File.join(File.dirname(RDoc::Generator::Aliki.instance_method(:initialize).source_location.first), "template", "aliki")
   ).freeze
@@ -187,29 +159,31 @@ class LittleGhostSiteChecker
     "assets/favicon.svg",
     "assets/social-card.png",
     "versions.json",
+    "robots.txt",
+    "llms.txt",
+    "llms-full.txt",
+    "index.md",
     "docs/index.html",
+    "docs/index.md",
+    "docs/api.html",
+    "docs/api.md",
     "docs/favicon.svg",
     "docs/getting_started.html",
     "docs/prompt_views.html",
     "docs/core_concepts.html",
+    "docs/models_and_providers.html",
+    "docs/structured_outputs_and_content.html",
     "docs/assemblies.html",
     "docs/tools.html",
+    "docs/skills.html",
     "docs/sandboxing.html",
     "docs/code_mode.html",
+    "docs/integrations.html",
     "docs/production.html"
   ].freeze
   LANDING_NAVIGATION_LABELS = %w[Docs GitHub].freeze
   DOCUMENTATION_NAVIGATION_LABELS = %w[Home Docs GitHub].freeze
-  GUIDE_NAVIGATION_LABELS = [
-    "Getting Started",
-    "Core Concepts",
-    "Compose Agents",
-    "Prompts as Views",
-    "Tools",
-    "Workspaces and Sandboxes",
-    "Code Mode",
-    "Running in Production"
-  ].freeze
+  GUIDE_NAVIGATION_LABELS = LittleGhostDocs::GUIDES.map { |guide| guide.fetch(:title) }.freeze
   ESSENTIAL_API_LABELS = %w[Agent Tool Run Assembly Workflow Swarm Graph].freeze
   RUBY_EXAMPLE_PATHS = [RDOC_MAIN, *RDoc::Generator::LittleGhost::GUIDE_PATHS.keys].freeze
   COMMON_NAVIGATION_PATTERN = /<nav\b[^>]*aria-label=["']Primary navigation["'][^>]*>(.*?)<\/nav>/mi
@@ -230,11 +204,13 @@ class LittleGhostSiteChecker
     check_landing_page
     check_documentation_navigation
     check_local_links
+    check_markdown_surface
+    check_discovery_files
     check_ruby_examples
 
     abort errors.join("\n") unless errors.empty?
 
-    puts "Verified #{site_root.glob("**/*.html").size} HTML pages and all local links."
+    puts "Verified #{site_root.glob("**/*.html").size} HTML pages, #{site_root.glob("**/*.md").size} Markdown pages, and all local links."
   end
 
   private
@@ -255,10 +231,10 @@ class LittleGhostSiteChecker
     page = site_root.join("index.html")
     html = page.read
 
-    unless html.include?('rel="canonical" href="https://mattyr.github.io/little_ghost/"')
+    unless html.include?('rel="canonical" href="https://littleghostai.org/"')
       errors << "Landing page is missing its canonical URL"
     end
-    unless html.include?('property="og:image" content="https://mattyr.github.io/little_ghost/assets/social-card.png"')
+    unless html.include?('property="og:image" content="https://littleghostai.org/assets/social-card.png"')
       errors << "Landing page is missing its social preview"
     end
 
@@ -413,6 +389,124 @@ class LittleGhostSiteChecker
     end
   end
 
+  def check_markdown_surface
+    site_root.glob("**/*.html").sort.each do |page|
+      next if page.basename.to_s == "404.html"
+
+      markdown = page.sub_ext(".md")
+      relative_page = page.relative_path_from(site_root)
+      unless markdown.file?
+        errors << "#{relative_page} is missing its Markdown representation"
+        next
+      end
+
+      html = page.read
+      if html.include?(LittleGhostDocs::LEGACY_SITE_URL)
+        errors << "#{relative_page} contains the legacy documentation URL"
+      end
+      expected_canonical = canonical_url(relative_page)
+      unless html.include?(%(<link rel="canonical" href="#{expected_canonical}">))
+        errors << "#{relative_page} is missing canonical URL #{expected_canonical}"
+      end
+      check_version_local_public_urls(page, html)
+      expected_url = "#{LittleGhostDocs::SITE_URL}#{markdown.relative_path_from(site_root)}"
+      unless html.include?(%(<link rel="alternate" type="text/markdown" href="#{expected_url}">))
+        errors << "#{relative_page} is missing its Markdown alternate"
+      end
+      unless html.include?(%(class="docs-markdown-link visually-hidden")) &&
+          html.include?(%(href="#{expected_url}" aria-hidden="true"))
+        errors << "#{relative_page} is missing its hidden Markdown pointer"
+      end
+    end
+
+    site_root.glob("**/*.md").sort.each do |page|
+      relative_page = page.relative_path_from(site_root)
+      source = page.read
+      errors << "#{relative_page} contains an unresolved rdoc-ref" if source.include?("rdoc-ref:")
+      errors << "#{relative_page} contains the legacy documentation URL" if source.include?(LittleGhostDocs::LEGACY_SITE_URL)
+      check_version_local_public_urls(page, source)
+      check_markdown_links(page, source)
+    end
+  end
+
+  def check_markdown_links(page, source)
+    source.scan(/\[[^\]]+\]\(([^)]+)\)/).flatten.each do |raw_reference|
+      reference = raw_reference.split(/\s+["']/).first
+      next if reference.match?(/\A[a-z][a-z0-9+.-]*:/i) || reference.start_with?("#")
+
+      path_reference, fragment = reference.split("#", 2)
+      target = if path_reference.empty?
+        page
+      else
+        page.dirname.join(URI::RFC2396_PARSER.unescape(path_reference)).cleanpath
+      end
+      unless inside_site?(target) && target.file?
+        errors << "#{page.relative_path_from(site_root)} links to missing #{raw_reference}"
+        next
+      end
+      next unless fragment && !fragment.empty?
+
+      decoded_fragment = URI::RFC2396_PARSER.unescape(fragment)
+      unless LittleGhostDocs.markdown_anchors(target.read).key?(decoded_fragment)
+        errors << "#{page.relative_path_from(site_root)} links to missing anchor #{raw_reference}"
+      end
+    end
+  end
+
+  def canonical_url(relative_page)
+    if relative_page.basename.to_s == "index.html"
+      directory = relative_page.dirname.to_s
+      directory = "" if directory == "."
+      directory = "#{directory}/" unless directory.empty?
+      URI.join(LittleGhostDocs::SITE_URL, directory).to_s
+    else
+      URI.join(LittleGhostDocs::SITE_URL, relative_page.to_s).to_s
+    end
+  end
+
+  def check_version_local_public_urls(page, contents)
+    relative_page = page.relative_path_from(site_root)
+    match = relative_page.to_s.match(%r{\Aversions/([^/]+)/})
+    return unless match
+
+    expected_prefix = "/versions/#{match[1]}/"
+    contents.scan(%r{https://littleghostai\.org/[^\s"')<>]+}).each do |url|
+      path = URI(url).path
+      next if path == "/versions.json" || path.start_with?(expected_prefix)
+
+      errors << "#{relative_page} links outside its documentation version with #{url}"
+    end
+  end
+
+  def check_discovery_files
+    snapshots = [[site_root, LittleGhostDocs::EDGE_ID]]
+    versions_root = site_root.join(LittleGhostDocs::VERSION_DIRECTORY)
+    if versions_root.directory?
+      versions_root.children.select(&:directory?).each do |directory|
+        snapshots << [directory, directory.basename.to_s]
+      end
+    end
+
+    snapshots.each do |root, version|
+      %w[llms.txt llms-full.txt].each do |file_name|
+        path = root.join(file_name)
+        errors << "Documentation #{version} is missing #{file_name}" unless path.file?
+      end
+      next unless root.join("llms.txt").file?
+
+      root.join("llms.txt").read.scan(%r{https://littleghostai\.org/[^)\s]+}).each do |url|
+        uri = URI(url)
+        next if uri.path == "/versions.json"
+
+        target = site_root.join(uri.path.delete_prefix("/"))
+        errors << "Documentation #{version} discovery links to missing #{url}" unless target.file?
+      end
+      if version != LittleGhostDocs::EDGE_ID && root.join("llms-full.txt").read.include?("Documentation version: Edge")
+        errors << "Documentation #{version} full text contains Edge content"
+      end
+    end
+  end
+
   def check_reference(page, raw_reference)
     reference = CGI.unescapeHTML(raw_reference)
     if reference.match?(LEGACY_GUIDE_REFERENCE_PATTERN)
@@ -553,7 +647,8 @@ namespace :site do
     File.write("#{SITE_OUTPUT}/index.html", homepage.result)
     touch "#{SITE_OUTPUT}/.nojekyll"
 
-    RDoc::RDoc.new.document([
+    rdoc = RDoc::RDoc.new
+    rdoc.document([
       "--format", RDOC_GENERATOR,
       "--op", "#{SITE_OUTPUT}/docs",
       "--title", RDOC_TITLE,
@@ -564,6 +659,13 @@ namespace :site do
 
     docs_id = ENV.fetch("DOCS_VERSION_ID", LittleGhostDocs::EDGE_ID)
     docs_base_path = ENV.fetch("DOCS_BASE_PATH", "")
+    LittleGhostDocs::MarkdownSite.new(
+      source_root: __dir__,
+      site_root: SITE_OUTPUT,
+      store: rdoc.store,
+      id: docs_id,
+      base_path: docs_base_path
+    ).build!
     LittleGhostDocs::Snapshot.new(SITE_OUTPUT, id: docs_id, base_path: docs_base_path).decorate!
     LittleGhostDocs::Catalog.new(SITE_OUTPUT).write! if docs_id == LittleGhostDocs::EDGE_ID && docs_base_path.empty?
   end

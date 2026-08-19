@@ -3,6 +3,9 @@
 /coverage/
 /doc/
 /_site/
+/.wrangler/
+/_worker.bundle
+/node_modules/
 /.ruby-lsp/
 /.env
 /mise.local.toml
