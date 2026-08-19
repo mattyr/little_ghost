@@ -37,11 +37,21 @@ module LittleGhost
 
       def wait(context:, **options)
         state = existing_state(context)
-        raise ToolError, "there is no active code-mode cell" unless state
+        raise ToolError, "there is no active code-mode program" unless state
 
         with_control(state) do
           bind_broker(state.broker, context)
           session_for(state).wait(context:, **options)
+        end
+      end
+
+      def stop(context:, **options)
+        state = existing_state(context)
+        raise ToolError, "there is no active code-mode program" unless state
+
+        with_control(state) do
+          bind_broker(state.broker, context)
+          session_for(state).stop(context:, **options)
         end
       end
 
@@ -141,7 +151,7 @@ module LittleGhost
         session = state.mutex.synchronize do
           if state.active && brokered_lifecycle_reentry?
             state.deferred_close = true
-            raise ToolError, "cannot close code mode from a brokered tool while a cell is active"
+            raise ToolError, "cannot close code mode from a brokered tool while a program is active"
           end
           state.condition.wait(state.mutex) while state.active || state.cleaning
           raise state.cleanup_error if state.cleanup_error
@@ -170,7 +180,7 @@ module LittleGhost
 
       def brokered_lifecycle_reentry?
         execution = ExecutionState[:tool_execution]
-        execution && !%w[exec wait].include?(execution.tool_use.name)
+        execution && !%w[exec wait stop].include?(execution.tool_use.name)
       end
 
       def sandbox_factory
@@ -201,13 +211,15 @@ module LittleGhost
 
     class ExecTool < Tool # :nodoc:
       tool_name "exec"
-      description "Run one fresh code-mode cell to orchestrate available tools."
+      description <<~TEXT.strip
+        Run one fresh code-mode program to orchestrate available tools. The program is observed for up to one minute.
+        If it finishes, use the result directly. If it returns still_working, call wait to observe the same program.
+      TEXT
       exclusive true
       input_schema(
         type: "object",
         properties: {
           source: {type: "string"},
-          yield_time_ms: {type: "integer", minimum: 1},
           max_output_tokens: {type: "integer", minimum: 1}
         },
         required: ["source"],
@@ -219,7 +231,6 @@ module LittleGhost
           source: input.fetch("source"),
           context:,
           **{
-            yield_time_ms: input["yield_time_ms"],
             max_output_tokens: input["max_output_tokens"]
           }.compact
         )
@@ -241,21 +252,16 @@ module LittleGhost
     class WaitTool < ExecTool # :nodoc:
       tool_name "wait"
       description <<~TEXT.strip
-        Continue observing the active code-mode cell. Call only after exec or wait returned running or yielded.
-        A running cell keeps executing; a yielded cell resumes. Set terminate to stop it.
+        Observe the active code-mode program for up to one minute. The program keeps running continuously; wait does
+        not resume or restart it. Call again only after exec or wait returned still_working.
       TEXT
       input_schema(
         type: "object",
         properties: {
-          yield_time_ms: {
-            type: "integer", minimum: 1,
-            description: "Return after this many milliseconds if the cell is still running."
-          },
           max_output_tokens: {
             type: "integer", minimum: 1,
             description: "Maximum output tokens returned by this observation."
-          },
-          terminate: {type: "boolean", description: "Stop the active cell instead of continuing it."}
+          }
         },
         additionalProperties: false
       )
@@ -264,10 +270,31 @@ module LittleGhost
         result = agent.code_mode_runtime.wait(
           context:,
           **{
-            yield_time_ms: input["yield_time_ms"],
-            max_output_tokens: input["max_output_tokens"],
-            terminate: input.fetch("terminate", false)
+            max_output_tokens: input["max_output_tokens"]
           }.compact
+        )
+        serialize(result)
+      end
+    end
+
+    class StopTool < ExecTool # :nodoc:
+      tool_name "stop"
+      description "Stop the active code-mode program and return any output produced since the previous observation."
+      input_schema(
+        type: "object",
+        properties: {
+          max_output_tokens: {
+            type: "integer", minimum: 1,
+            description: "Maximum output tokens returned while stopping the program."
+          }
+        },
+        additionalProperties: false
+      )
+
+      def call(input)
+        result = agent.code_mode_runtime.stop(
+          context:,
+          **{max_output_tokens: input["max_output_tokens"]}.compact
         )
         serialize(result)
       end

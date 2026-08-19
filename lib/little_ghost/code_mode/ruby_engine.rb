@@ -6,15 +6,15 @@ require_relative "ruby/session"
 
 module LittleGhost
   module CodeMode
-    # Dependency-free Ruby code-mode engine. A cell is one program submitted by
-    # the model. Every cell receives a fresh Ruby process, and Tool calls cross
+    # Dependency-free Ruby code-mode engine. Every submitted program receives a
+    # fresh Ruby process, and Tool calls cross
     # the bounded protocol to the parent Broker.
     class RubyEngine < Engine
       DEFAULT_LIMITS = {
         source_bytes: 1_000_000,
         output_bytes: 1_000_000,
         memory_bytes: 64 * 1024 * 1024,
-        wall_seconds: 10,
+        wall_seconds: 3_600,
         cpu_seconds: 10,
         file_bytes: 1_000_000,
         cells: 8,
@@ -29,10 +29,11 @@ module LittleGhost
       # Builds Ruby usage instructions and method declarations for +catalog+.
       def instructions(catalog:)
         <<~INSTRUCTIONS.strip
-          Run Ruby in a fresh process to call the available tools and compose their results. Each submitted program is
-          a cell. Every exec call starts a new cell. Local variables, constants, and other process state do not persist between exec calls.
-          If exec returns `running`, call wait to keep observing that same process. If it returns `yielded`, wait resumes
-          after `yield_control` and then observes it. Do not call wait after `completed`, `error`, or `terminated`.
+          Run Ruby in a fresh process to call the available tools and compose their results. Every exec call starts a
+          new program. Local variables, constants, and other process state do not persist between exec calls. Exec
+          observes the program for up to one minute. If it returns `still_working`, call wait to observe the same
+          continuously running program for another minute. Wait does not resume or restart it. Use stop when the
+          program is no longer needed. Do not call wait or stop after `completed`, `error`, or `terminated`.
           Filesystem, network, subprocess, and optional-library access are controlled by the configured sandbox; do not
           assume host capabilities are available.
 
@@ -42,9 +43,9 @@ module LittleGhost
           `tools.parallel(-> { tools.first(...) }, -> { tools.second(...) })` for independent calls; results preserve
           callable order. `ALL_TOOLS` contains the complete runtime catalog.
 
-          The cell's final expression is the value returned by exec. Use `text(value)` for user-visible text,
-          `finish(value)` to complete early with a value, and `yield_control` to return accumulated output while keeping
-          the cell alive for a later wait call. Prefer the named methods and exact keyword arguments documented here:
+          The program's final expression is the value returned by exec. Use `text(value)` for user-visible text and
+          `finish(value)` to complete early with a value. Prefer the named methods and exact keyword arguments
+          documented here:
 
           #{Ruby::Catalog.new(catalog).declarations}
         INSTRUCTIONS

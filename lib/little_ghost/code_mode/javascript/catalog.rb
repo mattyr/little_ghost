@@ -6,7 +6,7 @@ module LittleGhost
   module CodeMode
     class Javascript::Catalog < CodeMode::Catalog
       IDENTIFIER_CHARACTER = /[^A-Za-z0-9_$]/
-      RESERVED_NAMES = %w[exec wait].freeze
+      RESERVED_NAMES = %w[exec wait stop].freeze
 
       def initialize(specifications)
         super(specifications, normalize: method(:normalize), reserved: RESERVED_NAMES)

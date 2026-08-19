@@ -134,6 +134,26 @@ class SubagentManagerTest < Minitest::Test
     assert_same factory, definition.factory
   end
 
+  def test_built_in_tools_are_subagent_control_tools
+    manager = manager_for(->(_id) { ControlledAgent.new })
+    tools = manager.tools
+
+    assert_equal %w[
+      interject_subagent
+      list_subagents
+      send_message_to_subagent
+      spawn_subagent
+      wait_for_subagents
+    ], tools.map(&:tool_name).sort
+    assert tools.all? { |tool| tool < LittleGhost::Subagents::ControlTool }
+  ensure
+    manager&.close
+  end
+
+  def test_default_wait_timeout_is_thirty_seconds
+    assert_equal 30.0, LittleGhost::Subagents::Manager::DEFAULT_WAIT_TIMEOUT
+  end
+
   def test_model_chosen_task_names_form_strict_hierarchical_agent_paths
     manager = LittleGhost::Subagents::Manager.new(
       [definition_for(->(_id) { ControlledAgent.new })],

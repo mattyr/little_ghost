@@ -5,6 +5,7 @@ require "base64"
 require "digest"
 require "time"
 require_relative "definition"
+require_relative "control_tool"
 
 module LittleGhost
   module Subagents
@@ -46,7 +47,7 @@ module LittleGhost
       DEFAULT_MAX_QUEUED_TURNS_PER_IDENTITY = 8 # :nodoc:
       DEFAULT_MAX_MESSAGE_CHARS = 50_000 # :nodoc:
       DEFAULT_MAX_RESPONSE_CHARS = 100_000 # :nodoc:
-      DEFAULT_WAIT_TIMEOUT = 20.0 # :nodoc:
+      DEFAULT_WAIT_TIMEOUT = 30.0 # :nodoc:
       DEFAULT_CLOSE_TIMEOUT = 5.0 # :nodoc:
       DEFAULT_LIST_LIMIT = 20 # :nodoc:
       MAX_LIST_LIMIT = 100 # :nodoc:
@@ -512,7 +513,7 @@ module LittleGhost
           "- #{definition.kind}: #{definition.description}"
         end.join("\n")
         tools = [
-          Tool.define(
+          ControlTool.define(
             name: "spawn_subagent",
             description: <<~DESCRIPTION.strip,
               Create a new subagent identity for an independent task. Mode controls delivery: sync waits for the
@@ -554,7 +555,7 @@ module LittleGhost
               parent_operation_id: context&.agent_operation_id
             )
           end,
-          Tool.define(
+          ControlTool.define(
             name: "send_message_to_subagent",
             description: <<~DESCRIPTION.strip,
               Send a follow-up turn to an existing active or persisted subagent identity. Persisted conversations
@@ -585,7 +586,7 @@ module LittleGhost
               parent_operation_id: context&.agent_operation_id
             )
           end,
-          Tool.define(
+          ControlTool.define(
             name: "interject_subagent",
             description: <<~DESCRIPTION.strip,
               Interrupt an actively running subagent in its current turn. The message is added at the next model
@@ -612,7 +613,7 @@ module LittleGhost
               **options
             )
           end,
-          Tool.define(
+          ControlTool.define(
             name: "wait_for_subagents",
             description: <<~DESCRIPTION.strip,
               Wait briefly for selected subagents, or all subagents when omitted. A still_working response is expected
@@ -633,7 +634,7 @@ module LittleGhost
               additionalProperties: false
             }
           ) { |input| manager.wait(subagent_ids: input["subagent_ids"]) },
-          Tool.define(
+          ControlTool.define(
             name: "list_subagents",
             description: <<~DESCRIPTION.strip,
               List active and persisted subagent conversations newest-first without restoring inactive agents.

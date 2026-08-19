@@ -7,7 +7,7 @@ module LittleGhost
   # engines must preserve the Engine and Session containment contracts.
   #
   # See the {Code Mode guide}[rdoc-ref:docs/guides/code_mode.md] for the first
-  # Ruby cell, Broker boundary, lifecycle, limits, optional JavaScript engine,
+  # Ruby program, Broker boundary, lifecycle, limits, optional JavaScript engine,
   # and extension contract.
   module CodeMode
     @engines = {}

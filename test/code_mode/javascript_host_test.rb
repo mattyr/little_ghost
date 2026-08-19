@@ -118,7 +118,7 @@ class CodeModeHostTest < Minitest::Test
       {
         "type" => "failed",
         "cell_id" => "8",
-        "error" => "Code-mode host has too many active cells",
+        "error" => "Code-mode host has too many active programs",
         "fatal" => true
       },
       messages.first

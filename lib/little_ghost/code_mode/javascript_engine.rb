@@ -28,14 +28,15 @@ require_relative "javascript/host"
 
 module LittleGhost
   module CodeMode
-    # Runs code-mode cells in an isolated V8 context supplied by the optional
-    # MiniRacer integration. A cell is one program submitted by the model.
+    # Runs code-mode programs in an isolated V8 context supplied by the optional
+    # MiniRacer integration.
     class JavascriptEngine < Engine
       DEFAULT_LIMITS = {
         output_bytes: 64 * 1024 * 1024,
         memory_bytes: 128 * 1024 * 1024,
         cpu_seconds: 30,
         file_bytes: 1024 * 1024,
+        wall_seconds: 3_600,
         max_concurrency: 8
       }.freeze
 
@@ -47,12 +48,15 @@ module LittleGhost
       def instructions(catalog:)
         javascript_catalog = Javascript::Catalog.new(catalog)
         <<~INSTRUCTIONS.strip
-          Run JavaScript in a fresh V8 context to call the available tools and compose their results. Each submitted
-          program is a cell. The context has no Node.js APIs, filesystem, network, console, or WebAssembly. Tool
+          Run JavaScript in a fresh V8 context to call the available tools and compose their results. Every exec call
+          starts a new program. Exec observes it for up to one minute. If it returns `still_working`, call wait to
+          observe the same continuously running program for another minute. Wait does not resume or restart it. Use
+          stop when the program is no longer needed. Do not call wait or stop after `completed`, `error`, or
+          `terminated`. The context has no Node.js APIs, filesystem, network, console, or WebAssembly. Tool
           functions return Promises; use await or Promise.all. JSON tool results become objects or arrays and other
-          results remain strings. Unawaited tool calls are completed before the cell exits. Report output with
-          text(value), use yield_control() to yield accumulated output while continuing, and use exit() to complete
-          early. ALL_TOOLS is the complete catalog available inside this context.
+          results remain strings. Unawaited tool calls are completed before the program exits. Report output with
+          text(value) and use exit() to complete early. ALL_TOOLS is the complete catalog available inside this
+          context.
 
           #{javascript_catalog.declarations}
         INSTRUCTIONS
@@ -90,7 +94,8 @@ module LittleGhost
         })
         Javascript::Session.new(
           broker:, client:, sandbox:, workspace:,
-          max_concurrency: configured_limits.fetch(:max_concurrency)
+          max_concurrency: configured_limits.fetch(:max_concurrency),
+          wall_seconds: configured_limits.fetch(:wall_seconds)
         )
       rescue
         sandbox&.close

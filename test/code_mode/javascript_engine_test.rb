@@ -187,22 +187,7 @@ class CodeModeEngineTest < Minitest::Test
     assert_equal 2, broker.maximum_concurrency
   end
 
-  def test_yields_and_resumes_incremental_output_from_the_same_cell
-    broker = Broker.new
-    session = open_session(broker)
-    first = execute(
-      session,
-      broker,
-      'text("before"); await yield_control(); text("middle"); await yield_control(); text("after");'
-    )
-    second = session.wait(yield_time_ms: 10_000, max_output_tokens: 1_000)
-    third = session.wait(yield_time_ms: 10_000, max_output_tokens: 1_000)
-
-    assert_equal [:yielded, :yielded, :completed], [first.status, second.status, third.status]
-    assert_equal ["before", "middle", "after"], [first.output, second.output, third.output]
-  end
-
-  def test_waiting_on_a_running_cell_does_not_resume_a_later_explicit_yield
+  def test_wait_returns_incremental_output_from_the_same_program
     entered = Queue.new
     release = Queue.new
     broker = Broker.new do |_name, arguments, id|
@@ -210,57 +195,101 @@ class CodeModeEngineTest < Minitest::Test
       release.pop
       Result.new(id:, value: arguments.fetch("value"), error: nil)
     end
-    session = open_session(broker)
+    session = open_session(broker, observation_seconds: 0.1)
+    first = execute(session, broker, 'text("before"); await tools.echo_value({value: 1}); text("after");')
+    Timeout.timeout(2) { entered.pop }
+    release << true
+    result = first
+    outputs = [first.output]
+    while result.still_working?
+      result = session.wait
+      outputs << result.output
+    end
+
+    assert_predicate first, :still_working?
+    assert_equal "before\nafter", outputs.join
+    assert_equal 1, broker.calls.length
+  ensure
+    release << true if release && release.empty?
+  end
+
+  def test_wait_observes_without_restarting_the_program
+    entered = Queue.new
+    release = Queue.new
+    broker = Broker.new do |_name, arguments, id|
+      entered << true
+      release.pop
+      Result.new(id:, value: arguments.fetch("value"), error: nil)
+    end
+    session = open_session(broker, observation_seconds: 0.1)
     first = execute(
       session,
       broker,
-      'await tools.echo_value({value: 1}); await yield_control(); text("after");',
-      yield_time_ms: 5
+      "const value = await tools.echo_value({value: 1}); text(value);"
     )
     releaser = Thread.new do
       entered.pop
       release << true
     end
 
-    second = session.wait(yield_time_ms: 1_000)
-    third = session.wait(yield_time_ms: 1_000)
+    second = first
+    second = session.wait while second.still_working?
 
-    assert_equal [:running, :yielded, :completed], [first.status, second.status, third.status]
-    assert_equal "after", third.output
+    assert_equal :still_working, first.status
+    assert_equal :completed, second.status
+    assert_equal "1", second.output
+    assert_equal 1, broker.calls.length
     releaser.join
   ensure
     release << true if release && release.empty?
     releaser&.join(1)
   end
 
-  def test_resuming_a_yield_between_observations_consumes_that_yield
+  def test_cell_observations_drain_output_without_changing_execution
     cell = LittleGhost::CodeMode::Javascript::Client::Cell.new(
       id: "cell-1", owner: Object.new, dispatcher: Object.new
     )
 
-    assert_equal "running", cell.observe(timeout: 0, max_tokens: 100).fetch(:status)
-    cell.yielded
-
-    assert cell.resume
-    assert_equal "running", cell.observe(timeout: 0, max_tokens: 100).fetch(:status)
-    refute cell.resume
+    cell.output("first")
+    assert_equal({status: "still_working", cell_id: "cell-1", output: "first"},
+      cell.observe(timeout: 0, max_tokens: 100))
+    assert_equal({status: "still_working", cell_id: "cell-1", output: ""},
+      cell.observe(timeout: 0, max_tokens: 100))
   end
 
-  def test_terminates_a_yielded_cell
+  def test_stop_terminates_a_running_program
     broker = Broker.new
-    session = open_session(broker)
-    first = execute(session, broker, "await new Promise(() => {});", yield_time_ms: 5)
+    session = open_session(broker, observation_seconds: 0.01)
+    first = execute(session, broker, "await new Promise(() => {});")
     client = session.instance_variable_get(:@client)
     captured = nil
     client.define_singleton_method(:terminate) do |**options|
       captured = options
       super(**options)
     end
-    result = session.wait(terminate: true, max_output_tokens: 7)
+    result = session.stop(max_output_tokens: 7)
 
-    assert_equal :running, first.status
+    assert_equal :still_working, first.status
     assert_equal :terminated, result.status
     assert_equal 7, captured.fetch(:max_tokens)
+  end
+
+  def test_program_deadline_cleans_an_unobserved_program
+    broker = Broker.new
+    session = open_session(
+      broker,
+      limits: {wall_seconds: 0.05},
+      observation_seconds: 0.01
+    )
+
+    first = execute(session, broker, "await new Promise(() => {});")
+    Timeout.timeout(2) do
+      sleep(0.001) while session.instance_variable_get(:@current_cell_id)
+    end
+    error = assert_raises(LittleGhost::ToolError) { session.wait }
+
+    assert_predicate first, :still_working?
+    assert_includes error.message, "timed out"
   end
 
   def test_client_termination_honors_the_requested_output_budget
@@ -280,23 +309,98 @@ class CodeModeEngineTest < Minitest::Test
     client&.close
   end
 
-  def test_wait_context_cancellation_terminates_the_resumed_cell
+  def test_wait_context_cancellation_terminates_the_program
     broker = Broker.new
-    session = open_session(broker)
-    first = execute(session, broker, "await new Promise(() => {});", yield_time_ms: 5)
+    session = open_session(broker, observation_seconds: 0.01)
+    first = execute(session, broker, "await new Promise(() => {});")
     error = LittleGhost::CancelledError.new("cancelled while resuming")
 
     raised = assert_raises(LittleGhost::CancelledError) do
       session.wait(
         context: ContextError.new(error),
-        yield_time_ms: 1_000,
         max_output_tokens: 1_000
       )
     end
 
-    assert_equal :running, first.status
+    assert_equal :still_working, first.status
     assert_equal error.message, raised.message
     assert_raises(LittleGhost::ToolError) { session.wait }
+    recovered = execute(session, broker, 'text("recovered");')
+    recovered = session.wait while recovered.still_working?
+
+    assert_equal :completed, recovered.status
+  end
+
+  def test_nested_tool_cleanup_timeout_makes_the_session_unusable
+    entered = Queue.new
+    release = Queue.new
+    broker = Broker.new do |_name, arguments, id|
+      entered << true
+      release.pop
+      Result.new(id:, value: arguments.fetch("value"), error: nil)
+    end
+    session = open_session(broker, observation_seconds: 0.01)
+    session.instance_variable_set(:@cleanup_timeout, 0.01)
+    running = execute(session, broker, 'await tools.echo_value({value: "blocked"});')
+    Timeout.timeout(1) { entered.pop }
+
+    assert_predicate running, :still_working?
+    assert_raises(LittleGhost::CleanupError) { session.stop }
+    error = assert_raises(LittleGhost::ToolError) do
+      execute(session, broker, 'text("must not run");')
+    end
+    assert_includes error.message, "cannot be reused"
+  ensure
+    release << true if release
+  end
+
+  def test_javascript_session_rejects_stop_while_execute_is_starting
+    entered = Queue.new
+    release = Queue.new
+    client = Object.new
+    client.define_singleton_method(:start_cell) do |**|
+      entered << true
+      release.pop
+    end
+    client.define_singleton_method(:observe) do |**|
+      {status: "completed", output: ""}
+    end
+    client.define_singleton_method(:close_owner) { |_| nil }
+    client.define_singleton_method(:close) { nil }
+    session = LittleGhost::CodeMode::Javascript::Session.new(
+      broker: Broker.new, client:, observation_seconds: 0.01
+    )
+    @sessions << session
+    execution = Thread.new { session.execute(source: "1", catalog: []) }
+    Timeout.timeout(1) { entered.pop }
+
+    error = assert_raises(LittleGhost::ToolError) { session.stop }
+
+    assert_includes error.message, "already active"
+    release << true
+    assert_equal :completed, execution.value.status
+  ensure
+    release << true if release && release.empty?
+    execution&.join
+  end
+
+  def test_javascript_close_surfaces_an_unobserved_watchdog_cleanup_error
+    client = Object.new
+    client.define_singleton_method(:close_owner) { |_| nil }
+    client.define_singleton_method(:close) { nil }
+    session = LittleGhost::CodeMode::Javascript::Session.new(broker: Broker.new, client:)
+    cleanup_error = LittleGhost::CleanupError.new("watchdog cleanup failed")
+    session.instance_variable_get(:@pending_deadline_errors) << ["program-1", cleanup_error]
+
+    raised = assert_raises(LittleGhost::CleanupError) { session.close }
+
+    assert_same cleanup_error, raised
+  ensure
+    begin
+      session&.close
+    rescue LittleGhost::CleanupError
+      nil
+    end
   end
 
   def test_wait_requires_an_active_cell
@@ -304,7 +408,7 @@ class CodeModeEngineTest < Minitest::Test
 
     error = assert_raises(LittleGhost::ToolError) { session.wait }
 
-    assert_includes error.message, "no active JavaScript cell"
+    assert_includes error.message, "no active JavaScript program"
   end
 
   def test_completion_drains_unawaited_tool_calls
@@ -374,7 +478,6 @@ class CodeModeEngineTest < Minitest::Test
         source: "await new Promise(() => {});",
         catalog: broker.catalog,
         context: ContextError.new(error),
-        yield_time_ms: 1_000,
         max_output_tokens: 1_000
       )
     end
@@ -387,12 +490,11 @@ class CodeModeEngineTest < Minitest::Test
     broker = Broker.new
     session = open_session(broker)
 
-    error = assert_raises(LittleGhost::ToolError) do
-      execute(session, broker, 'throw new Error("model bug");')
-    end
+    error = execute(session, broker, 'throw new Error("model bug");')
     recovered = execute(session, broker, 'text("recovered");')
 
-    assert_includes error.message, "model bug"
+    assert_equal :error, error.status
+    assert_includes error.error, "model bug"
     assert_equal :completed, recovered.status
     assert_equal "recovered", recovered.output
   end
@@ -433,14 +535,15 @@ class CodeModeEngineTest < Minitest::Test
       Result.new(id:, value: arguments.fetch("value"), error: nil)
     end
     session = open_session(broker)
-    execute(session, broker, 'await tools.echo_value({value: "test"});', yield_time_ms: 5)
+    session.instance_variable_set(:@observation_seconds, 0.1)
+    execute(session, broker, 'await tools.echo_value({value: "test"});')
     Timeout.timeout(1) { entered.pop }
     process = @sandboxes.last.processes.last
     Process.kill("KILL", -process.pid)
     release << true
 
     error = assert_raises(LittleGhost::CleanupError) do
-      Timeout.timeout(2) { session.wait(yield_time_ms: 1_000) }
+      Timeout.timeout(2) { session.wait }
     end
 
     assert_includes error.message, "signal=SIGKILL"
@@ -503,6 +606,27 @@ class CodeModeEngineTest < Minitest::Test
     assert_equal "completed", result.fetch(:status)
     assert_equal "complete output", result.fetch(:output)
     completion.join
+  end
+
+  def test_empty_text_keeps_the_same_separator_across_observations
+    split = LittleGhost::CodeMode::Javascript::Client::Cell.new(
+      id: "split", owner: Object.new, dispatcher: Object.new
+    )
+    split.output("")
+    first = split.observe(timeout: 0, max_tokens: 1_000)
+    split.output("after")
+    split.complete(status: "completed")
+    split_output = first.fetch(:output) + split.wait_until_terminal.fetch(:output)
+
+    unsplit = LittleGhost::CodeMode::Javascript::Client::Cell.new(
+      id: "unsplit", owner: Object.new, dispatcher: Object.new
+    )
+    unsplit.output("")
+    unsplit.output("after")
+    unsplit.complete(status: "completed")
+
+    assert_equal "\nafter", split_output
+    assert_equal split_output, unsplit.wait_until_terminal.fetch(:output)
   end
 
   def test_cell_terminal_wait_has_an_explicit_cleanup_bound
@@ -634,16 +758,15 @@ class CodeModeEngineTest < Minitest::Test
 
   private
 
-  def execute(session, broker, source, yield_time_ms: 10_000)
+  def execute(session, broker, source)
     session.execute(
       source:,
       catalog: broker.catalog,
-      yield_time_ms:,
       max_output_tokens: 1_000
     )
   end
 
-  def open_session(broker, limits: {})
+  def open_session(broker, limits: {}, observation_seconds: nil)
     engine = LittleGhost::CodeMode::JavascriptEngine.new
     sandbox_factory = lambda do |workspace:, required_runtime_paths:|
       assert_equal workspace.paths.keys.to_h { |name| [name, :read_only] }, required_runtime_paths
@@ -652,6 +775,7 @@ class CodeModeEngineTest < Minitest::Test
       Sandbox.new(workspace).tap { |sandbox| @sandboxes << sandbox }
     end
     engine.open_session(broker:, sandbox_factory:, limits: {cpu_seconds: nil}.merge(limits)).tap do |session|
+      session.instance_variable_set(:@observation_seconds, observation_seconds) if observation_seconds
       @sessions << session
     end
   end

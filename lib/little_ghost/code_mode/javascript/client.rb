@@ -45,9 +45,7 @@ module LittleGhost
           @generation = generation
           @outputs = []
           @output_bytes = 0
-          @yield_count = 0
-          @consumed_yields = 0
-          @awaiting_resume = false
+          @returned_output = false
           @terminal = nil
           @termination_error = nil
           @client_termination_requested = false
@@ -69,26 +67,6 @@ module LittleGhost
             end
             @condition.broadcast
             overflow
-          end
-        end
-
-        def yielded
-          @mutex.synchronize do
-            return if @terminal
-
-            @yield_count += 1
-            @awaiting_resume = true
-            @condition.broadcast
-          end
-        end
-
-        def resume
-          @mutex.synchronize do
-            return false if @terminal || !@awaiting_resume
-
-            @awaiting_resume = false
-            @consumed_yields = @yield_count
-            true
           end
         end
 
@@ -141,18 +119,14 @@ module LittleGhost
           @mutex.synchronize do
             loop do
               context&.check!
-              break if @terminal || @yield_count > @consumed_yields || monotonic >= deadline
+              break if @terminal || monotonic >= deadline
 
               @condition.wait(@mutex, [deadline - monotonic, 0.05].min)
             end
-            yielded = @yield_count > @consumed_yields
-            @consumed_yields = @yield_count
-            output = @outputs.join("\n")
-            @outputs.clear
-            @output_bytes = 0
+            output = drain_output
             output = LittleGhost::Support::OutputTruncation
               .truncate_middle_with_token_budget(output, max_tokens).first
-            (@terminal || {status: yielded ? "yielded" : "running"}).merge(cell_id: id, output:)
+            (@terminal || {status: "still_working"}).merge(cell_id: id, output:)
           end
         end
 
@@ -162,7 +136,7 @@ module LittleGhost
             until @terminal
               remaining = deadline && deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
               if remaining && !remaining.positive?
-                raise LittleGhost::CleanupError, "Code-mode cell cleanup timed out"
+                raise LittleGhost::CleanupError, "Code-mode program cleanup timed out"
               end
 
               @condition.wait(@mutex, remaining)
@@ -178,10 +152,18 @@ module LittleGhost
         private
 
         def drain_output
+          had_output = !@outputs.empty?
           output = @outputs.join("\n")
           @outputs.clear
           @output_bytes = 0
-          output
+          if !had_output
+            output
+          elsif @returned_output
+            "\n#{output}"
+          else
+            @returned_output = true
+            output
+          end
         end
 
         def monotonic
@@ -219,9 +201,8 @@ module LittleGhost
         raise
       end
 
-      def observe(owner:, cell_id:, timeout:, max_tokens:, context: nil, resume: false)
+      def observe(owner:, cell_id:, timeout:, max_tokens:, context: nil)
         cell = owned_cell(owner, cell_id)
-        send_message({type: "resume", cell_id: cell.id}, cell:) if resume && cell.resume
         result = cell.observe(timeout:, max_tokens:, context:)
         release_cell(cell) if cell.terminal?
         result
@@ -287,7 +268,7 @@ module LittleGhost
         @cells_mutex.synchronize do
           cell = @cells[cell_id.to_s]
           unless cell && cell.owner.equal?(owner)
-            raise LittleGhost::ToolError, "Unknown code-mode cell: #{cell_id}"
+            raise LittleGhost::ToolError, "Unknown code-mode program: #{cell_id}"
           end
 
           cell
@@ -308,7 +289,7 @@ module LittleGhost
           raise(@failure || LittleGhost::CleanupError.new("Code-mode host is unavailable")) unless input
           return false if cell&.terminal?
           if cell && !generation.equal?(cell.generation)
-            raise LittleGhost::CleanupError, "Code-mode cell belongs to an inactive host"
+            raise LittleGhost::CleanupError, "Code-mode program belongs to an inactive host"
           end
 
           yield generation if block_given?
@@ -396,8 +377,6 @@ module LittleGhost
         case message["type"]
         when "output"
           request_cell_failure(cell, "Code-mode output exceeded the buffer limit") if cell.output(message["value"])
-        when "yield"
-          cell.yielded
         when "complete"
           cell.complete(status: "completed")
         when "terminated"

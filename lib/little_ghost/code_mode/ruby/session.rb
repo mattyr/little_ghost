@@ -10,88 +10,156 @@ module LittleGhost
   module CodeMode
     module Ruby
       class Session < CodeMode::Session # :nodoc:
-        def initialize(broker:, sandbox_factory:, subprocess_policy:, limits:)
+        OBSERVATION_SECONDS = 60
+
+        def initialize(broker:, sandbox_factory:, subprocess_policy:, limits:, observation_seconds: OBSERVATION_SECONDS)
           @broker = broker
           @sandbox_factory = sandbox_factory
           @subprocess_policy = subprocess_policy
           @limits = limits
+          @observation_seconds = Float(observation_seconds)
+          raise ArgumentError, "observation_seconds must be positive" unless @observation_seconds.positive?
           @session = nil
           @workspace = nil
           @sandbox = nil
           @output = +""
           @closed = false
+          @close_complete = false
+          @control_mutex = Mutex.new
           @cells = 0
           @call_mutex = Mutex.new
           @call_threads = []
           @call_errors = []
           @closing_marker = {closing: false}
+          @lifecycle_mutex = Mutex.new
+          @lifecycle_condition = ConditionVariable.new
+          @generation = nil
+          @expiring_generation = nil
+          @pending_program_error = nil
+          @watchdog = nil
+          @watchdog_mutex = Mutex.new
+          @watchdog_condition = ConditionVariable.new
+          @watchdog_generation = nil
         end
 
-        def execute(source:, catalog:, frame: nil, yield_time_ms: nil, max_output_tokens: nil, context: nil)
+        def execute(source:, catalog:, frame: nil, max_output_tokens: nil, context: nil)
+          with_control do
+            execute_program(source:, catalog:, frame:, max_output_tokens:, context:)
+          end
+        end
+
+        def wait(max_output_tokens: nil, context: nil)
+          with_control { wait_for_program(max_output_tokens:, context:) }
+        end
+
+        def stop(max_output_tokens: nil, context: nil)
+          with_control { stop_program(max_output_tokens:, context:) }
+        end
+
+        def close
+          acquired = false
+          return if @close_complete
+
+          @closed = true
+          acquired = @control_mutex.try_lock
+          unless acquired
+            raise ToolError, "cannot close while another code-mode control operation is active"
+          end
+          cleanup_error = begin
+            close_process
+            nil
+          rescue => error
+            error
+          end
+          pending_error = begin
+            raise_program_cleanup_error!
+            nil
+          rescue => error
+            error
+          end
+          @close_complete = true unless cleanup_error || pending_error
+          raise(cleanup_error || pending_error) if cleanup_error || pending_error
+        ensure
+          @control_mutex.unlock if acquired
+        end
+
+        private
+
+        def execute_program(source:, catalog:, frame:, max_output_tokens:, context:)
           raise ToolError, "code-mode session is closed" if @closed
-          raise ToolError, "a code-mode cell is already active" if @session&.alive?
+          ensure_program_can_start!
           @cells += 1
-          raise ToolError, "code-mode cell limit exceeded" if @cells > @limits.fetch(:cells)
+          raise ToolError, "code-mode program limit exceeded" if @cells > @limits.fetch(:cells)
           source = String(source)
           raise ToolError, "code-mode source exceeds the limit" if source.bytesize > @limits.fetch(:source_bytes)
           normalized_catalog = Catalog.new(catalog).host_definitions
 
-          open_process
+          generation, process = open_process
           process_opened = true
-          @session.write(Protocol.dump(
+          process.write(Protocol.dump(
             source:,
             catalog: normalized_catalog,
             frame:,
             tool_calls: @limits.fetch(:tool_calls),
             concurrency: @limits.fetch(:concurrency)
           ))
-          @explicit_yield = false
-          drive(yield_time_ms:, max_output_tokens:, context:)
+          drive(generation:, process:, max_output_tokens:, context:)
         rescue
-          close_process if process_opened
+          close_process(generation:) if process_opened
           raise
         end
 
-        def wait(yield_time_ms: nil, max_output_tokens: nil, terminate: false, context: nil)
-          raise ToolError, "there is no active code-mode cell" unless @session
-          if terminate
-            mark_process_closing
-            result = CellResult.new(output: bounded_output(max_output_tokens), status: :terminated)
-            termination_error = nil
+        def wait_for_program(max_output_tokens:, context:)
+          generation, process = active_process
+          drive(generation:, process:, max_output_tokens:, context:)
+        rescue
+          close_process(generation:) if generation
+          raise
+        end
+
+        def stop_program(max_output_tokens:, context:)
+          context&.check!
+          generation, process = active_process
+          mark_process_closing
+          termination_error = nil
+          begin
+            process.terminate
+            collect_remaining_output(process)
+          rescue => error
+            termination_error = error
+          ensure
             begin
-              @session.terminate
+              close_process(generation:)
             rescue => error
-              termination_error = error
-            ensure
-              begin
-                close_process
-              rescue => error
-                termination_error ||= error
-              end
+              termination_error ||= error
             end
-            raise termination_error if termination_error
-
-            return result
           end
+          raise termination_error if termination_error
 
-          if @explicit_yield
-            @session.write(Protocol.dump(type: "resume"))
-            @explicit_yield = false
-          end
-          drive(yield_time_ms:, max_output_tokens:, context:)
-        rescue
-          close_process
-          raise
+          CellResult.new(output: drain_output(max_output_tokens), status: :terminated)
         end
 
-        def close
-          return if @closed
+        def with_control
+          acquired = @control_mutex.try_lock
+          unless acquired
+            raise ToolError, "another code-mode control operation is already active"
+          end
 
-          @closed = true
-          close_process
+          yield
+        ensure
+          @control_mutex.unlock if acquired
         end
 
-        private
+        def ensure_program_can_start!
+          error = @lifecycle_mutex.synchronize do
+            @lifecycle_condition.wait(@lifecycle_mutex) while @expiring_generation
+            pending = take_pending_program_error
+            raise ToolError, "a code-mode program is already active" if !pending && (@generation || @session)
+
+            pending
+          end
+          raise error if error
+        end
 
         def open_process
           @workspace_directory = Dir.mktmpdir("little-ghost-code-mode-")
@@ -108,6 +176,7 @@ module LittleGhost
             factory.new(workspace: @workspace)
           end
           @sandbox.open
+          raise ToolError, "code-mode session is closed" if @closed
           @session = @sandbox.start_program(
             [RbConfig.ruby, "-e", Host::SOURCE],
             output_bytes: @limits.fetch(:output_bytes),
@@ -116,50 +185,55 @@ module LittleGhost
             file_bytes: @limits.fetch(:file_bytes),
             allow_subprocesses: @subprocess_policy.call(@sandbox)
           )
+          generation = Object.new
           @deadline = monotonic_time + @limits.fetch(:wall_seconds)
           @output = +""
+          @output_bytes = 0
           @buffer = +""
+          @lifecycle_mutex.synchronize { @generation = generation }
+          start_watchdog(generation, @deadline)
+          [generation, @session]
         rescue
           close_process
           raise
         end
 
-        def drive(yield_time_ms:, max_output_tokens:, context: nil)
-          slice_deadline = yield_time_ms && monotonic_time + Float(yield_time_ms) / 1_000
+        def drive(generation:, process:, max_output_tokens:, context: nil)
+          slice_deadline = monotonic_time + @observation_seconds
           loop do
             context&.check!
             raise_call_error!
-            raise ToolError, "code-mode cell timed out" if monotonic_time >= @deadline
-            if slice_deadline && monotonic_time >= slice_deadline
-              return CellResult.new(output: @output.dup, status: :running, continuation: self)
+            expire_program(generation) if monotonic_time >= @deadline
+            raise_program_error!(generation)
+            if monotonic_time >= slice_deadline
+              return CellResult.new(output: drain_output(max_output_tokens), status: :still_working)
             end
 
             read_timeout = 0.05
-            read_timeout = (slice_deadline - monotonic_time).clamp(0, read_timeout) if slice_deadline
-            chunk = @session.read(timeout: read_timeout)
+            read_timeout = (slice_deadline - monotonic_time).clamp(0, read_timeout)
+            chunk = process.read(timeout: read_timeout)
             raise_call_error!
             unless chunk.stderr.empty?
-              @output << chunk.stderr
-              enforce_output!(max_output_tokens)
+              append_output(chunk.stderr)
             end
             @buffer << chunk.stdout
             while (message = Protocol.extract!(@buffer))
               begin
                 case message.fetch("type")
-                when "call" then dispatch_call(message)
+                when "call" then dispatch_call(message, process)
                 when "text"
-                  @output << message.fetch("value")
-                  enforce_output!(max_output_tokens)
-                when "yield"
-                  @explicit_yield = true
-                  return CellResult.new(output: @output.dup, status: :yielded, continuation: self)
+                  append_output(message.fetch("value"))
                 when "done"
-                  result = CellResult.new(output: @output.dup, value: message["value"])
-                  close_process
+                  raise_program_error!(generation)
+                  result = CellResult.new(output: drain_output(max_output_tokens), value: message["value"])
+                  close_process(generation:)
                   return result
                 when "error"
-                  result = CellResult.new(output: @output.dup, status: :error, error: message.fetch("error"))
-                  close_process
+                  raise_program_error!(generation)
+                  result = CellResult.new(
+                    output: drain_output(max_output_tokens), status: :error, error: message.fetch("error")
+                  )
+                  close_process(generation:)
                   return result
                 else
                   raise ProtocolError, "unknown code-mode frame"
@@ -169,16 +243,17 @@ module LittleGhost
               end
             end
             if chunk.eof
+              raise_program_error!(generation)
               detail = [@output, @buffer].reject(&:empty?).join(" ")
-              close_process
+              close_process(generation:)
               raise ProtocolError, ["code-mode process exited without a final frame", detail].reject(&:empty?).join(": ")
             end
           end
         rescue Protocol::Error => error
-          close_process
+          close_process(generation:)
           raise ProtocolError, error.message
         rescue
-          close_process
+          close_process(generation:)
           raise
         end
 
@@ -192,12 +267,11 @@ module LittleGhost
           end
         end
 
-        def dispatch_call(message)
+        def dispatch_call(message, process)
           thread = @call_mutex.synchronize do
             active = @call_threads.count(&:alive?)
             raise ProtocolError, "code-mode concurrent tool call limit exceeded" if active >= @limits.fetch(:concurrency)
 
-            process = @session
             call_errors = @call_errors
             closing_marker = @closing_marker
             Thread.new do
@@ -210,19 +284,64 @@ module LittleGhost
           @call_mutex.synchronize { @call_threads << thread }
         end
 
-        def enforce_output!(max_output_tokens = nil)
-          maximum = @limits.fetch(:output_bytes)
-          maximum = [maximum, Integer(max_output_tokens) * 4].min if max_output_tokens
-          raise ToolError, "code-mode output exceeded the limit" if @output.bytesize > maximum
+        def append_output(value)
+          value = String(value).dup.force_encoding(Encoding::UTF_8).scrub
+          @output_bytes += value.bytesize
+          raise ToolError, "code-mode output exceeded the limit" if @output_bytes > @limits.fetch(:output_bytes)
+
+          @output << value
         end
 
-        def bounded_output(max_output_tokens)
-          return @output.dup unless max_output_tokens
-
-          Support::OutputTruncation.truncate_middle_with_token_budget(@output, max_output_tokens).first
+        def collect_remaining_output(process)
+          loop do
+            chunk = process.read(timeout: 0)
+            append_output(chunk.stderr) unless chunk.stderr.empty?
+            @buffer << chunk.stdout
+            while (message = Protocol.extract!(@buffer))
+              append_output(message.fetch("value")) if message["type"] == "text"
+            end
+            break if chunk.eof || (chunk.stdout.empty? && chunk.stderr.empty?)
+          end
+        rescue Protocol::Error, KeyError
+          raise ProtocolError, "malformed code-mode frame"
         end
 
-        def close_process
+        def drain_output(max_output_tokens)
+          output = @output
+          @output = +""
+          return output unless max_output_tokens
+
+          Support::OutputTruncation.truncate_middle_with_token_budget(output, max_output_tokens).first
+        end
+
+        def active_process
+          raise_pending_program_error!
+          @lifecycle_mutex.synchronize do
+            @lifecycle_condition.wait(@lifecycle_mutex) while @expiring_generation
+            error = take_pending_program_error
+            raise error if error
+            raise ToolError, "there is no active code-mode program" unless @generation && @session
+
+            [@generation, @session]
+          end
+        end
+
+        def close_process(generation: nil)
+          claimed = @lifecycle_mutex.synchronize do
+            target = generation || @generation
+            if target
+              return unless @generation.equal?(target)
+            elsif !@session && !@sandbox && !@workspace && !@workspace_directory
+              return
+            end
+
+            values = [target, @session, @sandbox, @workspace, @workspace_directory]
+            @generation = nil
+            @session = @sandbox = @workspace = @workspace_directory = nil
+            values
+          end
+          target, session, sandbox, workspace, directory = claimed
+          watchdog = cancel_watchdog(target)
           threads, call_errors = @call_mutex.synchronize do
             current_threads = @call_threads
             current_errors = @call_errors
@@ -232,8 +351,6 @@ module LittleGhost
             @closing_marker = {closing: false}
             [current_threads, current_errors]
           end
-          session, sandbox, workspace, directory = @session, @sandbox, @workspace, @workspace_directory
-          @session = @sandbox = @workspace = @workspace_directory = nil
           first_error = nil
           begin
             session&.close
@@ -272,7 +389,105 @@ module LittleGhost
           rescue => error
             first_error ||= error
           end
+          watchdog&.join unless watchdog.equal?(Thread.current)
           raise first_error if first_error
+        end
+
+        def start_watchdog(generation, deadline)
+          @watchdog_mutex.synchronize do
+            @watchdog_generation = generation
+            @watchdog = Thread.new do
+              expired = @watchdog_mutex.synchronize do
+                loop do
+                  break false unless @watchdog_generation.equal?(generation)
+
+                  remaining = deadline - monotonic_time
+                  break true unless remaining.positive?
+
+                  @watchdog_condition.wait(@watchdog_mutex, remaining)
+                end
+              end
+              expire_program(generation) if expired
+            rescue => error
+              record_program_error(generation, error)
+            end
+            @watchdog.report_on_exception = false
+          end
+        end
+
+        def cancel_watchdog(generation)
+          @watchdog_mutex.synchronize do
+            return unless !generation || @watchdog_generation.equal?(generation)
+
+            thread = @watchdog
+            @watchdog_generation = nil
+            @watchdog = nil
+            @watchdog_condition.broadcast
+            thread
+          end
+        end
+
+        def expire_program(generation)
+          process = @lifecycle_mutex.synchronize do
+            if @expiring_generation.equal?(generation)
+              nil
+            elsif @generation.equal?(generation)
+              @expiring_generation = generation
+              @session
+            end
+          end
+          return unless process
+
+          error = ToolError.new("code-mode program timed out")
+          begin
+            mark_process_closing
+            process.terminate
+          rescue => cleanup_error
+            error = cleanup_error
+          ensure
+            begin
+              close_process(generation:)
+            rescue => cleanup_error
+              error = cleanup_error
+            end
+            record_program_error(generation, error)
+          end
+        end
+
+        def record_program_error(generation, error)
+          @lifecycle_mutex.synchronize do
+            @pending_program_error ||= [generation, error]
+            @expiring_generation = nil if @expiring_generation.equal?(generation)
+            @lifecycle_condition.broadcast
+          end
+        end
+
+        def raise_program_error!(generation)
+          error = @lifecycle_mutex.synchronize do
+            @lifecycle_condition.wait(@lifecycle_mutex) while @expiring_generation.equal?(generation)
+            take_pending_program_error(generation)
+          end
+          raise error if error
+        end
+
+        def raise_pending_program_error!
+          error = @lifecycle_mutex.synchronize { take_pending_program_error }
+          raise error if error
+        end
+
+        def raise_program_cleanup_error!
+          error = @lifecycle_mutex.synchronize do
+            @lifecycle_condition.wait(@lifecycle_mutex) while @expiring_generation
+            take_pending_program_error
+          end
+          raise error if error
+        end
+
+        def take_pending_program_error(generation = nil)
+          return unless @pending_program_error
+          return if generation && !@pending_program_error.first.equal?(generation)
+
+          @pending_program_error.tap { @pending_program_error = nil }.last
         end
 
         def mark_process_closing

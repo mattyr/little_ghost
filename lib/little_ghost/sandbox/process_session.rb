@@ -7,8 +7,19 @@ module LittleGhost
     # its ordinary descendants. A descendant that creates another process group
     # can outlive this session. Use a backend with +process_tree_ownership+ or an
     # outer supervisor when complete descendant ownership is required.
+    #
+    # A configured memory bound is a sampled parent-side guard. On Linux, the
+    # session samples the visible process tree every 100 milliseconds and
+    # tolerates short-lived +/proc+ churn. It fails closed after three
+    # consecutive failures to read the root process or the process snapshot.
+    # Use an outer cgroup or container when memory must be enforced as a hard
+    # kernel boundary.
     class ProcessSession
       Chunk = Data.define(:stdout, :stderr, :eof) # :nodoc:
+      MEMORY_SAMPLE_INTERVAL = 0.1
+      MEMORY_SUPERVISION_FAILURE_LIMIT = 3
+
+      private_constant :MEMORY_SAMPLE_INTERVAL, :MEMORY_SUPERVISION_FAILURE_LIMIT
 
       def initialize(command:, environment: {}, inherit_environment: false, chdir: nil,
         output_bytes: 1_000_000, memory_bytes: nil, memory_reader: nil, cpu_seconds: nil, file_bytes: nil)
@@ -151,19 +162,42 @@ module LittleGhost
       private
 
       def monitor_memory
+        consecutive_failures = 0
         loop do
           break unless raw_alive?
-          if @memory_reader.call(@pid) > @memory_bytes
+
+          memory_bytes = nil
+          begin
+            memory_bytes = @memory_reader.call(@pid)
+            consecutive_failures = 0
+          rescue => error
+            consecutive_failures += 1
+            if consecutive_failures >= MEMORY_SUPERVISION_FAILURE_LIMIT
+              fail_memory_supervision(error)
+              break
+            end
+          end
+
+          if memory_bytes && memory_bytes > @memory_bytes
             @resource_error = ToolError.new("Program memory exceeded #{@memory_bytes} bytes")
             signal_group("TERM")
-            sleep(0.1)
+            sleep(MEMORY_SAMPLE_INTERVAL)
             signal_group("KILL") if raw_alive?
             break
           end
-          sleep(0.02)
+
+          sleep(MEMORY_SAMPLE_INTERVAL)
         end
-      rescue
-        @resource_error ||= ToolError.new("Program memory supervisor failed")
+      rescue => error
+        fail_memory_supervision(error)
+      end
+
+      def fail_memory_supervision(cause)
+        @resource_error ||= begin
+          raise ToolError, "Program memory supervisor failed (#{cause.class.name || "anonymous exception"})", cause: cause
+        rescue ToolError => error
+          error
+        end
         signal_group("KILL")
       end
 
@@ -182,17 +216,38 @@ module LittleGhost
       end
 
       def linux_process_tree_rss(root_pid)
-        processes = Dir.children("/proc").grep(/\A\d+\z/).filter_map do |entry|
-          status = File.read("/proc/#{entry}/status")
-          ppid = status[/^PPid:\s+(\d+)/, 1]
-          rss = status[/^VmRSS:\s+(\d+)\s+kB/, 1]
-          [Integer(entry), Integer(ppid), Integer(rss || 0) * 1024]
-        rescue Errno::ENOENT, Errno::EACCES
+        entries = linux_process_entries
+        root_process = read_linux_process(root_pid.to_s)
+        unless root_process
+          cause = ArgumentError.new("malformed root process status")
+          raise DependencyError, "process memory supervisor cannot read root process /proc/#{root_pid}/status", cause: cause
+        end
+
+        processes = entries.filter_map do |entry|
+          next unless /\A\d+\z/.match?(entry)
+          next root_process if entry == root_pid.to_s
+
+          read_linux_process(entry)
+        rescue SystemCallError, IOError
           nil
         end
+        processes << root_process unless entries.include?(root_pid.to_s)
         descendant_rss(processes, root_pid)
-      rescue Errno::ENOENT, Errno::EACCES
-        raise DependencyError, "process memory supervisor cannot read /proc"
+      rescue SystemCallError, IOError => error
+        raise DependencyError, "process memory supervisor cannot read root process /proc/#{root_pid}/status", cause: error
+      end
+
+      def linux_process_entries
+        Dir.children("/proc")
+      rescue SystemCallError, IOError => error
+        raise DependencyError, "process memory supervisor cannot snapshot /proc", cause: error
+      end
+
+      def read_linux_process(entry)
+        status = File.read("/proc/#{entry}/status")
+        ppid = Integer(status[/^PPid:\s+(\d+)/, 1], exception: false)
+        rss = Integer(status[/^VmRSS:\s+(\d+)\s+kB/, 1], exception: false)
+        [Integer(entry), ppid, rss * 1024] if ppid && rss
       end
 
       def darwin_process_tree_rss(root_pid)

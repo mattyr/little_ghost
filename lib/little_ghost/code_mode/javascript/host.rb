@@ -24,7 +24,6 @@ module LittleGhost
           const definitionIndex = Object.fromEntries(definitions.map((definition) => [definition.name, definition]));
           const calls = [];
           const outputs = [];
-          const yields = [];
           const pending = new Map();
           const exitSignal = Object.freeze({exit: true});
           let nextCallId = 0;
@@ -59,11 +58,6 @@ module LittleGhost
           const catalog = definitions.map(({name, description}) => Object.freeze({name, description}));
 
           const text = (value) => { outputs.push(stringify(value)); };
-          const yieldControl = () => new Promise((resolve) => {
-            const id = String(++nextCallId);
-            pending.set(id, {resolve, reject: resolve});
-            yields.push(id);
-          });
           const exit = () => { throw exitSignal; };
           const errorText = (error) => {
             if (error && typeof error.stack === "string") return error.stack;
@@ -75,7 +69,6 @@ module LittleGhost
             tools: {value: tools, writable: false, configurable: false},
             ALL_TOOLS: {value: Object.freeze(catalog), writable: false, configurable: false},
             text: {value: text, writable: false, configurable: false},
-            yield_control: {value: yieldControl, writable: false, configurable: false},
             exit: {value: exit, writable: false, configurable: false},
             console: {value: undefined, writable: false, configurable: false},
             process: {value: undefined, writable: false, configurable: false},
@@ -103,7 +96,6 @@ module LittleGhost
             drain: () => ({
               calls: calls.splice(0),
               outputs: outputs.splice(0),
-              yields: yields.splice(0),
               done,
               failure
             }),
@@ -215,15 +207,12 @@ module LittleGhost
             Array(state["outputs"]).each { |value| emit(type: "output", value:) }
             calls = Array(state["calls"])
             if calls.length > MAX_PENDING_TOOL_CALLS
-              emit(type: "failed", error: "Code-mode cell exceeded the pending tool-call limit", fatal: true)
+              emit(type: "failed", error: "Code-mode program exceeded the pending tool-call limit", fatal: true)
               return
             end
             emit(type: "tool_calls", calls:) unless calls.empty?
-            yield_ids = Array(state["yields"])
-            emit(type: "yield") unless yield_ids.empty?
-            unless calls.empty? && yield_ids.empty?
-              wait_for_results(context, calls.length, resume: !yield_ids.empty?)
-              yield_ids.each { |id| call_control(context, :resolve, id, true, nil) }
+            unless calls.empty?
+              wait_for_results(context, calls.length)
               next
             end
 
@@ -240,26 +229,19 @@ module LittleGhost
           end
         end
 
-        def wait_for_results(context, expected, resume: false)
+        def wait_for_results(context, expected)
           delivered = 0
-          resumed = !resume
           loop do
             message = @incoming.pop(timeout: 0.05)
             next unless message
             return terminate_cell if message["type"] == "terminate"
-
-            if message["type"] == "resume"
-              resumed = true
-              break if delivered >= expected
-              next
-            end
 
             call_control(
               context, :resolve, message.fetch("call_id"), message.fetch("ok"),
               message["ok"] ? message["value"] : message["error"]
             )
             delivered += 1
-            break if delivered >= expected && resumed
+            break if delivered >= expected
           end
         end
 
@@ -302,7 +284,6 @@ module LittleGhost
           case message["type"]
           when "execute" then execute(message)
           when "tool_result" then cell(message.fetch("cell_id"))&.deliver(message)
-          when "resume" then cell(message.fetch("cell_id"))&.deliver(message)
           when "terminate" then cell(message.fetch("cell_id"))&.terminate
           else raise Protocol::Error, "Unknown code-mode host request"
           end
@@ -325,7 +306,7 @@ module LittleGhost
             true
           end
           unless created
-            write(type: "failed", cell_id: id, error: "Code-mode host has too many active cells", fatal: true)
+            write(type: "failed", cell_id: id, error: "Code-mode host has too many active programs", fatal: true)
           end
         rescue KeyError, TypeError, Protocol::Error => error
           write(type: "failed", cell_id: id.to_s, error: "Invalid code-mode request: #{error.message}", fatal: true)

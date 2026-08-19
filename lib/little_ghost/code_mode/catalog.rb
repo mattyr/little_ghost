@@ -10,7 +10,7 @@ module LittleGhost
 
       # Normalizes trusted Tool +specifications+ with +normalize+. Names in
       # +reserved+ and names that collide after normalization are rejected.
-      def initialize(specifications, normalize:, reserved: %w[exec wait])
+      def initialize(specifications, normalize:, reserved: %w[exec wait stop])
         aliases = {}
         @definitions = Array(specifications).map do |specification|
           canonical_name = value(specification, :name).to_s

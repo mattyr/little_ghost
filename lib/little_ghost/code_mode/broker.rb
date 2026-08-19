@@ -31,7 +31,8 @@ module LittleGhost
         specifications = @registry&.specifications || []
         specifications.reject do |specification|
           name = specification.fetch(:name, specification["name"]).to_s
-          @except.include?(name) || %w[exec wait].include?(name)
+          tool = @registry.fetch(name)
+          @except.include?(name) || %w[exec wait stop].include?(name) || subagent_control?(tool)
         end
       end
 
@@ -87,6 +88,10 @@ module LittleGhost
       end
 
       private
+
+      def subagent_control?(tool)
+        defined?(Subagents::ControlTool) && tool.is_a?(Subagents::ControlTool)
+      end
 
       def emit_brokered_tool_call(tool_use)
         return unless @events.respond_to?(:<<)
