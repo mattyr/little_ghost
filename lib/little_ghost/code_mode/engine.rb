@@ -8,13 +8,17 @@ module LittleGhost
     # Model-authored code must run behind the supplied +sandbox_factory+. The
     # Broker must remain in the trusted parent process; do not expose it or its
     # application objects inside the child interpreter.
+    #
+    # LittleGhost may call one registered Engine instance concurrently for
+    # different Agents and RunContexts. Keep mutable program state in the
+    # Session returned by #open_session, not on the Engine.
     class Engine
       # Returns the engine's language identifier as a Symbol.
       def language = raise(AbstractMethodError, "engine must report its language")
 
-      # Returns model-facing instructions for the supplied Tool Catalog.
-      # Instructions must describe only names and behavior the Session actually
-      # implements.
+      # Returns model-facing instructions for the supplied Tool Catalog. This
+      # method may be called concurrently. Instructions must describe only names
+      # and behavior the Session actually implements.
       def instructions(catalog:) = raise(AbstractMethodError, "engine must provide instructions")
 
       # Opens and returns a CodeMode::Session.
@@ -24,7 +28,8 @@ module LittleGhost
       # the application's mapping, passed through unchanged. A custom Engine
       # must normalize keys and values, validate supported settings, and merge
       # its own safe defaults. The Session owns every Workspace, Sandbox,
-      # process, thread, and channel it creates.
+      # process, thread, and channel it creates. This method may be called
+      # concurrently; each call must return an independent Session.
       def open_session(broker:, sandbox_factory:, limits:) = raise(AbstractMethodError, "engine must open a session")
 
       private

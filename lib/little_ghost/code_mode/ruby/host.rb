@@ -2,7 +2,7 @@
 
 module LittleGhost
   module CodeMode
-    module Ruby
+    module Ruby # :nodoc:
       module Host # :nodoc:
         SOURCE = <<~'RUBY'
             require "json"
@@ -30,16 +30,13 @@ module LittleGhost
             write_lock = Mutex.new
             queues_lock = Mutex.new
             response_queues = {}
-            resume_queue = Queue.new
             calls = 0
             max_calls = request.fetch("tool_calls")
             emit = ->(value) { write_lock.synchronize { write_frame.call(value) } }
             reader = Thread.new do
               loop do
                 response = read_frame.call
-                if response["type"] == "resume"
-                  resume_queue << response
-                elsif response["id"]
+                if response["id"]
                   queue = queues_lock.synchronize { response_queues[response["id"]] }
                   queue << response if queue
                 end
@@ -83,12 +80,6 @@ module LittleGhost
             finish_value = nil
             context.define_singleton_method(:tools) { tools }
             context.define_singleton_method(:text) { |value| emit.call(type: "text", value: value.to_s); nil }
-            context.define_singleton_method(:yield_control) do
-              emit.call(type: "yield")
-              response = resume_queue.pop
-              raise "invalid resume frame" unless response["type"] == "resume"
-              nil
-            end
             context.define_singleton_method(:finish) do |value = nil|
               finished = true
               finish_value = value
@@ -97,6 +88,8 @@ module LittleGhost
             value = catch(:little_ghost_finish) { context.instance_eval(request.fetch("source"), "(code-mode)", 1) }
             value = finish_value if finished
             emit.call(type: "done", value: value)
+          rescue SignalException
+            exit 0
           rescue Exception => error
             STDERR.puts("#{error.class}: #{error.message}")
             write_frame&.call(type: "error", error: "#{error.class}: #{error.message}")

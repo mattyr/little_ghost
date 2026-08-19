@@ -6,11 +6,11 @@ require_relative "../protocol"
 
 module LittleGhost
   module CodeMode
-    module Javascript
+    module Javascript # :nodoc:
     end
 
-    module Javascript::Host
-      MAX_ACTIVE_CELLS = 8
+    module Javascript::Host # :nodoc: all
+      MAX_ACTIVE_PROGRAMS = 8
       MAX_SOURCE_BYTES = 1024 * 1024
       CONTEXT_MEMORY_BYTES = 64 * 1024 * 1024
       JAVASCRIPT_TIMEOUT_MS = 10_000
@@ -24,7 +24,6 @@ module LittleGhost
           const definitionIndex = Object.fromEntries(definitions.map((definition) => [definition.name, definition]));
           const calls = [];
           const outputs = [];
-          const yields = [];
           const pending = new Map();
           const exitSignal = Object.freeze({exit: true});
           let nextCallId = 0;
@@ -59,11 +58,6 @@ module LittleGhost
           const catalog = definitions.map(({name, description}) => Object.freeze({name, description}));
 
           const text = (value) => { outputs.push(stringify(value)); };
-          const yieldControl = () => new Promise((resolve) => {
-            const id = String(++nextCallId);
-            pending.set(id, {resolve, reject: resolve});
-            yields.push(id);
-          });
           const exit = () => { throw exitSignal; };
           const errorText = (error) => {
             if (error && typeof error.stack === "string") return error.stack;
@@ -75,7 +69,6 @@ module LittleGhost
             tools: {value: tools, writable: false, configurable: false},
             ALL_TOOLS: {value: Object.freeze(catalog), writable: false, configurable: false},
             text: {value: text, writable: false, configurable: false},
-            yield_control: {value: yieldControl, writable: false, configurable: false},
             exit: {value: exit, writable: false, configurable: false},
             console: {value: undefined, writable: false, configurable: false},
             process: {value: undefined, writable: false, configurable: false},
@@ -103,7 +96,6 @@ module LittleGhost
             drain: () => ({
               calls: calls.splice(0),
               outputs: outputs.splice(0),
-              yields: yields.splice(0),
               done,
               failure
             }),
@@ -136,7 +128,7 @@ module LittleGhost
         })();
       JAVASCRIPT
 
-      class Cell
+      class Program
         def initialize(id:, source:, tools:, writer:, finished:)
           @id = id
           @source = source
@@ -215,15 +207,12 @@ module LittleGhost
             Array(state["outputs"]).each { |value| emit(type: "output", value:) }
             calls = Array(state["calls"])
             if calls.length > MAX_PENDING_TOOL_CALLS
-              emit(type: "failed", error: "Code-mode cell exceeded the pending tool-call limit", fatal: true)
+              emit(type: "failed", error: "Code-mode program exceeded the pending tool-call limit", fatal: true)
               return
             end
             emit(type: "tool_calls", calls:) unless calls.empty?
-            yield_ids = Array(state["yields"])
-            emit(type: "yield") unless yield_ids.empty?
-            unless calls.empty? && yield_ids.empty?
-              wait_for_results(context, calls.length, resume: !yield_ids.empty?)
-              yield_ids.each { |id| call_control(context, :resolve, id, true, nil) }
+            unless calls.empty?
+              wait_for_results(context, calls.length)
               next
             end
 
@@ -240,30 +229,23 @@ module LittleGhost
           end
         end
 
-        def wait_for_results(context, expected, resume: false)
+        def wait_for_results(context, expected)
           delivered = 0
-          resumed = !resume
           loop do
             message = @incoming.pop(timeout: 0.05)
             next unless message
-            return terminate_cell if message["type"] == "terminate"
-
-            if message["type"] == "resume"
-              resumed = true
-              break if delivered >= expected
-              next
-            end
+            return terminate_program if message["type"] == "terminate"
 
             call_control(
               context, :resolve, message.fetch("call_id"), message.fetch("ok"),
               message["ok"] ? message["value"] : message["error"]
             )
             delivered += 1
-            break if delivered >= expected && resumed
+            break if delivered >= expected
           end
         end
 
-        def terminate_cell
+        def terminate_program
           raise Terminated
         end
 
@@ -273,7 +255,7 @@ module LittleGhost
         end
 
         def emit(type:, **attributes)
-          @writer.call(type:, cell_id: @id, **attributes)
+          @writer.call(type:, program_id: @id, **attributes)
         end
       end
 
@@ -281,8 +263,8 @@ module LittleGhost
         def initialize(input: $stdin, output: $stdout)
           @input = input
           @output = output
-          @cells = {}
-          @cells_mutex = Mutex.new
+          @programs = {}
+          @programs_mutex = Mutex.new
           @writer_mutex = Mutex.new
         end
 
@@ -291,9 +273,9 @@ module LittleGhost
             receive(message)
           end
         ensure
-          cells = @cells_mutex.synchronize { @cells.values.dup }
-          cells.each(&:terminate)
-          cells.each { |cell| cell.join(0.5) }
+          programs = @programs_mutex.synchronize { @programs.values.dup }
+          programs.each(&:terminate)
+          programs.each { |program| program.join(0.5) }
         end
 
         private
@@ -301,38 +283,37 @@ module LittleGhost
         def receive(message)
           case message["type"]
           when "execute" then execute(message)
-          when "tool_result" then cell(message.fetch("cell_id"))&.deliver(message)
-          when "resume" then cell(message.fetch("cell_id"))&.deliver(message)
-          when "terminate" then cell(message.fetch("cell_id"))&.terminate
+          when "tool_result" then program(message.fetch("program_id"))&.deliver(message)
+          when "terminate" then program(message.fetch("program_id"))&.terminate
           else raise Protocol::Error, "Unknown code-mode host request"
           end
         end
 
         def execute(message)
-          id = message.fetch("cell_id").to_s
+          id = message.fetch("program_id").to_s
           source = message.fetch("source").to_s
           tools = message.fetch("tools")
           raise Protocol::Error, "Code-mode source exceeds the size limit" if source.bytesize > MAX_SOURCE_BYTES
           raise Protocol::Error, "Code-mode tools must be an array" unless tools.is_a?(Array)
 
-          created = @cells_mutex.synchronize do
-            next false if @cells.key?(id) || @cells.length >= MAX_ACTIVE_CELLS
+          created = @programs_mutex.synchronize do
+            next false if @programs.key?(id) || @programs.length >= MAX_ACTIVE_PROGRAMS
 
-            @cells[id] = Cell.new(
+            @programs[id] = Program.new(
               id:, source:, tools:, writer: method(:write),
-              finished: ->(cell_id) { @cells_mutex.synchronize { @cells.delete(cell_id) } }
+              finished: ->(program_id) { @programs_mutex.synchronize { @programs.delete(program_id) } }
             )
             true
           end
           unless created
-            write(type: "failed", cell_id: id, error: "Code-mode host has too many active cells", fatal: true)
+            write(type: "failed", program_id: id, error: "Code-mode host has too many active programs", fatal: true)
           end
         rescue KeyError, TypeError, Protocol::Error => error
-          write(type: "failed", cell_id: id.to_s, error: "Invalid code-mode request: #{error.message}", fatal: true)
+          write(type: "failed", program_id: id.to_s, error: "Invalid code-mode request: #{error.message}", fatal: true)
         end
 
-        def cell(id)
-          @cells_mutex.synchronize { @cells[id.to_s] }
+        def program(id)
+          @programs_mutex.synchronize { @programs[id.to_s] }
         end
 
         def write(message)

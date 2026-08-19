@@ -197,7 +197,9 @@ module LittleGhost
     def workspace = configuration_values[:workspace]
     # Sandbox declaration used for subsequently built runtimes.
     def sandbox = configuration_values[:sandbox]
-    # Default code-mode engine, sandbox, and limits for enabled agents.
+    # Default code-mode declaration for enabled Agents. The Hash may select an
+    # +:engine+ and +:sandbox+, override +:limits+, and name Tools to keep in the
+    # conversation with +:except+.
     def code_mode = configuration_values[:code_mode]
     # Session-store declaration used for subsequently built runtimes.
     def session_store = configuration_values[:session_store]
@@ -387,7 +389,9 @@ module LittleGhost
       end
     end
 
-    # Configures application defaults for code-mode agents.
+    # Configures application defaults for code-mode Agents. The Hash may select
+    # an +:engine+ and +:sandbox+, override +:limits+, and name ordinary Tools
+    # that remain in the conversation with +:except+.
     def code_mode=(value)
       change_configuration do
         raise ArgumentError, "code_mode must be a Hash" unless value.nil? || value.is_a?(Hash)

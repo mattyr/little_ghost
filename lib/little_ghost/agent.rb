@@ -268,7 +268,8 @@ module LittleGhost
 
       # Enables code mode for this agent. +except+ names the ordinary Tools that
       # remain model-facing; every other ordinary Tool moves into the engine
-      # catalog and is called through the parent-process Broker.
+      # catalog and is called through the parent-process Broker. Framework-owned
+      # subagent controls remain model-facing automatically.
       def code_mode(engine: nil, except: nil, **options)
         unknown = options.keys - %i[sandbox limits]
         raise ArgumentError, "unknown keyword: #{unknown.first.inspect}" unless unknown.empty?
@@ -858,7 +859,9 @@ module LittleGhost
       exceptions = Array(@code_mode_declaration[:except]).map(&:to_s)
       tools.select do |specification|
         name = specification.fetch(:name, specification["name"]).to_s
-        exceptions.include?(name) || %w[exec wait].include?(name) || !tool_registry.names.include?(name)
+        tool = tool_registry.fetch(name) if tool_registry.names.include?(name)
+        exceptions.include?(name) || %w[exec wait stop].include?(name) ||
+          tool.is_a?(Subagents::ControlTool) || !tool
       end
     end
 
@@ -1709,7 +1712,7 @@ module LittleGhost
     end
 
     def code_mode_control_tool?(tool_use)
-      @code_mode_runtime && %w[exec wait].include?(tool_use.name)
+      @code_mode_runtime && %w[exec wait stop].include?(tool_use.name)
     end
 
     def code_mode_control_event?(event, indexes)
@@ -1718,7 +1721,7 @@ module LittleGhost
       index = event.data[:index]
       case event.type
       when :tool_call_start
-        indexes[index] = true if %w[exec wait].include?(event.data[:name])
+        indexes[index] = true if %w[exec wait stop].include?(event.data[:name])
         indexes.key?(index)
       when :tool_call_delta
         indexes.key?(index)
@@ -2051,6 +2054,7 @@ module LittleGhost
       @code_mode_runtime = CodeMode::AgentRuntime.new(agent: self, declaration: @code_mode_declaration)
       @tool_registry.register(CodeMode::ExecTool)
       @tool_registry.register(CodeMode::WaitTool)
+      @tool_registry.register(CodeMode::StopTool)
     end
 
     def append_code_mode_instructions(prompt)

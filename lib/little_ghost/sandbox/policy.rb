@@ -47,6 +47,7 @@ module LittleGhost
       attr_reader :environment
       # Network policy, or +nil+ for a backend-specific secure default.
       attr_reader :network
+      # Whether the +:root+ entry in +files+ requests +:read_write+ access.
       def workspace_writable? = files.fetch(:root, :read_only) == :read_write
 
       # Builds internal identity grants for a concrete Workspace.

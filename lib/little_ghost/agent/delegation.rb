@@ -22,7 +22,7 @@ module LittleGhost
     #
     # Tool overrides must be classes. A delegated agent otherwise receives only
     # its own declared tools; it does not inherit the parent's registry. The
-    # manager enforces its concurrency, identity, polling, and persistence bounds.
+    # manager enforces concurrency, identity, wait duration, and persistence bounds.
     module Delegation
       def self.included(base) # :nodoc:
         base.extend(ClassMethods)
@@ -40,7 +40,7 @@ module LittleGhost
         #   subagent_long_poll_duration() -> Float
         #   subagent_long_poll_duration(seconds) -> Float
         #
-        # The maximum long-poll duration used by subagent wait tools.
+        # How long +wait_for_subagents+ watches for progress before returning.
         #
         # The default comes from Subagents::Manager. Values must be positive,
         # finite numbers and are normalized to Float.

@@ -4,7 +4,7 @@ require "securerandom"
 
 module LittleGhost
   module CodeMode
-    class Javascript::Client
+    class Javascript::Client # :nodoc: all
       MAX_BUFFERED_OUTPUT_BYTES = 4 * 1024 * 1024
       MAX_CAPTURED_STDERR_BYTES = 64 * 1024
       SHUTDOWN_TIMEOUT = 0.5
@@ -35,7 +35,7 @@ module LittleGhost
       end
       private_constant :StderrCapture
 
-      class Cell
+      class Program
         attr_reader :id, :owner, :dispatcher, :generation
 
         def initialize(id:, owner:, dispatcher:, generation: nil)
@@ -45,9 +45,7 @@ module LittleGhost
           @generation = generation
           @outputs = []
           @output_bytes = 0
-          @yield_count = 0
-          @consumed_yields = 0
-          @awaiting_resume = false
+          @returned_output = false
           @terminal = nil
           @termination_error = nil
           @client_termination_requested = false
@@ -69,26 +67,6 @@ module LittleGhost
             end
             @condition.broadcast
             overflow
-          end
-        end
-
-        def yielded
-          @mutex.synchronize do
-            return if @terminal
-
-            @yield_count += 1
-            @awaiting_resume = true
-            @condition.broadcast
-          end
-        end
-
-        def resume
-          @mutex.synchronize do
-            return false if @terminal || !@awaiting_resume
-
-            @awaiting_resume = false
-            @consumed_yields = @yield_count
-            true
           end
         end
 
@@ -141,18 +119,14 @@ module LittleGhost
           @mutex.synchronize do
             loop do
               context&.check!
-              break if @terminal || @yield_count > @consumed_yields || monotonic >= deadline
+              break if @terminal || monotonic >= deadline
 
               @condition.wait(@mutex, [deadline - monotonic, 0.05].min)
             end
-            yielded = @yield_count > @consumed_yields
-            @consumed_yields = @yield_count
-            output = @outputs.join("\n")
-            @outputs.clear
-            @output_bytes = 0
+            output = drain_output
             output = LittleGhost::Support::OutputTruncation
               .truncate_middle_with_token_budget(output, max_tokens).first
-            (@terminal || {status: yielded ? "yielded" : "running"}).merge(cell_id: id, output:)
+            (@terminal || {status: "still_working"}).merge(program_id: id, output:)
           end
         end
 
@@ -162,12 +136,12 @@ module LittleGhost
             until @terminal
               remaining = deadline && deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
               if remaining && !remaining.positive?
-                raise LittleGhost::CleanupError, "Code-mode cell cleanup timed out"
+                raise LittleGhost::CleanupError, "Code-mode program cleanup timed out"
               end
 
               @condition.wait(@mutex, remaining)
             end
-            @terminal.merge(cell_id: id, output: drain_output)
+            @terminal.merge(program_id: id, output: drain_output)
           end
         end
 
@@ -178,10 +152,18 @@ module LittleGhost
         private
 
         def drain_output
+          had_output = !@outputs.empty?
           output = @outputs.join("\n")
           @outputs.clear
           @output_bytes = 0
-          output
+          if !had_output
+            output
+          elsif @returned_output
+            "\n#{output}"
+          else
+            @returned_output = true
+            output
+          end
         end
 
         def monotonic
@@ -195,75 +177,74 @@ module LittleGhost
         end
         @session_factory = session_factory
 
-        @cells = {}
-        @cells_mutex = Mutex.new
+        @programs = {}
+        @programs_mutex = Mutex.new
         @process_mutex = Mutex.new
         @writer_mutex = Mutex.new
         @closed = false
         @failure = nil
       end
 
-      def start_cell(owner:, dispatcher:, source:, tools:, cell_id: SecureRandom.uuid)
-        cell = nil
-        send_message({type: "execute", cell_id:, source:, tools:}) do |generation|
-          cell = Cell.new(id: cell_id, owner:, dispatcher:, generation:)
-          @cells_mutex.synchronize do
+      def start_program(owner:, dispatcher:, source:, tools:, program_id: SecureRandom.uuid)
+        program = nil
+        send_message({type: "execute", program_id:, source:, tools:}) do |generation|
+          program = Program.new(id: program_id, owner:, dispatcher:, generation:)
+          @programs_mutex.synchronize do
             raise LittleGhost::ToolError, "Code-mode client is closed" if @closed
 
-            @cells[cell.id] = cell
+            @programs[program.id] = program
           end
         end
-        cell.id
+        program.id
       rescue
-        @cells_mutex.synchronize { @cells.delete(cell&.id) }
+        @programs_mutex.synchronize { @programs.delete(program&.id) }
         raise
       end
 
-      def observe(owner:, cell_id:, timeout:, max_tokens:, context: nil, resume: false)
-        cell = owned_cell(owner, cell_id)
-        send_message({type: "resume", cell_id: cell.id}, cell:) if resume && cell.resume
-        result = cell.observe(timeout:, max_tokens:, context:)
-        release_cell(cell) if cell.terminal?
+      def observe(owner:, program_id:, timeout:, max_tokens:, context: nil)
+        program = owned_program(owner, program_id)
+        result = program.observe(timeout:, max_tokens:, context:)
+        release_program(program) if program.terminal?
         result
       end
 
-      def terminate(owner:, cell_id:, max_tokens: 10_000)
-        cell = owned_cell(owner, cell_id)
-        send_message({type: "terminate", cell_id: cell.id}, cell:) unless cell.terminal?
-        result = cell.observe(timeout: TERMINATION_TIMEOUT, max_tokens:)
-        unless cell.terminal?
+      def terminate(owner:, program_id:, max_tokens: 10_000)
+        program = owned_program(owner, program_id)
+        send_message({type: "terminate", program_id: program.id}, program:) unless program.terminal?
+        result = program.observe(timeout: TERMINATION_TIMEOUT, max_tokens:)
+        unless program.terminal?
           process_failed(
             RuntimeError.new("Code-mode host did not acknowledge termination"),
-            generation: cell.generation
+            generation: program.generation
           )
-          result = cell.wait_until_terminal(timeout: TERMINATION_TIMEOUT + Javascript::Session::CLEANUP_TIMEOUT)
+          result = program.wait_until_terminal(timeout: TERMINATION_TIMEOUT + Javascript::Session::CLEANUP_TIMEOUT)
         end
-        release_cell(cell)
+        release_program(program)
         result
       end
 
       def close_owner(owner)
-        cells = @cells_mutex.synchronize { @cells.values.select { |cell| cell.owner.equal?(owner) } }
-        cells.each do |cell|
-          terminate(owner:, cell_id: cell.id)
+        programs = @programs_mutex.synchronize { @programs.values.select { |program| program.owner.equal?(owner) } }
+        programs.each do |program|
+          terminate(owner:, program_id: program.id)
         rescue LittleGhost::Error, IOError, SystemCallError
-          release_cell(cell)
+          release_program(program)
         end
       end
 
-      def complete_tool_call(cell_id:, call_id:, ok:, value: nil, error: nil)
-        cell = @cells_mutex.synchronize { @cells[cell_id.to_s] }
-        return unless cell
+      def complete_tool_call(program_id:, call_id:, ok:, value: nil, error: nil)
+        program = @programs_mutex.synchronize { @programs[program_id.to_s] }
+        return unless program
 
         send_message(
-          {type: "tool_result", cell_id:, call_id:, ok:, value:, error:},
-          cell:
+          {type: "tool_result", program_id:, call_id:, ok:, value:, error:},
+          program:
         )
       end
 
-      def fail_cell(owner:, cell_id:, error:)
-        cell = owned_cell(owner, cell_id)
-        request_cell_failure(cell, error.message)
+      def fail_program(owner:, program_id:, error:)
+        program = owned_program(owner, program_id)
+        request_program_failure(program, error.message)
       end
 
       def close
@@ -277,38 +258,38 @@ module LittleGhost
             current
           end
         end
-        fail_all_cells("Code-mode client closed")
+        fail_all_programs("Code-mode client closed")
         stop_process(process)
       end
 
       private
 
-      def owned_cell(owner, cell_id)
-        @cells_mutex.synchronize do
-          cell = @cells[cell_id.to_s]
-          unless cell && cell.owner.equal?(owner)
-            raise LittleGhost::ToolError, "Unknown code-mode cell: #{cell_id}"
+      def owned_program(owner, program_id)
+        @programs_mutex.synchronize do
+          program = @programs[program_id.to_s]
+          unless program && program.owner.equal?(owner)
+            raise LittleGhost::ToolError, "Unknown code-mode program: #{program_id}"
           end
 
-          cell
+          program
         end
       end
 
-      def release_cell(cell)
-        @cells_mutex.synchronize { @cells.delete(cell.id) if @cells[cell.id].equal?(cell) }
+      def release_program(program)
+        @programs_mutex.synchronize { @programs.delete(program.id) if @programs[program.id].equal?(program) }
       end
 
-      def send_message(message, cell: nil)
-        return false if cell&.terminal?
+      def send_message(message, program: nil)
+        return false if program&.terminal?
 
         generation = nil
         @writer_mutex.synchronize do
           ensure_started
           generation, input = @process_mutex.synchronize { [@generation, @input] }
           raise(@failure || LittleGhost::CleanupError.new("Code-mode host is unavailable")) unless input
-          return false if cell&.terminal?
-          if cell && !generation.equal?(cell.generation)
-            raise LittleGhost::CleanupError, "Code-mode cell belongs to an inactive host"
+          return false if program&.terminal?
+          if program && !generation.equal?(program.generation)
+            raise LittleGhost::CleanupError, "Code-mode program belongs to an inactive host"
           end
 
           yield generation if block_given?
@@ -316,7 +297,7 @@ module LittleGhost
         end
       rescue Protocol::Error, IOError, SystemCallError => error
         process_failed(error, generation:) if generation
-        return false if cell&.terminal?
+        return false if program&.terminal?
 
         raise(@failure || cleanup_error(error))
       end
@@ -332,14 +313,14 @@ module LittleGhost
         if process.compact.any?
           wait_for_reader(process)
           failure = process_failure(EOFError.new("Code-mode host was not running"), process)
-          cells = @process_mutex.synchronize do
-            claimed = claim_active_cells(generation, failure)
+          programs = @process_mutex.synchronize do
+            claimed = claim_active_programs(generation, failure)
             @failure ||= failure unless claimed.empty?
             clear_process_state
             claimed
           end
-          unless cells.empty?
-            finish_process_failure(process, cells, failure)
+          unless programs.empty?
+            finish_process_failure(process, programs, failure)
             raise failure
           end
 
@@ -389,50 +370,48 @@ module LittleGhost
       end
 
       def receive(message)
-        cell_id = message["cell_id"].to_s
-        cell = @cells_mutex.synchronize { @cells[cell_id] }
-        return unless cell
+        program_id = message["program_id"].to_s
+        program = @programs_mutex.synchronize { @programs[program_id] }
+        return unless program
 
         case message["type"]
         when "output"
-          request_cell_failure(cell, "Code-mode output exceeded the buffer limit") if cell.output(message["value"])
-        when "yield"
-          cell.yielded
+          request_program_failure(program, "Code-mode output exceeded the buffer limit") if program.output(message["value"])
         when "complete"
-          cell.complete(status: "completed")
+          program.complete(status: "completed")
         when "terminated"
           begin
-            cell.dispatcher.finish_client_termination(cell.id) if cell.client_termination_requested?
-            cell.terminated
+            program.dispatcher.finish_client_termination(program.id) if program.client_termination_requested?
+            program.terminated
           rescue => error
-            cell.dispatcher.record_client_failure(cell.id, error)
-            cell.complete(status: "failed", error: error.message)
+            program.dispatcher.record_client_failure(program.id, error)
+            program.complete(status: "failed", error: error.message)
           end
         when "failed"
           if message["fatal"]
-            cell.dispatcher.record_client_failure(cell.id, cleanup_error(message["error"].to_s))
+            program.dispatcher.record_client_failure(program.id, cleanup_error(message["error"].to_s))
           end
-          cell.complete(status: "failed", error: message["error"].to_s)
+          program.complete(status: "failed", error: message["error"].to_s)
         when "tool_calls"
-          cell.dispatcher.enqueue_tool_calls(cell_id:, calls: message.fetch("calls"))
+          program.dispatcher.enqueue_tool_calls(program_id:, calls: message.fetch("calls"))
         else
-          request_cell_failure(cell, "Code-mode host returned an unknown message")
+          request_program_failure(program, "Code-mode host returned an unknown message")
         end
       rescue LittleGhost::ProtocolError, KeyError, TypeError => error
-        request_cell_failure(cell, "Code-mode host returned an invalid message: #{error.message}") if cell
+        request_program_failure(program, "Code-mode host returned an invalid message: #{error.message}") if program
       end
 
-      def request_cell_failure(cell, error)
+      def request_program_failure(program, error)
         failure = cleanup_error(error)
-        cell.dispatcher.record_client_failure(cell.id, failure)
-        return unless cell.request_client_termination(failure.message)
+        program.dispatcher.record_client_failure(program.id, failure)
+        return unless program.request_client_termination(failure.message)
 
-        cell.dispatcher.begin_client_termination(cell.id)
-        send_message({type: "terminate", cell_id: cell.id}, cell:)
+        program.dispatcher.begin_client_termination(program.id)
+        send_message({type: "terminate", program_id: program.id}, program:)
       end
 
       def process_failed(error, generation:)
-        process, cells, failure = @writer_mutex.synchronize do
+        process, programs, failure = @writer_mutex.synchronize do
           current = @process_mutex.synchronize do
             return if @closed || @failure || !@generation.equal?(generation)
 
@@ -445,51 +424,51 @@ module LittleGhost
             return if @closed || @failure || !@generation.equal?(generation)
 
             failure = process_failure(error, current)
-            cells = claim_active_cells(generation, failure)
-            @failure = failure unless cells.empty?
+            programs = claim_active_programs(generation, failure)
+            @failure = failure unless programs.empty?
             clear_process_state
-            [current, cells, failure]
+            [current, programs, failure]
           end
         end
-        finish_process_failure(process, cells, failure)
+        finish_process_failure(process, programs, failure)
       end
 
-      def finish_process_failure(process, cells, failure)
-        if cells.empty?
+      def finish_process_failure(process, programs, failure)
+        if programs.empty?
           stop_process(process)
           warn("little_ghost_code_mode_host_exited error=#{failure.message.inspect}")
           return
         end
-        cells.each { |cell| cell.dispatcher.record_client_failure(cell.id, failure) }
-        cells.each { |cell| cell.dispatcher.begin_client_termination(cell.id) }
+        programs.each { |program| program.dispatcher.record_client_failure(program.id, failure) }
+        programs.each { |program| program.dispatcher.begin_client_termination(program.id) }
         stop_process(process)
         Thread.new do
-          cells.each do |cell|
-            cell.dispatcher.finish_client_termination(cell.id)
+          programs.each do |program|
+            program.dispatcher.finish_client_termination(program.id)
           rescue => error
-            cell.dispatcher.record_client_failure(cell.id, error)
+            program.dispatcher.record_client_failure(program.id, error)
           ensure
-            cell.complete(status: "failed", error: failure.message)
+            program.complete(status: "failed", error: failure.message)
           end
         end.report_on_exception = false
       end
 
-      def claim_active_cells(generation, failure)
+      def claim_active_programs(generation, failure)
         return [] unless generation
 
-        cells = @cells_mutex.synchronize { @cells.values.select { |cell| cell.generation.equal?(generation) } }
-        cells.select { |cell| cell.claim_client_failure(failure.message) }
+        programs = @programs_mutex.synchronize { @programs.values.select { |program| program.generation.equal?(generation) } }
+        programs.select { |program| program.claim_client_failure(failure.message) }
       end
 
-      def fail_all_cells(message)
-        cells = @cells_mutex.synchronize { @cells.values.dup }
-        cells.each { |cell| cell.dispatcher.begin_client_termination(cell.id) }
-        cells.each do |cell|
-          cell.dispatcher.finish_client_termination(cell.id)
+      def fail_all_programs(message)
+        programs = @programs_mutex.synchronize { @programs.values.dup }
+        programs.each { |program| program.dispatcher.begin_client_termination(program.id) }
+        programs.each do |program|
+          program.dispatcher.finish_client_termination(program.id)
         rescue => error
-          cell.dispatcher.record_client_failure(cell.id, error)
+          program.dispatcher.record_client_failure(program.id, error)
         ensure
-          cell.complete(status: "failed", error: message)
+          program.complete(status: "failed", error: message)
         end
       end
 

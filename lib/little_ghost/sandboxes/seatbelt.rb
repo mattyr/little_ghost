@@ -13,6 +13,7 @@ module LittleGhost
     class Seatbelt < Sandbox::IsolatedBackend
       DEFAULT_EXECUTABLE = "/usr/bin/sandbox-exec" # :nodoc:
 
+      # Reports whether Seatbelt is available and returns its capabilities.
       def self.probe(executable: DEFAULT_EXECUTABLE, platform: RUBY_PLATFORM)
         available = platform.include?("darwin") && File.executable?(executable)
         {
@@ -22,6 +23,8 @@ module LittleGhost
         }
       end
 
+      # Capabilities the Seatbelt backend can enforce before a Policy narrows
+      # them.
       def self.backend_capabilities
         Capabilities.new(
           features: %i[
@@ -33,6 +36,7 @@ module LittleGhost
         )
       end
 
+      # Builds a Seatbelt backend around +workspace+ without opening it.
       def initialize(workspace:, policy: nil, profiles: {}, limits: {},
         executable: DEFAULT_EXECUTABLE, platform: RUBY_PLATFORM)
         super(workspace:, policy: policy || {}, profiles:, limits:)
@@ -41,6 +45,8 @@ module LittleGhost
         @opened = false
       end
 
+      # Effective capabilities after the configured root-filesystem policy is
+      # applied.
       def capabilities
         supported = self.class.backend_capabilities
         return supported unless effective_policy.root_filesystem == :isolated
@@ -52,6 +58,8 @@ module LittleGhost
         )
       end
 
+      # Validates Seatbelt and the Workspace, then creates owned temporary
+      # storage. Returns +self+.
       def open(run: nil)
         return self if @opened
         raise UnsupportedPlatformError, "Seatbelt sandboxing is supported only on macOS" unless @platform.include?("darwin")
@@ -69,6 +77,8 @@ module LittleGhost
         raise
       end
 
+      # Removes temporary storage owned by this backend. Safe to call more than
+      # once.
       def close
         FileUtils.remove_entry(@temporary_directory) if @temporary_directory && File.exist?(@temporary_directory)
         @temporary_directory = nil
@@ -76,6 +86,8 @@ module LittleGhost
         nil
       end
 
+      # Runs +command+ to completion under Seatbelt and returns its bounded
+      # stdout, stderr, and exit status.
       def execute_program(command, timeout:, context: nil, max_output_bytes: nil,
         environment: {}, inherit_environment: false, scope: nil, cwd: nil)
         selected_scope = scope || self.scope
@@ -111,6 +123,8 @@ module LittleGhost
         session&.close
       end
 
+      # Starts +command+ under Seatbelt and returns an owned ProcessSession.
+      # The caller must close the returned session.
       def start_program(command, context: nil, environment: {}, inherit_environment: false,
         scope: nil, cwd: nil, output_bytes: nil, memory_bytes: nil, cpu_seconds: nil, file_bytes: nil,
         allow_subprocesses: false)

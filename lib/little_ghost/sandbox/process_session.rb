@@ -7,9 +7,22 @@ module LittleGhost
     # its ordinary descendants. A descendant that creates another process group
     # can outlive this session. Use a backend with +process_tree_ownership+ or an
     # outer supervisor when complete descendant ownership is required.
+    #
+    # When +memory_bytes+ is configured, the parent samples the visible process
+    # tree every 100 milliseconds. This guard may miss memory peaks between
+    # samples. On Linux, three consecutive failures to read the root process or
+    # the +/proc+ snapshot end the process. Use an outer cgroup or container when
+    # memory needs a hard kernel-enforced limit.
     class ProcessSession
       Chunk = Data.define(:stdout, :stderr, :eof) # :nodoc:
+      MEMORY_SAMPLE_INTERVAL = 0.1
+      MEMORY_SUPERVISION_FAILURE_LIMIT = 3
 
+      private_constant :MEMORY_SAMPLE_INTERVAL, :MEMORY_SUPERVISION_FAILURE_LIMIT
+
+      # Starts +command+ in a new process group with a scrubbed environment by
+      # default. +output_bytes+ bounds combined standard output and error.
+      # Optional CPU, file-size, and sampled-memory limits apply to the child.
       def initialize(command:, environment: {}, inherit_environment: false, chdir: nil,
         output_bytes: 1_000_000, memory_bytes: nil, memory_reader: nil, cpu_seconds: nil, file_bytes: nil)
         @output_bytes = Integer(output_bytes)
@@ -53,14 +66,18 @@ module LittleGhost
         raise
       end
 
+      # Operating-system process ID of the command process.
       attr_reader :pid
 
+      # Whether the command process or its original process group is still
+      # alive. Raises when resource supervision failed.
       def alive?
         raise @resource_error if @resource_error
 
         raw_alive?
       end
 
+      # Writes +value+ to the child's standard input.
       def write(value)
         raise IOError, "process session is closed" if @closed
 
@@ -72,6 +89,7 @@ module LittleGhost
         raise IOError, "sandboxed process has exited"
       end
 
+      # Closes the child's standard input without ending the process.
       def close_write
         @stdin_w.close unless @stdin_w.closed?
       end
@@ -122,6 +140,8 @@ module LittleGhost
         raise
       end
 
+      # Requests termination, forces it when needed, and returns the child's
+      # Process::Status when available.
       def terminate
         return @status unless @pid
 
@@ -135,6 +155,8 @@ module LittleGhost
         @status
       end
 
+      # Terminates the process when needed and closes every owned stream.
+      # Calling +close+ more than once is safe.
       def close
         return if @closed
 
@@ -151,19 +173,42 @@ module LittleGhost
       private
 
       def monitor_memory
+        consecutive_failures = 0
         loop do
           break unless raw_alive?
-          if @memory_reader.call(@pid) > @memory_bytes
+
+          memory_bytes = nil
+          begin
+            memory_bytes = @memory_reader.call(@pid)
+            consecutive_failures = 0
+          rescue => error
+            consecutive_failures += 1
+            if consecutive_failures >= MEMORY_SUPERVISION_FAILURE_LIMIT
+              fail_memory_supervision(error)
+              break
+            end
+          end
+
+          if memory_bytes && memory_bytes > @memory_bytes
             @resource_error = ToolError.new("Program memory exceeded #{@memory_bytes} bytes")
             signal_group("TERM")
-            sleep(0.1)
+            sleep(MEMORY_SAMPLE_INTERVAL)
             signal_group("KILL") if raw_alive?
             break
           end
-          sleep(0.02)
+
+          sleep(MEMORY_SAMPLE_INTERVAL)
         end
-      rescue
-        @resource_error ||= ToolError.new("Program memory supervisor failed")
+      rescue => error
+        fail_memory_supervision(error)
+      end
+
+      def fail_memory_supervision(cause)
+        @resource_error ||= begin
+          raise ToolError, "Program memory supervisor failed (#{cause.class.name || "anonymous exception"})", cause: cause
+        rescue ToolError => error
+          error
+        end
         signal_group("KILL")
       end
 
@@ -182,17 +227,38 @@ module LittleGhost
       end
 
       def linux_process_tree_rss(root_pid)
-        processes = Dir.children("/proc").grep(/\A\d+\z/).filter_map do |entry|
-          status = File.read("/proc/#{entry}/status")
-          ppid = status[/^PPid:\s+(\d+)/, 1]
-          rss = status[/^VmRSS:\s+(\d+)\s+kB/, 1]
-          [Integer(entry), Integer(ppid), Integer(rss || 0) * 1024]
-        rescue Errno::ENOENT, Errno::EACCES
+        entries = linux_process_entries
+        root_process = read_linux_process(root_pid.to_s)
+        unless root_process
+          cause = ArgumentError.new("malformed root process status")
+          raise DependencyError, "process memory supervisor cannot read root process /proc/#{root_pid}/status", cause: cause
+        end
+
+        processes = entries.filter_map do |entry|
+          next unless /\A\d+\z/.match?(entry)
+          next root_process if entry == root_pid.to_s
+
+          read_linux_process(entry)
+        rescue SystemCallError, IOError
           nil
         end
+        processes << root_process unless entries.include?(root_pid.to_s)
         descendant_rss(processes, root_pid)
-      rescue Errno::ENOENT, Errno::EACCES
-        raise DependencyError, "process memory supervisor cannot read /proc"
+      rescue SystemCallError, IOError => error
+        raise DependencyError, "process memory supervisor cannot read root process /proc/#{root_pid}/status", cause: error
+      end
+
+      def linux_process_entries
+        Dir.children("/proc")
+      rescue SystemCallError, IOError => error
+        raise DependencyError, "process memory supervisor cannot snapshot /proc", cause: error
+      end
+
+      def read_linux_process(entry)
+        status = File.read("/proc/#{entry}/status")
+        ppid = Integer(status[/^PPid:\s+(\d+)/, 1], exception: false)
+        rss = Integer(status[/^VmRSS:\s+(\d+)\s+kB/, 1], exception: false)
+        [Integer(entry), ppid, rss * 1024] if ppid && rss
       end
 
       def darwin_process_tree_rss(root_pid)

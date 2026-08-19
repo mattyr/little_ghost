@@ -59,7 +59,7 @@ module LittleGhost
         raise Error, "Code-mode frame is not valid JSON: #{error.message}"
       end
 
-      def read_exactly(io, length)
+      def read_exactly(io, length) # :nodoc:
         return "".b if length.zero?
 
         buffer = String.new(capacity: length, encoding: Encoding::BINARY)

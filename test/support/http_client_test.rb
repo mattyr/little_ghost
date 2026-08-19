@@ -146,7 +146,10 @@ class HTTPClientTest < Minitest::Test
     token = LittleGhost::Support::CancellationToken.new
 
     Net::HTTP.stub(:new, http) do
-      transport.stream(path: "responses", headers: {}, body: "{}", cancellation_token: token).to_a
+      transport.stream(
+        path: "responses", headers: {"content-type" => "application/json"},
+        body: "{}", cancellation_token: token
+      ).to_a
     end
   end
 
@@ -161,7 +164,7 @@ class HTTPClientTest < Minitest::Test
     runner = Thread.new do
       transport.stream(
         path: "responses",
-        headers: {},
+        headers: {"content-type" => "application/json"},
         body: "{}",
         cancellation_token:,
         deadline:

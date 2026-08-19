@@ -154,6 +154,10 @@ end
 
 Use a subagent when delegation is part of one model's decision-making. Use a Workflow when application code must guarantee that a step happens.
 
+When an Agent also uses code mode, subagent controls stay in the Agent's
+conversation. Code-mode programs can compose ordinary Tools, while spawning,
+messaging, and checking on subagents remain decisions for the parent model.
+
 ### Workflows make Ruby the coordinator
 
 A **Workflow** coordinates work with ordinary Ruby. Its `perform` method can call an Agent or another Assembly, read a result, choose a branch, or run independent steps together.
