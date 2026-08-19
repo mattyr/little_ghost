@@ -969,8 +969,8 @@ class CodeModeTest < Minitest::Test
     broker = LittleGhost::CodeMode::Broker.new(registry:)
     session = ruby_session(broker:, observation_seconds: 0.05)
 
-    session.execute(source: 'sleep 0.1; text("abcdefghij"); sleep 30', catalog: [])
-    sleep 0.15
+    session.execute(source: 'sleep 0.5; text("abcdefghij"); sleep 30', catalog: [])
+    sleep 1
     terminated = session.stop(max_output_tokens: 1)
 
     assert_equal :terminated, terminated.status
