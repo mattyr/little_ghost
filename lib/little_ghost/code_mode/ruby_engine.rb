@@ -6,10 +6,17 @@ require_relative "ruby/session"
 
 module LittleGhost
   module CodeMode
-    # Dependency-free Ruby code-mode engine. Every submitted program receives a
-    # fresh Ruby process, and Tool calls cross
-    # the bounded protocol to the parent Broker.
+    # Runs model-written Ruby in a fresh sandboxed process.
+    #
+    # Tool calls cross a bounded protocol to the trusted parent Broker. The
+    # engine uses only Ruby's standard library and adds no runtime dependency.
+    #
+    #   LittleGhost.configure do |config|
+    #     config.code_mode = {engine: :ruby, sandbox: :native}
+    #   end
     class RubyEngine < Engine
+      # Resource, Tool-call, and program limits applied when the application
+      # does not override them.
       DEFAULT_LIMITS = {
         source_bytes: 1_000_000,
         output_bytes: 1_000_000,
@@ -17,7 +24,7 @@ module LittleGhost
         wall_seconds: 3_600,
         cpu_seconds: 10,
         file_bytes: 1_000_000,
-        cells: 8,
+        programs: 8,
         tool_calls: 1_000,
         concurrency: 8,
         cleanup_seconds: 5
@@ -29,23 +36,34 @@ module LittleGhost
       # Builds Ruby usage instructions and method declarations for +catalog+.
       def instructions(catalog:)
         <<~INSTRUCTIONS.strip
-          Run Ruby in a fresh process to call the available tools and compose their results. Every exec call starts a
-          new program. Local variables, constants, and other process state do not persist between exec calls. Exec
-          observes the program for up to one minute. If it returns `still_working`, call wait to observe the same
-          continuously running program for another minute. Wait does not resume or restart it. Use stop when the
-          program is no longer needed. Do not call wait or stop after `completed`, `error`, or `terminated`.
-          Filesystem, network, subprocess, and optional-library access are controlled by the configured sandbox; do not
-          assume host capabilities are available.
+          Use Ruby to call the available tools and compose their results.
 
-          Tools are methods on `tools` and accept keyword arguments exactly as declared below. Calls return decoded
-          JSON values as ordinary Ruby values (Hash, Array, String, Numeric, booleans, or nil), and tool failures raise.
-          Use `tools.call(name, arguments)` when the tool name is dynamic. Use
-          `tools.parallel(-> { tools.first(...) }, -> { tools.second(...) })` for independent calls; results preserve
-          callable order. `ALL_TOOLS` contains the complete runtime catalog.
+          Program lifecycle:
+          - Every exec call starts a fresh program in a new Ruby process.
+          - Exec and wait observe it for up to one minute. They return sooner when it finishes.
+          - If exec or wait returns `still_working`, call wait to observe the same running program again.
+          - Wait does not pause, resume, or restart the program.
+          - Use stop when the result is no longer needed.
+          - Do not call wait or stop after `completed`, `error`, or `terminated`.
+          - Local variables, constants, and other process state do not persist between exec calls.
 
-          The program's final expression is the value returned by exec. Use `text(value)` for user-visible text and
-          `finish(value)` to complete early with a value. Prefer the named methods and exact keyword arguments
-          documented here:
+          Tool calls:
+          - Call a tool with `tools.<method>(keyword: value)` and only its documented keywords.
+          - Use `tools.call(name, arguments)` when the name is dynamic.
+          - Tool calls are synchronous. Use `tools.parallel` for independent calls; results keep callable order.
+          - JSON results become ordinary Ruby values. Other results remain strings.
+          - A failed call raises. Rescue it only when the program can recover.
+          - `ALL_TOOLS` contains the complete runtime catalog.
+
+          Output and completion:
+          - The final Ruby expression becomes the completed program value.
+          - Use `text(value)` for user-visible output.
+          - Use `finish(value)` to complete early with a value.
+
+          The Sandbox controls filesystem, network, subprocess, and optional-library access. Do not assume host
+          capabilities are available.
+
+          Available tool methods:
 
           #{Ruby::Catalog.new(catalog).declarations}
         INSTRUCTIONS

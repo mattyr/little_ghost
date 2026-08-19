@@ -206,11 +206,14 @@ output limits, requests termination, and then forces termination when needed.
 Callers that open a ProcessSession own it and must close it. LittleGhost fails
 closed when it cannot supervise a configured memory limit. The parent samples
 the visible process tree every 100 milliseconds, so it reacts only to memory
-present at a sample and may miss peaks between samples. On Linux, three consecutive failures to read
-the root process or the `/proc` snapshot end the process. Use an outer cgroup or
-container when memory must be enforced as a hard kernel boundary. A Run closes the
-Workspace and Sandbox it creates after success, failure, a partial response, or
-cancellation; application-supplied instances remain caller-owned.
+present at a sample and may miss peaks between samples. On Linux, three
+consecutive failures to read the root process or the `/proc` snapshot end the
+process. Use an outer cgroup or container when memory must be enforced as a hard
+kernel boundary.
+
+A Run closes the Workspace and Sandbox it creates after success, failure, a
+partial response, or cancellation. Application-supplied instances remain
+caller-owned.
 
 ## Treat networking as a separate boundary
 

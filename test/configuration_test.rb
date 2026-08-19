@@ -9,7 +9,7 @@ class ConfigurationTest < Minitest::Test
   def test_code_mode_configuration_is_explicit_and_frozen
     configuration = LittleGhost::Configuration.new
 
-    configuration.code_mode = {engine: :ruby, sandbox: :native, limits: {cells: 4}}
+    configuration.code_mode = {engine: :ruby, sandbox: :native, limits: {programs: 4}}
 
     assert_equal :ruby, configuration.code_mode.fetch(:engine)
     assert_predicate configuration.code_mode, :frozen?

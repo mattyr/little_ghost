@@ -245,16 +245,16 @@ class CodeModeEngineTest < Minitest::Test
     releaser&.join(1)
   end
 
-  def test_cell_observations_drain_output_without_changing_execution
-    cell = LittleGhost::CodeMode::Javascript::Client::Cell.new(
-      id: "cell-1", owner: Object.new, dispatcher: Object.new
+  def test_program_observations_drain_output_without_changing_execution
+    program = LittleGhost::CodeMode::Javascript::Client::Program.new(
+      id: "program-1", owner: Object.new, dispatcher: Object.new
     )
 
-    cell.output("first")
-    assert_equal({status: "still_working", cell_id: "cell-1", output: "first"},
-      cell.observe(timeout: 0, max_tokens: 100))
-    assert_equal({status: "still_working", cell_id: "cell-1", output: ""},
-      cell.observe(timeout: 0, max_tokens: 100))
+    program.output("first")
+    assert_equal({status: "still_working", program_id: "program-1", output: "first"},
+      program.observe(timeout: 0, max_tokens: 100))
+    assert_equal({status: "still_working", program_id: "program-1", output: ""},
+      program.observe(timeout: 0, max_tokens: 100))
   end
 
   def test_stop_terminates_a_running_program
@@ -284,7 +284,7 @@ class CodeModeEngineTest < Minitest::Test
 
     first = execute(session, broker, "await new Promise(() => {});")
     Timeout.timeout(2) do
-      sleep(0.001) while session.instance_variable_get(:@current_cell_id)
+      sleep(0.001) while session.instance_variable_get(:@current_program_id)
     end
     error = assert_raises(LittleGhost::ToolError) { session.wait }
 
@@ -295,14 +295,14 @@ class CodeModeEngineTest < Minitest::Test
   def test_client_termination_honors_the_requested_output_budget
     owner = Object.new
     client = LittleGhost::CodeMode::Javascript::Client.new(session_factory: -> { flunk "unexpected host start" })
-    cell = LittleGhost::CodeMode::Javascript::Client::Cell.new(
-      id: "cell-1", owner:, dispatcher: Object.new
+    program = LittleGhost::CodeMode::Javascript::Client::Program.new(
+      id: "program-1", owner:, dispatcher: Object.new
     )
-    cell.output("abcdefghij")
-    cell.complete(status: "completed")
-    client.instance_variable_get(:@cells)[cell.id] = cell
+    program.output("abcdefghij")
+    program.complete(status: "completed")
+    client.instance_variable_get(:@programs)[program.id] = program
 
-    result = client.terminate(owner:, cell_id: cell.id, max_tokens: 1)
+    result = client.terminate(owner:, program_id: program.id, max_tokens: 1)
 
     assert_equal "ab…2 tokens truncated…ij", result.fetch(:output)
   ensure
@@ -358,7 +358,7 @@ class CodeModeEngineTest < Minitest::Test
     entered = Queue.new
     release = Queue.new
     client = Object.new
-    client.define_singleton_method(:start_cell) do |**|
+    client.define_singleton_method(:start_program) do |**|
       entered << true
       release.pop
     end
@@ -403,7 +403,7 @@ class CodeModeEngineTest < Minitest::Test
     end
   end
 
-  def test_wait_requires_an_active_cell
+  def test_wait_requires_an_active_program
     session = open_session(Broker.new)
 
     error = assert_raises(LittleGhost::ToolError) { session.wait }
@@ -468,7 +468,7 @@ class CodeModeEngineTest < Minitest::Test
     end
   end
 
-  def test_observation_context_cancellation_terminates_the_cell
+  def test_observation_context_cancellation_terminates_the_program
     broker = Broker.new
     session = open_session(broker)
     error = LittleGhost::CancelledError.new("cancelled while waiting")
@@ -499,7 +499,7 @@ class CodeModeEngineTest < Minitest::Test
     assert_equal "recovered", recovered.output
   end
 
-  def test_uses_a_fresh_v8_context_for_each_completed_cell
+  def test_uses_a_fresh_v8_context_for_each_completed_program
     broker = Broker.new
     session = open_session(broker)
     first = execute(session, broker, 'globalThis.transient = "set"; text(transient);')
@@ -509,7 +509,7 @@ class CodeModeEngineTest < Minitest::Test
     assert_equal "undefined", second.output
   end
 
-  def test_host_loss_between_completed_cells_starts_a_fresh_process
+  def test_host_loss_between_completed_programs_starts_a_fresh_process
     broker = Broker.new
     session = open_session(broker)
     assert_equal :completed, execute(session, broker, 'text("first");').status
@@ -579,34 +579,34 @@ class CodeModeEngineTest < Minitest::Test
   end
 
   def test_fatal_client_termination_cannot_race_to_success
-    cell = LittleGhost::CodeMode::Javascript::Client::Cell.new(
-      id: "cell-1",
+    program = LittleGhost::CodeMode::Javascript::Client::Program.new(
+      id: "program-1",
       owner: Object.new,
       dispatcher: Object.new
     )
 
-    assert cell.request_client_termination("fatal host error")
-    assert cell.claim_client_failure("host exited")
-    cell.complete(status: "completed")
-    result = cell.wait_until_terminal
+    assert program.request_client_termination("fatal host error")
+    assert program.claim_client_failure("host exited")
+    program.complete(status: "completed")
+    result = program.wait_until_terminal
 
     assert_equal "failed", result.fetch(:status)
     assert_equal "host exited", result.fetch(:error)
   end
 
-  def test_cell_waits_without_a_timeout_until_the_full_terminal_result_arrives
-    cell = LittleGhost::CodeMode::Javascript::Client::Cell.new(
-      id: "cell-1",
+  def test_program_waits_without_a_timeout_until_the_full_terminal_result_arrives
+    program = LittleGhost::CodeMode::Javascript::Client::Program.new(
+      id: "program-1",
       owner: Object.new,
       dispatcher: Object.new
     )
     completion = Thread.new do
       sleep 0.02
-      cell.output("complete output")
-      cell.complete(status: "completed")
+      program.output("complete output")
+      program.complete(status: "completed")
     end
 
-    result = cell.wait_until_terminal
+    result = program.wait_until_terminal
 
     assert_equal "completed", result.fetch(:status)
     assert_equal "complete output", result.fetch(:output)
@@ -614,7 +614,7 @@ class CodeModeEngineTest < Minitest::Test
   end
 
   def test_empty_text_keeps_the_same_separator_across_observations
-    split = LittleGhost::CodeMode::Javascript::Client::Cell.new(
+    split = LittleGhost::CodeMode::Javascript::Client::Program.new(
       id: "split", owner: Object.new, dispatcher: Object.new
     )
     split.output("")
@@ -623,7 +623,7 @@ class CodeModeEngineTest < Minitest::Test
     split.complete(status: "completed")
     split_output = first.fetch(:output) + split.wait_until_terminal.fetch(:output)
 
-    unsplit = LittleGhost::CodeMode::Javascript::Client::Cell.new(
+    unsplit = LittleGhost::CodeMode::Javascript::Client::Program.new(
       id: "unsplit", owner: Object.new, dispatcher: Object.new
     )
     unsplit.output("")
@@ -634,15 +634,15 @@ class CodeModeEngineTest < Minitest::Test
     assert_equal split_output, unsplit.wait_until_terminal.fetch(:output)
   end
 
-  def test_cell_terminal_wait_has_an_explicit_cleanup_bound
-    cell = LittleGhost::CodeMode::Javascript::Client::Cell.new(
-      id: "cell-1",
+  def test_program_terminal_wait_has_an_explicit_cleanup_bound
+    program = LittleGhost::CodeMode::Javascript::Client::Program.new(
+      id: "program-1",
       owner: Object.new,
       dispatcher: Object.new
     )
 
     error = assert_raises(LittleGhost::CleanupError) do
-      cell.wait_until_terminal(timeout: 0.01)
+      program.wait_until_terminal(timeout: 0.01)
     end
 
     assert_includes error.message, "cleanup timed out"

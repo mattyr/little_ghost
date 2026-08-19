@@ -15,7 +15,7 @@ require "tmpdir"
 
 module LittleGhost
   module CodeMode
-    module Javascript
+    module Javascript # :nodoc:
     end
   end
 end
@@ -28,9 +28,14 @@ require_relative "javascript/host"
 
 module LittleGhost
   module CodeMode
-    # Runs code-mode programs in an isolated V8 context supplied by the optional
-    # MiniRacer integration.
+    # Runs model-written JavaScript in an isolated V8 context.
+    #
+    # This optional engine uses MiniRacer. Requiring LittleGhost does not load
+    # MiniRacer; applications opt in by requiring
+    # <tt>little_ghost/code_mode/javascript_engine</tt>.
     class JavascriptEngine < Engine
+      # Resource and concurrency limits applied when the application does not
+      # override them.
       DEFAULT_LIMITS = {
         output_bytes: 64 * 1024 * 1024,
         memory_bytes: 128 * 1024 * 1024,
@@ -48,15 +53,29 @@ module LittleGhost
       def instructions(catalog:)
         javascript_catalog = Javascript::Catalog.new(catalog)
         <<~INSTRUCTIONS.strip
-          Run JavaScript in a fresh V8 context to call the available tools and compose their results. Every exec call
-          starts a new program. Exec observes it for up to one minute. If it returns `still_working`, call wait to
-          observe the same continuously running program for another minute. Wait does not resume or restart it. Use
-          stop when the program is no longer needed. Do not call wait or stop after `completed`, `error`, or
-          `terminated`. The context has no Node.js APIs, filesystem, network, console, or WebAssembly. Tool
-          functions return Promises; use await or Promise.all. JSON tool results become objects or arrays and other
-          results remain strings. Unawaited tool calls are completed before the program exits. Report output with
-          text(value) and use exit() to complete early. ALL_TOOLS is the complete catalog available inside this
-          context.
+          Use JavaScript to call the available tools and compose their results.
+
+          Program lifecycle:
+          - Every exec call starts a fresh program in a new V8 context.
+          - Exec and wait observe it for up to one minute. They return sooner when it finishes.
+          - If exec or wait returns `still_working`, call wait to observe the same running program again.
+          - Wait does not pause, resume, or restart the program.
+          - Use stop when the result is no longer needed.
+          - Do not call wait or stop after `completed`, `error`, or `terminated`.
+
+          Tool calls:
+          - Tool functions return Promises. Use await or Promise.all.
+          - JSON results become objects or arrays. Other results remain strings.
+          - Unawaited tool calls finish before the program exits.
+          - `ALL_TOOLS` contains the complete runtime catalog.
+
+          Output and completion:
+          - Use `text(value)` for user-visible output.
+          - Use `exit()` to complete early.
+
+          The V8 context has no Node.js APIs, filesystem, network, console, WebAssembly, or process API.
+
+          Available tool methods:
 
           #{javascript_catalog.declarations}
         INSTRUCTIONS

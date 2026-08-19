@@ -2,7 +2,7 @@
 
 module LittleGhost
   module CodeMode
-    module Ruby
+    module Ruby # :nodoc:
       module Host # :nodoc:
         SOURCE = <<~'RUBY'
             require "json"

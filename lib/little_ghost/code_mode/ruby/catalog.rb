@@ -4,7 +4,7 @@ require "json"
 
 module LittleGhost
   module CodeMode
-    module Ruby
+    module Ruby # :nodoc:
       class Catalog < CodeMode::Catalog # :nodoc:
         RESERVED_METHODS = %w[call parallel exec wait stop text finish all_tools].freeze
 

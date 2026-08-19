@@ -6,11 +6,11 @@ require_relative "../protocol"
 
 module LittleGhost
   module CodeMode
-    module Javascript
+    module Javascript # :nodoc:
     end
 
-    module Javascript::Host
-      MAX_ACTIVE_CELLS = 8
+    module Javascript::Host # :nodoc: all
+      MAX_ACTIVE_PROGRAMS = 8
       MAX_SOURCE_BYTES = 1024 * 1024
       CONTEXT_MEMORY_BYTES = 64 * 1024 * 1024
       JAVASCRIPT_TIMEOUT_MS = 10_000
@@ -128,7 +128,7 @@ module LittleGhost
         })();
       JAVASCRIPT
 
-      class Cell
+      class Program
         def initialize(id:, source:, tools:, writer:, finished:)
           @id = id
           @source = source
@@ -234,7 +234,7 @@ module LittleGhost
           loop do
             message = @incoming.pop(timeout: 0.05)
             next unless message
-            return terminate_cell if message["type"] == "terminate"
+            return terminate_program if message["type"] == "terminate"
 
             call_control(
               context, :resolve, message.fetch("call_id"), message.fetch("ok"),
@@ -245,7 +245,7 @@ module LittleGhost
           end
         end
 
-        def terminate_cell
+        def terminate_program
           raise Terminated
         end
 
@@ -255,7 +255,7 @@ module LittleGhost
         end
 
         def emit(type:, **attributes)
-          @writer.call(type:, cell_id: @id, **attributes)
+          @writer.call(type:, program_id: @id, **attributes)
         end
       end
 
@@ -263,8 +263,8 @@ module LittleGhost
         def initialize(input: $stdin, output: $stdout)
           @input = input
           @output = output
-          @cells = {}
-          @cells_mutex = Mutex.new
+          @programs = {}
+          @programs_mutex = Mutex.new
           @writer_mutex = Mutex.new
         end
 
@@ -273,9 +273,9 @@ module LittleGhost
             receive(message)
           end
         ensure
-          cells = @cells_mutex.synchronize { @cells.values.dup }
-          cells.each(&:terminate)
-          cells.each { |cell| cell.join(0.5) }
+          programs = @programs_mutex.synchronize { @programs.values.dup }
+          programs.each(&:terminate)
+          programs.each { |program| program.join(0.5) }
         end
 
         private
@@ -283,37 +283,37 @@ module LittleGhost
         def receive(message)
           case message["type"]
           when "execute" then execute(message)
-          when "tool_result" then cell(message.fetch("cell_id"))&.deliver(message)
-          when "terminate" then cell(message.fetch("cell_id"))&.terminate
+          when "tool_result" then program(message.fetch("program_id"))&.deliver(message)
+          when "terminate" then program(message.fetch("program_id"))&.terminate
           else raise Protocol::Error, "Unknown code-mode host request"
           end
         end
 
         def execute(message)
-          id = message.fetch("cell_id").to_s
+          id = message.fetch("program_id").to_s
           source = message.fetch("source").to_s
           tools = message.fetch("tools")
           raise Protocol::Error, "Code-mode source exceeds the size limit" if source.bytesize > MAX_SOURCE_BYTES
           raise Protocol::Error, "Code-mode tools must be an array" unless tools.is_a?(Array)
 
-          created = @cells_mutex.synchronize do
-            next false if @cells.key?(id) || @cells.length >= MAX_ACTIVE_CELLS
+          created = @programs_mutex.synchronize do
+            next false if @programs.key?(id) || @programs.length >= MAX_ACTIVE_PROGRAMS
 
-            @cells[id] = Cell.new(
+            @programs[id] = Program.new(
               id:, source:, tools:, writer: method(:write),
-              finished: ->(cell_id) { @cells_mutex.synchronize { @cells.delete(cell_id) } }
+              finished: ->(program_id) { @programs_mutex.synchronize { @programs.delete(program_id) } }
             )
             true
           end
           unless created
-            write(type: "failed", cell_id: id, error: "Code-mode host has too many active programs", fatal: true)
+            write(type: "failed", program_id: id, error: "Code-mode host has too many active programs", fatal: true)
           end
         rescue KeyError, TypeError, Protocol::Error => error
-          write(type: "failed", cell_id: id.to_s, error: "Invalid code-mode request: #{error.message}", fatal: true)
+          write(type: "failed", program_id: id.to_s, error: "Invalid code-mode request: #{error.message}", fatal: true)
         end
 
-        def cell(id)
-          @cells_mutex.synchronize { @cells[id.to_s] }
+        def program(id)
+          @programs_mutex.synchronize { @programs[id.to_s] }
         end
 
         def write(message)

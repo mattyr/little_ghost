@@ -8,7 +8,7 @@ require_relative "host"
 
 module LittleGhost
   module CodeMode
-    module Ruby
+    module Ruby # :nodoc:
       class Session < CodeMode::Session # :nodoc:
         OBSERVATION_SECONDS = 60
 
@@ -26,7 +26,7 @@ module LittleGhost
           @closed = false
           @close_complete = false
           @control_mutex = Mutex.new
-          @cells = 0
+          @programs = 0
           @call_mutex = Mutex.new
           @call_threads = []
           @call_errors = []
@@ -88,8 +88,8 @@ module LittleGhost
         def execute_program(source:, catalog:, frame:, max_output_tokens:, context:)
           raise ToolError, "code-mode session is closed" if @closed
           ensure_program_can_start!
-          @cells += 1
-          raise ToolError, "code-mode program limit exceeded" if @cells > @limits.fetch(:cells)
+          @programs += 1
+          raise ToolError, "code-mode program limit exceeded" if @programs > @limits.fetch(:programs)
           source = String(source)
           raise ToolError, "code-mode source exceeds the limit" if source.bytesize > @limits.fetch(:source_bytes)
           normalized_catalog = Catalog.new(catalog).host_definitions
@@ -136,7 +136,7 @@ module LittleGhost
           end
           raise termination_error if termination_error
 
-          CellResult.new(output: drain_output(max_output_tokens), status: :terminated)
+          ProgramResult.new(output: drain_output(max_output_tokens), status: :terminated)
         end
 
         def with_control
@@ -206,7 +206,7 @@ module LittleGhost
             expire_program(generation) if monotonic_time >= @deadline
             raise_program_error!(generation)
             if monotonic_time >= slice_deadline
-              return CellResult.new(output: drain_output(max_output_tokens), status: :still_working)
+              return ProgramResult.new(output: drain_output(max_output_tokens), status: :still_working)
             end
 
             read_timeout = 0.05
@@ -225,12 +225,12 @@ module LittleGhost
                   append_output(message.fetch("value"))
                 when "done"
                   raise_program_error!(generation)
-                  result = CellResult.new(output: drain_output(max_output_tokens), value: message["value"])
+                  result = ProgramResult.new(output: drain_output(max_output_tokens), value: message["value"])
                   close_process(generation:)
                   return result
                 when "error"
                   raise_program_error!(generation)
-                  result = CellResult.new(
+                  result = ProgramResult.new(
                     output: drain_output(max_output_tokens), status: :error, error: message.fetch("error")
                   )
                   close_process(generation:)

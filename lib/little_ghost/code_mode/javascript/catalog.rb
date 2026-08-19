@@ -4,7 +4,7 @@ require "json"
 
 module LittleGhost
   module CodeMode
-    class Javascript::Catalog < CodeMode::Catalog
+    class Javascript::Catalog < CodeMode::Catalog # :nodoc: all
       IDENTIFIER_CHARACTER = /[^A-Za-z0-9_$]/
       RESERVED_NAMES = %w[exec wait stop].freeze
 

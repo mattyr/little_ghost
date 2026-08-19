@@ -27,6 +27,8 @@ module LittleGhost
       end
 
       # Returns the Tool specifications available to model-authored code.
+      # Excluded Tools, code-mode controls, and subagent controls stay outside
+      # this catalog.
       def catalog
         specifications = @registry&.specifications || []
         specifications.reject do |specification|

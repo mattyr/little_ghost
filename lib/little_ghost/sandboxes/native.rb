@@ -6,6 +6,8 @@ module LittleGhost
     # Selection fails closed on unsupported platforms and never falls back to
     # unrestricted host execution.
     class Native < Sandbox
+      # Reports whether the native backend for +platform+ is available and
+      # returns its capabilities.
       def self.probe(platform: RUBY_PLATFORM, **options)
         implementation = if platform.include?("darwin")
           Seatbelt
@@ -17,6 +19,8 @@ module LittleGhost
         implementation.probe(platform:, **options)
       end
 
+      # Selects Seatbelt on macOS or Bubblewrap on Linux and builds that backend
+      # around +workspace+.
       def initialize(workspace:, platform: RUBY_PLATFORM, **options)
         implementation = if platform.include?("darwin")
           Seatbelt

@@ -8,12 +8,11 @@ module LittleGhost
     # can outlive this session. Use a backend with +process_tree_ownership+ or an
     # outer supervisor when complete descendant ownership is required.
     #
-    # A configured memory bound is a sampled parent-side guard. On Linux, the
-    # session samples the visible process tree every 100 milliseconds and
-    # tolerates short-lived +/proc+ churn. It fails closed after three
-    # consecutive failures to read the root process or the process snapshot.
-    # Use an outer cgroup or container when memory must be enforced as a hard
-    # kernel boundary.
+    # When +memory_bytes+ is configured, the parent samples the visible process
+    # tree every 100 milliseconds. This guard may miss memory peaks between
+    # samples. On Linux, three consecutive failures to read the root process or
+    # the +/proc+ snapshot end the process. Use an outer cgroup or container when
+    # memory needs a hard kernel-enforced limit.
     class ProcessSession
       Chunk = Data.define(:stdout, :stderr, :eof) # :nodoc:
       MEMORY_SAMPLE_INTERVAL = 0.1
@@ -21,6 +20,9 @@ module LittleGhost
 
       private_constant :MEMORY_SAMPLE_INTERVAL, :MEMORY_SUPERVISION_FAILURE_LIMIT
 
+      # Starts +command+ in a new process group with a scrubbed environment by
+      # default. +output_bytes+ bounds combined standard output and error.
+      # Optional CPU, file-size, and sampled-memory limits apply to the child.
       def initialize(command:, environment: {}, inherit_environment: false, chdir: nil,
         output_bytes: 1_000_000, memory_bytes: nil, memory_reader: nil, cpu_seconds: nil, file_bytes: nil)
         @output_bytes = Integer(output_bytes)
@@ -64,14 +66,18 @@ module LittleGhost
         raise
       end
 
+      # Operating-system process ID of the command process.
       attr_reader :pid
 
+      # Whether the command process or its original process group is still
+      # alive. Raises when resource supervision failed.
       def alive?
         raise @resource_error if @resource_error
 
         raw_alive?
       end
 
+      # Writes +value+ to the child's standard input.
       def write(value)
         raise IOError, "process session is closed" if @closed
 
@@ -83,6 +89,7 @@ module LittleGhost
         raise IOError, "sandboxed process has exited"
       end
 
+      # Closes the child's standard input without ending the process.
       def close_write
         @stdin_w.close unless @stdin_w.closed?
       end
@@ -133,6 +140,8 @@ module LittleGhost
         raise
       end
 
+      # Requests termination, forces it when needed, and returns the child's
+      # Process::Status when available.
       def terminate
         return @status unless @pid
 
@@ -146,6 +155,8 @@ module LittleGhost
         @status
       end
 
+      # Terminates the process when needed and closes every owned stream.
+      # Calling +close+ more than once is safe.
       def close
         return if @closed
 

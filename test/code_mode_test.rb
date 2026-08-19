@@ -59,7 +59,7 @@ class CodeModeTest < Minitest::Test
       Integer(source).times do |index|
         results << @broker.call("nested", {"value" => "same"}, id: "nested-#{index}")
       end
-      LittleGhost::CodeMode::CellResult.new(output: results.map(&:value).join("\n"))
+      LittleGhost::CodeMode::ProgramResult.new(output: results.map(&:value).join("\n"))
     end
 
     def close = @closed = true
@@ -107,17 +107,17 @@ class CodeModeTest < Minitest::Test
 
     def execute(source:, catalog:, context:, max_output_tokens: :default)
       @execute_options = {max_output_tokens:}
-      LittleGhost::CodeMode::CellResult.new(status: :still_working)
+      LittleGhost::CodeMode::ProgramResult.new(status: :still_working)
     end
 
     def wait(context:, max_output_tokens: :default)
       @wait_options = {max_output_tokens:}
-      LittleGhost::CodeMode::CellResult.new
+      LittleGhost::CodeMode::ProgramResult.new
     end
 
     def stop(context:, max_output_tokens: :default)
       @stop_options = {max_output_tokens:}
-      LittleGhost::CodeMode::CellResult.new(status: :terminated)
+      LittleGhost::CodeMode::ProgramResult.new(status: :terminated)
     end
   end
 
@@ -147,7 +147,7 @@ class CodeModeTest < Minitest::Test
         @max_active = [@max_active, @active].max
       end
       sleep 0.05
-      LittleGhost::CodeMode::CellResult.new
+      LittleGhost::CodeMode::ProgramResult.new
     ensure
       @mutex.synchronize { @active -= 1 }
     end
@@ -178,7 +178,7 @@ class CodeModeTest < Minitest::Test
     end
 
     def execute(**)
-      LittleGhost::CodeMode::CellResult.new(status: :still_working)
+      LittleGhost::CodeMode::ProgramResult.new(status: :still_working)
     end
 
     def call_nested
@@ -198,7 +198,7 @@ class CodeModeTest < Minitest::Test
     def execute(**)
       entered << true
       release.pop
-      LittleGhost::CodeMode::CellResult.new
+      LittleGhost::CodeMode::ProgramResult.new
     end
 
     def close = @closed = true
@@ -286,7 +286,7 @@ class CodeModeTest < Minitest::Test
     registry&.close
   end
 
-  def test_each_ruby_cell_gets_fresh_process_state
+  def test_each_ruby_program_gets_fresh_process_state
     registry = LittleGhost::ToolRegistry.new([])
     broker = LittleGhost::CodeMode::Broker.new(registry:)
     session = ruby_session(broker:)
@@ -349,7 +349,7 @@ class CodeModeTest < Minitest::Test
     registry&.close
   end
 
-  def test_rejected_exec_does_not_close_the_active_cell
+  def test_rejected_exec_does_not_close_the_active_program
     registry = LittleGhost::ToolRegistry.new([])
     broker = LittleGhost::CodeMode::Broker.new(registry:)
     session = ruby_session(broker:, observation_seconds: 0.001)
@@ -504,20 +504,19 @@ class CodeModeTest < Minitest::Test
     assert_includes instructions, "# @param filters [{ids: Array[Integer]}] optional"
     assert_includes instructions, "# @return [Array[Hash[String, untyped]]]"
     assert_includes instructions, "ALL_TOOLS"
-    assert_includes instructions, "fresh process"
-    assert_includes instructions, "Every exec call starts a"
+    assert_includes instructions, "fresh program in a new Ruby process"
     assert_includes instructions, "do not persist between exec calls"
-    assert_includes instructions, "If it returns `still_working`, call wait"
+    assert_includes instructions, "If exec or wait returns `still_working`, call wait"
     assert_includes instructions, "Do not call wait or stop after `completed`, `error`, or"
-    assert_includes instructions, "Filesystem, network, subprocess, and optional-library"
-    assert_includes instructions, "JSON values as ordinary Ruby values"
+    assert_includes instructions, "Sandbox controls filesystem, network, subprocess, and optional-library"
+    assert_includes instructions, "JSON results become ordinary Ruby values"
     assert_includes instructions, "callable order"
     refute_includes instructions, "FRAME"
-    assert_includes instructions, "final expression is the value returned by exec"
+    assert_includes instructions, "final Ruby expression becomes the completed program value"
     refute_includes instructions, "yield_control"
   end
 
-  def test_ruby_engine_enforces_source_output_cell_and_tool_call_limits
+  def test_ruby_engine_enforces_source_output_program_and_tool_call_limits
     tool = LittleGhost::Tool.define(name: "echo", description: "Echo.") { |input| input }
     registry = LittleGhost::ToolRegistry.new([tool])
     broker = LittleGhost::CodeMode::Broker.new(registry:)
@@ -530,7 +529,7 @@ class CodeModeTest < Minitest::Test
     assert_raises(LittleGhost::ToolError) { session.execute(source: 'text("1234")', catalog: broker.catalog) }
     session.close
 
-    session = ruby_session(broker:, cells: 1)
+    session = ruby_session(broker:, programs: 1)
     assert_equal 1, session.execute(source: "1", catalog: broker.catalog).value
     assert_raises(LittleGhost::ToolError) { session.execute(source: "2", catalog: broker.catalog) }
     session.close
@@ -619,7 +618,7 @@ class CodeModeTest < Minitest::Test
       dispatch: lambda do |_call|
         entered << true
         release.pop
-        raise "old cell failure"
+        raise "old program failure"
       ensure
         finished << true
       end
@@ -677,7 +676,7 @@ class CodeModeTest < Minitest::Test
     registry&.close
   end
 
-  def test_ruby_engine_closes_a_partially_started_cell_when_the_initial_frame_fails
+  def test_ruby_engine_closes_a_partially_started_program_when_the_initial_frame_fails
     registry = LittleGhost::ToolRegistry.new([])
     broker = LittleGhost::CodeMode::Broker.new(registry:)
     sandboxes = []
@@ -1289,7 +1288,7 @@ class CodeModeTest < Minitest::Test
     agent&.close
   end
 
-  def test_wait_tool_explains_the_active_cell_state_machine
+  def test_wait_tool_explains_the_active_program_state_machine
     specification = LittleGhost::CodeMode::WaitTool.specification
 
     assert_includes specification.fetch(:description), "exec or wait returned still_working"

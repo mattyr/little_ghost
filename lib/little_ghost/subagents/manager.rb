@@ -21,9 +21,11 @@ module LittleGhost
     #       description: "Investigates policies and account history"
     #   end
     #
-    # LittleGhost then gives +CustomerSupportAgent+ tools to spawn, message, wait for,
-    # interject, and list research agents. The manager keeps each child identity
-    # stable across follow-up turns.
+    # LittleGhost then gives +CustomerSupportAgent+ tools to spawn, message,
+    # check on, interject, and list research agents. The manager keeps each child
+    # identity stable across follow-up turns. A progress check returns after 30
+    # seconds by default when the selected subagents are still working; it does
+    # not pause or restart them.
     #
     # Follow-up messages are FIFO turns and never interject active work.
     # #interject is the separate synchronous path for delivery at the next model
