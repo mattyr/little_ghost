@@ -276,8 +276,10 @@ class LittleGhostReleaseTest < Minitest::Test
       path = File.join(directory, "little_ghost-#{LittleGhost::VERSION}.gem")
       specification = Gem::Specification.load(File.expand_path("../little_ghost.gemspec", __dir__))
 
-      Dir.chdir(File.expand_path("..", __dir__)) do
-        Gem::Package.build(specification, true, false, path)
+      capture_io do
+        Dir.chdir(File.expand_path("..", __dir__)) do
+          Gem::Package.build(specification, true, false, path)
+        end
       end
 
       manifest = LittleGhostRelease.verify_package!(path, LittleGhost::VERSION)
@@ -383,7 +385,7 @@ class LittleGhostReleaseTest < Minitest::Test
     end
     path = File.join(directory, file_name)
 
-    Dir.chdir(directory) { package_class.build(specification, true, false, path) }
+    capture_io { Dir.chdir(directory) { package_class.build(specification, true, false, path) } }
     path
   end
 end

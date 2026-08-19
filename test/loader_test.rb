@@ -46,7 +46,11 @@ class LoaderTest < Minitest::Test
 
     Dir.mktmpdir do |root|
       write(root, "app/agents/expected_agent.rb", "class DifferentAgent; end")
-      assert_raises(LittleGhost::Support::Loader::ExpectedConstantError) { LittleGhost::Support::Loader.new(root:).eager_load }
+      capture_io do
+        assert_raises(LittleGhost::Support::Loader::ExpectedConstantError) do
+          LittleGhost::Support::Loader.new(root:).eager_load
+        end
+      end
     ensure
       Object.send(:remove_const, :DifferentAgent) if Object.const_defined?(:DifferentAgent, false)
       Object.send(:remove_const, :ExpectedAgent) if Object.const_defined?(:ExpectedAgent, false)
@@ -88,7 +92,10 @@ class LoaderTest < Minitest::Test
     Dir.mktmpdir do |root|
       write(root, "app/agents/broken_agent.rb", "MissingLoaderDependency")
 
-      error = assert_raises(NameError) { LittleGhost::Support::Loader.new(root:).eager_load }
+      error = nil
+      capture_io do
+        error = assert_raises(NameError) { LittleGhost::Support::Loader.new(root:).eager_load }
+      end
 
       assert_equal :MissingLoaderDependency, error.name
     ensure
@@ -100,7 +107,10 @@ class LoaderTest < Minitest::Test
     Dir.mktmpdir do |root|
       write(root, "app/agents/broken_agent.rb", "module LoaderDependency; end; LoaderDependency::BrokenAgent")
 
-      error = assert_raises(NameError) { LittleGhost::Support::Loader.new(root:).eager_load }
+      error = nil
+      capture_io do
+        error = assert_raises(NameError) { LittleGhost::Support::Loader.new(root:).eager_load }
+      end
 
       assert_equal :BrokenAgent, error.name
       assert_equal LoaderDependency, error.receiver

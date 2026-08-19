@@ -166,7 +166,7 @@ class CodeModeHostTest < Minitest::Test
         end
       end
     end
-    program.join
+    assert program.join(2), "JavaScript host program did not finish after its terminal result"
     collected
   ensure
     program&.terminate
