@@ -10,10 +10,10 @@ module LittleGhost
     # It applies cancellation, deadlines, timeouts, and response-size limits while
     # yielding response chunks as they arrive.
     #
-    # === Security and trust
+    # === HTTPS defaults
     #
     # HTTPS is required by default. Enabling +allow_insecure_http+ can expose API
-    # keys and model content in transit; use it only with a trusted local
+    # keys and model content in transit; use it only with a local
     # development endpoint.
     class HTTPClient
       # Default upper bound for a complete provider response (50 MiB).

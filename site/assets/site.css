@@ -208,6 +208,9 @@ main,
 .install-command code span { color: var(--mint); }
 .install-command small { color: var(--dim); font: inherit; }
 .intro-docs-link { color: var(--violet-soft); font-size: 0.76rem; font-weight: 650; }
+.intro-copy .agent-docs-callout { margin-top: 18px; color: var(--dim); font-size: 0.78rem; }
+.agent-docs-callout a { color: var(--mint); text-decoration: underline; text-decoration-color: rgba(121, 246, 212, 0.4); text-underline-offset: 4px; }
+.agent-docs-callout code { font-family: var(--font-code); font-size: 0.92em; }
 .intro-docs-link:hover { color: var(--mint); }
 
 .intro-ghost-wrap { position: relative; display: grid; place-items: center; }

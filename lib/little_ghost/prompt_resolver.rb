@@ -22,13 +22,12 @@ module LittleGhost
   # Construction resolves symbolic links immediately and rejects paths that are
   # missing or are not directories.
   #
-  # === Security and trust
+  # === Choosing prompt directories
   #
-  # Construction is a trust assertion, not a sanitizer. It does not inspect
-  # ownership, permissions, or who can modify the directory. ERB templates run
-  # as Ruby inside the current process, so create TrustedPath values only from
-  # allowlisted, application-controlled, non-user-writable roots. Never wrap a
-  # path taken from unchecked request or model input.
+  # ERB templates run as Ruby inside the current process. TrustedPath checks that
+  # a directory exists and resolves symbolic links; it cannot tell who may edit
+  # that directory. Create these values only from application-configured,
+  # non-user-writable roots, never from a request or model-selected path.
   class TrustedPath < Data # :doc:
     ##
     # :singleton-method: new
@@ -91,7 +90,8 @@ module LittleGhost
     #
     # +invocation_paths+ accepts only TrustedPath values because those roots
     # take precedence over application configuration. The wrapper records the
-    # caller's trust decision; it does not make an untrusted directory safe.
+    # directory selected by application code; it does not inspect who can modify
+    # that directory.
     def render(name, locals: {}, invocation_paths: [])
       roots = normalize_invocation_roots(invocation_paths) + @paths
       render_template(normalize_name(name), locals, roots, [])

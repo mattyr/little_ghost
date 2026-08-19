@@ -136,7 +136,9 @@ Opt in only for a member that needs the data:
 member AccountAgent, history: true, context: true
 ```
 
-Intermediate model text stays out of the caller-facing stream, leaving one coherent public answer. This is not a privacy boundary. The next member receives the handoff, and the result keeps a bounded summary of the journey.
+Intermediate model text stays out of the caller-facing stream, leaving one
+coherent public answer. The next member still receives the handoff, and the
+result keeps a bounded summary of the journey.
 
 ## Use a Graph for guided routes
 
@@ -167,7 +169,7 @@ Conditions and input mappers read an immutable `Graph::State`. At most one condi
 
 Graph nodes start without caller history or application context. The start node receives the original input. By default, each downstream node receives the original task plus its immediate predecessor results. Use an input mapper to replace or redact that data before it moves to a provider or participant that should see less.
 
-Opt in for a trusted node when it needs caller context:
+Opt in when a node needs caller context:
 
 ```ruby
 node :account_lookup, AccountLookupAgent, context: true
@@ -240,14 +242,15 @@ edge :triage, :ledger, input: lambda { |state|
 }
 ```
 
-Conditions and mappers receive a detached, deeply immutable `Graph::State`.
+Conditions and mappers receive a copied, frozen `Graph::State`, so they cannot
+change the running Graph.
 Use `state.input` for the original request, `state.results` for completed nodes,
 and `state.incoming_results` for the immediate predecessors. The
 `LittleGhost::Graph::State` API reference lists every routing value.
 
-Conditions and mappers are trusted application code. Their state includes
-snapshots of caller history and application context, even when the destination
-node does not opt in to receiving those values.
+Conditions and mappers are application code. Their state includes copies of
+caller history and application context, even when the destination node does not
+receive those values.
 
 Use an explicit array-source edge when a fan-in needs one mapper:
 
@@ -259,12 +262,10 @@ edge [:ledger, :policy], :respond, input: lambda { |state|
 
 #### Control data crossing branches
 
-By default, the original request and complete source output cross into every
-parallel branch. Treat both as untrusted, and only connect participants and
-providers allowed to receive them. A trusted input mapper can replace the
-branch input. A trusted redaction assembly before the fan-out can narrow the
-source output. If the original request also needs narrowing, give the graph a
-redacted request from trusted application code.
+By default, the original request and complete source output go to every
+parallel branch. An input mapper can replace the branch input, and a redaction
+assembly before the fan-out can narrow the source output. Use those options
+when a participant or provider should receive only part of the data.
 
 #### Recover and review
 
@@ -320,13 +321,19 @@ run.completed? # => true
 
 `source.agent_id` identifies the Agent class, `source.agent_path` distinguishes managed subagents, and `source.operation_id` groups one invocation. `source.assembly_path` lists the enclosing Workflow, Swarm, or Graph steps from the outside inward.
 
-The routed input and inner event are detached, deeply immutable snapshots, so an observer cannot change live execution. Parallel participants can interleave. Events from each Agent retain their order, and LittleGhost never calls the stream block concurrently.
+The routed input and inner event are copied and frozen before they reach the
+observer, so changing an event can't affect the running assembly. Parallel
+participants can interleave. Events from each Agent retain their order, and
+LittleGhost never calls the stream block concurrently.
 
 The contextual wrapper arrives before the corresponding ordinary event. An assembly's final Agent therefore appears through both projections. Filter for `:agent_stream` when building an all-agent view, or handle ordinary events when rendering only the final answer. Pass `include_agent_events: false` when a composite assembly caller only wants the ordinary public stream. Standalone Agent streams keep their ordinary events by default and accept `include_agent_events: true` when source metadata is useful.
 
 The AG-UI adapter ignores contextual wrappers. Translate them explicitly if an AG-UI client should receive participant activity.
 
-**Warning:** A composite assembly stream exposes routed inputs, reasoning, tool arguments and results, model output, errors, and completed results from every participating Agent. Treat that content as untrusted and potentially sensitive. Authorize the destination for the complete stream, and filter or redact events before logging, telemetry, transport, or display. Keep `include_agent_events` under trusted application control.
+> **Safety note:** A composite stream can include inputs, reasoning, Tool
+> arguments and results, errors, and output from every participant. Check that
+> the destination may see the complete Run, or filter the events before sending
+> or storing them.
 
 ## Inspect what the assembly did
 
@@ -343,7 +350,8 @@ policy = trajectory.find { |step| step.participant == "policy" }
 trajectory.concurrent?(ledger.id, policy.id)
 ```
 
-Step outputs and buffered events have size limits. Use your application's instrumentation when trusted operators need deeper diagnostics.
+Step outputs and buffered events have size limits. Use your application's
+instrumentation when you need deeper diagnostics.
 
 ## Compose assemblies inside assemblies
 
@@ -370,11 +378,17 @@ class SupportCoordinatorAgent < LittleGhost::Agent
 end
 ```
 
-The nested assembly receives the parent Tool's current working state. That state may include values restored from a Session. `preserve_context` controls conversation history only: when it is false, working state still passes to the nested assembly. Any nested Tool doing privileged work must authorize with values the application established for the current request or checked again after loading.
+The nested assembly receives the parent Tool's current working state. That state
+may include values restored from a Session. `preserve_context` controls
+conversation history only: when it is false, working state still passes to the
+nested assembly. A nested Tool that reads private data or performs a write
+should check values established for the current request or checked again after
+loading.
 
 ## Reach for builders when definitions are dynamic
 
-Classes are the preferred form in application code. Use a builder when trusted application configuration decides the nodes or routes:
+Classes are the preferred form in application code. Use a builder when runtime
+configuration decides the nodes or routes:
 
 ```ruby
 graph = LittleGhost::GraphBuilder.new(
@@ -394,4 +408,5 @@ run = graph.ask("Where is my order?")
 
 Each builder uses the same declarations as its matching class. The builder stays editable, but each run gets a fixed copy of its current definition. Later edits affect later runs. Ruby callbacks still see any application objects they captured.
 
-Continue with [Prompts as Views](prompt_views.md) to give each Agent's growing instructions and shared prompt pieces a natural home.
+Continue with [Skills](skills.md) when an Agent should discover focused
+instructions and supporting resources only when a task needs them.

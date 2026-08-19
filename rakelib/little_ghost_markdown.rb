@@ -12,6 +12,9 @@ require "uri"
 
 module LittleGhostDocs
   class MarkdownSite
+    API_INDEX_TITLE = "LittleGhost API index"
+    API_INDEX_DESCRIPTION = "Browse LittleGhost's public classes, modules, methods, and signatures."
+
     BUILD_MUTEX = Mutex.new
     API_ROOT = Pathname("docs")
     ESSENTIAL_APIS = %w[
@@ -89,17 +92,27 @@ module LittleGhostDocs
       source = source_root.join("README.md")
       return unless source.file?
 
-      write("docs/index.md", document_header("LittleGhost documentation", "docs/") +
-        rewrite_source_markdown(source.read, output_path: Pathname("docs/index.md"), context: rdoc_file("README.md")))
+      output = Pathname("docs/index.md")
+      write(output, source_document_markdown(
+        source.read,
+        title: "LittleGhost documentation",
+        html_path: "docs/",
+        output_path: output,
+        context: rdoc_file("README.md")
+      ))
     end
 
     def write_guides
       available_guides.each do |guide|
         source = source_root.join(guide.fetch(:source))
         output = Pathname("docs").join(Pathname(guide.fetch(:output)).sub_ext(".md"))
-        markdown = document_header(guide.fetch(:title), output.sub_ext(".html"))
-        markdown << rewrite_source_markdown(source.read, output_path: output, context: rdoc_file(guide.fetch(:source)))
-        write(output, markdown)
+        write(output, source_document_markdown(
+          source.read,
+          title: guide.fetch(:title),
+          html_path: output.sub_ext(".html"),
+          output_path: output,
+          context: rdoc_file(guide.fetch(:source))
+        ))
       end
     end
 
@@ -112,7 +125,7 @@ module LittleGhostDocs
 
     def write_api_index
       output = Pathname("docs/api.md")
-      lines = [document_header("LittleGhost API index", "docs/api.html")]
+      lines = [document_header(API_INDEX_TITLE, "docs/api.html")]
       lines << "Every public class and module is listed here. Open an entry for signatures, ownership, and failure behavior.\n\n"
       api_objects.each do |object|
         target = API_ROOT.join(Pathname(object.path).sub_ext(".md"))
@@ -139,8 +152,21 @@ module LittleGhostDocs
         </main>
       HTML
       html = template.read.sub(/<main role="main">.*?<\/main>/m, content.rstrip)
-      html = html.sub(/<title>.*?<\/title>/m, "<title>LittleGhost API index - LittleGhost API Documentation</title>")
+      html = html.sub(/<title>.*?<\/title>/m, "<title>#{API_INDEX_TITLE} - LittleGhost API Documentation</title>")
+      html = replace_meta(html, "name", "description", API_INDEX_DESCRIPTION)
+      html = replace_meta(html, "property", "og:title", API_INDEX_TITLE)
+      html = replace_meta(html, "property", "og:description", API_INDEX_DESCRIPTION)
+      html = replace_meta(html, "name", "twitter:title", API_INDEX_TITLE)
+      html = replace_meta(html, "name", "twitter:description", API_INDEX_DESCRIPTION)
       site_root.join("docs/api.html").write(html)
+    end
+
+    def replace_meta(html, attribute, key, content)
+      tag = %(<meta #{attribute}="#{key}" content="#{CGI.escapeHTML(content)}">)
+      pattern = %r{<meta\b(?=[^>]*\b#{attribute}=["']#{Regexp.escape(key)}["'])[^>]*>}m
+      return html.sub(pattern, tag) if html.match?(pattern)
+
+      html.sub("</head>", "#{tag}\n</head>")
     end
 
     def api_markdown(object, output)
@@ -212,7 +238,7 @@ module LittleGhostDocs
           markdown << "\n### #{plain_text(title)}\n\n#{plain_text(description)}\n"
         end
       end
-      markdown << "\n## Continue\n\n- [Read the documentation](docs/index.md)\n- [Start with your first agent](docs/getting_started.md)\n- [Browse the public API](docs/api.md)\n"
+      markdown << "\n## Continue\n\n- [Read the documentation](docs/index.md)\n- [Start with your first agent](docs/getting_started.md)\n- [Browse the public API](docs/api.md)\n- [Give your coding agent `#{public_url("llms.txt")}`](llms.txt)\n"
       normalize(markdown)
     end
 
@@ -232,14 +258,13 @@ module LittleGhostDocs
 
     def llms_text
       available = markdown_pages.to_h { |path| [path.relative_path_from(site_root).to_s, true] }
-      sections = {
-        "Start here" => ["docs/index.md", "docs/getting_started.md", "docs/core_concepts.md"],
-        "Build with agents" => %w[docs/models_and_providers.md docs/structured_outputs_and_content.md docs/assemblies.md docs/prompt_views.md docs/tools.md docs/skills.md],
-        "Isolation and code execution" => %w[docs/sandboxing.md docs/code_mode.md],
-        "Operate and integrate" => %w[docs/integrations.md docs/production.md],
-        "Essential API" => ESSENTIAL_APIS.map { |path| "docs/#{path}.md" },
-        "Integrations API" => INTEGRATION_APIS.map { |path| "docs/#{path}.md" }
-      }
+      guide_sections = GUIDE_SECTIONS.transform_values do |sources|
+        sources.map { |source| "docs/#{Pathname(GUIDE_PATHS.fetch(source)).sub_ext(".md")}" }
+      end
+      sections = {"Start here" => ["docs/index.md", *guide_sections.delete("Learn")]}
+      sections.merge!(guide_sections)
+      sections["Essential API"] = ESSENTIAL_APIS.map { |path| "docs/#{path}.md" }
+      sections["Integrations API"] = INTEGRATION_APIS.map { |path| "docs/#{path}.md" }
       text = +"# LittleGhost\n\n> An open-source Ruby 3.3+ library for agents, tools, workflows, swarms, and graphs.\n\n"
       text << "This documentation describes #{(id == EDGE_ID) ? "the Edge build" : "LittleGhost v#{id}"}. "
       text << "Use a matching release snapshot for an application pinned to a released gem.\n\n"
@@ -290,6 +315,12 @@ module LittleGhostDocs
 
     def document_header(title, html_path)
       "# #{title}\n\nDocumentation version: #{(id == EDGE_ID) ? "Edge" : "v#{id}"}\n\nCanonical HTML: #{public_url(html_path)}\n\n"
+    end
+
+    def source_document_markdown(markdown, title:, html_path:, output_path:, context:)
+      body = rewrite_source_markdown(markdown, output_path:, context:)
+      body = body.sub(/\A#\s+[^\n]+\n+/, "")
+      document_header(title, html_path) + body
     end
 
     def render_comment(comment, context:, output_path:)
@@ -454,11 +485,10 @@ module LittleGhostDocs
     end
 
     def rewrite_public_urls(contents)
-      rewritten = contents.gsub(LEGACY_SITE_URL, SITE_URL)
-      return rewritten if base_path.to_s.empty? || base_path.to_s == "."
+      return contents if base_path.to_s.empty? || base_path.to_s == "."
 
       deployed_url = URI.join(SITE_URL, "#{base_path}/").to_s
-      rewritten.gsub(UNVERSIONED_SITE_URL_PATTERN, deployed_url)
+      contents.gsub(UNVERSIONED_SITE_URL_PATTERN, deployed_url)
     end
   end
 end

@@ -1,10 +1,9 @@
 # Return Structured Results and Send Rich Content
 
-An Agent can return a locally validated JSON-shaped value instead of relying on
-application code to parse prose. Messages can also combine text with images and
-documents when the selected model advertises those input modalities.
+An Agent can return a checked Ruby value instead of prose. It can also receive
+text alongside images and documents when the selected model supports them.
 
-## Declare a strict result contract
+## Declare a result shape
 
 Use `result_schema` on the Agent:
 
@@ -42,24 +41,22 @@ end
 
 Every object in a result schema must set `additionalProperties: false` and list
 every property in `required`. The top-level type must be `object`. LittleGhost
-checks the supported JSON Schema subset when the Agent class is defined and
-validates the returned value locally before publishing it as a
-`LittleGhost::StructuredResult`.
+checks the supported JSON Schema subset when the Agent is defined and checks
+the returned value again before publishing a `LittleGhost::StructuredResult`.
 
-LittleGhost intentionally supports a constrained subset of [JSON Schema Draft
-2020-12](https://json-schema.org/draft/2020-12/json-schema-core). Check
-`LittleGhost::Agent.result_schema` for the accepted keywords rather than
-assuming that every JSON Schema feature is available.
+LittleGhost supports a focused subset of [JSON Schema Draft
+2020-12](https://json-schema.org/draft/2020-12/json-schema-core). The
+`LittleGhost::Agent.result_schema` API reference lists the accepted keywords.
 
-`run.result.output` returns the validated value for a structured Agent and text
-for an ordinary Agent. Use `run.result.structured_result` when the schema name
-also matters.
+For a structured Agent, `run.result.output` returns the checked value. For an
+ordinary Agent, it returns text. Use `run.result.structured_result` when you
+also need the schema name.
 
-## Let capabilities choose the transport
+## Let LittleGhost choose the strategy
 
-The default `strategy: :auto` prefers provider-native structured output and
-uses a terminal Tool when the model supports reliable tool calls instead. You
-may require one strategy:
+The default `strategy: :auto` uses provider-native structured output when it is
+available and otherwise uses a terminal Tool when the model supports reliable
+Tool calls. You can require one strategy:
 
 ```ruby
 result_schema(
@@ -74,19 +71,17 @@ result_schema(
 )
 ```
 
-Use `:provider` or `:tool` only when deployment policy requires it. LittleGhost
-raises `LittleGhost::ConfigurationError` before execution if the selected model
-cannot provide the required strategy.
+Use `:provider` or `:tool` when your application depends on that exact path.
+LittleGhost raises `LittleGhost::ConfigurationError` before execution if the
+selected model cannot provide it.
 
-An absent or invalid result receives one repair attempt. During a repair turn,
-ordinary Tools cannot run. If the second result remains invalid, the Run fails
-with `LittleGhost::StructuredResultError`. A checked shape does not make the
-values true: continue to apply application validation and authorization before
-using them for side effects.
+If the first response is missing or invalid, LittleGhost asks the model to
+repair it once. A second invalid response ends the Run with
+`LittleGhost::StructuredResultError`.
 
-Structured payloads are redacted from retained conversation messages and
-ordinary telemetry paths. The validated value still exists in the returned
-Run, so protect that object and any application logging around it.
+> **Safety note:** A checked shape tells you that fields and types match the
+> schema, not that the model's claims are correct. Apply your normal business
+> checks before the result changes data, spends money, or contacts someone.
 
 ## Combine text with an image
 
@@ -115,35 +110,26 @@ For a document, include a display name:
 
 ```ruby
 document = LittleGhost::Content::Document.new(
-  data: File.binread("tmp/refund-policy.pdf"),
+  data: File.binread("tmp/refund-guide.pdf"),
   media_type: "application/pdf",
-  name: "refund-policy.pdf"
+  name: "refund-guide.pdf"
 )
 ```
 
 `Image` and `Document` hold the original bytes. Serialization base64-encodes
-them when they cross a JSON boundary. This can substantially increase request
-size; enforce upload size, file type, decompression, and malware policies before
-constructing the block.
+them when they cross a JSON boundary, which increases request size. The
+resolved model checks the content type against its advertised input
+capabilities before making the provider request.
 
-## Check capability and data boundaries
+> **Safety note:** When content comes from an upload, check its size and actual
+> file type before creating the block. Send it only to a provider you use for
+> that kind of data, and don't treat text extracted from a file as proof of
+> identity or permission.
 
-The resolved model validates an attachment against its advertised input
-modalities. An image requires image support; a PDF document requires PDF
-support; other documents require file support. Unsupported input raises before
-the provider request. Provider-specific file limits and supported MIME types may
-be narrower, so validate those at the upload boundary too.
+Content blocks may also accompany a Tool result. They become visible to the
+model, so apply the same size and disclosure checks as you would for user
+content.
 
-An attachment may contain personal data, secrets, hidden text, active content,
-or adversarial instructions. Treat its content as untrusted model input. Do not
-use a filename, media type, or model description as proof of what the bytes
-contain. Send it only to a provider approved to receive that data, and do not
-grant Tools authority based on claims extracted from it.
-
-Content blocks can also appear in Tool companion content. An ordinary Tool
-still runs with application authority, while the returned image or document is
-model-visible. Apply the same disclosure and size rules to Tool results.
-
-Continue with [Tools](tools.md) when a structured decision should call
-application code, and [Choose Models and Providers](models_and_providers.md)
-when a modality or structured-output strategy must influence routing.
+Continue with [Compose Agents](assemblies.md) to route a checked result through
+several participants, or [Tools](tools.md) when the result should call Ruby
+code.

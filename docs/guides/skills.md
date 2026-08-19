@@ -1,127 +1,141 @@
 # Give Agents Skills
 
-A Skill is an application-authored instruction package that an Agent discovers
-by name and loads only when it needs the full procedure. Skills keep specialized
-guidance out of every prompt while leaving Tool authority in application code.
+A Skill is a reusable instruction package that an Agent can discover by name
+and load when a task needs it. Skills keep specialized procedures out of the
+Agent's main prompt.
 
 ## Write one focused skill
 
-Create `app/skills/refund_policy/SKILL.md`:
+Create `app/skills/refund_guide/SKILL.md`:
 
 ```markdown
 ---
-name: refund_policy
-description: Determine which refund policy applies to a customer request.
+name: refund_guide
+description: Determine which refund guidance applies to a customer request.
 allowed-tools:
   - help_center_lookup
 compatibility: Requires the refunds help-center collection.
 ---
 
-# Apply the refund policy
+# Apply the refund guidance
 
 1. Load the current refund entry with `help_center_lookup`.
-2. Compare the purchase date and item category with the returned policy.
+2. Compare the purchase date and item category with the returned guidance.
 3. State which facts support the decision and which facts are still missing.
-4. Do not approve or issue a refund; return the analysis to the application.
+4. Return the analysis to the application instead of issuing a refund.
 ```
 
 Each immediate child of a configured skill root may contain one `SKILL.md`.
-Front matter requires a single-line `name` and `description`. Names contain only
-letters, numbers, underscores, and hyphens. `allowed-tools` and `compatibility`
-are optional metadata shown to the model.
+Front matter requires a single-line `name` and `description`. Names contain
+only letters, numbers, underscores, and hyphens. `allowed-tools` and
+`compatibility` are optional information shown to the model.
 
-Resources may live in `references/`, `scripts/`, or `assets/` beneath the skill
-directory. Keep the main instructions focused and direct the model to a resource
-only when the task needs it.
+A Skill may also include supporting files in `references/`, `scripts/`, or
+`assets/`. Keep the main instructions short and point to a resource only when
+the task needs it.
 
-## Enable discovery on an Agent
+## Let an Agent discover skills
 
 The conventional root is `app/skills`:
 
 ```ruby
 class CustomerSupportAgent < LittleGhost::Agent
-  system_prompt "Use the available skill when a request needs a documented procedure."
+  system_prompt "Use an available skill when a request needs a documented procedure."
   tools HelpCenterLookupTool
   skills
 end
 ```
 
-At runtime, the Agent's system message receives a short escaped catalog of
-names, descriptions, and locations. The `skills` Tool loads the selected
-instructions. An empty catalog adds neither discovery text nor a Tool.
+At runtime, the Agent receives a short catalog of skill names, descriptions,
+and locations. The generated `skills` Tool loads the full instructions when
+the model selects one. An empty catalog adds nothing to the prompt and no Tool.
 
-Use an explicit trusted root when the skills live elsewhere:
+You can use another application-owned directory or expose only selected
+skills:
 
 ```ruby
 class CustomerSupportAgent < LittleGhost::Agent
   skills paths: [File.expand_path("../../support_skills", __dir__)],
-    only: %w[refund_policy]
+    only: %w[refund_guide]
 end
 ```
 
-Paths may also come from a callable resolved for each Run. That callable is
-trusted application policy: derive its choice from authenticated tenant or
-deployment configuration, never from a model-supplied path.
+Paths may also come from a callable resolved for each Run. Build the path from
+application configuration, not from a path supplied by the model or request.
 
-## Keep instructions separate from authority
+## Pair instructions with Tools
 
-`allowed-tools` documents what a Skill expects; it does not install, enable, or
-authorize those Tools. The Agent's Tool declarations decide what is available,
-and each Tool must authorize its own operation from application-established
-identity and context.
+`allowed-tools` tells the model which Tools a Skill expects. It doesn't add or
+enable those Tools. The Agent's `tools` declaration remains the source of what
+the model can call, and each Tool applies its normal application checks.
 
-A Skill can be wrong, stale, or manipulated just like any other prompt input.
-It must not be able to grant filesystem access, expose credentials, relax
-Sandbox policy, select an unapproved provider, or bypass a Tool's validation.
-Review a skill change with the same care as code that changes model behavior.
+This separation makes Skills safe to use as guidance: changing a Markdown file
+can change what the Agent tries, but it can't grant a new Tool, provider,
+filesystem path, or credential.
 
-Keep configured roots application-owned and non-user-writable. The catalog
-rejects symbolic-link escapes and bounds skill counts, file sizes, resource
-counts, and resource depth, but those checks do not make an untrusted author
-safe.
+> **Safety note:** Keep configured skill directories under application control
+> and review Skill changes as prompt changes. A Skill can contain mistaken or
+> outdated instructions, so application code should continue to check any
+> operation that has side effects.
 
-## Expose stable resource locations
+## Make resources available to code mode
 
-Without a `skill_resource_root`, catalog locations are process-visible paths.
-When model-authored code needs resources, map the skill root into a Workspace
-and expose a model-visible reference:
+Ordinary Skill loading needs no Workspace configuration. If model-authored code
+also needs to read Skill resources, give those resources a stable model-visible
+location:
 
 ```ruby
+require "fileutils"
+require "tmpdir"
+
+skill_root = File.expand_path("../../app/skills", __dir__)
+
 LittleGhost.configure do |config|
-  config.skill_paths = ["app/skills"]
+  config.skill_paths = [skill_root]
   config.skill_resource_root = "workspace://skills"
+
+  config.workspace = lambda do |**|
+    root = Dir.mktmpdir("little-ghost-skills-")
+    LittleGhost::Workspace.new(
+      root:,
+      paths: {skills: skill_root},
+      teardown: lambda do |workspace:, **|
+        FileUtils.remove_entry_secure(workspace.root) if File.exist?(workspace.root)
+      end
+    )
+  end
+
+  config.sandbox = {
+    provider: :native,
+    files: {root: :read_write, skills: :read_only},
+    root_filesystem: :isolated,
+    network: :none
+  }
 end
 ```
 
-The current Workspace must map the `skills` name to every configured skill root,
-and the bound Sandbox must expose it through a read-only file grant. LittleGhost
-rejects writable Tool-visible aliases it can identify. The application must
-also ensure an outer container or mount namespace does not expose the same
-physical files through another writable path.
+The named Workspace path maps the configured Skill directory, and the Sandbox
+makes it readable without allowing model-authored code to change it. The model
+can then ask the Filesystem Tool for a path such as
+`workspace://skills/refund_guide/references/example.md` without learning the
+host's directory layout. [Workspaces and Sandboxes](sandboxing.md) explains how
+to adapt the temporary root, backend, and other grants for your application.
 
-A `workspace://skills/refund_policy/references/example.md` reference describes
-where a model can ask the Filesystem Tool to read a resource. It does not give
-arbitrary Ruby code or a process new authority.
+## Write instructions that stand on their own
 
-## Make a skill operationally complete
+A useful Skill tells the Agent:
 
-A useful skill tells the Agent:
+- When the procedure applies.
+- Which information it needs before deciding.
+- Which named Tools or resources help.
+- What result the caller expects.
+- Which action remains with the application.
+- What to do when information is missing or conflicts.
 
-- When the procedure applies and when it does not.
-- Which evidence to collect before deciding.
-- Which named Tools or resources it may need.
-- What output or handoff the caller expects.
-- Which action remains application-owned.
-- How to handle missing, conflicting, or stale information.
+Use direct instructions and stable domain language. Avoid repeating the
+Agent's general prompt or relying on Tool behavior that the Tool description
+doesn't promise.
 
-Use direct instructions and stable domain language. Avoid restating the Agent's
-general prompt, embedding credentials, relying on undocumented Tool behavior,
-or telling the model to ignore higher-priority instructions.
-
-Before release, load the catalog in a test, confirm the expected skill names,
-inspect `discovery_prompt`, activate each changed skill through the generated
-Tool, and verify every listed resource resolves inside the intended boundary.
-
-Continue with [Tools](tools.md) for validation and authorization, and
-[Workspaces and Sandboxes](sandboxing.md) when a skill's resources must be
-available to model-authored code.
+Continue with [Workspaces and Sandboxes](sandboxing.md) when model-authored code
+needs Skill resources. See [Tools](tools.md) for Tool validation, bindings, and
+side effects.

@@ -1,8 +1,8 @@
 # Choose Models and Providers
 
-A model role lets application code ask for a capability such as customer
-support without depending on one vendor or model identifier. A provider
-connection holds the trusted configuration needed to perform that request.
+An Agent needs a model target: a configured provider connection plus the
+provider's model identifier. You can write that target directly while getting
+started, then give it an application-facing name when several Agents share it.
 
 ## Start with one direct target
 
@@ -15,14 +15,14 @@ class CustomerSupportAgent < LittleGhost::Agent
 end
 ```
 
-`openrouter` is the application-configured connection. The remainder is the
-provider-owned model identifier. This form is useful while one Agent owns one
-stable choice.
+`openrouter` names a connection configured by the application. The remainder
+is the model identifier understood by that provider. This is a good fit when
+one Agent owns one stable choice.
 
-## Name the choice with a model role
+## Give shared choices a role
 
-Use a role when several Agents share a choice or the application must change
-models without editing those Agents:
+A model role lets several Agents share a choice without knowing its provider
+or model identifier:
 
 ```ruby
 LittleGhost.configure do |config|
@@ -46,12 +46,11 @@ class CustomerSupportAgent < LittleGhost::Agent
 end
 ```
 
-The role is `customer_support`; the provider connection is `primary`; the
-adapter is `openrouter`. Keeping those names distinct makes it possible to move
-a role between connections while leaving Agent definitions unchanged.
+Here `customer_support` is the role, `primary` is the connection, and
+`openrouter` is the adapter. You can move the role to another model or provider
+without editing the Agent.
 
-Profile settings are defaults. Trusted per-request settings passed to `.ask`
-take precedence:
+Profile settings are defaults. An individual call can override them:
 
 ```ruby
 run = CustomerSupportAgent.ask(
@@ -60,34 +59,28 @@ run = CustomerSupportAgent.ask(
 )
 ```
 
-Do not pass unchecked request parameters directly into `settings`. They can
-change model cost and behavior and therefore belong to application policy.
+Build these settings in application code instead of passing request parameters
+through unchanged. Settings can affect cost, latency, and model behavior.
 
-## Configure provider connections, not credentials in Agents
+## Configure connections in one place
 
 LittleGhost includes adapters for OpenRouter, OpenAI-compatible APIs,
-Anthropic, Gemini, Vertex AI, and Bedrock. Provider connections may live in the
-initializer above or in the conventional files under `config/little_ghost`.
-Keep credentials in the application's secret manager and out of Agent classes,
-prompts, repositories, logs, and client responses.
+Anthropic, Gemini, Vertex AI, and Bedrock. Connections may live in an
+initializer or in the conventional files under `config/little_ghost`.
 
-Provider connections and model profiles serve different trust boundaries:
+Keep credentials in your application's secret manager. Agents refer to a role
+or configured connection; they don't need to contain credentials. If your
+application obtains short-lived credentials at runtime, configure a credential
+resolver that returns them for the selected connection.
 
-- A connection selects an adapter, endpoint, credentials, and other transport
-  configuration.
-- A profile selects a connection-backed target and trusted model settings.
-- A model role is the application-facing name an Agent declares.
-- A caller message can influence what the model does, but must not select
-  credentials or an unapproved endpoint.
+> **Safety note:** The selected provider may receive system instructions,
+> caller input, conversation history, Tool results, schemas, and attachments.
+> Choose a provider that is appropriate for that data, and keep credentials and
+> provider endpoints under application control.
 
-For applications that rotate or obtain credentials at runtime, configure a
-trusted credential resolver rather than putting secrets in a profile. Its
-return value is merged into the selected provider connection when the model is
-constructed. Keep the resolver independent from model-controlled input.
+## Choose a role for each request
 
-## Choose dynamically only from trusted policy
-
-An Agent may choose a model from its `Invocation`:
+An Agent can select between configured roles using its `Invocation`:
 
 ```ruby
 class CustomerSupportAgent < LittleGhost::Agent
@@ -97,12 +90,11 @@ class CustomerSupportAgent < LittleGhost::Agent
 end
 ```
 
-Populate `premium_account` from authenticated application state. Do not accept
-a raw `provider:model-id` value from a public request unless the application
-first maps it through an explicit allowlist. Model selection affects where
-prompts, history, attachments, and tool results leave your system.
+Set `premium_account` from application state when creating the invocation. If
+a public request offers a model choice, map that choice to one of your
+configured roles rather than accepting an arbitrary provider target.
 
-An inline selection is also supported for trusted code:
+Trusted application code may also declare a selection inline:
 
 ```ruby
 class ResearchAgent < LittleGhost::Agent
@@ -114,35 +106,20 @@ class ResearchAgent < LittleGhost::Agent
 end
 ```
 
-Here `provider` still names a configured connection. Inline settings do not
-create or authorize a new connection.
+`provider` still names a configured connection. The inline settings change the
+selection; they don't create a new connection.
 
-## Treat model metadata as capability information
+## Use model capabilities
 
-`LittleGhost::ModelResolver` resolves a role or target into an executable
-`LittleGhost::Model`. Its catalog supplies metadata such as supported input
-modalities, output limits, and structured-output capabilities. LittleGhost uses
-those facts to reject unsupported attachments, clamp configured output limits,
-and select a structured-result strategy.
+`LittleGhost::ModelResolver` turns a role or target into an executable
+`LittleGhost::Model`. Its catalog describes capabilities such as supported
+input types, output limits, and structured results. LittleGhost uses that
+information to reject unsupported attachments, constrain output limits, and
+choose a structured-result strategy.
 
-Remote metadata can become stale or unavailable. Treat it as capability and
-routing information, not as an authorization decision or a promise that a
-provider will accept every request. Handle failed Runs and provider errors at
-the application boundary.
+Provider capabilities can change. Handle failed Runs and provider errors even
+when the catalog says a feature is supported.
 
-## Review the data path
-
-The selected external provider may receive system and developer instructions,
-caller input, conversation history, tool results, structured-output schemas,
-and attachments. Before enabling a provider or model, review its retention,
-training, data-residency, regional, and logging policies for the data your
-application sends.
-
-Use application code for guarantees. A prompt can guide model behavior; it
-cannot enforce authorization, spending limits, tenant isolation, or a required
-output shape by itself.
-
-Continue with [Structured Outputs and Content](structured_outputs_and_content.md)
-to validate result shapes and send images or documents through a selected
-model. See [Running in Production](production.md) for configuration precedence,
-sessions, lifecycle, and observability.
+Continue with [Prompts as Views](prompt_views.md) when an Agent's instructions
+outgrow one string. See [Structured Results and Content](structured_outputs_and_content.md)
+when you need checked result shapes, images, or documents.

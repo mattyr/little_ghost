@@ -38,6 +38,31 @@ class LittleGhostDocsTest < Minitest::Test
     )
   end
 
+  def test_homepage_points_coding_agents_to_the_discovery_file
+    homepage = File.read(File.expand_path("../site/index.html", __dir__))
+
+    assert_includes homepage, "Using a coding agent?"
+    assert_includes homepage, '<a href="./llms.txt">'
+    assert_includes homepage, "https://mattyr.github.io/little_ghost/llms.txt"
+  end
+
+  def test_guides_follow_the_reader_journey
+    assert_equal [
+      "Getting Started",
+      "Core Concepts",
+      "Models and Providers",
+      "Prompts as Views",
+      "Tools",
+      "Structured Results and Content",
+      "Compose Agents",
+      "Skills",
+      "Workspaces and Sandboxes",
+      "Code Mode",
+      "Integrations",
+      "Running in Production"
+    ], LittleGhostDocs::GUIDES.map { |guide| guide.fetch(:title) }
+  end
+
   def test_snapshot_adds_edge_selector_assets_and_catalog_location
     Dir.mktmpdir("little-ghost-docs") do |directory|
       site = build_site(directory, "site", version: "0.3.0")
@@ -48,12 +73,12 @@ class LittleGhostDocsTest < Minitest::Test
       agent = File.read(File.join(site, "docs", "LittleGhost", "Agent.html"))
       assert_includes homepage, 'data-current-version="edge"'
       assert_includes homepage, 'data-versions-url="versions.json"'
-      assert_includes homepage, '<link rel="alternate" type="text/markdown" href="https://littleghostai.org/index.md">'
+      assert_includes homepage, '<link rel="alternate" type="text/markdown" href="https://mattyr.github.io/little_ghost/index.md">'
       assert_includes homepage, 'class="docs-markdown-link visually-hidden"'
       refute_includes homepage, "data-docs-version-notice"
       assert_includes agent, 'data-current-page="docs/LittleGhost/Agent.html"'
       assert_includes agent, 'data-versions-url="../../versions.json"'
-      assert_includes agent, '<link rel="canonical" href="https://littleghostai.org/docs/LittleGhost/Agent.html">'
+      assert_includes agent, '<link rel="canonical" href="https://mattyr.github.io/little_ghost/docs/LittleGhost/Agent.html">'
       assert_path_exists File.join(site, "assets", "version-selector.css")
       assert_path_exists File.join(site, "assets", "version-selector.js")
     end
@@ -69,10 +94,10 @@ class LittleGhostDocsTest < Minitest::Test
       agent = File.read(File.join(site, "docs", "LittleGhost", "Agent.html"))
       assert_includes homepage, 'data-current-version="0.2.0"'
       assert_includes homepage, 'data-versions-url="../../versions.json"'
-      assert_includes homepage, "https://littleghostai.org/versions/0.2.0/"
-      assert_includes homepage, 'href="https://littleghostai.org/versions/0.2.0/index.md"'
+      assert_includes homepage, "https://mattyr.github.io/little_ghost/versions/0.2.0/"
+      assert_includes homepage, 'href="https://mattyr.github.io/little_ghost/versions/0.2.0/index.md"'
       assert_includes agent, 'data-versions-url="../../../../versions.json"'
-      assert_includes agent, '<link rel="canonical" href="https://littleghostai.org/versions/0.2.0/docs/LittleGhost/Agent.html">'
+      assert_includes agent, '<link rel="canonical" href="https://mattyr.github.io/little_ghost/versions/0.2.0/docs/LittleGhost/Agent.html">'
     end
   end
 
@@ -169,7 +194,7 @@ class LittleGhostDocsTest < Minitest::Test
     end
   end
 
-  def test_snapshot_adds_markdown_alternates_to_an_already_decorated_release
+  def test_snapshot_adds_markdown_alternates_idempotently
     Dir.mktmpdir("little-ghost-docs") do |directory|
       release = build_site(directory, "release", version: "1.0.0")
       snapshot = LittleGhostDocs::Snapshot.new(release, id: "1.0.0", base_path: "versions/1.0.0")
@@ -177,7 +202,6 @@ class LittleGhostDocsTest < Minitest::Test
       snapshot.decorate!
       agent_path = File.join(release, "docs", "LittleGhost", "Agent.html")
       first = File.read(agent_path)
-      File.write(agent_path, first.gsub(LittleGhostDocs::SITE_URL, LittleGhostDocs::LEGACY_SITE_URL))
       snapshot.decorate!
       second = File.read(agent_path)
       snapshot.decorate!
@@ -185,9 +209,8 @@ class LittleGhostDocsTest < Minitest::Test
 
       assert_equal first, second
       assert_equal second, third
-      refute_includes second, LittleGhostDocs::LEGACY_SITE_URL
-      assert_includes second, '<link rel="alternate" type="text/markdown" href="https://littleghostai.org/versions/1.0.0/docs/LittleGhost/Agent.md">'
-      assert_includes second, 'href="https://littleghostai.org/versions/1.0.0/docs/LittleGhost/Agent.md" aria-hidden="true"'
+      assert_includes second, '<link rel="alternate" type="text/markdown" href="https://mattyr.github.io/little_ghost/versions/1.0.0/docs/LittleGhost/Agent.md">'
+      assert_includes second, 'href="https://mattyr.github.io/little_ghost/versions/1.0.0/docs/LittleGhost/Agent.md" aria-hidden="true"'
     end
   end
 
@@ -468,6 +491,7 @@ class LittleGhostDocsTest < Minitest::Test
       File.write(File.join(site, "index.html"), homepage("0.1.0"))
       File.write(File.join(site, "docs", "index.html"), docs_page("Docs", "0.1.0"))
       File.write(File.join(site, "docs", "LittleGhost", "Agent.html"), docs_page("Agent", "0.1.0"))
+      LittleGhostDocs::Snapshot.new(site, id: "0.1.0", base_path: "versions/0.1.0").decorate!
 
       LittleGhostDocs::MarkdownSite.build_from_source(
         source_root: source,
@@ -482,23 +506,37 @@ class LittleGhostDocsTest < Minitest::Test
         id: "0.1.0",
         base_path: "versions/0.1.0"
       )
+      LittleGhostDocs::Snapshot.new(site, id: "0.1.0", base_path: "versions/0.1.0").decorate!
 
       docs_home = File.read(File.join(site, "docs", "index.md"))
+      homepage_markdown = File.read(File.join(site, "index.md"))
+      getting_started = File.read(File.join(site, "docs", "getting_started.md"))
       agent = File.read(File.join(site, "docs", "LittleGhost", "Agent.md"))
+      api_index_html = File.read(File.join(site, "docs", "api.html"))
       discovery = File.read(File.join(site, "llms.txt"))
+      assert_equal 1, docs_home.scan(/^# /).length
+      assert_equal 1, getting_started.scan(/^# /).length
       assert_includes docs_home, "(getting_started.md)"
-      assert_includes docs_home, "Canonical HTML: https://littleghostai.org/versions/0.1.0/docs/"
+      assert_includes docs_home, "Canonical HTML: https://mattyr.github.io/little_ghost/versions/0.1.0/docs/"
+      assert_includes homepage_markdown, "https://mattyr.github.io/little_ghost/versions/0.1.0/llms.txt"
+      assert_includes homepage_markdown, "](llms.txt)"
       assert_includes docs_home, "(legacy_guide.md)"
       assert_includes docs_home, "(LittleGhost/Agent.md)"
       refute_includes docs_home, "rdoc-ref:"
       assert_includes agent, '<a id="method-i-ask"></a>'
       assert_includes agent, "#ask(message)"
-      assert_includes discovery, "https://littleghostai.org/versions/0.1.0/docs/LittleGhost/Agent.md"
+      assert_includes api_index_html, 'data-current-page="docs/api.html"'
+      assert_includes api_index_html, 'href="https://mattyr.github.io/little_ghost/versions/0.1.0/docs/api.md"'
+      refute_includes api_index_html, 'href="https://mattyr.github.io/little_ghost/versions/0.1.0/docs/index.md"'
+      assert_includes api_index_html, 'name="description" content="Browse LittleGhost&#39;s public classes, modules, methods, and signatures."'
+      assert_includes api_index_html, 'property="og:title" content="LittleGhost API index"'
+      assert_includes api_index_html, 'name="twitter:title" content="LittleGhost API index"'
+      assert_includes discovery, "https://mattyr.github.io/little_ghost/versions/0.1.0/docs/LittleGhost/Agent.md"
       assert_equal first_full_text, File.read(File.join(site, "llms-full.txt"))
-      assert_equal 1, first_full_text.scan("Source: https://littleghostai.org/versions/0.1.0/docs/LittleGhost/Agent.md").length
+      assert_equal 1, first_full_text.scan("Source: https://mattyr.github.io/little_ghost/versions/0.1.0/docs/LittleGhost/Agent.md").length
       assert_path_exists File.join(site, "docs", "legacy_guide.md")
       assert_includes File.read(File.join(site, "docs", "getting_started.md")), "(legacy_guide.md)"
-      assert_includes first_full_text, "Source: https://littleghostai.org/versions/0.1.0/docs/legacy_guide.md"
+      assert_includes first_full_text, "Source: https://mattyr.github.io/little_ghost/versions/0.1.0/docs/legacy_guide.md"
     end
   end
 
@@ -519,6 +557,38 @@ class LittleGhostDocsTest < Minitest::Test
     assert anchors["method-i-run"]
   end
 
+  def test_markdown_anchors_ignore_fenced_code
+    anchors = LittleGhostDocs.markdown_anchors(<<~MARKDOWN)
+      ```ruby
+      # Not a heading
+      <a id="not-an-anchor"></a>
+      ```
+
+      ~~~~text
+      ## Still not a heading
+      ~~~~
+
+      ## Real heading
+      <a id="real-anchor"></a>
+    MARKDOWN
+
+    refute anchors["not-a-heading"]
+    refute anchors["not-an-anchor"]
+    refute anchors["still-not-a-heading"]
+    assert anchors["real-heading"]
+    assert anchors["real-anchor"]
+  end
+
+  def test_public_documentation_urls_stop_at_markdown_link_delimiters
+    markdown = "[full docs](https://mattyr.github.io/little_ghost/versions/0.1.0/llms.txt) " \
+      "[`llms.txt`](https://mattyr.github.io/little_ghost/versions/0.1.0/llms.txt)"
+
+    assert_equal [
+      "https://mattyr.github.io/little_ghost/versions/0.1.0/llms.txt",
+      "https://mattyr.github.io/little_ghost/versions/0.1.0/llms.txt"
+    ], markdown.scan(LittleGhostDocs::PUBLIC_DOCUMENTATION_URL_PATTERN)
+  end
+
   def test_workflows_rebuild_the_complete_site_without_a_persistent_branch
     docs_workflow = File.read(File.expand_path("../.github/workflows/docs.yml", __dir__))
     release_workflow = File.read(File.expand_path("../.github/workflows/release.yml", __dir__))
@@ -530,6 +600,10 @@ class LittleGhostDocsTest < Minitest::Test
     assert_includes docs_workflow, "event=push"
     assert_includes docs_workflow, "Require the current published release set"
     assert_includes docs_workflow, "little-ghost-documentation-publish"
+    refute_includes docs_workflow, "setup-node"
+    refute_includes docs_workflow, "npm"
+    refute_includes docs_workflow, "cloudflare"
+    refute_includes docs_workflow, "wrangler"
     refute_includes docs_workflow, "docs-archive"
     assert_includes release_workflow, 'gh workflow run docs.yml --ref main -f expected_release="$GITHUB_REF_NAME"'
     refute_includes release_workflow, "bundle exec rake site:build_all"

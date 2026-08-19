@@ -2,7 +2,8 @@
 
 Code mode lets an Agent solve a multi-step Tool task in one small program. The
 model can gather independent results, filter them, and combine them before it
-returns to the conversation. Tool authorization stays in your Ruby application.
+returns to the conversation. Your Ruby Tools keep their usual permission
+checks.
 
 Start by adding code mode to an Agent that already has a Tool:
 
@@ -66,27 +67,26 @@ model
 exec ──> sandboxed Ruby process
              │ tools.help_center_lookup(...)
              ▼
-          Tool broker in the trusted parent
+          Tool broker in the parent Ruby process
              │ normal Tool execution
              ▼
           HelpCenterLookupTool#call
 ```
 
-The Tool broker receives interpreter calls in the trusted parent process. It
+The Tool broker receives interpreter calls in the parent Ruby process. It
 accepts only Tools registered on the Agent, then sends each call through the
-same validation, authorization, limits, callbacks, events, and tracing used by
+same validation, permission checks, limits, callbacks, events, and tracing used by
 an ordinary Tool call.
 
 Public streams show the brokered Tools by name. They omit the `exec`, `wait`,
 and `stop` bookkeeping. Traces still record the control operation around its
 nested Tool calls, so you can follow the complete execution.
 
-Code mode does not make an unsafe Tool safe. A Tool still runs with your
-application's authority. Filesystem and process access are contained only when
-the Tool delegates that work through an enforcing Sandbox. Read
-[Tools](tools.md) for the Tool boundary and
-[Workspaces and Sandboxes](sandboxing.md) for the process boundary before you
-enable untrusted programs.
+Code mode does not change what a Tool can do. A Tool still runs as application
+code, while the generated program runs in the configured Sandbox. Read
+[Tools](tools.md) for Tool permission checks and [Workspaces and
+Sandboxes](sandboxing.md) before giving generated programs file or process
+access.
 
 ## Compose Tool calls with Ruby
 
@@ -195,14 +195,14 @@ end
 ```
 
 Bubblewrap owns the program's process tree but does not cap its process or thread
-count. Use an outer cgroup or container supervisor when untrusted code needs a
+count. Use an outer cgroup or container supervisor when generated code needs a
 hard task-count limit.
 
 Application defaults apply to every Agent that declares `code_mode`. An Agent
 can override the engine, Sandbox, limits, or excluded Tools in its own
 declaration.
 
-The operating-system Sandbox contains the interpreter. The trusted parent
+The operating-system Sandbox contains the interpreter. The parent Ruby process
 starts it, brokers Tool calls, and cleans it up. Language restrictions alone
 cannot contain native extensions, interpreter bugs, files, subprocesses, or
 sockets.
@@ -237,8 +237,8 @@ complete early. Call `text(value)` first when the value should become
 user-visible output.
 
 MiniRacer's language-level restrictions are useful, but the operating-system
-Sandbox remains the containment boundary. The Ruby parent still owns the Tool
-catalog, authorization, budgets, events, tracing, and resource lifecycle.
+Sandbox still contains the program. The Ruby parent owns the Tool catalog,
+permission checks, budgets, events, tracing, and resource lifecycle.
 
 ## Build a custom engine
 
@@ -248,7 +248,7 @@ language, writes the instructions shown to the model, and opens a
 `#close`. The first three operations return a `CodeMode::ProgramResult`.
 
 LittleGhost gives the engine a Tool broker and a Sandbox factory. The broker
-must stay in the trusted parent process. The factory creates the Sandbox that
+stays in the parent Ruby process. The factory creates the Sandbox that
 contains model-written code. An engine may request named runtime paths for its
 interpreter libraries. Those paths are visible to the child process, but they
 never become filesystem grants available through Tools.
@@ -259,10 +259,10 @@ LittleGhost may use one registered engine instance for concurrent Agent Runs,
 so the engine must keep each program's mutable state inside its session.
 
 A sandboxed engine must use a backend that owns the complete child process tree
-or can enforce a no-child-process policy. An explicitly unrestricted backend
-may run an engine, but it does not provide containment.
+or can prevent child processes. An explicitly unrestricted backend may run an
+engine, but the generated program then has the same host access as the parent.
 
 See `LittleGhost::CodeMode::Engine`, `LittleGhost::CodeMode::Session`, and
-`LittleGhost::CodeMode::ProgramResult` for the extension contract. For
-deployment-wide ownership and observability, continue with
-[Running in Production](production.md).
+`LittleGhost::CodeMode::ProgramResult` for the extension contract. Continue
+with [Integrations](integrations.md) to connect Runs to MCP tools, AG-UI, and
+OpenTelemetry.

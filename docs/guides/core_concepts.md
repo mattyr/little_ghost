@@ -53,9 +53,11 @@ class HelpCenterLookupTool < LittleGhost::Tool
 end
 ```
 
-LittleGhost checks the model's arguments, calls the tool, and gives the result back to the model. The schema checks shape, not permission. Authorize sensitive reads and actions inside the tool with trusted application context.
+LittleGhost checks the model's arguments, calls the Tool, and gives the result
+back to the model. The schema checks shape, not permission. Check permission
+inside the Tool using identity and account information from your application.
 
-[Tools](tools.md) follows that boundary from model input to application code,
+[Tools](tools.md) follows that path from model input to application code,
 including run-scoped bindings, concurrency, retries, and sandbox delegation.
 
 ## A Run owns one top-level execution
@@ -85,7 +87,9 @@ Run
 └── Agent and Tools ──> RunResult
 ```
 
-An **Invocation** is the request in LittleGhost's standard shape. Its `context` contains current request values supplied by your application. A Tool can read those values through `run.invocation.context` when it authorizes work.
+An **Invocation** is the request in LittleGhost's standard shape. Its `context`
+contains current request values supplied by your application. A Tool can read
+those values through `run.invocation.context` when it checks permission.
 
 A **Session** stores conversation state between Runs when persistence is
 configured. The **RunContext** carries mutable working state in `context.state`
@@ -93,7 +97,11 @@ during one Run. LittleGhost loads saved Session state before adding the current
 Invocation context. Recheck saved values before using them for permission
 decisions.
 
-A Tool's **Binding** gives the Tool access to objects created for this run, including the Agent, Run, workspace, and sandbox. These objects are separate from the arguments chosen by the model. [Tools](tools.md) explains the binding and application authority; [Workspaces and Sandboxes](sandboxing.md) explains which delegated operations cross the process boundary.
+A Tool's **Binding** gives the Tool access to objects created for this run,
+including the Agent, Run, Workspace, and Sandbox. These objects are separate
+from arguments chosen by the model. [Tools](tools.md) explains the binding;
+[Workspaces and Sandboxes](sandboxing.md) explains delegated files and child
+processes.
 
 The final **RunResult** keeps the complete assembly result. Its `text` is the final text answer. Its `output` returns structured data when the Agent declared a result schema, and text otherwise. The top-level `Run#response` is always the caller-facing text.
 
@@ -110,9 +118,13 @@ Top-level calls normally return a Run, even when execution fails. The terminal e
 | Tool input or a `ToolError` failed | The model may recover | No terminal event by itself | Gives a safe error result back to the model |
 | Input, configuration, or resources failed before a Run could start | No Run exists | None | Raises the exception |
 
-Unexpected Tool exception messages are hidden from the model. The original exception remains available to trusted application callbacks and diagnostics.
+Unexpected Tool exception messages are hidden from the model. The original
+exception remains available to application callbacks and diagnostics.
 
-Failures while closing resources, delivering events, or reporting instrumentation sit outside the normal result path. They raise a Ruby exception because LittleGhost can no longer promise that it delivered a clean ending. [Running in Production](production.md) covers that boundary where applications supervise and shut down work.
+Failures while closing resources, delivering events, or reporting
+instrumentation sit outside the normal result path. They raise a Ruby exception
+because LittleGhost can no longer promise that it delivered a clean ending.
+[Running in Production](production.md) covers supervision and shutdown.
 
 ## An Assembly can look like one Agent
 
@@ -197,7 +209,10 @@ class ProblemSolverSwarm < LittleGhost::Swarm
 end
 ```
 
-A Swarm is intentionally agent-to-agent. Its members are Agents, not other kinds of Assembly. Caller history and application context stay hidden unless a member opts in. Treat every handoff message as untrusted model input.
+A Swarm is intentionally agent-to-agent. Its members are Agents, not other
+kinds of Assembly. Caller history and application context stay hidden unless a
+member opts in. A handoff message comes from another model, so a receiving
+Agent should use it as context rather than proof that an action is permitted.
 
 ### Graphs make routes visible
 
@@ -243,4 +258,6 @@ explains builders, detailed routing records, and live events from nested Agents.
 
 The pieces now fit together: Agents define behavior. Tools connect them to Ruby. Runs record one execution. Assemblies let the system grow without changing the caller.
 
-Continue with [Compose Agents](assemblies.md) to put several agents to work together. If you are ready to connect the feature to a real application, jump to [Running in Production](production.md).
+Continue with [Models and Providers](models_and_providers.md) to choose model
+targets and configure provider connections. When you need several agents to
+work together, [Compose Agents](assemblies.md) builds on the same concepts.

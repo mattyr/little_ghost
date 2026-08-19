@@ -8,7 +8,7 @@ module LittleGhost
     #
     # Redaction is a defense-in-depth aid, not proof that arbitrary
     # sensitive content is safe to export. Applications should add known secret
-    # values and keep telemetry within an appropriate trust boundary.
+    # values and send telemetry only to the intended destination.
     class Redactor
       SENSITIVE_KEY = /(authorization|api[_-]?key|credential|password|secret|(?:^|[_-])token(?:$|[_-])|cookie|private[_-]?key)/i # :nodoc:
       SECRET_PATTERNS = [

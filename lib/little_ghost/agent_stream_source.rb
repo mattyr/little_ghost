@@ -65,7 +65,7 @@ module LittleGhost
   # Describes which Agent produced an event during a Run.
   #
   # A +:agent_stream+ StreamEvent carries this value in +data[:source]+ and the
-  # Agent's detached, deeply immutable StreamEvent snapshot in +data[:event]+.
+  # Agent's event as a separate frozen StreamEvent in +data[:event]+.
   # +assembly_path+ is empty for a top-level Agent and contains one
   # AgentStreamStep for each enclosing composite assembly participant.
   class AgentStreamSource < Data # :doc:

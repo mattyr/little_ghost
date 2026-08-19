@@ -1,10 +1,10 @@
 # Connect MCP, AG-UI, and OpenTelemetry
 
-LittleGhost's integration layers connect the same Agent and Run lifecycle to
-remote Tools, interactive interfaces, and tracing systems. Each one crosses a
-different trust boundary; enable only the data flow the application needs.
+LittleGhost can load Tools from an MCP server, translate a Run stream for an
+interactive interface, and publish lifecycle traces. Each integration uses the
+same Agents and Runs you already have.
 
-## Use MCP Tools through one trusted client
+## Load Tools from an MCP server
 
 Load the optional MCP integration and connect to a Streamable HTTP endpoint:
 
@@ -23,44 +23,39 @@ transport = LittleGhost::MCP::HTTPTransport.new(
 client = LittleGhost::MCP::Client.new(
   transport:,
   prefix: "help_center",
-  rejected_tools: %w[delete_article],
   definition_filter: ->(definition) {
     %w[search fetch].include?(definition.fetch("name"))
   }
 )
 
 class CustomerSupportAgent < LittleGhost::Agent
-  system_prompt "Use help-center tools for published policy facts."
+  system_prompt "Use help-center tools for published guidance."
 end
 
 CustomerSupportAgent.tools(*client.tools)
 run = CustomerSupportAgent.ask("What is the return window?")
 ```
 
-`HTTPTransport` requires HTTPS unless trusted local development explicitly sets
-`allow_insecure_http: true`. It bounds request time and response bytes, accepts
-JSON or server-sent event responses, and retains the negotiated MCP session ID.
-The Client negotiates protocol version `2025-06-18`, paginates tool definitions,
-normalizes names, checks collisions, and turns accepted definitions into
-ordinary `LittleGhost::Tool` instances.
+The Client loads accepted definitions and turns them into ordinary
+`LittleGhost::Tool` instances. `prefix` keeps their model-visible names distinct,
+and `definition_filter` lets this Agent load only the operations it needs.
 
-The wire behavior follows the [MCP 2025-06-18
-specification](https://modelcontextprotocol.io/specification/2025-06-18).
-LittleGhost currently implements the client behavior described by its API; do
-not infer support for every optional protocol capability from the specification.
+`HTTPTransport` uses HTTPS by default, limits response time and size, and keeps
+the negotiated MCP session ID. One transport and Client pair represents one
+authenticated server session, so create separate pairs when callers use
+different server credentials.
 
-MCP definitions, schemas, results, and error messages remain untrusted server
-input. Use `rejected_tools` or `definition_filter` as an application allowlist,
-then apply normal authorization to every resulting capability. Prefixes prevent
-accidental name overlap; they do not create a security boundary.
+> **Safety note:** An MCP server chooses its Tool definitions and results. Load
+> only the operations your application intends to expose. The server must check
+> caller and resource access using the credentials or session attached to this
+> Client; `definition_filter` limits which operations are loaded, but does not
+> authorize them. Use a separate Client when callers need different access.
 
-One transport and Client represent one authenticated server session. Do not
-share the pair across tenants or principals. Scope credential headers to that
-server, set bounded response and pagination limits, and configure server-side
-session expiry when explicit termination is required. LittleGhost does not send
-an MCP session-termination `DELETE` request.
+LittleGhost implements its documented client behavior for the [MCP 2025-06-18
+specification](https://modelcontextprotocol.io/specification/2025-06-18). The
+API reference covers supported protocol options and limits.
 
-## Translate a stream to AG-UI
+## Send a Run stream through AG-UI
 
 The AG-UI adapter converts LittleGhost events into protocol event hashes:
 
@@ -83,30 +78,28 @@ events = LittleGhost::AGUI::Adapter.new.stream(
 events.each { |event| websocket.write(JSON.generate(event)) }
 ```
 
-The adapter is stateless between calls and translates text, reasoning, Tool
-activity, usage, retries, trace context, subagent events, and terminal outcomes.
-It does not authenticate the client, persist a thread, control backpressure, or
-redact the stream.
+The adapter translates text, reasoning, Tool activity, usage, retries, trace
+context, subagent activity, and terminal outcomes. It is stateless between
+calls. Your application still owns the connection, thread storage,
+backpressure, and disconnect behavior.
 
-Use the [AG-UI event documentation](https://docs.ag-ui.com/concepts/events) when
-implementing the consumer. LittleGhost also emits namespaced custom events, so
-clients must preserve or deliberately ignore event types they do not recognize.
+LittleGhost also emits namespaced custom events. Consumers should preserve or
+deliberately ignore event types they don't recognize. See the [AG-UI event
+documentation](https://docs.ag-ui.com/concepts/events) when implementing the
+client.
 
-Provider plaintext reasoning, Tool arguments and results, selected error text,
-invocation metadata, trace context, and subagent data may reach the interface.
-Authorize the user for the complete run, filter fields before transport, apply
-message and rate limits, and use an authenticated encrypted channel. Never use
-an AG-UI `thread_id` as proof of identity or tenant membership.
+> **Safety note:** A Run stream can include model output, Tool arguments and
+> results, errors, and participant activity. Check that the connected user may
+> see the complete Run, then filter fields before sending or storing events.
 
-The source stream runs on the enumerating thread. Handle disconnects by ending
-enumeration and applying the application's cancellation policy; closing a
-socket alone does not undo Tool side effects already performed.
+Enumeration drives the source stream on the current thread. When a client
+disconnects, stop enumerating and apply the cancellation behavior your
+application needs. Closing the socket can't undo Tool work that already ran.
 
-## Export lifecycle spans with OpenTelemetry
+## Trace Runs with OpenTelemetry
 
-LittleGhost includes an OpenTelemetry subscriber. Configure an OpenTelemetry
-SDK and exporter in the application, then register the subscriber before the
-first Agent call:
+Configure an OpenTelemetry SDK and exporter in the application, then register
+the LittleGhost subscriber before the first Agent call:
 
 ```ruby
 LittleGhost.configure do |config|
@@ -114,48 +107,21 @@ LittleGhost.configure do |config|
 end
 ```
 
-LittleGhost depends on `opentelemetry-api`, not a particular SDK, processor, or
-exporter. The subscriber emits GenAI-oriented spans and events for runs, Agents,
-model calls, Tools, assemblies, sessions, usage, and failures. It can propagate
-W3C `traceparent` and `tracestate` fields for active operations.
+LittleGhost depends on `opentelemetry-api`, leaving the SDK, processor, and
+exporter up to the application. It emits spans and events for Runs, Agents,
+model calls, Tools, assemblies, sessions, usage, and failures. Active operations
+can propagate W3C `traceparent` and `tracestate` fields.
+
+Prompts, messages, responses, Tool arguments, and exception content are omitted
+by default. If you intentionally need some of that content, install a
+`LittleGhost::Support::ContentCapture` with a scrubber before enabling capture.
+Avoid putting raw user, order, session, or request IDs in span attributes.
 
 Attribute names follow the evolving [OpenTelemetry GenAI semantic
 conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/) where they
-apply. Treat dashboards and alerts as versioned integrations rather than
-assuming every backend interprets those attributes identically.
+apply. Flush or shut down `LittleGhost::Instrumentation` during application
+shutdown when your backend buffers data.
 
-Prompts, messages, responses, Tool arguments, and exception content are omitted
-by default. They appear only when the process installs an explicit
-`LittleGhost::Support::ContentCapture` policy. Keep capture disabled unless the
-application has a reviewed scrubber, retention policy, access controls, and an
-export destination approved for that data.
-
-Avoid high-cardinality attributes such as raw user, order, session, or request
-IDs. A telemetry exporter is an external data recipient; its endpoint,
-credentials, sampling, retention, and regional behavior need the same review as
-a model provider. Flush or shut down `LittleGhost::Instrumentation` during
-application shutdown when the configured backend buffers data.
-
-## Keep the boundaries independent
-
-These integrations do not implicitly protect one another:
-
-```text
-MCP server ──untrusted tools and results──> trusted Tool boundary
-Run stream ──potentially sensitive events──> authorized AG-UI client
-Lifecycle ──selected attributes and content──> telemetry backend
-```
-
-A Sandbox policy does not contain the MCP HTTP request, AG-UI transport, or
-telemetry exporter; they run through trusted application code. Conversely,
-using HTTPS does not authorize an MCP Tool, sanitize an AG-UI event, or make
-telemetry safe to retain.
-
-Test each integration at its protocol boundary: reject disallowed MCP
-definitions and oversized responses, verify every AG-UI terminal and failure
-path, and inspect exported spans with content capture both disabled and scrubbed.
-
-See [Tools](tools.md) for application authority, [Running in
-Production](production.md) for lifecycle and observability, and [Workspaces and
-Sandboxes](sandboxing.md) for the operations that actually cross an enforced
-process boundary.
+See [Running in Production](production.md) for lifecycle and observability,
+[Tools](tools.md) for local and remote Tool behavior, and [Workspaces and
+Sandboxes](sandboxing.md) for child processes and files.

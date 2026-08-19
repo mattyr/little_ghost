@@ -202,6 +202,7 @@ class LittleGhostSiteChecker
   def check
     check_required_paths
     check_landing_page
+    check_api_index_metadata
     check_documentation_navigation
     check_local_links
     check_markdown_surface
@@ -231,10 +232,11 @@ class LittleGhostSiteChecker
     page = site_root.join("index.html")
     html = page.read
 
-    unless html.include?('rel="canonical" href="https://littleghostai.org/"')
+    unless html.include?(%(rel="canonical" href="#{LittleGhostDocs::SITE_URL}"))
       errors << "Landing page is missing its canonical URL"
     end
-    unless html.include?('property="og:image" content="https://littleghostai.org/assets/social-card.png"')
+    social_image = URI.join(LittleGhostDocs::SITE_URL, "assets/social-card.png").to_s
+    unless html.include?(%(property="og:image" content="#{social_image}"))
       errors << "Landing page is missing its social preview"
     end
 
@@ -257,6 +259,20 @@ class LittleGhostSiteChecker
     end
     check_version(page, html)
     check_navigation(page, html, LANDING_NAVIGATION_LABELS)
+  end
+
+  def check_api_index_metadata
+    page = site_root.join("docs/api.html")
+    return unless page.file?
+
+    html = page.read
+    title = LittleGhostDocs::MarkdownSite::API_INDEX_TITLE
+    description = CGI.escapeHTML(LittleGhostDocs::MarkdownSite::API_INDEX_DESCRIPTION)
+    errors << "API index has the wrong description metadata" unless html.include?(%(name="description" content="#{description}"))
+    errors << "API index has the wrong Open Graph title" unless html.include?(%(property="og:title" content="#{title}"))
+    errors << "API index has the wrong Open Graph description" unless html.include?(%(property="og:description" content="#{description}"))
+    errors << "API index has the wrong Twitter title" unless html.include?(%(name="twitter:title" content="#{title}"))
+    errors << "API index has the wrong Twitter description" unless html.include?(%(name="twitter:description" content="#{description}"))
   end
 
   def check_documentation_navigation
@@ -401,9 +417,6 @@ class LittleGhostSiteChecker
       end
 
       html = page.read
-      if html.include?(LittleGhostDocs::LEGACY_SITE_URL)
-        errors << "#{relative_page} contains the legacy documentation URL"
-      end
       expected_canonical = canonical_url(relative_page)
       unless html.include?(%(<link rel="canonical" href="#{expected_canonical}">))
         errors << "#{relative_page} is missing canonical URL #{expected_canonical}"
@@ -423,7 +436,6 @@ class LittleGhostSiteChecker
       relative_page = page.relative_path_from(site_root)
       source = page.read
       errors << "#{relative_page} contains an unresolved rdoc-ref" if source.include?("rdoc-ref:")
-      errors << "#{relative_page} contains the legacy documentation URL" if source.include?(LittleGhostDocs::LEGACY_SITE_URL)
       check_version_local_public_urls(page, source)
       check_markdown_links(page, source)
     end
@@ -469,10 +481,11 @@ class LittleGhostSiteChecker
     match = relative_page.to_s.match(%r{\Aversions/([^/]+)/})
     return unless match
 
-    expected_prefix = "/versions/#{match[1]}/"
-    contents.scan(%r{https://littleghostai\.org/[^\s"')<>]+}).each do |url|
+    site_path = URI(LittleGhostDocs::SITE_URL).path
+    expected_prefix = "#{site_path}versions/#{match[1]}/"
+    contents.scan(LittleGhostDocs::PUBLIC_DOCUMENTATION_URL_PATTERN).each do |url|
       path = URI(url).path
-      next if path == "/versions.json" || path.start_with?(expected_prefix)
+      next if path == "#{site_path}versions.json" || path.start_with?(expected_prefix)
 
       errors << "#{relative_page} links outside its documentation version with #{url}"
     end
@@ -494,11 +507,13 @@ class LittleGhostSiteChecker
       end
       next unless root.join("llms.txt").file?
 
-      root.join("llms.txt").read.scan(%r{https://littleghostai\.org/[^)\s]+}).each do |url|
+      root.join("llms.txt").read.scan(LittleGhostDocs::PUBLIC_DOCUMENTATION_URL_PATTERN).each do |url|
         uri = URI(url)
-        next if uri.path == "/versions.json"
+        site_path = URI(LittleGhostDocs::SITE_URL).path
+        next if uri.path == "#{site_path}versions.json"
 
-        target = site_root.join(uri.path.delete_prefix("/"))
+        relative_path = uri.path.delete_prefix(site_path)
+        target = site_root.join(relative_path)
         errors << "Documentation #{version} discovery links to missing #{url}" unless target.file?
       end
       if version != LittleGhostDocs::EDGE_ID && root.join("llms-full.txt").read.include?("Documentation version: Edge")

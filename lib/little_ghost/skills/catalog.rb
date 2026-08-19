@@ -20,12 +20,12 @@ module LittleGhost
     # YAML are rejected or skipped before instructions reach a model. Optional
     # resource listings are limited by count and depth.
     #
-    # === Security and trust
+    # === Choosing skill sources
     #
-    # Configured roots and their contents are fully trusted instruction sources.
-    # The +allowed-tools+ field is metadata shown to the model, not an
-    # authorization boundary. Applications must enforce tool access separately
-    # and keep skill roots non-user-writable. For a <tt>workspace://</tt>
+    # Skill files become model instructions, so keep configured roots under
+    # application control and non-user-writable. The +allowed-tools+ field tells
+    # the model what a skill expects; the Agent's Tool list and each Tool's
+    # application checks still decide what can run. For a <tt>workspace://</tt>
     # resource root, the Catalog verifies the named read-only grant and rejects
     # direct writable aliases it can identify. LittleGhost cannot identify every
     # alias created by an outer container or mount namespace, so the application

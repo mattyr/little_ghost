@@ -16,8 +16,8 @@ module LittleGhost
   # +:reasoning_delta+, +:tool_call_start+, +:tool_call_delta+,
   # +:tool_call_stop+, +:usage+, +:model_retry+, and +:message_stop+. The
   # terminal event carries a {ModelResponse}[rdoc-ref:LittleGhost::ModelResponse]
-  # in +data[:response]+. An +:agent_stream+ event wraps a detached,
-  # deeply immutable snapshot of an Agent event with an
+  # in +data[:response]+. An +:agent_stream+ event wraps a copied, frozen Agent
+  # event with an
   # AgentStreamSource[rdoc-ref:LittleGhost::AgentStreamSource] when a Run exposes
   # nested work.
   #

@@ -39,7 +39,9 @@ end
 
 Provider connections and model roles can also live in YAML files under `config/little_ghost`, or in files you select explicitly. Values set in Ruby take priority. An explicitly selected file comes next, followed by conventional files and environment defaults. See `LittleGhost::Configuration` when you need every supported source and override.
 
-Prompts, caller input and history, tool results, and attachments may leave the application for the selected external provider. Select providers from trusted configuration and account for their retention and data-residency policies.
+Prompts, caller input and history, Tool results, and attachments may go to the
+selected provider. Choose configured providers that are appropriate for that
+data and its retention or residency needs.
 
 ## Configure once, call from anywhere
 
@@ -118,12 +120,11 @@ record_outcome(run.outcome, error_type: run.error&.class&.name)
 
 Composite assembly streams include intermediate and nested Agent work as `:agent_stream` events. This default also applies to the event consumer passed to `start_execution`. Pass `include_agent_events: false` when only the ordinary public stream is needed.
 
-**Warning:** Contextual events include routed inputs, reasoning, Tool arguments
-and results, model output, errors, and final results. Treat them as untrusted
-and potentially sensitive. Authorize the destination for every participant and
-provider. Redact events before logging or transport, and keep
-`include_agent_events` under trusted application control. LittleGhost's AG-UI
-adapter ignores these events unless the application translates them explicitly.
+> **Safety note:** Contextual events can include inputs, reasoning, Tool
+> arguments and results, errors, and output from every participant. Check that
+> the destination may see the complete Run, or filter the events before sending
+> or storing them. LittleGhost's AG-UI adapter ignores these events unless the
+> application translates them explicitly.
 
 Use `start_execution` when the caller must stay free for other work, or when you want to deliver an interjection to an active response:
 
@@ -139,11 +140,16 @@ execution.run.completed?
 
 The event block runs on the worker thread, so keep it quick. Cancellation, deadlines, and `close` ask the work to stop; they cannot forcibly end arbitrary provider or tool code. They also cannot undo actions that already happened.
 
-## Treat tools as application boundaries
+## Keep Tool permission checks in application code
 
-A Tool schema checks the shape of model-supplied input. Your application still owns permission checks, safe retries, rate limits, tenant boundaries, and auditing. An ordinary Tool runs in the trusted Ruby process; a Sandbox contains only the file or process operations that deliberately pass through it.
+A Tool schema checks the shape of model-supplied input. Your application still
+owns permission checks, safe retries, rate limits, and auditing. An ordinary
+Tool runs in the Ruby process; a Sandbox contains only file or child-process
+work that deliberately passes through it.
 
-Use the Tool binding's `run` to read current, application-established values from `run.invocation.context`. Do not make permission decisions from model arguments.
+Use the Tool binding's `run` to read current, application-established values
+from `run.invocation.context`. Don't rely on model arguments for identity or
+account membership.
 
 Treat `RunContext#state` as mutable working and Session state. Revalidate anything restored from an earlier request. Synchronize access when parallel Tools share mutable state, or mark every Tool that reads or changes it as `exclusive true`.
 
@@ -151,12 +157,15 @@ A `ToolError` message is visible to the model, so keep it safe to share. LittleG
 
 When a step retries, its tool calls may happen again too. Prefer read-only work, idempotency keys, or operations that are safe to repeat.
 
-[Tools](tools.md) develops this boundary from the first application Tool through
+[Tools](tools.md) develops this pattern from the first application Tool through
 bindings, concurrency, sandbox delegation, and code mode.
 
 ## Choose workspace and sandbox behavior explicitly
 
-A **Workspace** names the host paths associated with a Run. A **Sandbox** governs bounded filesystem operations and child processes that deliberately pass through it. A custom Ruby Tool remains trusted application code unless it delegates work to the bound Sandbox.
+A **Workspace** names the host paths associated with a Run. A **Sandbox**
+controls filesystem operations and child processes deliberately sent through
+it. A custom Ruby Tool stays in the application process unless it delegates
+work to the bound Sandbox.
 
 The dependency-free default is an application-root Workspace with `LittleGhost::Sandboxes::Unrestricted`. It is not process or network isolation. Select an enforcing backend explicitly when a model can influence commands; LittleGhost raises when that backend is unavailable instead of silently falling back:
 
@@ -188,24 +197,32 @@ The temporary Workspace above is useful when files should live for one Run. Use 
 
 The Run opens a Runtime-created Workspace before its Sandbox and closes them in reverse order after every outcome. Closing a Workspace invokes its configured teardown; it does not delete files by default. Cleanup failures raise because LittleGhost cannot confirm a clean shutdown of every owned resource. Existing instances passed by the application remain caller-owned.
 
-[Workspaces and Sandboxes](sandboxing.md) explains backend selection, logical Workspace paths, files, process-only runtime paths, Scopes, filtered networking, hosting boundaries, and deployment validation in depth.
+[Workspaces and Sandboxes](sandboxing.md) explains backend selection, logical
+Workspace paths, files, process-only runtime paths, Scopes, filtered
+networking, and deployment validation in depth.
 
-[Code Mode](code_mode.md) applies those boundaries to model-authored Ruby or
+[Code Mode](code_mode.md) applies that setup to model-authored Ruby or
 optional JavaScript that composes the Agent's existing Tools.
 
 ## Protect data in telemetry
 
 LittleGhost emits events as a request starts, calls a model or tool, moves between assembly steps, retries, and finishes. Instrumentation subscribers and OpenTelemetry exporters can send those events to your monitoring system.
 
-An external telemetry service may receive application identifiers and event data. Redact sensitive values before they leave your boundary. Avoid attributes with many unique values, such as raw order or request IDs. Replacing one identifier does not make the rest of the data anonymous.
+An external telemetry service may receive application identifiers and event
+data. Redact sensitive values before exporting them. Avoid attributes with many
+unique values, such as raw order or request IDs.
 
-A composite `RunResult` includes short step summaries and trajectory queries. Keep detailed provider errors and sensitive diagnostics in trusted monitoring channels, not in model or user responses.
+A composite `RunResult` includes short step summaries and trajectory queries.
+Keep detailed provider errors and sensitive diagnostics in your monitoring
+system, not in model or user responses.
 
 ## Know what the Run closes and raises
 
 One top-level Run owns the workspace and sandbox that LittleGhost creates for it, plus application resources registered with `run.register`. It closes those resources after success, failure, a partial response, or cancellation. Existing workspace or sandbox instances passed by the application remain caller-owned.
 
-Ordinary execution failures appear on the Run and its final event. Cleanup, event delivery, or instrumentation can still raise an exception: once those boundaries fail, LittleGhost cannot promise a clean ending.
+Ordinary execution failures appear on the Run and its final event. Cleanup,
+event delivery, or instrumentation can still raise an exception when
+LittleGhost cannot promise a clean ending.
 
 ## Advanced: work with Runtime directly
 
@@ -219,7 +236,8 @@ runtime = LittleGhost::Runtime.new(configuration: configuration)
 agent = CustomerSupportAgent.new(runtime: runtime)
 ```
 
-An explicit Runtime is an independent configuration snapshot. It does not replace LittleGhost's shared default.
+An explicit Runtime has its own independent configuration. It does not replace
+LittleGhost's shared default.
 
 One Runtime can serve independent calls from several threads. Each call gets
 its own Run, participants, Tools, and Runtime-created Workspace and Sandbox. An

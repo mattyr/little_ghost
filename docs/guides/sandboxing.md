@@ -33,18 +33,18 @@ end
 
 This example gives each Run a temporary writable root and removes it during
 teardown. The `:native` Sandbox backend selects Seatbelt on macOS or Bubblewrap on
-Linux. It fails closed—raises instead of running without isolation—when the
-platform boundary is unavailable.
+Linux. It raises instead of running without isolation when the native backend
+is unavailable.
 
 `LittleGhost::Tools::Filesystem` and `LittleGhost::Tools::Shell` use the Sandbox
 assigned to the current Run. Code-mode interpreters also run inside their own
 Sandbox. Ordinary application Tools, callbacks, and provider requests stay in
-the trusted Ruby process unless they deliberately delegate an operation.
+the Ruby process unless they deliberately delegate an operation.
 
-That is the central boundary:
+The split looks like this:
 
 ```text
-trusted Ruby process
+Ruby application process
 ├── provider requests
 ├── application Tool#call
 └── Sandbox
@@ -97,12 +97,12 @@ use the Workspace's real paths directly, start in its root, and receive
 `LITTLE_GHOST_WORKSPACE_<NAME>` variable for each named path.
 
 Workspace references give application code one stable path format. Each
-Sandbox backend enforces that policy using the filesystem controls available on
-its host.
+Sandbox backend applies the configured access using the filesystem controls
+available on its host.
 
 ## Separate Tool-visible files from process support
 
-The Sandbox policy divides named paths into two groups:
+Sandbox configuration divides named paths into two groups:
 
 ```ruby
 config.sandbox = {
@@ -126,10 +126,10 @@ filesystem Tool.
 
 This is visibility, not secrecy from the process. A child with a runtime-path
 grant can use that path according to its access mode. The distinction prevents
-the trusted Filesystem Tool handler from offering it as a model-visible file
+the Filesystem Tool from offering it as a model-visible file
 tree.
 
-## Narrow authority with a Scope
+## Narrow access with a Scope
 
 A `Sandbox::Scope` is a non-owning, reduced view of a Sandbox. It can remove
 paths, change writable access to read-only, remove capabilities (categories of
@@ -154,7 +154,7 @@ open or close its parent and owns no resources.
 Workspace paths:
 
 - `:isolated` exposes only declared paths and required runtime support. It is
-  the default and the right starting point for untrusted interpreters.
+  the default and the right starting point for generated interpreters.
 - `:read_only` exposes the host filesystem for development commands while
   confining writes to declared writable paths. It makes installed compilers,
   package managers, profiles, and toolchains available, but the child can also
@@ -183,7 +183,7 @@ supervising process dies. It cannot selectively deny fork inside that
 namespace, so a request for
 `allow_subprocesses: false` fails closed rather than claiming an unenforced
 restriction. Bubblewrap does not impose a task-count limit by itself. Use an
-outer cgroup or container supervisor when untrusted code needs a hard cap on
+outer cgroup or container supervisor when generated code needs a hard cap on
 the processes and threads it can create.
 
 Seatbelt can constrain spawned children, but macOS has no PID namespace. It
@@ -191,9 +191,10 @@ terminates the command process group during cleanup; a child that deliberately
 detaches from that group may survive. Use an outer process or container
 supervisor when complete descendant ownership is required on macOS.
 
-`LittleGhost::Sandboxes::Unrestricted` remains useful for trusted application
-commands and tests. Path validation, output bounds, and a scrubbed environment
-do not turn it into a security boundary.
+> **Safety note:** `LittleGhost::Sandboxes::Unrestricted` is suitable for
+> application commands and tests that you would already run directly. It
+> validates paths and bounds output, but it does not isolate the command from
+> the host. Use `:native` for generated commands in production.
 
 ## Keep process ownership explicit
 
@@ -215,7 +216,7 @@ A Run closes the Workspace and Sandbox it creates after success, failure, a
 partial response, or cancellation. Application-supplied instances remain
 caller-owned.
 
-## Treat networking as a separate boundary
+## Configure child-process networking separately
 
 Sandbox networking has three modes:
 
@@ -228,19 +229,19 @@ Proxy environment variables alone are not an allowlist. An external gateway
 uses named, process-only Workspace paths and verifies that they still point to
 the configured directories; it does not create a virtual path mapping.
 LittleGhost does not attest that an external proxy is ready or enforcing the
-declared destination policy. The application must supervise and verify that
+declared destinations. The application must supervise and verify that
 gateway before giving a child network access.
 
-The policy reaches only processes launched through the Sandbox. Providers,
-callbacks, and arbitrary application Tool code still use the trusted process's
-network authority.
+These settings reach only processes launched through the Sandbox. Providers,
+callbacks, and application Tool code still use the Ruby process's network
+access.
 
 Test the deployed kernel and filesystem, not only the configuration object.
 Exercise denied reads and writes, runtime paths, child creation, direct sockets,
-cancellation, limits, and cleanup before treating the Sandbox as an enforcement
-boundary.
+cancellation, limits, and cleanup before depending on the Sandbox to isolate
+generated code.
 
 Continue with [Code Mode](code_mode.md) to see how a model-authored interpreter
-uses this boundary while every Tool call stays in the trusted parent. For exact
-policy and lifecycle contracts, see `LittleGhost::Workspace`,
+uses this setup while every Tool call stays in the parent Ruby process. For
+exact configuration and lifecycle contracts, see `LittleGhost::Workspace`,
 `LittleGhost::Sandbox`, and `LittleGhost::Sandbox::Scope`.

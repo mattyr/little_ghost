@@ -35,11 +35,11 @@ the Tool, LittleGhost checks the arguments, calls `#call`, and returns the
 result to the model. That loop can happen several times before the Agent writes
 its final answer.
 
-## Keep authority in Ruby
+## Check permission in Ruby
 
 A schema answers “Is this input shaped correctly?” It does not answer “May this
-caller perform this operation?” Model-selected arguments remain untrusted after
-validation.
+caller perform this operation?” Use values established by your application to
+answer that second question.
 
 Use values established by your application to authorize sensitive work:
 
@@ -64,19 +64,23 @@ end
 ```
 
 Here, the model chooses `order_number`. The application supplies `actor_id` and
-`account_id` after authenticating the request. The Tool reads those trusted
-values through its run-scoped binding: the trusted objects LittleGhost attaches
-to a Tool for one execution. They are not part of the model's Tool arguments.
+`account_id` after authenticating the request. The Tool reads those values
+through its run-scoped binding: the objects LittleGhost attaches to a Tool for
+one execution. They are not part of the model's Tool arguments.
 
 The Run also has `context.state`, mutable working state for this execution. When
 saved conversations are configured, it may contain values from an earlier Run.
-Recheck saved values before using them for authorization.
+Recheck saved values before using them for a permission decision.
+
+> **Safety note:** Keep identity and account membership in the Run's invocation,
+> not in model-selected arguments. A valid Tool input may still name a record
+> the current caller isn't allowed to use.
 
 ## Know where a Tool runs
 
-An ordinary Tool is trusted application code. Its `#call` method runs in the
-same Ruby process as LittleGhost, with the authority of your application. A
-Sandbox does not automatically contain it.
+An ordinary Tool is application code. Its `#call` method runs in the same Ruby
+process as LittleGhost, with the same access as the rest of your application. A
+Sandbox contains only work that the Tool explicitly sends through it.
 
 Some Tools deliberately delegate a smaller operation to the Sandbox:
 
@@ -94,11 +98,11 @@ This distinction keeps the architecture predictable:
 ```text
 model ──arguments──> Tool#call ──> application service
                          │
-                         └──> bound Sandbox ──> file or process
+                         └──> bound Sandbox ──> file or child process
 ```
 
-Provider requests also leave from the trusted application process. A Sandbox
-network policy applies to processes launched through that Sandbox, not to model
+Provider requests also leave from the application process. Sandbox network
+settings apply to processes launched through that Sandbox, not to model
 providers, callbacks, or arbitrary Ruby inside a Tool.
 
 Read [Workspaces and Sandboxes](sandboxing.md) before exposing filesystem or
@@ -113,10 +117,10 @@ one top-level Agent or Assembly execution. A Tool can reach that `run`, its
 current `workspace` and `sandbox` through accessors supplied by
 `Tool::Binding`.
 
-That binding carries trusted collaborators, not model arguments. Keep request
+That binding carries application collaborators, not model arguments. Keep request
 identity on `run.invocation`, working state on `context.state`, and the
 model-selected input in the `input` passed to `#call`. Keeping those three
-sources distinct makes authorization reviews much easier.
+sources distinct makes permission checks easier to follow.
 
 Registries close Tool instances that implement `#close`. Tool instance state
 therefore belongs to one Agent run unless your Tool deliberately talks to a
@@ -168,12 +172,12 @@ the result before the model chooses the next step. Code mode lets the model
 write a small Ruby program that calls several of the same Tools, combines their
 results, and returns one useful value.
 
-The authority does not move into that program. Each call crosses back to the
-trusted parent process. LittleGhost checks the schema and calls the ordinary
-Tool method there, so authorization inside `#call` still applies. Tool limits,
+Each call crosses back to the parent Ruby process. LittleGhost checks the schema
+and calls the ordinary Tool method there, so permission checks inside `#call`
+still apply. Tool limits,
 callbacks, events, and tracing also follow the ordinary Tool path.
 
-Continue with [Workspaces and Sandboxes](sandboxing.md) to give delegated file,
-process, and interpreter work an enforceable boundary. That guide leads into
-code mode once the process model is in place. For exact Tool DSL and result
-contracts, see `LittleGhost::Tool` and `LittleGhost::Tool::Binding`.
+Continue with [Structured Results and Content](structured_outputs_and_content.md)
+to give Agent responses a predictable shape and accept images or documents.
+For exact Tool DSL and result contracts, see `LittleGhost::Tool` and
+`LittleGhost::Tool::Binding`.

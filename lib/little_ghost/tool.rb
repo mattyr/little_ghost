@@ -53,7 +53,7 @@ module LittleGhost
   #     context: {account_id: authenticated_user.account_id}
   #   )
   #
-  # These values cross different trust boundaries:
+  # Each value comes from a different part of the run:
   #
   # [<tt>input</tt>]
   #   Arguments selected by the model. The schema checks their shape, not their
@@ -86,7 +86,7 @@ module LittleGhost
   # filesystem and process isolation.
   #
   # See the {Tools guide}[rdoc-ref:docs/guides/tools.md] for the complete path
-  # from model-selected input to trusted application context, sandbox
+  # from model-selected input to application context, sandbox
   # delegation, concurrency, and code mode.
   class Tool
     # Supply run-scoped collaborators when tools are instantiated outside an agent.
