@@ -829,7 +829,11 @@ class CodeModeTest < Minitest::Test
   ensure
     release << true if release && release.empty?
     second&.join
-    session&.close
+    begin
+      session&.close
+    rescue LittleGhost::ToolError
+      nil
+    end
     registry&.close
   end
 

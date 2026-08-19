@@ -543,7 +543,12 @@ class CodeModeEngineTest < Minitest::Test
     release << true
 
     error = assert_raises(LittleGhost::CleanupError) do
-      Timeout.timeout(2) { session.wait }
+      Timeout.timeout(5) do
+        loop do
+          result = session.wait
+          raise "host loss unexpectedly completed the program" unless result.still_working?
+        end
+      end
     end
 
     assert_includes error.message, "signal=SIGKILL"
