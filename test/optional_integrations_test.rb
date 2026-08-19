@@ -79,4 +79,24 @@ class OptionalIntegrationsTest < Minitest::Test
     assert defined?(LittleGhost::Tools::Shell)
     assert defined?(LittleGhost::MCP)
   end
+
+  def test_mcp_entrypoint_loads_the_core_toolset_contract
+    script = <<~RUBY
+      require "little_ghost/mcp"
+
+      class RemoteTools < LittleGhost::MCP::Toolset
+        endpoint "https://mcp.example/rpc"
+      end
+
+      class RemoteAgent < LittleGhost::Agent
+        tools RemoteTools
+      end
+
+      abort unless RemoteAgent.tool_declarations == [RemoteTools]
+    RUBY
+
+    output, status = Open3.capture2e(RbConfig.ruby, "-Ilib", "-e", script, chdir: __dir__ + "/..")
+
+    assert status.success?, output
+  end
 end

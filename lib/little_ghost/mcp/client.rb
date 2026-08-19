@@ -143,17 +143,17 @@ module LittleGhost
       end
     end
 
-    # Client makes tools from an MCP server available as ordinary LittleGhost
-    # tools. Agents can use a remote capability without learning a second tool
-    # interface.
+    # Client is the lower-level interface for loading tools from an MCP server.
+    # Most Agents can declare a reusable Toolset instead. Use Client directly
+    # when an application needs a custom transport or definition filter.
     #
     #   transport = LittleGhost::MCP::HTTPTransport.new(url: "https://mcp.example/rpc")
     #   client = LittleGhost::MCP::Client.new(transport:, prefix: "docs")
-    #   client.tools.map(&:tool_name) # => ["docs_search", "docs_fetch"]
+    #   client.tools.map(&:tool_name) # => ["docs___search", "docs___fetch"]
     #
     # Tool names are normalized and checked for collisions. Pagination, tool
-    # count, and response sizes are limited; +rejected_tools+ and
-    # +definition_filter+ can enforce an application allowlist.
+    # count, and response sizes are limited. +rejected_tools+ excludes named
+    # operations; +definition_filter+ can enforce an application allowlist.
     #
     # Server definitions and results remain untrusted input. LittleGhost validates
     # them before creating tools, but applications still decide which servers and

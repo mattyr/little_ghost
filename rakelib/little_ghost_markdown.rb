@@ -31,6 +31,7 @@ module LittleGhostDocs
     ].freeze
     INTEGRATION_APIS = %w[
       LittleGhost/Skills/Catalog
+      LittleGhost/MCP/Toolset
       LittleGhost/MCP/Client
       LittleGhost/MCP/HTTPTransport
       LittleGhost/AGUI/Adapter

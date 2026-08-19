@@ -6,54 +6,70 @@ same Agents and Runs you already have.
 
 ## Load Tools from an MCP server
 
-Load the optional MCP integration and connect to a Streamable HTTP endpoint:
+Declare a reusable set of remote Tools, then add it to an Agent with the same
+`tools` DSL used for Ruby Tools:
 
 ```ruby
 require "little_ghost/mcp"
 
-transport = LittleGhost::MCP::HTTPTransport.new(
-  url: "https://mcp.example/rpc",
-  headers: {
-    "Authorization" => "Bearer #{ENV.fetch("MCP_ACCESS_TOKEN")}"
-  },
-  timeout: 20,
-  max_response_bytes: 2 * 1024 * 1024
-)
-
-client = LittleGhost::MCP::Client.new(
-  transport:,
-  prefix: "help_center",
-  definition_filter: ->(definition) {
-    %w[search fetch].include?(definition.fetch("name"))
-  }
-)
+class HelpCenterTools < LittleGhost::MCP::Toolset
+  endpoint "https://mcp.example/rpc", timeout: 20
+  headers { {"Authorization" => "Bearer #{ENV.fetch("MCP_ACCESS_TOKEN")}"} }
+  prefix "help_center"
+  expose "search", "fetch"
+end
 
 class CustomerSupportAgent < LittleGhost::Agent
   system_prompt "Use help-center tools for published guidance."
+  tools HelpCenterTools
 end
 
-CustomerSupportAgent.tools(*client.tools)
 run = CustomerSupportAgent.ask("What is the return window?")
 ```
 
-The Client loads accepted definitions and turns them into ordinary
-`LittleGhost::Tool` instances. `prefix` keeps their model-visible names distinct,
-and `definition_filter` lets this Agent load only the operations it needs.
+`HelpCenterTools` is reusable configuration. Each Agent gets its own MCP Client
+and negotiated session when LittleGhost materializes the Toolset. `prefix` keeps
+the model-visible names distinct, and `expose` loads only the operations this
+Agent needs. Omit `expose` when the Agent should receive every valid Tool the
+server advertises.
 
 `HTTPTransport` uses HTTPS by default, limits response time and size, and keeps
-the negotiated MCP session ID. One transport and Client pair represents one
-authenticated server session, so create separate pairs when callers use
-different server credentials.
+the negotiated MCP session ID. The `headers` block runs as each Agent is built.
+It may accept the current Run when credentials depend on the authenticated
+caller:
+
+```ruby
+class HelpCenterTools < LittleGhost::MCP::Toolset
+  endpoint "https://mcp.example/rpc", timeout: 20
+  headers do |run|
+    token = McpAccessTokens.for_actor(run.invocation.actor_id)
+    {"Authorization" => "Bearer #{token}"}
+  end
+  prefix "help_center"
+  expose "search", "fetch"
+end
+
+CustomerSupportAgent.ask(
+  "What is the return window?",
+  actor_id: authenticated_user.id
+)
+```
+
+Here, `McpAccessTokens` is an application service that returns a token for the
+authenticated actor.
 
 > **Safety note:** An MCP server chooses its Tool definitions and results. Load
 > only the operations your application intends to expose. The server must check
-> caller and resource access using the credentials or session attached to this
-> Client; `definition_filter` limits which operations are loaded, but does not
-> authorize them. Use a separate Client when callers need different access.
+> caller and resource access using the credentials sent with each request;
+> `expose` limits which operations are loaded, but does not authorize them.
 
 LittleGhost implements its documented client behavior for the [MCP 2025-06-18
 specification](https://modelcontextprotocol.io/specification/2025-06-18). The
 API reference covers supported protocol options and limits.
+
+Use `LittleGhost::MCP::HTTPTransport` and `LittleGhost::MCP::Client` directly
+when you need a custom transport or want to inspect each server definition with
+a custom filter.
 
 ## Send a Run stream through AG-UI
 
