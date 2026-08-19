@@ -88,7 +88,7 @@ the Tool delegates that work through an enforcing Sandbox. Read
 [Workspaces and Sandboxes](sandboxing.md) for the process boundary before you
 enable untrusted programs.
 
-## Write one Ruby program
+## Compose Tool calls with Ruby
 
 Each `exec` starts a fresh Ruby process. Local variables, constants, and globals
 do not carry into a later `exec`. Within one program, the model can use:
@@ -168,15 +168,11 @@ step. `except` uses each Tool's model-visible name; `ConfirmTool` defaults to
 Tool-call budget. The `exec`, `wait`, and `stop` controls manage execution. They
 do not consume that application Tool budget themselves.
 
-Subagent controls also stay in the conversation automatically. A subagent is
-another Agent that the parent model can ask for help. The parent can start it,
-send it a message, interrupt it, list it, or check on its result. Code-mode
-programs cannot call those controls.
-
-An asynchronous subagent keeps working after it starts.
-`wait_for_subagents` checks for progress for up to 30 seconds. This is separate
-from code-mode `wait`, which watches one interpreter program for up to one
-minute.
+Subagent controls also stay in the conversation. They are orchestration choices
+for the parent model, not functions available inside a code-mode program.
+Code-mode `wait` watches an interpreter program; `wait_for_subagents` checks on
+delegated Agents. [Core Concepts](core_concepts.md#subagents-bring-in-a-specialist)
+explains model-directed delegation.
 
 ## Set limits for the work you expect
 

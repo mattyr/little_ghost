@@ -284,6 +284,7 @@ main,
 .syntax-constant { color: var(--violet-soft); }
 .syntax-method { color: var(--mint); }
 .syntax-string { color: var(--warm); }
+.syntax-comment { color: var(--dim); }
 
 .typing-ghost { position: absolute; z-index: 5; top: 29px; left: calc(100% - 43px); width: 27px; opacity: 0; pointer-events: none; filter: drop-shadow(0 7px 8px rgba(180, 154, 255, 0.3)); transition: top 300ms cubic-bezier(0.2, 0.8, 0.2, 1), left 1200ms cubic-bezier(0.2, 0.8, 0.2, 1), opacity 180ms ease, transform 220ms ease; }
 .typing-ghost.is-typing { animation: typingGhost 4s ease-in-out infinite; }
@@ -321,7 +322,7 @@ main,
 
 .linear-flow { display: grid; grid-template-columns: minmax(70px, 94px) minmax(18px, 1fr) 58px minmax(18px, 1fr) minmax(70px, 94px); align-items: center; gap: clamp(6px, 1.5vw, 12px); }
 .linear-flow .flow-endpoint { position: static; width: auto; justify-content: center; text-align: center; }
-.linear-flow .agent-node { position: relative; top: auto; left: auto; transform: none; }
+.linear-flow .agent-node { position: relative; top: auto; left: auto; grid-template-columns: minmax(0, 1fr); transform: none; }
 .flow-link { --flow-color: rgba(247, 244, 237, 0.34); position: relative; z-index: 1; height: 1.5px; background-image: repeating-linear-gradient(90deg, var(--flow-color) 0 8px, transparent 8px 13px); background-position: 0 0; background-size: 13px 2px; transition: filter 300ms ease; }
 .flow-link.is-active { --flow-color: var(--mint); height: 2px; filter: drop-shadow(0 0 5px rgba(121, 246, 212, 0.72)); animation: flowLink 1.8s linear infinite; }
 .flow-link.is-complete { background: rgba(121, 246, 212, 0.65); }
