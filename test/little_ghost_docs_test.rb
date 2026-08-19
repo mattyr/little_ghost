@@ -3,6 +3,7 @@
 require "test_helper"
 require_relative "../rakelib/little_ghost_docs"
 require "cgi/escape"
+require "timeout"
 
 class LittleGhostDocsTest < Minitest::Test
   def test_homepage_book_club_graph_uses_generic_edges
@@ -216,6 +217,95 @@ class LittleGhostDocsTest < Minitest::Test
     end
   end
 
+  def test_site_builder_builds_releases_in_parallel
+    original_jobs = ENV["DOCS_BUILD_JOBS"]
+    ENV["DOCS_BUILD_JOBS"] = "2"
+
+    Dir.mktmpdir("little-ghost-docs") do |directory|
+      edge = build_site(directory, "current-edge", version: "0.5.0")
+      destination = File.join(directory, "preview")
+      repository = File.expand_path("..", __dir__)
+      releases = [
+        LittleGhostDocs::Release.new(version: "0.3.0", commit: "release-three"),
+        LittleGhostDocs::Release.new(version: "0.2.0", commit: "release-two")
+      ]
+      archive = tar_archive(
+        "Rakefile" => "namespace :site do\nend\n",
+        "rakelib/little_ghost_docs.rb" => ""
+      )
+      capture_runner = lambda do |*_command, chdir:|
+        [archive, "", successful_status]
+      end
+      commands = Queue.new
+      installs_started = Queue.new
+      continue_installs = Queue.new
+      test_case = self
+      command_runner = lambda do |environment, *command, chdir:|
+        commands << [environment, command, chdir]
+        if command == ["bundle", "install"]
+          installs_started << environment.fetch("BUNDLE_PATH")
+          continue_installs.pop
+        elsif command == ["bundle", "exec", "rake", "site:build"]
+          test_case.send(:build_site, chdir, "_site", version: environment.fetch("DOCS_VERSION_ID"))
+        end
+        true
+      end
+      constructor = LittleGhostDocs::ReleaseBuilder.method(:new)
+      factory = lambda do |**arguments|
+        constructor.call(**arguments, capture_runner:, command_runner:)
+      end
+
+      build_error = Queue.new
+      build_thread = Thread.new do
+        LittleGhostDocs::ReleaseBuilder.stub(:command_environment, {}) do
+          LittleGhostDocs::ReleaseBuilder.stub(:new, factory) do
+            LittleGhostDocs::SiteBuilder.new(repository:, edge_site: edge, releases:).build!(destination)
+          end
+        end
+      rescue => error
+        build_error << error
+      end
+
+      bundle_paths = nil
+      begin
+        bundle_paths = Timeout.timeout(2) { 2.times.map { installs_started.pop } }
+      ensure
+        2.times { continue_installs << true }
+      end
+      unless build_thread.join(2)
+        build_thread.kill
+        build_thread.join
+        flunk "parallel documentation build did not finish"
+      end
+      raise build_error.pop unless build_error.empty?
+
+      recorded_commands = []
+      recorded_commands << commands.pop until commands.empty?
+      install_commands = recorded_commands.select { |_, command, _| command == ["bundle", "install"] }
+      build_commands = recorded_commands.select { |_, command, _| command == ["bundle", "exec", "rake", "site:build"] }
+      assert_equal 2, bundle_paths.uniq.length
+      assert_equal 2, install_commands.length
+      assert_equal 2, build_commands.length
+      install_commands.each do |environment, _, chdir|
+        assert_equal File.join(File.dirname(chdir), "bundle"), environment.fetch("BUNDLE_PATH")
+        assert_equal File.join(File.dirname(chdir), "bundle-config"), environment.fetch("BUNDLE_APP_CONFIG")
+        assert_equal "true", environment.fetch("BUNDLE_DISABLE_SHARED_GEMS")
+        assert_equal "true", environment.fetch("BUNDLE_FROZEN")
+        assert_equal "1", environment.fetch("BUNDLE_JOBS")
+        assert_nil environment.fetch("GH_TOKEN")
+        assert_nil environment.fetch("GITHUB_TOKEN")
+      end
+      build_commands.each do |environment, _, _|
+        assert_includes bundle_paths, environment.fetch("BUNDLE_PATH")
+        assert_includes %w[0.2.0 0.3.0], environment.fetch("DOCS_VERSION_ID")
+      end
+      assert_path_exists File.join(destination, "versions", "0.2.0", "index.html")
+      assert_path_exists File.join(destination, "versions", "0.3.0", "index.html")
+    end
+  ensure
+    ENV["DOCS_BUILD_JOBS"] = original_jobs
+  end
+
   def test_published_releases_are_stable_annotated_tags_from_main_with_matching_source
     original_repository = ENV.delete("GITHUB_REPOSITORY")
     commands = []
@@ -282,6 +372,23 @@ class LittleGhostDocsTest < Minitest::Test
     assert_nil captured_environment.fetch("ACTIONS_ID_TOKEN_REQUEST_TOKEN")
   end
 
+  def test_release_build_failures_identify_the_release
+    archive = tar_archive("Rakefile" => "task :default\n")
+    capture_runner = lambda do |*_command, chdir:|
+      [archive, "", successful_status]
+    end
+    builder = LittleGhostDocs::ReleaseBuilder.new(
+      repository: "/project",
+      site: "/versioned-site",
+      capture_runner:
+    )
+
+    error = assert_raises(LittleGhostDocs::Error) do
+      builder.add!(version: "0.3.0", commit: "release-commit")
+    end
+    assert_includes error.message, "Documentation release v0.3.0 failed"
+  end
+
   def test_workflows_rebuild_the_complete_site_without_a_persistent_branch
     docs_workflow = File.read(File.expand_path("../.github/workflows/docs.yml", __dir__))
     release_workflow = File.read(File.expand_path("../.github/workflows/release.yml", __dir__))
@@ -326,6 +433,16 @@ class LittleGhostDocsTest < Minitest::Test
       File.write(File.join(root, file_name), contents)
     end
     root
+  end
+
+  def tar_archive(files)
+    archive = StringIO.new(+"")
+    Gem::Package::TarWriter.new(archive) do |tar|
+      files.each do |path, contents|
+        tar.add_file_simple(path, 0o644, contents.bytesize) { |file| file.write(contents) }
+      end
+    end
+    archive.string
   end
 
   def homepage(version)

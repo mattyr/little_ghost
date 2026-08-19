@@ -504,31 +504,49 @@ module LittleGhostDocs
     def add!(version:, commit:)
       version = LittleGhostDocs.stable_version!(version)
       Dir.mktmpdir("little-ghost-docs-#{version}") do |directory|
-        source = Pathname(directory).join("source")
+        temporary_root = Pathname(directory)
+        source = temporary_root.join("source")
+        bundle_environment = isolated_bundle_environment(temporary_root)
         FileUtils.mkdir_p(source)
         extract_commit(commit, source)
         unless source.join("Rakefile").read.match?(/^namespace :site do$/)
           raise Error, "Documentation release v#{version} does not support versioned site builds"
         end
 
-        run_command!("bundle", "install", "--jobs", "4", chdir: source.to_s)
+        run_command!("bundle", "install", chdir: source.to_s, env: bundle_environment)
         if source.join("rakelib/little_ghost_docs.rb").file?
           run_command!(
             "bundle", "exec", "rake", "site:build",
             chdir: source.to_s,
-            env: {"DOCS_VERSION_ID" => version, "DOCS_BASE_PATH" => "#{VERSION_DIRECTORY}/#{version}"}
+            env: bundle_environment.merge(
+              "DOCS_VERSION_ID" => version,
+              "DOCS_BASE_PATH" => "#{VERSION_DIRECTORY}/#{version}"
+            )
           )
         else
-          run_command!("bundle", "exec", "rake", "site:check", chdir: source.to_s)
+          run_command!("bundle", "exec", "rake", "site:check", chdir: source.to_s, env: bundle_environment)
         end
         site.publish_release!(source.join("_site"), version)
       end
       site.verify!
+    rescue Error => error
+      raise Error, "Documentation release v#{version} failed: #{error.message}", cause: error
     end
 
     private
 
     attr_reader :capture_runner, :command_environment, :command_runner, :repository, :site
+
+    def isolated_bundle_environment(temporary_root)
+      temporary_root = Pathname(temporary_root)
+      {
+        "BUNDLE_APP_CONFIG" => temporary_root.join("bundle-config").to_s,
+        "BUNDLE_DISABLE_SHARED_GEMS" => "true",
+        "BUNDLE_FROZEN" => "true",
+        "BUNDLE_JOBS" => "1",
+        "BUNDLE_PATH" => temporary_root.join("bundle").to_s
+      }
+    end
 
     def extract_commit(commit, destination)
       archive_data, error, status = capture_runner.call("git", "archive", "--format=tar", commit, chdir: repository.to_s)
