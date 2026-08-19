@@ -750,7 +750,7 @@ class CodeModeTest < Minitest::Test
     registry&.close
   end
 
-  def test_ruby_watchdog_finishes_cleanup_before_a_new_program_can_start
+  def test_ruby_expiration_finishes_cleanup_before_a_new_program_can_start
     entered = Queue.new
     release = Queue.new
     process_class = Class.new do
@@ -800,13 +800,15 @@ class CodeModeTest < Minitest::Test
     broker = LittleGhost::CodeMode::Broker.new(registry:)
     limits = LittleGhost::CodeMode::RubyEngine::DEFAULT_LIMITS.merge(
       memory_bytes: 128 * 1024 * 1024,
-      wall_seconds: 0.03
+      wall_seconds: 30
     )
     session = LittleGhost::CodeMode::Ruby::Session.new(
       broker:, sandbox_factory: factory, subprocess_policy: ->(_sandbox) { true },
       limits:, observation_seconds: 0.005
     )
     assert_predicate session.execute(source: "sleep", catalog: []), :still_working?
+    generation = session.instance_variable_get(:@generation)
+    expiration = Thread.new { session.send(:expire_program, generation) }
     Timeout.timeout(1) { entered.pop }
 
     second = Thread.new do
@@ -827,6 +829,7 @@ class CodeModeTest < Minitest::Test
     refute File.exist?(roots.first)
   ensure
     release << true if release && release.empty?
+    expiration&.join
     second&.join
     begin
       session&.close
@@ -836,7 +839,7 @@ class CodeModeTest < Minitest::Test
     registry&.close
   end
 
-  def test_ruby_close_surfaces_an_unobserved_watchdog_cleanup_error
+  def test_ruby_close_surfaces_an_unobserved_expiration_cleanup_error
     close_entered = Queue.new
     close_release = Queue.new
     process_class = Class.new do
@@ -873,12 +876,14 @@ class CodeModeTest < Minitest::Test
     end
     registry = LittleGhost::ToolRegistry.new([])
     broker = LittleGhost::CodeMode::Broker.new(registry:)
-    limits = LittleGhost::CodeMode::RubyEngine::DEFAULT_LIMITS.merge(wall_seconds: 0.03)
+    limits = LittleGhost::CodeMode::RubyEngine::DEFAULT_LIMITS.merge(wall_seconds: 30)
     session = LittleGhost::CodeMode::Ruby::Session.new(
       broker:, sandbox_factory: factory, subprocess_policy: ->(_sandbox) { true },
       limits:, observation_seconds: 0.005
     )
     assert_predicate session.execute(source: "sleep", catalog: []), :still_working?
+    generation = session.instance_variable_get(:@generation)
+    expiration = Thread.new { session.send(:expire_program, generation) }
     Timeout.timeout(1) { close_entered.pop }
     closing = Thread.new do
       session.close
@@ -895,6 +900,7 @@ class CodeModeTest < Minitest::Test
     assert_equal "watchdog cleanup failed", raised.message
   ensure
     close_release << true if close_release && close_release.empty?
+    expiration&.join
     closing&.join
     begin
       session&.close

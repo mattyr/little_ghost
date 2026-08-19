@@ -150,10 +150,11 @@ module LittleGhost
 
         def terminate
           @incoming << {"type" => "terminate"}
-          @context_mutex.synchronize do
+          context = @context_mutex.synchronize do
             @terminating = true
-            @context&.stop
+            @context
           end
+          context&.stop
         rescue MiniRacer::ContextDisposedError
           nil
         end
@@ -178,27 +179,27 @@ module LittleGhost
             filename: "little-ghost-code-mode-bootstrap.js"
           )
           call_control(context, :run, @source)
-          pump(context)
+          terminal = pump(context)
         rescue Terminated
-          emit(type: "terminated")
+          terminal = {type: "terminated"}
         rescue MiniRacer::ScriptTerminatedError
-          if @context_mutex.synchronize { @terminating }
-            emit(type: "terminated")
+          terminal = if @context_mutex.synchronize { @terminating }
+            {type: "terminated"}
           else
-            emit(type: "failed", error: "JavaScript execution exceeded its limit", fatal: true)
+            {type: "failed", error: "JavaScript execution exceeded its limit", fatal: true}
           end
         rescue MiniRacer::V8OutOfMemoryError
-          emit(type: "failed", error: "JavaScript execution exceeded its memory limit", fatal: true)
+          terminal = {type: "failed", error: "JavaScript execution exceeded its memory limit", fatal: true}
         rescue => error
-          emit(type: "failed", error: "#{error.class}: #{error.message}", fatal: true)
+          terminal = {type: "failed", error: "#{error.class}: #{error.message}", fatal: true}
         ensure
-          @context_mutex.synchronize do
-            @context&.dispose
-            @context = nil
-          rescue MiniRacer::ContextDisposedError
-            @context = nil
+          cleanup_error = dispose_context
+          terminal = {type: "failed", error: "JavaScript context cleanup failed", fatal: true} if cleanup_error
+          begin
+            emit(**terminal) if terminal
+          ensure
+            @finished.call(@id)
           end
-          @finished.call(@id)
         end
 
         def pump(context)
@@ -207,8 +208,11 @@ module LittleGhost
             Array(state["outputs"]).each { |value| emit(type: "output", value:) }
             calls = Array(state["calls"])
             if calls.length > MAX_PENDING_TOOL_CALLS
-              emit(type: "failed", error: "Code-mode program exceeded the pending tool-call limit", fatal: true)
-              return
+              return {
+                type: "failed",
+                error: "Code-mode program exceeded the pending tool-call limit",
+                fatal: true
+              }
             end
             emit(type: "tool_calls", calls:) unless calls.empty?
             unless calls.empty?
@@ -218,11 +222,10 @@ module LittleGhost
 
             if state["done"]
               if state["failure"]
-                emit(type: "failed", error: state["failure"])
+                return {type: "failed", error: state["failure"]}
               else
-                emit(type: "complete")
+                return {type: "complete"}
               end
-              return
             end
 
             wait_for_results(context, 0)
@@ -247,6 +250,18 @@ module LittleGhost
 
         def terminate_program
           raise Terminated
+        end
+
+        def dispose_context
+          context = @context_mutex.synchronize do
+            @context.tap { @context = nil }
+          end
+          context&.dispose
+          nil
+        rescue MiniRacer::ContextDisposedError
+          nil
+        rescue => error
+          error
         end
 
         def call_control(context, method, *arguments)

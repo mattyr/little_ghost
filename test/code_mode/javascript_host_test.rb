@@ -146,6 +146,117 @@ class CodeModeHostTest < Minitest::Test
     )
   end
 
+  def test_termination_does_not_wait_for_context_disposal
+    disposal_started = Queue.new
+    disposal_release = Queue.new
+    messages = Queue.new
+    finished = Queue.new
+    context = Object.new
+    context.define_singleton_method(:eval) do |source, **|
+      next({"outputs" => [], "calls" => [], "done" => true, "failure" => nil}) if source.include?(".drain(")
+
+      nil
+    end
+    context.define_singleton_method(:stop) { nil }
+    context.define_singleton_method(:dispose) do
+      disposal_started << true
+      disposal_release.pop
+    end
+
+    MiniRacer::Context.stub(:new, context) do
+      program = LittleGhost::CodeMode::Javascript::Host::Program.new(
+        id: "blocked-cleanup",
+        source: "1",
+        tools: [],
+        writer: ->(**message) { messages << message },
+        finished: ->(*) { finished << true }
+      )
+      Timeout.timeout(1) { disposal_started.pop }
+
+      termination = Thread.new { program.terminate }
+      assert termination.join(0.2), "termination waited for JavaScript context disposal"
+      assert_nil messages.pop(timeout: 0.05)
+
+      disposal_release << true
+      terminal = Timeout.timeout(1) { messages.pop }
+      assert_equal "complete", terminal.fetch(:type)
+      assert program.join(1), "JavaScript host program did not finish after disposal"
+      assert Timeout.timeout(1) { finished.pop }
+    ensure
+      disposal_release << true if disposal_release.empty?
+      termination&.join(0.5)
+      program&.terminate
+      program&.join(0.5)
+    end
+  end
+
+  def test_context_disposal_failure_replaces_a_successful_terminal_result
+    messages = Queue.new
+    finished = Queue.new
+    context = Object.new
+    context.define_singleton_method(:eval) do |source, **|
+      next({"outputs" => [], "calls" => [], "done" => true, "failure" => nil}) if source.include?(".drain(")
+
+      nil
+    end
+    context.define_singleton_method(:dispose) { raise "sensitive cleanup detail" }
+
+    MiniRacer::Context.stub(:new, context) do
+      program = LittleGhost::CodeMode::Javascript::Host::Program.new(
+        id: "failed-cleanup",
+        source: "1",
+        tools: [],
+        writer: ->(**message) { messages << message },
+        finished: ->(*) { finished << true }
+      )
+      terminal = Timeout.timeout(1) { messages.pop }
+
+      assert_equal "failed", terminal.fetch(:type)
+      assert_equal true, terminal.fetch(:fatal)
+      assert_equal "JavaScript context cleanup failed", terminal.fetch(:error)
+      refute_includes terminal.fetch(:error), "sensitive cleanup detail"
+      assert program.join(1), "JavaScript host program did not finish after failed disposal"
+      assert Timeout.timeout(1) { finished.pop }
+    end
+  end
+
+  def test_program_id_remains_reserved_until_terminal_result_is_written
+    write_started = Queue.new
+    write_release = Queue.new
+    finished = Queue.new
+    context = Object.new
+    context.define_singleton_method(:eval) do |source, **|
+      next({"outputs" => [], "calls" => [], "done" => true, "failure" => nil}) if source.include?(".drain(")
+
+      nil
+    end
+    context.define_singleton_method(:dispose) { nil }
+
+    MiniRacer::Context.stub(:new, context) do
+      program = LittleGhost::CodeMode::Javascript::Host::Program.new(
+        id: "reserved",
+        source: "1",
+        tools: [],
+        writer: ->(**) do
+          write_started << true
+          write_release.pop
+        end,
+        finished: ->(*) { finished << true }
+      )
+      Timeout.timeout(1) { write_started.pop }
+
+      assert_nil finished.pop(timeout: 0.05)
+
+      write_release << true
+      assert program.join(1), "JavaScript host program did not finish after writing its terminal result"
+      assert Timeout.timeout(1) { finished.pop }
+    ensure
+      write_release << true if write_release.empty?
+      program&.terminate
+      program&.join(0.5)
+    end
+  end
+
   private
 
   def run_program(source, tools: [])
