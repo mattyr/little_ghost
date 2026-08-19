@@ -161,6 +161,26 @@ class CodeModeTest < Minitest::Test
     end
   end
 
+  class DeferredBrokerEngine < AgentEngine
+    def open_session(broker:, **)
+      DeferredBrokerSession.new(broker:).tap { |session| sessions << session }
+    end
+  end
+
+  class DeferredBrokerSession < LittleGhost::CodeMode::Session
+    def initialize(broker:)
+      @broker = broker
+    end
+
+    def execute(**)
+      LittleGhost::CodeMode::CellResult.new(status: :running)
+    end
+
+    def call_nested
+      @broker.call("nested", {"value" => "same"}, id: "nested-later")
+    end
+  end
+
   class BlockingSession < LittleGhost::CodeMode::Session
     attr_reader :entered, :release
 
@@ -244,6 +264,23 @@ class CodeModeTest < Minitest::Test
     registry&.close
   end
 
+  def test_ruby_engine_returns_non_ascii_tool_results_across_binary_frames
+    template = {type: "result", id: "call-1", value: "—", error: nil}
+    value = "—#{"a" * (128 - JSON.generate(template).bytesize)}"
+    tool = LittleGhost::Tool.define(name: "diagnostic", description: "Return diagnostic text.") { value }
+    registry = LittleGhost::ToolRegistry.new([tool])
+    broker = LittleGhost::CodeMode::Broker.new(registry:)
+    session = ruby_session(broker:)
+
+    result = session.execute(source: "tools.diagnostic", catalog: broker.catalog)
+
+    assert_equal 128, JSON.generate(template.merge(value:)).bytesize
+    assert_equal value, result.value
+  ensure
+    session&.close
+    registry&.close
+  end
+
   def test_each_ruby_cell_gets_fresh_process_state
     registry = LittleGhost::ToolRegistry.new([])
     broker = LittleGhost::CodeMode::Broker.new(registry:)
@@ -283,6 +320,21 @@ class CodeModeTest < Minitest::Test
 
     assert_equal :running, running.status
     assert_equal 7, completed.value
+  ensure
+    session&.close
+    registry&.close
+  end
+
+  def test_rejected_exec_does_not_close_the_active_cell
+    registry = LittleGhost::ToolRegistry.new([])
+    broker = LittleGhost::CodeMode::Broker.new(registry:)
+    session = ruby_session(broker:)
+
+    running = session.execute(source: "sleep(0.05); 7", catalog: [], yield_time_ms: 1)
+
+    assert_equal :running, running.status
+    assert_raises(LittleGhost::ToolError) { session.execute(source: "8", catalog: []) }
+    assert_equal 7, session.wait.value
   ensure
     session&.close
     registry&.close
@@ -392,7 +444,8 @@ class CodeModeTest < Minitest::Test
     assert_includes instructions, "fresh process"
     assert_includes instructions, "Each submitted program is"
     assert_includes instructions, "do not persist between exec calls"
-    assert_includes instructions, "resumed with wait continues in the same process"
+    assert_includes instructions, "If exec returns `running`, call wait"
+    assert_includes instructions, "Do not call wait after `completed`, `error`, or `terminated`"
     assert_includes instructions, "Filesystem, network, subprocess, and optional-library"
     assert_includes instructions, "JSON values as ordinary Ruby values"
     assert_includes instructions, "callable order"
@@ -453,6 +506,7 @@ class CodeModeTest < Minitest::Test
       end
     )
     sandbox = nil
+    directory = nil
     sandbox_class = Class.new(LittleGhost::Sandboxes::Unrestricted) do
       attr_reader :closed
 
@@ -463,6 +517,7 @@ class CodeModeTest < Minitest::Test
     end
     factory = lambda do |workspace:, required_runtime_paths:|
       assert_empty required_runtime_paths
+      directory = workspace.root
       sandbox = sandbox_class.new(
         workspace:,
         policy: {files: {root: :read_write}, network: :inherit}
@@ -473,12 +528,11 @@ class CodeModeTest < Minitest::Test
       limits: {memory_bytes: 128 * 1024 * 1024, cleanup_seconds: 0.1}
     )
 
-    result = session.execute(source: "tools.fail", catalog: broker.catalog, yield_time_ms: 1_000)
-    Timeout.timeout(5) { entered.pop }
-    directory = session.instance_variable_get(:@workspace_directory)
+    error = assert_raises(RuntimeError) do
+      session.execute(source: "tools.fail", catalog: broker.catalog, yield_time_ms: 1_000)
+    end
 
-    assert_equal :running, result.status
-    error = assert_raises(RuntimeError) { session.close }
+    Timeout.timeout(5) { entered.pop }
     assert_equal "nested failure", error.message
     assert sandbox.closed
     refute File.exist?(directory)
@@ -488,6 +542,112 @@ class CodeModeTest < Minitest::Test
     rescue RuntimeError
       nil
     end
+    registry&.close
+  end
+
+  def test_ruby_engine_cannot_be_reused_after_nested_tool_cleanup_times_out
+    tool = LittleGhost::Tool.define(name: "slow", description: "Wait.") { "unused" }
+    registry = LittleGhost::ToolRegistry.new([tool])
+    entered = Queue.new
+    release = Queue.new
+    finished = Queue.new
+    broker = LittleGhost::CodeMode::Broker.new(
+      registry:,
+      dispatch: lambda do |_call|
+        entered << true
+        release.pop
+        raise "old cell failure"
+      ensure
+        finished << true
+      end
+    )
+    session = ruby_session(broker:, cleanup_seconds: 0.01)
+
+    running = session.execute(source: "tools.slow", catalog: broker.catalog, yield_time_ms: 1_000)
+    Timeout.timeout(5) { entered.pop }
+
+    assert_equal :running, running.status
+    assert_raises(LittleGhost::CleanupError) { session.wait(terminate: true) }
+    release << true
+    Timeout.timeout(5) { finished.pop }
+    assert_raises(LittleGhost::ToolError) { session.execute(source: "42", catalog: []) }
+  ensure
+    release << true if release && release.empty?
+    begin
+      session&.close
+    rescue RuntimeError
+      nil
+    end
+    registry&.close
+  end
+
+  def test_ruby_termination_ignores_a_late_reply_to_the_closed_process
+    tool = LittleGhost::Tool.define(name: "slow", description: "Wait.") { "unused" }
+    registry = LittleGhost::ToolRegistry.new([tool])
+    entered = Queue.new
+    release = Queue.new
+    broker = LittleGhost::CodeMode::Broker.new(
+      registry:,
+      dispatch: lambda do |call|
+        entered << true
+        release.pop
+        LittleGhost::CodeMode::CallResult.new(id: call.id, value: "late", error: nil)
+      end
+    )
+    session = ruby_session(broker:, cleanup_seconds: 1)
+    running = session.execute(source: "tools.slow", catalog: broker.catalog, yield_time_ms: 1_000)
+    Timeout.timeout(5) { entered.pop }
+    releaser = Thread.new do
+      sleep(0.05)
+      release << true
+    end
+
+    terminated = session.wait(terminate: true)
+
+    assert_equal :running, running.status
+    assert_equal :terminated, terminated.status
+    releaser.join
+  ensure
+    release << true if release && release.empty?
+    releaser&.join(1)
+    session&.close
+    registry&.close
+  end
+
+  def test_ruby_engine_closes_a_partially_started_cell_when_the_initial_frame_fails
+    registry = LittleGhost::ToolRegistry.new([])
+    broker = LittleGhost::CodeMode::Broker.new(registry:)
+    sandboxes = []
+    sandbox_class = Class.new(LittleGhost::Sandboxes::Unrestricted) do
+      attr_reader :closed
+
+      def close
+        @closed = true
+        super
+      end
+    end
+    factory = lambda do |workspace:, required_runtime_paths:|
+      assert_empty required_runtime_paths
+      sandbox_class.new(
+        workspace:,
+        policy: {files: {root: :read_write}, network: :inherit}
+      ).tap { |sandbox| sandboxes << sandbox }
+    end
+    session = LittleGhost::CodeMode::RubyEngine.new.open_session(
+      broker:, sandbox_factory: factory,
+      limits: {memory_bytes: 128 * 1024 * 1024}
+    )
+
+    LittleGhost::CodeMode::Protocol.stub(:dump, ->(*) { raise LittleGhost::CodeMode::Protocol::Error, "invalid" }) do
+      assert_raises(LittleGhost::CodeMode::Protocol::Error) do
+        session.execute(source: "1", catalog: [])
+      end
+    end
+
+    assert sandboxes.first.closed
+    assert_equal 2, session.execute(source: "2", catalog: []).value
+  ensure
+    session&.close
     registry&.close
   end
 
@@ -796,6 +956,47 @@ class CodeModeTest < Minitest::Test
     )
   ensure
     agent&.close
+  end
+
+  def test_brokered_tools_keep_the_control_trace_context_after_the_control_returns
+    carrier = {"traceparent" => "00-#{"1" * 32}-#{"2" * 16}-01"}
+    telemetry = []
+    tracing = TestInstrumentationSubscriber.new
+    tracing.define_singleton_method(:trace_context) do |operation_id:|
+      if operation_id == "control-operation"
+        carrier
+      else
+        {}
+      end
+    end
+    LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new(
+      subscribers: [tracing, TestTelemetryRecorder.new(telemetry)]
+    )
+    engine = DeferredBrokerEngine.new
+    nested = LittleGhost::Tool.define(name: "nested", description: "Nested") { |input| input.fetch("value") }
+    agent_class = Class.new(LittleGhost::Agent) { code_mode(engine:) }
+    agent = agent_class.new(model: ScriptedModel.new, tools: [nested])
+    execution = Struct.new(:operation_id, :parent_trace_context, :events)
+      .new("control-operation", nil, [])
+
+    LittleGhost::ExecutionState.with(tool_execution: execution) do
+      agent.code_mode_runtime.execute(source: "1", context: LittleGhost::RunContext.new)
+    end
+    engine.sessions.first.call_nested
+
+    nested_start = telemetry.find do |name, attributes|
+      name == :tool_start && attributes[:tool_name] == "nested"
+    end
+    assert_equal carrier, nested_start.fetch(1).fetch(:trace_context)
+  ensure
+    agent&.close
+  end
+
+  def test_wait_tool_explains_the_active_cell_state_machine
+    specification = LittleGhost::CodeMode::WaitTool.specification
+
+    assert_includes specification.fetch(:description), "exec or wait returned running or yielded"
+    assert_includes specification.dig(:input_schema, "properties", "terminate", "description"), "Stop the active cell"
   end
 
   def test_brokered_calls_participate_in_agent_tool_loop_detection

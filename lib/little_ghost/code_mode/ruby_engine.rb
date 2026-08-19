@@ -31,7 +31,8 @@ module LittleGhost
         <<~INSTRUCTIONS.strip
           Run Ruby in a fresh process to call the available tools and compose their results. Each submitted program is
           a cell. Every exec call starts a new cell. Local variables, constants, and other process state do not persist between exec calls.
-          A cell resumed with wait continues in the same process.
+          If exec returns `running`, call wait to keep observing that same process. If it returns `yielded`, wait resumes
+          after `yield_control` and then observes it. Do not call wait after `completed`, `error`, or `terminated`.
           Filesystem, network, subprocess, and optional-library access are controlled by the configured sandbox; do not
           assume host capabilities are available.
 
