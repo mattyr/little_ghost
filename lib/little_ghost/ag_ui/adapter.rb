@@ -18,13 +18,13 @@ module LittleGhost
     # The adapter has no state between #stream calls, so one instance can
     # translate independent runs.
     #
-    # === Security and trust
+    # === Choose what the interface receives
     #
     # Provider plaintext reasoning becomes AG-UI reasoning events. Tool
     # arguments and results, invocation metadata, subagent events, trace context,
     # and selected error text also pass through without redaction. Authorize and
     # filter the complete stream before transport, and send it only to an
-    # interface trusted to display that data. Encrypted reasoning and provider
+    # interface intended to display that data. Encrypted reasoning and provider
     # continuity artifacts are never exposed here.
     class Adapter
       TERMINAL_EVENTS = %i[run_partial run_cancel run_stop run_error].freeze # :nodoc:

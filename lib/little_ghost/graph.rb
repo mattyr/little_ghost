@@ -34,11 +34,11 @@ module LittleGhost
   # Multiple unconditional edges from one source run in parallel and converge
   # at their first unambiguous common successor. Array endpoints declare an
   # explicit fan-out or wait-for-all fan-in. Parallel groups cannot nest.
-  # Conditions and input mappers receive immutable Graph::State. Nodes do not
+  # Conditions and input mappers receive a read-only Graph::State. Nodes do not
   # receive caller history or application context unless their declaration
   # opts in with <tt>history: true</tt> or <tt>context: true</tt>. Validate the
-  # topology before execution. Conditions and mappers remain trusted
-  # application code and can inspect snapshots of both values. +to_mermaid+
+  # topology before execution. Conditions and mappers are application callbacks
+  # and can inspect copied input, history, context, and completed results. +to_mermaid+
   # renders the same definition as a flowchart.
   class Graph < Assembly
     Node = Data.define(:name, :assembly, :policies, :inherit_history, :inherit_context, :input_mapper) # :nodoc:
@@ -54,18 +54,18 @@ module LittleGhost
       end
     end
 
-    # Immutable routing data passed to conditions and input mappers.
+    # Read-only routing data passed to conditions and input mappers.
     #
     # +results+ contains every completed node result. +incoming_results+
     # contains only the immediate predecessors supplying the current node.
     # +previous+ and #previous_result are present for a single predecessor;
     # +predecessors+ preserves declaration order for fan-in execution.
     class State
-      # The original request as a detached Message snapshot.
+      # A copied Message containing the original request.
       attr_reader :input
-      # The caller history snapshot available to the condition or mapper.
+      # A frozen copy of caller history available to the condition or mapper.
       attr_reader :history
-      # The application context snapshot available to the condition or mapper.
+      # A frozen copy of application context available to the condition or mapper.
       attr_reader :context
       # The one-based execution count assigned to the current node.
       attr_reader :step
@@ -75,11 +75,11 @@ module LittleGhost
       attr_reader :previous
       # The immediate predecessor names in declaration order.
       attr_reader :predecessors
-      # The completed RunResult snapshots keyed by node name.
+      # Frozen copies of completed RunResults keyed by node name.
       attr_reader :results
-      # The immediate predecessor RunResult snapshots keyed by node name.
+      # Frozen copies of immediate predecessor RunResults keyed by node name.
       attr_reader :incoming_results
-      # The routed exception snapshot available to an error-edge mapper.
+      # A frozen copy of the routed exception available to an error-edge mapper.
       attr_reader :error
 
       def initialize(input:, history:, context:, step:, current:, previous:, results:,

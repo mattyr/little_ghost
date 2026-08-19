@@ -48,14 +48,14 @@ module LittleGhost
   #
   # A composite Assembly stream observes every Agent that shares the Run. Each
   # +:agent_stream+ event carries an AgentStreamSource in +data[:source]+ and a
-  # detached, deeply immutable snapshot of the Agent's StreamEvent in
-  # +data[:event]+. An inner +:invocation_start+ also includes the routed Message
-  # snapshot in +data[:input]+.
+  # copied, frozen Agent StreamEvent in +data[:event]+. An inner
+  # +:invocation_start+ also includes the copied, frozen Message sent to that
+  # Agent in +data[:input]+. Event consumers cannot change the running work.
   #
   # Parallel Agents may interleave, but the Run invokes the stream consumer
   # serially. Contextual events expose data from every participating Agent, so
-  # applications must keep +include_agent_events+ under trusted control and
-  # authorize the stream destination for every participant.
+  # applications should enable +include_agent_events+ only for destinations
+  # that may see every participant's data.
   class Run
     include Enumerable
 

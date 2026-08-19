@@ -12,11 +12,11 @@ module LittleGhost
     end
   end
 
-  # The immutable, executable snapshot produced by an AssemblyBuilder.
+  # A complete Assembly configuration produced by an AssemblyBuilder.
   #
   # Runtime and other builders accept a definition anywhere they accept an
-  # Assembly reference. +implementation+ is the sealed class instantiated for
-  # this snapshot.
+  # Assembly reference. +implementation+ is the Assembly subclass used for
+  # executions built from this definition.
   class AssemblyDefinition < Data # :doc:
     ##
     # :attr_reader: kind
@@ -24,15 +24,15 @@ module LittleGhost
 
     ##
     # :attr_reader: assembly_id
-    # The stable identifier captured by the snapshot.
+    # The Assembly identifier at the time the definition was built.
 
     ##
     # :attr_reader: description
-    # The human-readable description captured by the snapshot.
+    # The human-readable description at the time the definition was built.
 
     ##
     # :attr_reader: implementation
-    # The sealed Assembly subclass used to build executions.
+    # The Assembly subclass used to build executions.
   end
 
   # Builds an Assembly when its participants or routes are discovered at runtime.
@@ -51,10 +51,10 @@ module LittleGhost
   #
   #   run = graph.ask("Can I get a refund?")
   #
-  # A builder remains mutable. Each build or invocation snapshots declaration
-  # containers and referenced Assembly definitions, so later builder changes
-  # affect only future executions. Executable Ruby closures and the external
-  # objects they reference remain live trusted application code.
+  # A builder remains mutable. Each build or invocation copies its declarations
+  # and referenced Assembly definitions. Later builder changes affect future
+  # executions without changing an Assembly already built. Ruby closures and
+  # the objects they reference remain live application code.
   class AssemblyBuilder
     # Optional Runtime reused by standalone executions from this builder.
     attr_reader :runtime
@@ -87,13 +87,13 @@ module LittleGhost
     # Returns +:agent+, +:workflow+, +:swarm+, or +:graph+.
     def assembly_kind = self.class.assembly_kind
 
-    # Validates the current snapshot and returns this mutable builder.
+    # Validates the builder's current declarations and returns this builder.
     def validate!
       definition
       self
     end
 
-    # Returns an immutable, recursively snapshotted definition.
+    # Returns a complete definition for the builder's current declarations.
     def definition
       stack = Thread.current[:little_ghost_assembly_definition_stack] ||= []
       identity = base || self
@@ -118,7 +118,7 @@ module LittleGhost
       Thread.current[:little_ghost_assembly_definition_stack] = nil if stack && stack.empty?
     end
 
-    # Builds one execution instance from the current definition snapshot.
+    # Builds one execution instance from the current declarations.
     def build(runtime: self.runtime, run: nil)
       snapshot = definition
       return (runtime || run.runtime).build_assembly(snapshot, run:) if run
@@ -126,10 +126,10 @@ module LittleGhost
       snapshot.implementation.new(runtime:)
     end
 
-    # Executes a standalone snapshot and returns its Run.
+    # Executes the current declarations and returns their Run.
     def ask(message, **options) = build.ask(message, **options)
 
-    # Lazily streams a standalone snapshot.
+    # Lazily streams an execution built from the current declarations.
     def stream_ask(message, **options)
       snapshot = definition
       Enumerator.new do |events|
@@ -137,13 +137,13 @@ module LittleGhost
       end
     end
 
-    # Executes a snapshot to completion.
+    # Executes the current declarations to completion.
     def call(input = nil, **options) = build.call(input, **options)
-    # Streams a snapshot as StreamEvent objects.
+    # Streams the current declarations as StreamEvent objects.
     def stream(input = nil, **options) = build.stream(input, **options)
-    # Starts a supervised execution from a snapshot.
+    # Starts a supervised execution from the current declarations.
     def start_execution(payload, &block) = build.start_execution(payload, &block)
-    # Exposes a snapshot as a Tool.
+    # Exposes the current declarations as a Tool.
     def as_tool(**options) = build.as_tool(**options)
 
     protected
@@ -258,8 +258,8 @@ module LittleGhost
   #   agent.system_prompt "Answer customer questions clearly."
   #   agent.ask("Where is my order?")
   #
-  # Supported Agent class-DSL calls are recorded and replayed into each
-  # immutable snapshot.
+  # It accepts the same configuration calls as an Agent class. Changing the
+  # builder affects future builds without changing Agents already built.
   class AgentBuilder < AssemblyBuilder
     DECLARATIONS = %i[
       model limits result_schema capture_diagnostics system_template system_prompt
@@ -286,7 +286,7 @@ module LittleGhost
       value.nil? ? assembly_id : assembly_id(value)
     end
 
-    # Records supported Agent class-DSL declarations for the next snapshot.
+    # Applies a supported Agent configuration call to future builds.
     def method_missing(name, *arguments, **keywords, &block)
       return super unless DECLARATIONS.include?(name)
 
@@ -338,7 +338,7 @@ module LittleGhost
   # Builds a Workflow whose Ruby composition block is supplied at runtime.
   # Use a named Workflow subclass's +to_builder+ when the class supplies the
   # composition and runtime configuration supplies its identity or description.
-  # +perform+ supplies the underlying dynamic form for trusted application code.
+  # +perform+ supplies the underlying dynamic form for application code.
   class WorkflowBuilder < AssemblyBuilder
     class << self
       # :nodoc:
@@ -465,7 +465,7 @@ module LittleGhost
       end
     end
 
-    # Renders the current validated snapshot as Mermaid flowchart text.
+    # Validates the current declarations and renders them as Mermaid flowchart text.
     def to_mermaid = definition.implementation.to_mermaid
 
     protected

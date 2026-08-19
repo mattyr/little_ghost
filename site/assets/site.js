@@ -110,11 +110,14 @@ const createDemo = (section) => {
     });
     const editorBox = editor.getBoundingClientRect();
     const horizontalRange = Math.min(24, editorBox.width * 0.065);
+    const compact = window.matchMedia("(max-width: 470px)").matches;
     lineDestinations = lineElements.map((line, index) => {
       const lineBox = line.getBoundingClientRect();
       const horizontalDrift = Math.sin(index * 1.15) * horizontalRange;
       return {
-        x: Math.min(editorBox.width - 48, Math.max(72, editorBox.width * 0.62 + horizontalDrift)),
+        x: compact
+          ? editorBox.width - 39
+          : Math.min(editorBox.width - 48, Math.max(72, editorBox.width * 0.62 + horizontalDrift)),
         y: lineBox.top - editorBox.top + Math.max(-2, (lineBox.height - 35) / 2),
       };
     });
@@ -370,16 +373,17 @@ const controllers = new Map(sections.map((section) => [section, createDemo(secti
 if (!("IntersectionObserver" in window)) {
   controllers.forEach((controller) => controller.play());
 } else {
+  const demoVisibilityThreshold = 0.95;
   const observer = new IntersectionObserver(
     (entries) => {
       entries.forEach((entry) => {
-        if (!entry.isIntersecting) return;
+        if (!entry.isIntersecting || entry.intersectionRatio < demoVisibilityThreshold) return;
         const section = entry.target.closest("[data-demo]");
         if (!section.dataset.started) controllers.get(section).play();
         observer.unobserve(entry.target);
       });
     },
-    { threshold: 1 },
+    { rootMargin: "-8px 0px", threshold: demoVisibilityThreshold },
   );
   sections.forEach((section) => observer.observe(section.querySelector(".terminal")));
 }

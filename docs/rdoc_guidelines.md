@@ -47,7 +47,8 @@ Reader-facing pages should move down this ladder in order:
 2. **Smallest useful path** — the shortest copyable example that reaches that outcome.
 3. **Mental model** — how the participating objects divide responsibility.
 4. **Working detail** — configuration, lifecycle, extension points, and alternatives.
-5. **Boundaries** — security, persistence, concurrency, failure, or compatibility constraints.
+5. **Essential considerations** — the limits or failure behavior the reader
+   needs before using the feature.
 6. **Next step** — a link to the next guide or the relevant API object.
 
 Do not make a newcomer learn provider inheritance, event internals, or every DSL before seeing an agent answer a request. Do not make an experienced reader wade through a tutorial to find a method contract. The page's depth determines where it joins the ladder.
@@ -73,8 +74,8 @@ That reader should come away with a few steady impressions:
   code calls it.
 - Advanced control is available when the application needs it, but it does not
   crowd the first path.
-- The documentation is candid about data flow, authorization, failures, and
-  ownership without turning every paragraph into a warning.
+- The documentation is candid about data flow, permission checks, failures,
+  and ownership without making ordinary usage feel risky or burdensome.
 - Each page answers the question raised by the page before it and makes the next
   useful step feel within reach.
 
@@ -102,7 +103,7 @@ Do not repeat whole guide narratives or unrelated architecture.
 
 ### Run a cold-reader pass
 
-For a substantial documentation change, review the rendered Edge site in the
+For a substantial documentation change, review the rendered site in the
 same order a newcomer would encounter it: homepage, docs home, top-level guides,
 then a few central API pages. Use a reviewer with no LittleGhost context when
 possible. After each page, record:
@@ -126,12 +127,16 @@ rewrite it in approachable language rather than hiding it in a late disclaimer.
 | `README.md` | “What can this do, and where do I start?” | Roughly 600–900 words. One compact end-to-end example, one architecture map, installation, documentation links, compatibility status, license, and essential contribution commands. |
 | Getting Started | “How do I make the first useful agent run?” | One complete path from installation through output and streaming. Explain only concepts used on that path. |
 | Core Concepts | “How do these pieces relate, and when do I choose each one?” | A durable mental model from Agent to Assembly, contrasting adjacent choices without cataloguing their options. |
+| Models and Providers | “How do I choose where an Agent sends a request?” | Start with one direct target, then introduce shared roles, connections, per-request selection, and capabilities. |
 | Assembly guide | “How do I compose several participants?” | Connected, runnable examples of Workflow, Swarm, Graph, nesting, trajectories, and builders. |
-| Prompts as Views | “Where do growing instructions and shared prompt pieces live?” | Move one inline prompt into a conventional ERB view, then introduce locals, partials, lookup, and trust boundaries. |
+| Prompts as Views | “Where do growing instructions and shared prompt pieces live?” | Move one inline prompt into a conventional ERB view, then introduce locals, partials, and lookup. |
 | Tools | “What can an agent do, where does that code run, and where is it authorized?” | Tool definition and binding, trusted context, direct application authority, sandbox delegation, concurrency, retries, failures, and the bridge to code mode. |
+| Structured Results and Content | “How do I receive checked values or send images and documents?” | One strict result schema, strategy selection, repair behavior, and typed content blocks. |
+| Skills | “How do I package reusable instructions and resources?” | One focused Skill, discovery, Tool pairing, optional Workspace resources, and writing guidance. |
 | Workspaces and Sandboxes | “What runs where, what persists, and which process boundaries are enforced?” | Workspace and resource lifecycle, logical paths, scoped capabilities, backend tradeoffs, networking, hosting layers, and explicit limitations. |
 | Code Mode | “How can a model compose Tools without gaining their authority?” | One useful Ruby program, trusted Tool boundary, execution lifecycle, excluded Tools, limits, optional JavaScript, engine extensions, and sandbox requirements. |
-| Production guide | “How does this live in a real application?” | Configuration, runtime reuse, sessions, supervision, observability, ownership, and trust boundaries. |
+| Integrations | “How do I connect remote Tools, interfaces, and tracing?” | Small MCP, AG-UI, and OpenTelemetry recipes, each followed by its immediate operational considerations. |
+| Production guide | “How does this live in a real application?” | Configuration, runtime reuse, sessions, supervision, observability, and ownership. |
 | Class or module comment | “What responsibility does this object own?” | A purpose sentence, lifecycle or extension contract, and a short canonical example for a core type. |
 | Method comment | “What happens if I call this?” | Usually one sentence plus non-obvious arguments, return value, side effects, exceptions, or constraints. |
 | Extension contract | “What must my implementation provide?” | The smallest valid implementation, ownership and concurrency expectations, accepted and returned shapes, and failures the framework handles. |
@@ -196,7 +201,8 @@ Lead with the contract in natural present-tense prose. “Returns…”, “Buil
 - The returned object or yielded values.
 - Observable side effects and lifecycle ownership.
 - Important edge cases and exceptions callers may handle.
-- Threading, persistence, trust, or security constraints.
+- Threading, persistence, or safety constraints that change how callers use the
+  method.
 
 Do not use YARD-only tags such as `@param` or `@return`. Write ordinary prose and RDoc lists instead:
 
@@ -225,7 +231,7 @@ every inherited Ruby method. For an error, say what condition raises it and
 what a caller can reasonably do next. An empty example adds less value than a
 precise sentence.
 
-## Examples, jargon, and warnings
+## Examples, jargon, and safety notes
 
 Examples demonstrate the preferred public API, not every possible form. Keep a single example internally consistent: names, roles, input keys, return objects, and output should agree. Before writing one, inspect the implementation and tests for every non-trivial call it uses.
 
@@ -244,7 +250,37 @@ return value.
 
 Use LittleGhost's own vocabulary consistently. A **model role** is the application-facing name resolved by `ModelResolver`; a **provider** performs model requests; a **run** owns one top-level execution; an **assembly** is any agent-compatible coordination; a **subagent** is model-directed delegation; a **workflow** is Ruby-directed composition; a **swarm** uses direct agent handoffs; and a **graph** follows declared nodes and edges. Do not switch casually between “agent,” “assistant,” “bot,” “worker,” and “model.”
 
-Warnings are for plausible harm or surprising irreversible behavior, not emphasis. Start with **Warning:**, name the risk, then give the safe action. Examples that grant filesystem, process, network, credential, or cross-tenant data access must put the trust boundary next to the enabling code. Use **Note:** for useful, non-hazardous context. If ordinary prose is clear enough, use ordinary prose.
+Write the default, productive path first. Add deeper mechanics only when they
+help the reader choose or debug something on that page. A guide should feel
+safe to follow without asking the reader to perform a security review before
+every example.
+
+Prefer concrete actors and actions over institutional shorthand. Phrases such
+as “application policy,” “trust boundary,” “authorization boundary,” and
+“untrusted input” often hide the useful instruction. Say who chooses the value,
+where code runs, or what the application must check. Precise API and domain
+names such as `Sandbox::Policy` and “refund policy” remain correct. These terms
+are review prompts, not banned words.
+
+Do not introduce implementation nouns as if readers already know them. Describe
+the observable behavior first. For example, say that changing a builder affects
+future builds without changing an assembly already built; do not lead with
+“immutable snapshot” or “recorded and replayed.” Use “snapshot” only for an
+actual point-in-time record exposed by the public API, and define it on first
+use.
+
+Use a Markdown blockquote beginning with `> **Safety note:**` when a plausible
+harm needs to stand apart from the learning flow. Give one concrete safe action
+and keep the aside as close as possible to the code that creates the risk.
+Combine repeated cautions instead of scattering them across a page. Use no more
+than one Safety note per major topic. Use `> **Note:**` for helpful context and
+`> **Advanced:**` for optional mechanics. If ordinary prose is clear enough,
+use ordinary prose.
+
+Place machine-readable discovery near the top of a documentation landing page
+as a short aside, after the reader has enough context to understand the project.
+Link concise labels such as `llms.txt`; do not make a raw URL a hero message or
+present agent discovery as the first documentation chapter.
 
 ## A golden before and after
 
@@ -322,6 +358,58 @@ without redefining generated readers. Keep the reopening documentation-only,
 and verify both runtime behavior and the rendered page whenever the value
 changes.
 
+## Machine-readable documentation surface
+
+The published documentation is one body of content with HTML and Markdown
+representations. A representation for a model or agent is not a second set of
+documentation and must not be maintained independently from the source that
+people read.
+
+- Every content-bearing HTML page has a stable Markdown counterpart generated
+  from the same README, guide, homepage content, or RDoc object store. Do not
+  convert rendered HTML back into Markdown.
+- Each HTML page declares its Markdown counterpart with
+  `<link rel="alternate" type="text/markdown">` and an absolute, visually
+  hidden pointer. The pointer is `aria-hidden="true"`; it is machine discovery
+  metadata, not duplicate navigation for assistive technology.
+- Canonical URLs use `https://mattyr.github.io/little_ghost/`, the published
+  GitHub Pages site. Each Markdown representation has its own stable `.md` URL;
+  request-time content negotiation is not required.
+- A versioned page links only to content generated from the same release. Current
+  content and historical APIs must never be combined in one Markdown page or
+  full-text corpus.
+
+`/llms.txt` is a concise orientation document in the llmstxt.org shape. It
+states what LittleGhost is, distinguishes the learning paths, and links only to
+the most useful canonical Markdown pages. It is not a sitemap or a dump of page
+titles. `/llms-full.txt` is the deterministic current corpus: docs home, guides in
+navigation order, API index, essential APIs, then remaining public APIs in
+alphabetical order. Each document appears once under its canonical Markdown
+URL. Historical releases produce their own discovery files from that release.
+
+`robots.txt` allows documentation crawlers and publishes this owner-approved
+content signal:
+
+```text
+Content-Signal: search=yes, ai-input=yes, ai-train=yes
+```
+
+The signal expresses permission; it does not make unpublished information
+appropriate for the public documentation.
+
+Prefer content quality over model-specific markup. Define concepts directly,
+use descriptive headings, make examples complete, and cite authoritative
+primary specifications when an external contract matters. Do not invent
+statistics, testimonials, or citations. Do not add `ai.txt`, AI-specific meta
+tags, hidden prompt comments, user-agent routing, an “AI mode” toggle, a
+duplicate AI-only information page, or JSON-LD solely to attract models.
+
+Documentation review must include evidence from the built artifact. A clean
+review records the changed source pages, applicable standards, rendered pages
+inspected, link and reference checks, Markdown counterparts, discovery files,
+and release isolation. Missing required source or rendered output is a finding,
+not an assumed pass.
+
 ## Review rubrics
 
 An agent preparing documentation should verify:
@@ -330,9 +418,16 @@ An agent preparing documentation should verify:
 - Every public symbol added or changed has an intentional RDoc state: documented, non-public, or explicitly `:nodoc:`.
 - The page follows the narrative ladder and stays at its assigned depth.
 - Jargon is defined once and reused consistently.
-- Security and lifecycle boundaries appear beside the API that creates them.
+- Safety and lifecycle notes are concrete, proportional, and appear beside the
+  API that creates the need for them.
 - Reader-facing prose contains no documentation process, CI, coverage, publication planning, or maintainer instructions.
 - The generated page, navigation, signatures, links, and metadata were inspected rather than inferred from source rendering.
+- Every affected HTML page and its same-source Markdown counterpart agree on
+  the public contract, and discovery files point to the canonical version.
+- Alternate links, Markdown routes, crawler metadata, and version isolation
+  have build evidence when the change touches them.
+- Model-targeted anti-patterns from the machine-readable surface section are
+  absent.
 - Only owned files changed and generated output is not staged.
 
 A human reviewer should be able to answer “yes” to these questions:
@@ -342,8 +437,11 @@ A human reviewer should be able to answer “yes” to these questions:
 3. Would copying the example call real APIs with the shown argument shapes?
 4. Are the return value, ownership, and important failure modes unambiguous?
 5. Does the text distinguish model-directed delegation from application-directed workflow control?
-6. Are warnings concrete, proportional, and paired with a safe action?
+6. Are Safety notes concrete, proportional, and paired with a useful action?
 7. Does the generated site look intentional rather than merely compile?
+8. Can a model reach the canonical Markdown without guessing or scraping HTML?
+9. Do the curated and full-text discovery files describe one internally
+   consistent release?
 
 ## Generated-site validation
 
@@ -360,7 +458,11 @@ Check both content and generated metadata:
 
 - The landing-page browser title is “LittleGhost API Documentation”; guide and API page titles also include that configured project title.
 - The landing-page description begins with LittleGhost's capability, not project history or development status.
-- `README.md` is the landing page; Getting Started, Core Concepts, Compose Agents, Prompts as Views, Tools, Workspaces and Sandboxes, Code Mode, and Running in Production appear in that learning order; Tools, Workspaces and Sandboxes, and Code Mode form a “Capabilities and isolation” group; and this contributor guideline does not.
+- `README.md` is the landing page. Guides appear in this order: Getting Started,
+  Core Concepts, Models and Providers, Prompts as Views, Tools, Structured
+  Results and Content, Compose Agents, Skills, Workspaces and Sandboxes, Code
+  Mode, Integrations, and Running in Production. This contributor guideline
+  does not appear in reader navigation.
 - Page titles, headings, code blocks, tables, navigation, and explicit cross-references render correctly.
 - Public method signatures match the source, with no duplicate generated entries.
 - Pages navigation contains the intended guides, and search data contains the expected public API names without exposing internal-only pages.

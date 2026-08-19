@@ -2,6 +2,11 @@
 
 LittleGhost is a Ruby library for building AI features with agents and composable assemblies. With `OPENROUTER_API_KEY` set, start with one class, give it a prompt, and call it like the rest of your application code:
 
+> **Using a coding agent?** Start with
+> [`llms.txt`](https://mattyr.github.io/little_ghost/llms.txt) for a concise map
+> of the guides and API. [`llms-full.txt`](https://mattyr.github.io/little_ghost/llms-full.txt)
+> contains the complete documentation in one file.
+
 ```ruby
 require "little_ghost"
 
@@ -17,7 +22,10 @@ run.response
 
 That small definition is already a complete agent. LittleGhost makes the model call, tracks usage, supports streaming, and closes the resources it creates for the request. Add a tool when the agent needs something from your application. Bring in more agents when the work grows.
 
-Model requests may send system instructions, caller input, conversation history, tool results, and attachments to the selected external provider. Model wording can vary between runs. Choose providers and the data you send them with the same care as any other external service.
+Model requests may send system instructions, caller input, conversation history,
+Tool results, and attachments to the selected provider. Model wording can vary
+between runs. [Models and Providers](docs/guides/models_and_providers.md) explains
+how to choose where each Agent sends its requests.
 
 ## Install the gem
 
@@ -63,12 +71,13 @@ class CustomerSupportAgent < LittleGhost::Agent
 end
 ```
 
-The schema checks the shape of the input. Your Ruby code still decides whether the operation is allowed and safe. The result goes back to the model as context.
+The schema checks the shape of the input. Your Ruby code still decides whether
+the operation is allowed. The result goes back to the model as context.
 
 An ordinary Tool runs in your Ruby process. When a Tool needs files or child
 processes, it can delegate that work through a Sandbox. Code mode goes one step
 further: a sandboxed interpreter can compose several Tools, while every Tool
-call still returns to trusted Ruby for validation and authorization.
+call still returns to your Ruby Tool for validation and permission checks.
 
 ## Grow without changing the caller
 
@@ -111,11 +120,15 @@ upgrading, because interfaces may change between releases.
 
 - [Getting Started](docs/guides/getting_started.md) takes you from installation to a tool-backed, streaming agent.
 - [Core Concepts](docs/guides/core_concepts.md) builds the mental model from Agent to Assembly.
-- [Compose Agents](docs/guides/assemblies.md) walks through workflows, swarms, graphs, nesting, and builders.
+- [Models and Providers](docs/guides/models_and_providers.md) gives shared model choices application-facing names.
 - [Prompts as Views](docs/guides/prompt_views.md) gives growing instructions, shared pieces, and application values a natural home.
-- [Tools](docs/guides/tools.md) explains how models call Ruby code and where your application keeps control.
-- [Workspaces and Sandboxes](docs/guides/sandboxing.md) contains file access and child processes.
-- [Code Mode](docs/guides/code_mode.md) builds on those boundaries so a model can compose Tools in sandboxed Ruby or optional JavaScript.
+- [Tools](docs/guides/tools.md) explains how models call focused Ruby operations.
+- [Structured Results and Content](docs/guides/structured_outputs_and_content.md) covers checked result shapes, images, and documents.
+- [Compose Agents](docs/guides/assemblies.md) walks through workflows, swarms, graphs, nesting, and builders.
+- [Skills](docs/guides/skills.md) organizes reusable instructions and supporting resources.
+- [Workspaces and Sandboxes](docs/guides/sandboxing.md) gives files and child processes a deliberate place to run.
+- [Code Mode](docs/guides/code_mode.md) lets a model compose Tools in sandboxed Ruby or optional JavaScript.
+- [Integrations](docs/guides/integrations.md) connects MCP, AG-UI, and OpenTelemetry.
 - [Running in Production](docs/guides/production.md) covers configuration, saved conversations, supervision, and observability.
 - [API reference](rdoc-ref:LittleGhost) provides exact method signatures and ownership rules.
 

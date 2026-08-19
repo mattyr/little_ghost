@@ -15,16 +15,16 @@ module LittleGhost
     # HTTPTransport sends MCP JSON-RPC messages over Streamable HTTP. It applies
     # time and response-size limits and keeps the negotiated MCP session ID.
     #
-    # === Security and trust
+    # === Connections and credentials
     #
-    # HTTPS is required by default. +allow_insecure_http+ is only for an
-    # explicitly trusted local development endpoint. Scope caller-supplied
+    # HTTPS is required by default. +allow_insecure_http+ is only for a local
+    # development endpoint. Scope caller-supplied
     # credential headers to the target server. Response bodies and negotiated
     # session IDs are validated before use.
     #
     # One transport instance retains one negotiated MCP session ID and sends it
-    # with later requests. Scope the transport and its Client to one trusted
-    # server and one authenticated principal; never share that pair across
+    # with later requests. Use one transport and Client for one server and one
+    # authenticated user or service identity; never share that pair across
     # tenants. LittleGhost does not send MCP session-termination DELETE requests,
     # so configure server-side expiry or manage that lifecycle outside this
     # transport when the server requires explicit cleanup.
@@ -143,24 +143,24 @@ module LittleGhost
       end
     end
 
-    # Client makes tools from an MCP server available as ordinary LittleGhost
-    # tools. Agents can use a remote capability without learning a second tool
-    # interface.
+    # Client is the lower-level interface for loading tools from an MCP server.
+    # Most Agents can declare a reusable Toolset instead. Use Client directly
+    # when an application needs a custom transport or definition filter.
     #
     #   transport = LittleGhost::MCP::HTTPTransport.new(url: "https://mcp.example/rpc")
     #   client = LittleGhost::MCP::Client.new(transport:, prefix: "docs")
-    #   client.tools.map(&:tool_name) # => ["docs_search", "docs_fetch"]
+    #   client.tools.map(&:tool_name) # => ["docs___search", "docs___fetch"]
     #
     # Tool names are normalized and checked for collisions. Pagination, tool
-    # count, and response sizes are limited; +rejected_tools+ and
-    # +definition_filter+ can enforce an application allowlist.
+    # count, and response sizes are limited. +rejected_tools+ excludes named
+    # operations; +definition_filter+ can enforce an application allowlist.
     #
     # Server definitions and results remain untrusted input. LittleGhost validates
     # them before creating tools, but applications still decide which servers and
     # capabilities an agent may use.
     #
     # A client and its transport represent one authenticated server session.
-    # Create a separate pair for each principal or trust boundary. Protocol
+    # Create a separate pair for each authenticated user or service identity. Protocol
     # initialization and subsequent requests through one client are serialized;
     # do not share its transport with another client.
     class Client

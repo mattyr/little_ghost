@@ -14,7 +14,7 @@ module LittleGhost
     #   )
     #   registry.names # => ["read_file", "list_files"]
     #
-    # === Security and trust
+    # === Files follow the Sandbox
     #
     # These tools do not add isolation. The configured sandbox must enforce path
     # containment, permissions, size limits, and cancellation.

@@ -101,13 +101,18 @@ run.response
 # Refunds are available within 30 days, so your purchase is eligible.
 ```
 
-LittleGhost checks the model's arguments before it calls `HelpCenterLookupTool#call`. The schema checks shape, not permission. If a tool reads customer data or changes something, authorize that work from trusted application context. The tool's result then becomes context for the model.
+LittleGhost checks the model's arguments before it calls
+`HelpCenterLookupTool#call`. The Tool's result then becomes context for the
+model.
 
-### Use trusted context for private data
+### Use application context for private data
 
-Model tool arguments are untrusted, even after their shape has been checked. Pass identity and permissions from your application's authentication boundary instead.
+The schema checks shape, not permission. When a Tool reads private data or
+changes something, use identity and account information established by your
+application rather than asking the model to supply it.
 
-While an Agent is working, LittleGhost binds each Tool instance to the current Run. The Tool can read trusted request values through its `run` accessor:
+While an Agent is working, LittleGhost binds each Tool instance to the current
+Run. The Tool can read request values through its `run` accessor:
 
 ```ruby
 class OrderStatusTool < LittleGhost::Tool
@@ -147,7 +152,13 @@ run = CustomerSupportAgent.ask(
 )
 ```
 
-Here, `order_number` came from the model. The application supplied `actor_id` and `account_id` after authenticating the caller. LittleGhost places those request values on `run.invocation`; context keys become strings. The model cannot replace them through its tool arguments.
+Here, `order_number` came from the model. The application supplied `actor_id`
+and `account_id` after authenticating the caller. LittleGhost places those
+request values on `run.invocation`; context keys become strings.
+
+> **Safety note:** Treat model-selected Tool arguments like any other external
+> input. Check permission using the current user and account before returning
+> private data or performing a write.
 
 That is enough to authorize the first Tool safely. [Core Concepts](core_concepts.md) names the request and working-state objects behind `run`, and [Running in Production](production.md) explains what changes when you add saved conversations.
 

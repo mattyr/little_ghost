@@ -106,13 +106,18 @@ LittleGhost chooses one prompt source in this order:
 2. An explicit `system_template`
 3. The Agent's conventional `system.erb` view
 
-Applications can add prompt lookup roots through `Configuration#prompt_paths`. Earlier roots win, which is useful when one trusted application layer overrides a shared prompt package.
+Applications can add prompt lookup roots through `Configuration#prompt_paths`.
+Earlier roots win, which lets application code override a shared prompt package.
 
 ## Treat views as application code
 
-Prompt views run as ERB inside the Ruby process. They can call Ruby, so keep every prompt directory application-controlled and non-user-writable. Never turn a request or model-supplied path into a prompt root.
+Prompt views run as ERB inside the Ruby process and can call Ruby. Keep prompt
+directories with the rest of your application code rather than letting a
+request choose one.
 
-`TrustedPath` exists for the uncommon case where trusted application code selects a request-specific root. It records a trust decision; it does not make an untrusted directory safe.
+`TrustedPath` is available for the uncommon case where application code selects
+a request-specific root. It marks that choice explicitly; it does not inspect
+or restrict the directory.
 
 ## Build request-specific input in a Workflow
 

@@ -15,12 +15,12 @@ module LittleGhost
     #   )
     #   LittleGhost::Instrumentation.capture_content(policy)
     #
-    # === Security and trust
+    # === Choose captured data
     #
     # Enabling capture may place model input, output, tool definitions, and
     # exception details into telemetry. Redaction and a custom scrubber reduce
-    # accidental disclosure but are not a security boundary. Configure one
-    # policy per trusted process and apply exporter-side controls as well.
+    # accidental disclosure but cannot recognize every sensitive value. Configure
+    # one capture policy per process and apply exporter-side controls as well.
     class ContentCapture
       CaptureLimitExceeded = Class.new(StandardError) # :nodoc:
 

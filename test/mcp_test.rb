@@ -47,6 +47,221 @@ class MCPTest < Minitest::Test
     assert_equal %w[initialize notifications/initialized tools/list tools/call], transport.payloads.map { |item| item[:method] }
   end
 
+  def test_toolset_loads_exposed_tools_through_the_agent_tool_provider_contract
+    transports = []
+    transport_class = Class.new(Transport) do
+      def send(payload, context: nil)
+        return super unless payload[:method] == "tools/list"
+
+        @payloads << payload
+        {"result" => {"tools" => [
+          {"name" => "search", "description" => "Search"},
+          {"name" => "fetch", "description" => "Fetch"}
+        ]}}
+      end
+    end
+    toolset = Class.new(LittleGhost::MCP::Toolset) do
+      endpoint "https://mcp.example/rpc", timeout: 20
+      headers { {"Authorization" => "Bearer token"} }
+      prefix "help_center"
+      expose "search"
+    end
+    transport_factory = lambda do |**options|
+      transports << [transport_class.new, options]
+      transports.last.first
+    end
+
+    LittleGhost::MCP::HTTPTransport.stub(:new, transport_factory) do
+      registry = LittleGhost::ToolRegistry.new(
+        [toolset],
+        binding: LittleGhost::Tool::Binding.new(run: Object.new)
+      )
+
+      assert_equal ["help_center___search"], registry.names
+      assert_equal "found", registry.fetch("help_center___search").execute({}).content
+    ensure
+      registry&.close
+    end
+
+    assert_equal "https://mcp.example/rpc", transports.first.last.fetch(:url)
+    assert_equal 20, transports.first.last.fetch(:timeout)
+    assert_equal({"Authorization" => "Bearer token"}, transports.first.last.fetch(:headers))
+  end
+
+  def test_toolset_resolves_headers_for_each_run_and_does_not_share_clients
+    runs = [Object.new, Object.new]
+    resolved_runs = []
+    transports = []
+    toolset = Class.new(LittleGhost::MCP::Toolset) do
+      endpoint "https://mcp.example/rpc"
+      headers do |run|
+        resolved_runs << run
+        {"Authorization" => "Bearer #{runs.index(run)}"}
+      end
+    end
+
+    LittleGhost::MCP::HTTPTransport.stub(:new, ->(**) { Transport.new.tap { |transport| transports << transport } }) do
+      runs.each do |run|
+        registry = LittleGhost::ToolRegistry.new(
+          [toolset],
+          binding: LittleGhost::Tool::Binding.new(run:)
+        )
+        registry.fetch("search").execute({})
+        registry.close
+      end
+    end
+
+    assert_equal runs, resolved_runs
+    assert_equal 2, transports.length
+    assert_equal 2, transports.map(&:object_id).uniq.length
+    assert_equal 2, transports.sum { |transport| transport.payloads.count { |payload| payload[:method] == "initialize" } }
+  end
+
+  def test_toolset_passes_run_cancellation_and_deadlines_to_discovery
+    transport = Class.new(Transport) do
+      def send(payload, context: nil)
+        context&.check!
+        super
+      end
+    end.new
+    toolset = Class.new(LittleGhost::MCP::Toolset) do
+      endpoint "https://mcp.example/rpc"
+    end
+
+    LittleGhost::MCP::HTTPTransport.stub(:new, transport) do
+      token = LittleGhost::Support::CancellationToken.new
+      token.cancel
+      cancelled = LittleGhost::RunContext.new(cancellation_token: token)
+      run = Struct.new(:context).new(cancelled)
+      assert_raises(LittleGhost::CancelledError) do
+        toolset.tools(LittleGhost::Tool::Binding.new(run:))
+      end
+
+      expired = LittleGhost::RunContext.new(deadline: Time.now - 1)
+      run = Struct.new(:context).new(expired)
+      assert_raises(LittleGhost::DeadlineExceededError) do
+        toolset.tools(LittleGhost::Tool::Binding.new(run:))
+      end
+    end
+  end
+
+  def test_toolset_accepts_zero_argument_header_resolvers
+    options = nil
+    toolset = Class.new(LittleGhost::MCP::Toolset) do
+      endpoint "https://mcp.example/rpc"
+      headers -> { {"Authorization" => "Bearer token"} }
+    end
+
+    factory = lambda do |**values|
+      options = values
+      Transport.new
+    end
+    LittleGhost::MCP::HTTPTransport.stub(:new, factory) do
+      registry = LittleGhost::ToolRegistry.new([toolset])
+      registry.close
+    end
+
+    assert_equal({"Authorization" => "Bearer token"}, options.fetch(:headers))
+  end
+
+  def test_toolset_exposes_every_server_tool_when_expose_is_omitted
+    transport = Class.new(Transport) do
+      def send(payload, context: nil)
+        return super unless payload[:method] == "tools/list"
+
+        @payloads << payload
+        {"result" => {"tools" => [
+          {"name" => "search", "description" => "Search"},
+          {"name" => "fetch", "description" => "Fetch"}
+        ]}}
+      end
+    end.new
+    toolset = Class.new(LittleGhost::MCP::Toolset) do
+      endpoint "https://mcp.example/rpc"
+    end
+
+    LittleGhost::MCP::HTTPTransport.stub(:new, transport) do
+      registry = LittleGhost::ToolRegistry.new([toolset])
+      assert_equal %w[search fetch], registry.names
+    ensure
+      registry&.close
+    end
+  end
+
+  def test_toolset_configuration_is_inherited_and_validated
+    parent = Class.new(LittleGhost::MCP::Toolset) do
+      endpoint "https://mcp.example/rpc"
+      prefix "shared"
+      expose "search"
+    end
+    child = Class.new(parent)
+
+    assert_equal parent.endpoint, child.endpoint
+    assert_equal parent.prefix, child.prefix
+    assert_equal parent.expose, child.expose
+
+    error = assert_raises(LittleGhost::ConfigurationError) do
+      Class.new(LittleGhost::MCP::Toolset).tools(LittleGhost::Tool::Binding.new)
+    end
+    assert_includes error.message, "must declare an MCP endpoint"
+
+    invalid_headers = Class.new(LittleGhost::MCP::Toolset) do
+      endpoint "https://mcp.example/rpc"
+      headers { "not a hash" }
+    end
+    error = assert_raises(LittleGhost::ConfigurationError) do
+      invalid_headers.tools(LittleGhost::Tool::Binding.new)
+    end
+    assert_includes error.message, "headers must resolve to a hash"
+  end
+
+  def test_toolset_requires_headers_to_be_redeclared_for_a_different_endpoint
+    parent = Class.new(LittleGhost::MCP::Toolset) do
+      endpoint "https://first.example/rpc"
+      headers "Authorization" => "Bearer first"
+    end
+    child = Class.new(parent) do
+      endpoint "https://second.example/rpc"
+    end
+
+    error = assert_raises(LittleGhost::ConfigurationError) do
+      child.tools(LittleGhost::Tool::Binding.new)
+    end
+    assert_includes error.message, "redeclare headers"
+
+    child.headers({})
+    options = nil
+    factory = lambda do |**values|
+      options = values
+      Transport.new
+    end
+    LittleGhost::MCP::HTTPTransport.stub(:new, factory) do
+      registry = LittleGhost::ToolRegistry.new([child])
+      registry.close
+    end
+    assert_equal "https://second.example/rpc", options.fetch(:url)
+    assert_empty options.fetch(:headers)
+  end
+
+  def test_toolset_copies_and_freezes_static_headers
+    name = +"Authorization"
+    value = +"Bearer first"
+    configured = {name => value}
+    toolset = Class.new(LittleGhost::MCP::Toolset) do
+      endpoint "https://mcp.example/rpc"
+      headers configured
+    end
+
+    name.replace("Changed")
+    value.replace("Bearer changed")
+    configured.clear
+
+    assert_equal({"Authorization" => "Bearer first"}, toolset.headers)
+    assert toolset.headers.frozen?
+    assert toolset.headers.keys.first.frozen?
+    assert toolset.headers.values.first.frozen?
+  end
+
   def test_concurrent_tool_discovery_initializes_the_protocol_once
     entered = Queue.new
     release = Queue.new
