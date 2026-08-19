@@ -43,7 +43,9 @@ class LittleGhostDocsTest < Minitest::Test
     intro = homepage.match(/<section class="home-intro".*?<\/section>/m).to_s
 
     assert_includes intro, '<a class="agent-docs-link" href="./llms.txt">For coding agents →</a>'
+    assert_includes intro, "Ruby 3.3+"
     refute_includes intro, "https://mattyr.github.io/little_ghost/llms.txt"
+    refute_includes intro, "OpenRouter API key"
   end
 
   def test_guides_follow_the_reader_journey

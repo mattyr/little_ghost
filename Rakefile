@@ -202,6 +202,7 @@ class LittleGhostSiteChecker
   def check
     check_required_paths
     check_landing_page
+    check_getting_started_page
     check_api_index_metadata
     check_documentation_navigation
     check_local_links
@@ -248,9 +249,6 @@ class LittleGhostSiteChecker
     unless html.include?("CustomerSupportAgent") && html.include?("BookClubLaunchGraph")
       errors << "Landing page is missing its Agent or Graph example"
     end
-    unless html.include?("OpenRouter API key")
-      errors << "Landing page does not state the first demo's credential prerequisite"
-    end
     if html.match?(/Docker backends|Move from bind mounts|direct_tools/)
       errors << "Landing page contains obsolete sandbox or code-mode guidance"
     end
@@ -259,6 +257,13 @@ class LittleGhostSiteChecker
     end
     check_version(page, html)
     check_navigation(page, html, LANDING_NAVIGATION_LABELS)
+  end
+
+  def check_getting_started_page
+    html = site_root.join("docs/getting_started.html").read
+    return if html.include?("OPENROUTER_API_KEY")
+
+    errors << "Getting Started does not state the first Agent's credential prerequisite"
   end
 
   def check_api_index_metadata

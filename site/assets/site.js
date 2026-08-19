@@ -373,18 +373,19 @@ const controllers = new Map(sections.map((section) => [section, createDemo(secti
 if (!("IntersectionObserver" in window)) {
   controllers.forEach((controller) => controller.play());
 } else {
+  const demoVisibilityThreshold = 0.95;
   const observer = new IntersectionObserver(
     (entries) => {
       entries.forEach((entry) => {
-        if (!entry.isIntersecting) return;
+        if (!entry.isIntersecting || entry.intersectionRatio < demoVisibilityThreshold) return;
         const section = entry.target.closest("[data-demo]");
         if (!section.dataset.started) controllers.get(section).play();
         observer.unobserve(entry.target);
       });
     },
-    { threshold: 0.25 },
+    { rootMargin: "-8px 0px", threshold: demoVisibilityThreshold },
   );
-  sections.forEach((section) => observer.observe(section.querySelector(".editor")));
+  sections.forEach((section) => observer.observe(section.querySelector(".terminal")));
 }
 
 class Constellation {

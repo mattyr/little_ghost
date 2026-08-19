@@ -476,7 +476,7 @@ main,
   .underhood-branching.is-open { min-height: 166px; max-height: 166px; }
   .branch-flow { height: 126px; }
   .branch-flow .flow-endpoint { width: 54px; line-height: 1.2; }
-  .branch-flow .agent-bubble { display: none; }
+  .branch-flow .agent-bubble { max-width: min(96px, 27vw); line-height: 1.25; white-space: normal; }
   .site-footer { align-items: flex-start; flex-direction: column; }
   .site-footer nav { justify-content: flex-start; }
 }
