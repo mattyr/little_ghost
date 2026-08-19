@@ -70,11 +70,15 @@ module LittleGhost
 
       def bind_broker(broker, context)
         execution = ExecutionState[:tool_execution]
+        trace_context = if execution
+          Instrumentation.trace_context(operation_id: execution.operation_id)
+        end
+        trace_context = execution&.parent_trace_context if trace_context.nil? || trace_context.empty?
         broker.bind(
           context:,
           events: execution&.events || [],
           parent_operation_id: execution&.operation_id,
-          parent_trace_context: execution&.parent_trace_context
+          parent_trace_context: trace_context
         )
       end
 
@@ -236,13 +240,22 @@ module LittleGhost
 
     class WaitTool < ExecTool # :nodoc:
       tool_name "wait"
-      description "Resume or terminate a yielded code-mode cell."
+      description <<~TEXT.strip
+        Continue observing the active code-mode cell. Call only after exec or wait returned running or yielded.
+        A running cell keeps executing; a yielded cell resumes. Set terminate to stop it.
+      TEXT
       input_schema(
         type: "object",
         properties: {
-          yield_time_ms: {type: "integer", minimum: 1},
-          max_output_tokens: {type: "integer", minimum: 1},
-          terminate: {type: "boolean"}
+          yield_time_ms: {
+            type: "integer", minimum: 1,
+            description: "Return after this many milliseconds if the cell is still running."
+          },
+          max_output_tokens: {
+            type: "integer", minimum: 1,
+            description: "Maximum output tokens returned by this observation."
+          },
+          terminate: {type: "boolean", description: "Stop the active cell instead of continuing it."}
         },
         additionalProperties: false
       )

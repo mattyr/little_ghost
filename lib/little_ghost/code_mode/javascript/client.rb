@@ -47,6 +47,7 @@ module LittleGhost
           @output_bytes = 0
           @yield_count = 0
           @consumed_yields = 0
+          @awaiting_resume = false
           @terminal = nil
           @termination_error = nil
           @client_termination_requested = false
@@ -76,7 +77,18 @@ module LittleGhost
             return if @terminal
 
             @yield_count += 1
+            @awaiting_resume = true
             @condition.broadcast
+          end
+        end
+
+        def resume
+          @mutex.synchronize do
+            return false if @terminal || !@awaiting_resume
+
+            @awaiting_resume = false
+            @consumed_yields = @yield_count
+            true
           end
         end
 
@@ -133,13 +145,14 @@ module LittleGhost
 
               @condition.wait(@mutex, [deadline - monotonic, 0.05].min)
             end
+            yielded = @yield_count > @consumed_yields
             @consumed_yields = @yield_count
             output = @outputs.join("\n")
             @outputs.clear
             @output_bytes = 0
             output = LittleGhost::Support::OutputTruncation
               .truncate_middle_with_token_budget(output, max_tokens).first
-            (@terminal || {status: "yielded"}).merge(cell_id: id, output:)
+            (@terminal || {status: yielded ? "yielded" : "running"}).merge(cell_id: id, output:)
           end
         end
 
@@ -208,7 +221,7 @@ module LittleGhost
 
       def observe(owner:, cell_id:, timeout:, max_tokens:, context: nil, resume: false)
         cell = owned_cell(owner, cell_id)
-        send_message({type: "resume", cell_id: cell.id}, cell:) if resume && !cell.terminal?
+        send_message({type: "resume", cell_id: cell.id}, cell:) if resume && cell.resume
         result = cell.observe(timeout:, max_tokens:, context:)
         release_cell(cell) if cell.terminal?
         result

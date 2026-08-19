@@ -23,6 +23,8 @@ module LittleGhost
           @cells = 0
           @call_mutex = Mutex.new
           @call_threads = []
+          @call_errors = []
+          @closing_marker = {closing: false}
         end
 
         def execute(source:, catalog:, frame: nil, yield_time_ms: nil, max_output_tokens: nil, context: nil)
@@ -35,6 +37,7 @@ module LittleGhost
           normalized_catalog = Catalog.new(catalog).host_definitions
 
           open_process
+          process_opened = true
           @session.write(Protocol.dump(
             source:,
             catalog: normalized_catalog,
@@ -44,10 +47,13 @@ module LittleGhost
           ))
           @explicit_yield = false
           drive(yield_time_ms:, max_output_tokens:, context:)
+        rescue
+          close_process if process_opened
+          raise
         end
 
         def wait(yield_time_ms: nil, max_output_tokens: nil, terminate: false, context: nil)
-          raise ToolError, "there is no yielded code-mode cell" unless @session
+          raise ToolError, "there is no active code-mode cell" unless @session
           if terminate
             result = CellResult.new(output: bounded_output(max_output_tokens), status: :terminated)
             termination_error = nil
@@ -72,6 +78,9 @@ module LittleGhost
             @explicit_yield = false
           end
           drive(yield_time_ms:, max_output_tokens:, context:)
+        rescue
+          close_process
+          raise
         end
 
         def close
@@ -118,6 +127,7 @@ module LittleGhost
           slice_deadline = yield_time_ms && monotonic_time + Float(yield_time_ms) / 1_000
           loop do
             context&.check!
+            raise_call_error!
             raise ToolError, "code-mode cell timed out" if monotonic_time >= @deadline
             if slice_deadline && monotonic_time >= slice_deadline
               return CellResult.new(output: @output.dup, status: :running, continuation: self)
@@ -126,6 +136,7 @@ module LittleGhost
             read_timeout = 0.05
             read_timeout = (slice_deadline - monotonic_time).clamp(0, read_timeout) if slice_deadline
             chunk = @session.read(timeout: read_timeout)
+            raise_call_error!
             unless chunk.stderr.empty?
               @output << chunk.stderr
               enforce_output!(max_output_tokens)
@@ -170,9 +181,14 @@ module LittleGhost
           raise
         end
 
-        def answer_call(message)
+        def answer_call(message, process, closing_marker)
           result = @broker.call(message.fetch("name"), message.fetch("arguments"), id: message.fetch("id"))
-          @session.write(Protocol.dump(type: "result", id: result.id, value: result.value, error: result.error))
+          frame = Protocol.dump(type: "result", id: result.id, value: result.value, error: result.error)
+          begin
+            process.write(frame)
+          rescue IOError, SystemCallError
+            raise unless @call_mutex.synchronize { closing_marker.fetch(:closing) }
+          end
         end
 
         def dispatch_call(message)
@@ -180,7 +196,14 @@ module LittleGhost
             active = @call_threads.count(&:alive?)
             raise ProtocolError, "code-mode concurrent tool call limit exceeded" if active >= @limits.fetch(:concurrency)
 
-            Thread.new { answer_call(message) }
+            process = @session
+            call_errors = @call_errors
+            closing_marker = @closing_marker
+            Thread.new do
+              answer_call(message, process, closing_marker)
+            rescue => error
+              @call_mutex.synchronize { call_errors << error }
+            end
           end
           thread.report_on_exception = false
           @call_mutex.synchronize { @call_threads << thread }
@@ -199,10 +222,14 @@ module LittleGhost
         end
 
         def close_process
-          threads = @call_mutex.synchronize do
-            current = @call_threads
+          threads, call_errors = @call_mutex.synchronize do
+            current_threads = @call_threads
+            current_errors = @call_errors
+            @closing_marker[:closing] = true
             @call_threads = []
-            current
+            @call_errors = []
+            @closing_marker = {closing: false}
+            [current_threads, current_errors]
           end
           session, sandbox, workspace, directory = @session, @sandbox, @workspace, @workspace_directory
           @session = @sandbox = @workspace = @workspace_directory = nil
@@ -224,8 +251,11 @@ module LittleGhost
             end
           end
           if threads.any?(&:alive?)
+            @closed = true
             first_error ||= CleanupError.new("Code-mode nested tool cleanup timed out")
           end
+          call_error = @call_mutex.synchronize { call_errors.shift }
+          first_error ||= call_error
           begin
             sandbox&.close
           rescue => error
@@ -242,6 +272,11 @@ module LittleGhost
             first_error ||= error
           end
           raise first_error if first_error
+        end
+
+        def raise_call_error!
+          error = @call_mutex.synchronize { @call_errors.shift }
+          raise error if error
         end
 
         def monotonic_time

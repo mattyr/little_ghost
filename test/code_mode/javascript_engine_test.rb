@@ -202,6 +202,50 @@ class CodeModeEngineTest < Minitest::Test
     assert_equal ["before", "middle", "after"], [first.output, second.output, third.output]
   end
 
+  def test_waiting_on_a_running_cell_does_not_resume_a_later_explicit_yield
+    entered = Queue.new
+    release = Queue.new
+    broker = Broker.new do |_name, arguments, id|
+      entered << true
+      release.pop
+      Result.new(id:, value: arguments.fetch("value"), error: nil)
+    end
+    session = open_session(broker)
+    first = execute(
+      session,
+      broker,
+      'await tools.echo_value({value: 1}); await yield_control(); text("after");',
+      yield_time_ms: 5
+    )
+    releaser = Thread.new do
+      entered.pop
+      release << true
+    end
+
+    second = session.wait(yield_time_ms: 1_000)
+    third = session.wait(yield_time_ms: 1_000)
+
+    assert_equal [:running, :yielded, :completed], [first.status, second.status, third.status]
+    assert_equal "after", third.output
+    releaser.join
+  ensure
+    release << true if release && release.empty?
+    releaser&.join(1)
+  end
+
+  def test_resuming_a_yield_between_observations_consumes_that_yield
+    cell = LittleGhost::CodeMode::Javascript::Client::Cell.new(
+      id: "cell-1", owner: Object.new, dispatcher: Object.new
+    )
+
+    assert_equal "running", cell.observe(timeout: 0, max_tokens: 100).fetch(:status)
+    cell.yielded
+
+    assert cell.resume
+    assert_equal "running", cell.observe(timeout: 0, max_tokens: 100).fetch(:status)
+    refute cell.resume
+  end
+
   def test_terminates_a_yielded_cell
     broker = Broker.new
     session = open_session(broker)
@@ -214,7 +258,7 @@ class CodeModeEngineTest < Minitest::Test
     end
     result = session.wait(terminate: true, max_output_tokens: 7)
 
-    assert_equal :yielded, first.status
+    assert_equal :running, first.status
     assert_equal :terminated, result.status
     assert_equal 7, captured.fetch(:max_tokens)
   end
@@ -250,7 +294,7 @@ class CodeModeEngineTest < Minitest::Test
       )
     end
 
-    assert_equal :yielded, first.status
+    assert_equal :running, first.status
     assert_equal error.message, raised.message
     assert_raises(LittleGhost::ToolError) { session.wait }
   end

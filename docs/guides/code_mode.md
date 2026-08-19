@@ -125,9 +125,18 @@ the `wait` control Tool to resume or terminate that same cell.
 
 The optional `yield_time_ms` input on `exec` and `wait` asks LittleGhost to
 return control after that many milliseconds when the program is still running.
-The cell keeps running, and `wait` continues watching it. Ruby waits for
-completion when this input is omitted; JavaScript uses a ten-second observation
-interval by default.
+The returned status tells the model what to do next:
+
+- `running` means the program is still working. `wait` observes it for another
+  interval without restarting it.
+- `yielded` means the program called `yield_control`. `wait` resumes it and then
+  observes it.
+- `completed`, `error`, and `terminated` are final. There is no cell to wait for
+  after one of these statuses.
+
+Setting `terminate: true` on `wait` stops an active cell. Ruby waits for
+completion when `yield_time_ms` is omitted; JavaScript uses a ten-second
+observation interval by default.
 
 Only one `exec` or `wait` operation runs for a cell at a time. Together, the
 engine and active child process form a code-mode session. The Agent closes that

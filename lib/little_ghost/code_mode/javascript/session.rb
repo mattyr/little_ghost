@@ -175,7 +175,7 @@ module LittleGhost
 
       def finish(cell_id, result)
         status = result.fetch(:status)
-        unless status == "yielded"
+        unless %w[running yielded].include?(status)
           @frames_mutex.synchronize do
             @frames.delete(cell_id)
             @current_cell_id = nil if @current_cell_id == cell_id

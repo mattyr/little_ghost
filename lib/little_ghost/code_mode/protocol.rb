@@ -23,7 +23,7 @@ module LittleGhost
         raise Error, "Code-mode frame exceeds the size limit" if length > MAX_FRAME_BYTES
 
         JSON.parse(read_exactly(io, length) || raise(EOFError, "Code-mode frame ended early"))
-      rescue JSON::ParserError => error
+      rescue JSON::ParserError, EncodingError => error
         raise Error, "Code-mode frame is not valid JSON: #{error.message}"
       end
 
@@ -38,7 +38,9 @@ module LittleGhost
         payload = JSON.generate(value)
         raise Error, "Code-mode frame exceeds the size limit" if payload.bytesize > MAX_FRAME_BYTES
 
-        [payload.bytesize].pack("N") << payload
+        [payload.bytesize].pack("N") << payload.b
+      rescue JSON::GeneratorError, EncodingError => error
+        raise Error, "Code-mode frame cannot be encoded as JSON: #{error.message}"
       end
 
       # Removes and returns one complete frame from +buffer+, or returns +nil+
@@ -53,7 +55,7 @@ module LittleGhost
         payload = buffer.byteslice(4, length)
         buffer.slice!(0, length + 4)
         JSON.parse(payload)
-      rescue JSON::ParserError => error
+      rescue JSON::ParserError, EncodingError => error
         raise Error, "Code-mode frame is not valid JSON: #{error.message}"
       end
 
