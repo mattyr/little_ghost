@@ -55,6 +55,7 @@ module LittleGhost
         def wait(yield_time_ms: nil, max_output_tokens: nil, terminate: false, context: nil)
           raise ToolError, "there is no active code-mode cell" unless @session
           if terminate
+            mark_process_closing
             result = CellResult.new(output: bounded_output(max_output_tokens), status: :terminated)
             termination_error = nil
             begin
@@ -272,6 +273,10 @@ module LittleGhost
             first_error ||= error
           end
           raise first_error if first_error
+        end
+
+        def mark_process_closing
+          @call_mutex.synchronize { @closing_marker[:closing] = true }
         end
 
         def raise_call_error!
