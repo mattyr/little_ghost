@@ -277,6 +277,11 @@ than one Safety note per major topic. Use `> **Note:**` for helpful context and
 `> **Advanced:**` for optional mechanics. If ordinary prose is clear enough,
 use ordinary prose.
 
+Place machine-readable discovery near the top of a documentation landing page
+as a short aside, after the reader has enough context to understand the project.
+Link concise labels such as `llms.txt`; do not make a raw URL a hero message or
+present agent discovery as the first documentation chapter.
+
 ## A golden before and after
 
 Before, the comment repeats the method name, leaves ownership unclear, and uses vague jargon:

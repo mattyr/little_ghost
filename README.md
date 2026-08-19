@@ -2,6 +2,11 @@
 
 LittleGhost is a Ruby library for building AI features with agents and composable assemblies. With `OPENROUTER_API_KEY` set, start with one class, give it a prompt, and call it like the rest of your application code:
 
+> **Using a coding agent?** Start with
+> [`llms.txt`](https://mattyr.github.io/little_ghost/llms.txt) for a concise map
+> of the guides and API. [`llms-full.txt`](https://mattyr.github.io/little_ghost/llms-full.txt)
+> contains the complete documentation in one file.
+
 ```ruby
 require "little_ghost"
 
@@ -126,15 +131,6 @@ upgrading, because interfaces may change between releases.
 - [Integrations](docs/guides/integrations.md) connects MCP, AG-UI, and OpenTelemetry.
 - [Running in Production](docs/guides/production.md) covers configuration, saved conversations, supervision, and observability.
 - [API reference](rdoc-ref:LittleGhost) provides exact method signatures and ownership rules.
-
-### Give a coding agent the documentation
-
-Point a coding agent at
-[`https://mattyr.github.io/little_ghost/llms.txt`](https://mattyr.github.io/little_ghost/llms.txt).
-It is a concise index of the guides and API reference, with links to Markdown
-pages that are comfortable to read without scraping HTML. The complete
-single-file corpus is available at
-[`llms-full.txt`](https://mattyr.github.io/little_ghost/llms-full.txt).
 
 ### For contributors
 

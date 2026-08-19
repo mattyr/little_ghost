@@ -110,11 +110,14 @@ const createDemo = (section) => {
     });
     const editorBox = editor.getBoundingClientRect();
     const horizontalRange = Math.min(24, editorBox.width * 0.065);
+    const compact = window.matchMedia("(max-width: 470px)").matches;
     lineDestinations = lineElements.map((line, index) => {
       const lineBox = line.getBoundingClientRect();
       const horizontalDrift = Math.sin(index * 1.15) * horizontalRange;
       return {
-        x: Math.min(editorBox.width - 48, Math.max(72, editorBox.width * 0.62 + horizontalDrift)),
+        x: compact
+          ? editorBox.width - 39
+          : Math.min(editorBox.width - 48, Math.max(72, editorBox.width * 0.62 + horizontalDrift)),
         y: lineBox.top - editorBox.top + Math.max(-2, (lineBox.height - 35) / 2),
       };
     });
@@ -379,9 +382,9 @@ if (!("IntersectionObserver" in window)) {
         observer.unobserve(entry.target);
       });
     },
-    { threshold: 1 },
+    { threshold: 0.25 },
   );
-  sections.forEach((section) => observer.observe(section.querySelector(".terminal")));
+  sections.forEach((section) => observer.observe(section.querySelector(".editor")));
 }
 
 class Constellation {

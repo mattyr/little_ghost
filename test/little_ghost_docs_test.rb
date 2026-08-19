@@ -40,10 +40,10 @@ class LittleGhostDocsTest < Minitest::Test
 
   def test_homepage_points_coding_agents_to_the_discovery_file
     homepage = File.read(File.expand_path("../site/index.html", __dir__))
+    intro = homepage.match(/<section class="home-intro".*?<\/section>/m).to_s
 
-    assert_includes homepage, "Using a coding agent?"
-    assert_includes homepage, '<a href="./llms.txt">'
-    assert_includes homepage, "https://mattyr.github.io/little_ghost/llms.txt"
+    assert_includes intro, '<a class="agent-docs-link" href="./llms.txt">For coding agents →</a>'
+    refute_includes intro, "https://mattyr.github.io/little_ghost/llms.txt"
   end
 
   def test_guides_follow_the_reader_journey

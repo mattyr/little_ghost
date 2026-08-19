@@ -208,10 +208,9 @@ main,
 .install-command code span { color: var(--mint); }
 .install-command small { color: var(--dim); font: inherit; }
 .intro-docs-link { color: var(--violet-soft); font-size: 0.76rem; font-weight: 650; }
-.intro-copy .agent-docs-callout { margin-top: 18px; color: var(--dim); font-size: 0.78rem; }
-.agent-docs-callout a { color: var(--mint); text-decoration: underline; text-decoration-color: rgba(121, 246, 212, 0.4); text-underline-offset: 4px; }
-.agent-docs-callout code { font-family: var(--font-code); font-size: 0.92em; }
+.agent-docs-link { color: var(--dim); font-size: 0.68rem; font-weight: 540; }
 .intro-docs-link:hover { color: var(--mint); }
+.agent-docs-link:hover { color: var(--paper); }
 
 .intro-ghost-wrap { position: relative; display: grid; place-items: center; }
 .intro-ghost { position: relative; z-index: 2; width: 120px; filter: drop-shadow(0 22px 22px rgba(101, 75, 193, 0.25)); animation: ghostFloat 5s ease-in-out infinite; }
@@ -462,11 +461,22 @@ main,
   .intro-copy h1 { max-width: 92%; }
   .intro-copy h1 span { display: inline; }
   .install-command { align-items: flex-start; flex-direction: column; }
+  .intro-actions { gap: 13px 18px; }
+  .agent-docs-link { flex-basis: 100%; }
   .demo-heading { align-items: start; grid-template-columns: 1fr; gap: 8px; }
   .replay-button { justify-self: start; }
   .file-bar > span:nth-child(2) { display: none; }
+  .editor { padding-right: 48px; }
+  .recording.is-executing .editor { padding-top: 12px; padding-bottom: 11px; }
   .code-line { grid-template-columns: 23px minmax(0, 1fr); }
+  .recording.is-executing .code-line,
+  #agent-graph .recording.is-executing .code-line { min-height: 1.35em; line-height: 1.35; }
   .typed-text { padding-left: 10px; }
+  #agent-graph .recording { min-height: 560px; }
+  .underhood-branching.is-open { min-height: 166px; max-height: 166px; }
+  .branch-flow { height: 126px; }
+  .branch-flow .flow-endpoint { width: 54px; line-height: 1.2; }
+  .branch-flow .agent-bubble { display: none; }
   .site-footer { align-items: flex-start; flex-direction: column; }
   .site-footer nav { justify-content: flex-start; }
 }
