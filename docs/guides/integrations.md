@@ -102,8 +102,10 @@ end
 it, and the current binding. Return any Ruby value or `Tool::Result`. Returning
 the supplied result unchanged keeps the default conversion described above.
 MCP images and local Tool artifacts use the same storage and presentation
-rules when `Configuration#artifacts` is enabled. LittleGhost also checks results
-against server-advertised JSON Schema Draft 2020-12 output schemas.
+rules when `Configuration#artifacts` is enabled. Images and documents are sent
+as model content; their stored references are fallback information rather than
+a second representation. LittleGhost also checks results against
+server-advertised JSON Schema Draft 2020-12 output schemas.
 
 An optional server can fail discovery without preventing Agent construction:
 

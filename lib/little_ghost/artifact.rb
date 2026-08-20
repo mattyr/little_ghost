@@ -2,9 +2,10 @@
 
 module LittleGhost
   # Represents a file, image, or document produced by a Tool or supplied to a
-  # Run. Inline artifacts contain their bytes. Deferred artifacts contain an
-  # application-defined reference that the block passed to
-  # Configuration#artifacts may use to load the bytes.
+  # Run. LittleGhost sends supported media to the model once and may store the
+  # same bytes for filesystem Tools. Inline artifacts contain their bytes.
+  # Deferred artifacts contain an application-defined reference that the block
+  # passed to Configuration#artifacts may use to load the bytes.
   #
   #   image = LittleGhost::Artifact.new(
   #     data: File.binread("chart.png"),

@@ -627,7 +627,13 @@ module LittleGhost
     def dispatch_tools(tool_uses, context:, events:, parent_operation_id:, parent_trace_context: nil) # :nodoc:
       counted = tool_uses.count { |tool_use| !code_mode_control_tool?(tool_use) }
       context.record_tool_calls!(counted, maximum: @max_tool_calls) if counted.positive?
-      execute_tools(tool_uses, context, events, parent_operation_id:, parent_trace_context:)
+      execute_tools(
+        tool_uses,
+        context,
+        events,
+        parent_operation_id:,
+        parent_trace_context:
+      )
     end
 
     def code_mode_runtime # :nodoc:
@@ -1657,6 +1663,7 @@ module LittleGhost
             context:
           )
         end
+        tool_result = bound_artifact_presentation(tool_result, presentation_budget)
         result = build_tool_result(
           tool_use_id: tool_use.id,
           content: tool_result.content,
@@ -1677,7 +1684,6 @@ module LittleGhost
             exception: tool_error && diagnostic_tool_exception(tool_error, tool:)
           }.compact
         )
-        tool_result = bound_artifact_presentation(tool_result, presentation_budget)
         ExecutedTool.new(result:, execution_result: tool_result)
       rescue ToolError => error
         result = build_tool_result(tool_use_id: tool_use.id, content: error.message, status: :error)
@@ -1733,14 +1739,33 @@ module LittleGhost
       accepted = budget.accept(result.presentation_content)
       return result if accepted.equal?(result.presentation_content) || accepted == result.presentation_content
 
+      fallback = result.artifacts.reject do |artifact|
+        artifact.metadata[:complete_result] || artifact.metadata["complete_result"]
+      end
+      references = artifact_references(fallback)
+      content = if references.empty?
+        result.content
+      else
+        "#{result.content}\n\nArtifacts:\n#{references.join("\n")}"
+      end
+
       Tool::ExecutionResult.new(
         value: result.value,
-        content: result.content,
+        content:,
         status: result.status,
         error: result.error,
         artifacts: result.artifacts,
         presentation_content: accepted
       )
+    end
+
+    def artifact_references(artifacts)
+      artifacts.filter_map do |artifact|
+        next unless artifact.reference.is_a?(String) && artifact.bytes
+
+        details = [artifact.media_type, "#{artifact.bytes} bytes"].compact.join(", ")
+        "- #{artifact.reference} (#{details})"
+      end
     end
 
     def artifact_message_metadata(executed_tools)

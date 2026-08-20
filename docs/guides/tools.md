@@ -274,9 +274,11 @@ end
 Once enabled, artifact handling covers three cases:
 
 - Input images and documents are stored so filesystem Tools and code mode can
-  read the same bytes.
-- Tool artifacts are stored and returned to the model as images, documents, or
-  `workspace://artifacts/...` references.
+  read the same bytes. The model still receives only the original image or
+  document.
+- Tool artifacts are stored and returned to the model as images or documents.
+  The stored reference is shown only when the media cannot be included in the
+  model request.
 - Oversized successful Tool values are stored automatically. The model receives
   a short preview and a reference instead of the complete value.
 
@@ -304,7 +306,9 @@ end
 
 Declaring the named Workspace path does not grant model access. When the Agent
 should read artifact references, grant the Sandbox read access to the
-`:artifacts` path and include a filesystem Tool.
+`:artifacts` path and include a filesystem Tool. The model can list that path
+when a task genuinely needs a stored file; ordinary multimodal work does not
+need a second reference to media already in the conversation.
 
 ## Let code mode compose the same capabilities
 

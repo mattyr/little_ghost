@@ -88,7 +88,6 @@ module LittleGhost
           )
           content = result_content(
             result,
-            all_descriptors,
             automatic: automatic_descriptor,
             oversized:
           )
@@ -134,7 +133,7 @@ module LittleGhost
             workspace: run.workspace,
             context:
           )
-          append_references(message, descriptors)
+          attach_artifact_metadata(message, descriptors)
         rescue CancelledError, DeadlineExceededError, CleanupError
           raise
         rescue => error
@@ -262,32 +261,15 @@ module LittleGhost
           raise ToolError, "Tool value cannot be stored as an artifact"
         end
 
-        def result_content(result, artifacts, automatic:, oversized:)
-          references = artifact_references(artifacts)
-          return result.content if references.empty? && !oversized
+        def result_content(result, automatic:, oversized:)
+          return result.content unless oversized
 
-          if oversized
-            preview = Support::OutputTruncation
-              .truncate_middle_with_token_budget(result.content, RESULT_PREVIEW_TOKENS)
-              .first
-            if automatic
-              extras = artifact_references(artifacts[0...-1])
-              content = "Full result: #{artifact_label(automatic)}\n\nPreview:\n#{preview}"
-              return extras.empty? ? content : "#{content}\n\nArtifacts:\n#{extras.join("\n")}"
-            end
+          preview = Support::OutputTruncation
+            .truncate_middle_with_token_budget(result.content, RESULT_PREVIEW_TOKENS)
+            .first
+          return "Full result: #{artifact_label(automatic)}\n\nPreview:\n#{preview}" if automatic
 
-            content = "Full result exceeded artifact storage limits.\n\nPreview:\n#{preview}"
-            extras = references
-            return extras.empty? ? content : "#{content}\n\nArtifacts:\n#{extras.join("\n")}"
-          end
-
-          "#{result.content}\n\nArtifacts:\n#{references.join("\n")}"
-        end
-
-        def artifact_references(artifacts)
-          artifacts.filter_map do |artifact|
-            "- #{artifact_label(artifact)}" if artifact.reference && artifact.bytes
-          end
+          "Full result exceeded artifact storage limits.\n\nPreview:\n#{preview}"
         end
 
         def artifact_label(artifact)
@@ -295,8 +277,7 @@ module LittleGhost
           details.empty? ? artifact.reference : "#{artifact.reference} (#{details})"
         end
 
-        def append_references(message, artifacts)
-          references = artifact_references(artifacts).join("\n")
+        def attach_artifact_metadata(message, artifacts)
           metadata = message.metadata.to_h.merge(
             "little_ghost_artifacts" => artifacts.map do |artifact|
               {
@@ -309,10 +290,7 @@ module LittleGhost
           )
           Message.new(
             role: message.role,
-            content: [
-              *message.content,
-              Content::Text.new(text: "Artifacts are available in the run workspace:\n#{references}")
-            ],
+            content: message.content,
             metadata:
           )
         end

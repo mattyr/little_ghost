@@ -27,6 +27,7 @@ module LittleGhost
         @delivery_mutex = Mutex.new
         @presentation_content = []
         @artifacts = []
+        @fallback_references = []
         @presentation_budget = Artifacts::PresentationBudget.new
       end
 
@@ -61,7 +62,7 @@ module LittleGhost
           @call_count += 1
           raise ToolError, "Code-mode tool call budget exceeded" if @max_calls && @call_count > @max_calls
         end
-        name = String(name)
+        name = String(name).delete_prefix("tools.")
         available = catalog.any? { |specification| specification.fetch(:name, specification["name"]).to_s == name }
         raise ToolError, "Tool is not available in code mode: #{name}" unless available
         raise ToolError, "Tool arguments must be an object" unless arguments.is_a?(Hash)
@@ -105,9 +106,10 @@ module LittleGhost
 
       def drain_delivery # :nodoc:
         @delivery_mutex.synchronize do
-          delivery = [@presentation_content.freeze, @artifacts.freeze]
+          delivery = [@presentation_content.freeze, @artifacts.freeze, @fallback_references.uniq.freeze]
           @presentation_content = []
           @artifacts = []
+          @fallback_references = []
           @presentation_budget = Artifacts::PresentationBudget.new
           delivery
         end
@@ -131,8 +133,22 @@ module LittleGhost
         return if presentations.empty? && artifacts.empty?
 
         @delivery_mutex.synchronize do
-          @presentation_content.concat(@presentation_budget.accept(presentations))
+          accepted = @presentation_budget.accept(presentations)
+          @presentation_content.concat(accepted)
           @artifacts.concat(artifacts)
+          if accepted.empty? && artifacts.any?
+            @fallback_references.concat(artifact_references(artifacts))
+          end
+        end
+      end
+
+      def artifact_references(artifacts)
+        artifacts.filter_map do |artifact|
+          next if artifact.metadata[:complete_result] || artifact.metadata["complete_result"]
+          next unless artifact.reference.is_a?(String) && artifact.bytes
+
+          details = [artifact.media_type, "#{artifact.bytes} bytes"].compact.join(", ")
+          "- #{artifact.reference} (#{details})"
         end
       end
 

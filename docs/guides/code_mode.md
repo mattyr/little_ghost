@@ -103,12 +103,16 @@ do not carry into a later `exec`. Within one program, the model can use:
   a later `wait`.
 - `finish(value)` to complete early.
 
+The dynamic form accepts either the catalog name (`"help_center_lookup"`) or
+the matching method name (`"tools.help_center_lookup"`).
+
 JSON Tool results arrive as ordinary Ruby hashes, arrays, strings, numbers,
 booleans, or `nil`. When a Tool returns `Tool::Result`, code mode uses its
 Ruby `value`. Artifact bytes are not copied into program variables; the
-artifacts return to the model with the surrounding `exec` or `wait` result. A
-Tool failure raises inside the program so its Ruby code can handle the failure
-or return an error.
+artifacts return to the model once with the surrounding `exec` or `wait`
+result. Stored references appear only when native media delivery exceeds its
+limit. A Tool failure raises inside the program so its Ruby code can handle the
+failure or return an error.
 
 Fresh processes keep interpreter state from leaking across programs. Each Ruby
 program also gets a temporary Workspace. LittleGhost removes it when the
