@@ -4,7 +4,7 @@ require "test_helper"
 
 class LittleGhostTest < Minitest::Test
   def test_exposes_the_version
-    assert_equal "0.4.0", LittleGhost::VERSION
+    assert_equal "0.5.0", LittleGhost::VERSION
   end
 
   def test_message_accepts_one_content_hash
