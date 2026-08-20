@@ -26,8 +26,8 @@ module LittleGhost
   # === Persistence and trust
   #
   # System messages, transient messages, and private model reasoning are removed
-  # before persistence. Store failures reach the caller; a successful write is
-  # the checkpoint boundary.
+  # before persistence. Store failures reach the caller. A successful write
+  # becomes the checkpoint used by later updates.
   #
   # Multi-tenant applications must derive +actor_id+ from stable, authenticated
   # identity. A nil actor provides no tenant isolation and is appropriate only

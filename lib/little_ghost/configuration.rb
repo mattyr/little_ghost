@@ -28,9 +28,8 @@ module LittleGhost
   # advanced way to take an independent snapshot without selecting the shared
   # default.
   #
-  # Session actor resolvers belong at an authentication boundary. Multi-tenant
-  # applications should derive actor identity from trusted authenticated state,
-  # not from an unverified request field.
+  # Multi-tenant applications should derive Session actor identity from state
+  # established after authentication, not from an unverified request field.
   class Configuration
     FILE_LOAD_MUTEX = Mutex.new # :nodoc:
     CONFIGURATION_KEYS = %i[invocation service_name].freeze # :nodoc:
@@ -485,10 +484,14 @@ module LittleGhost
       hook_class
     end
 
-    # Enables the unified Artifact lifecycle. Input attachments and Tool
-    # artifacts use the conventional +:artifacts+ Workspace path; oversized
-    # Tool values are stored there automatically. An optional resolver turns
-    # deferred Artifact references into bytes for the current Run.
+    # Stores input attachments, Tool artifacts, and oversized successful Tool
+    # values under the conventional +:artifacts+ Workspace path. An optional
+    # block receives deferred Artifacts and may load their bytes for the current
+    # Run. It may return a String, an inline Artifact, or nil.
+    #
+    # The block is application code. It must authorize each reference using
+    # identity established by the application and limit any file or network read
+    # before returning bytes. LittleGhost applies its storage limits afterward.
     #
     # :call-seq:
     #   artifacts() -> Class<Runtime::Hook>
@@ -533,7 +536,7 @@ module LittleGhost
     # The resolved application root, defaulting to +Dir.pwd+.
     #
     # Setting or reading an invalid root raises ConfigurationError. Symlinks are
-    # resolved so runtimes and lookup paths share one stable boundary.
+    # resolved so runtimes and lookup paths use the same canonical directory.
     def root(value = :__read__)
       if value != :__read__
         return change_configuration { configuration_values[:root] = canonical_root(value) }

@@ -136,16 +136,15 @@ module LittleGhost
       end
     end
 
-    # Returns a machine value together with artifacts produced by an advanced
-    # Tool. Ordinary Tools should return their Ruby value directly.
+    # Returns a Ruby value together with files or media produced by a Tool.
+    # Tools without artifacts should return their Ruby value directly.
     class Result < Data # :doc:
       ##
       # :singleton-method: new
       # :call-seq:
       #   new(value:, artifacts: []) -> Result
       #
-      # Creates a result from a machine +value+ and immutable Array of
-      # Artifact objects.
+      # Creates a result from the Ruby +value+ and an Array of Artifact objects.
 
       ##
       # :attr_reader: value

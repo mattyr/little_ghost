@@ -41,8 +41,8 @@ module LittleGhost
   #
   # The Run opens its workspace, sandbox, Session, and Assembly entrypoint, then
   # closes registered resources in reverse order. +register+ adds application
-  # resources to that lifecycle. Interjection is available only while one Agent
-  # entrypoint is active.
+  # resources to that cleanup sequence. Interjection is available only while one
+  # Agent entrypoint is active.
   #
   # == Nested Agent events
   #

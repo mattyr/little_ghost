@@ -124,7 +124,8 @@ module LittleGhost
 
       ##
       # :attr_reader: raw
-      # A deeply frozen, indifferent-access copy of the complete wire value.
+      # A deeply frozen, indifferent-access copy of the complete server
+      # definition object.
       # Definition also delegates +[]+, +fetch+, +dig+, and +key?+ to this map.
     end
 
@@ -141,9 +142,9 @@ module LittleGhost
       end
     end
 
-    # Immutable context for one MCP Tool invocation. It combines the advertised
-    # Definition with a copied argument object and the run-scoped collaborators
-    # used for the call.
+    # Describes one MCP Tool invocation. It combines the server's Definition,
+    # the copied arguments, and the Tool::Binding used to execute the generated
+    # Tool.
     class Call < Data # :doc:
       ##
       # :attr_reader: definition
@@ -183,9 +184,9 @@ module LittleGhost
       def error? = error
     end
 
-    # Immutable, fidelity-preserving MCP Tool result. The raw protocol value is
-    # retained alongside normalized content and structured content so policies
-    # can make application-specific decisions without reparsing model text.
+    # Represents one MCP Tool result without discarding server fields. Mapping
+    # callbacks can inspect normalized content, structured content, metadata, or
+    # the complete protocol value.
     class Result < Data # :doc:
       ##
       # :attr_reader: content
@@ -205,7 +206,7 @@ module LittleGhost
 
       ##
       # :attr_reader: raw
-      # A deeply frozen copy of the complete wire result.
+      # A deeply frozen copy of the complete server result object.
 
       ##
       # :method: error?

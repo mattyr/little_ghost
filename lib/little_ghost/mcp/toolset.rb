@@ -2,9 +2,18 @@
 
 module LittleGhost
   module MCP
-    # Declares one reusable MCP server as an ordinary Agent tool provider.
-    # Connections are resolved for each Tool::Binding. One mapping hook may omit
-    # or configure generated Tool classes, and one may map immutable results.
+    # Connects one MCP server to an Agent as a reusable Tool provider. Each Agent
+    # run gets its own connection. +map_tool+ chooses and configures the generated
+    # Tool classes; +map_result+ converts results that need application-specific
+    # handling.
+    #
+    #   class HelpCenterTools < LittleGhost::MCP::Toolset
+    #     connection url: "https://mcp.example/rpc", timeout: 20
+    #   end
+    #
+    #   class CustomerSupportAgent < LittleGhost::Agent
+    #     tools HelpCenterTools
+    #   end
     class Toolset
       extend Support::ClassAttributes
 
@@ -27,8 +36,8 @@ module LittleGhost
       class_attribute :error_callback_value
 
       class << self
-        # Declares a static connection Hash or a resolver called with the
-        # current Tool::Binding. The Hash requires +url+ and may include
+        # Declares a static connection Hash or a block called with the current
+        # Tool::Binding. The Hash requires +url+ and may include
         # +headers+, +timeout+, +signer+, +allow_insecure_http+, and
         # +max_response_bytes+.
         #
@@ -50,7 +59,8 @@ module LittleGhost
 
         # Maps each generated Tool class. The block receives +definition:+ and
         # +binding:+ keywords. Return the configured Tool class, or nil to omit
-        # it. Changing Tool#tool_name never changes source-name dispatch.
+        # it. Changing Tool#tool_name does not change the operation name sent to
+        # the MCP server.
         #
         # :call-seq:
         #   map_tool() -> Proc, nil
@@ -86,7 +96,7 @@ module LittleGhost
           self.optional_value = !!value
         end
 
-        # Observes an expected discovery failure caught by +optional true+.
+        # Observes an expected discovery failure caught by <tt>optional true</tt>.
         # Exceptions raised by this callback propagate.
         #
         # :call-seq:

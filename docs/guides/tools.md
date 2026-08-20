@@ -78,7 +78,7 @@ end
 
 Prefer `available_if` on an individual Tool when only that operation is
 conditional. Use a provider when the collection itself owns discovery,
-construction, or shared integration policy.
+construction, or shared setup for an application or remote service.
 
 LittleGhost does not enforce class names. A useful application convention is
 to end one model-callable operation with `Tool` and a provider of multiple
@@ -91,8 +91,7 @@ base class or hiding ordinary Ruby composition.
 A schema answers “Is this input shaped correctly?” It does not answer “May this
 caller perform this operation?” Use values established by your application to
 answer that second question.
-
-Use values established by your application to authorize sensitive work:
+For sensitive work, read those values inside the Tool:
 
 ```ruby
 class OrderStatusTool < LittleGhost::Tool
@@ -129,7 +128,7 @@ Recheck saved values before using them for a permission decision.
 
 ## Know where a Tool runs
 
-An ordinary Tool is application code. Its `#call` method runs in the same Ruby
+A local Tool is application code. Its `#call` method runs in the same Ruby
 process as LittleGhost, with the same access as the rest of your application. A
 Sandbox contains only work that the Tool explicitly sends through it.
 
@@ -139,10 +138,11 @@ Some Tools deliberately delegate a smaller operation to the Sandbox:
   Sandbox. It exposes mutation Tools only when that Sandbox is writable.
 - `LittleGhost::Tools::Shell` runs one argument vector through the bound
   Sandbox. It does not interpret shell syntax.
-- An application Tool can call its bound `sandbox` explicitly for the same
-  boundary. Its bound `workspace` provides paths and lifecycle only. Do not pass
-  model-selected paths from `Workspace#resolve` to `File`; use Sandbox file
-  operations, which reject symlinks while opening the path.
+- An application Tool can send work through its bound `sandbox` when it needs
+  the same file and process restrictions. Its bound `workspace` names paths but
+  does not restrict access to them. Do not pass model-selected paths from
+  `Workspace#resolve` to `File`; use Sandbox file operations, which reject
+  symlinks while opening the path.
 
 This distinction keeps the architecture predictable:
 
@@ -157,8 +157,9 @@ settings apply to processes launched through that Sandbox, not to model
 providers, callbacks, or arbitrary Ruby inside a Tool.
 
 Read [Workspaces and Sandboxes](sandboxing.md) before exposing filesystem or
-process operations to model influence. It shows how paths, process authority,
-networking, and cleanup fit around these delegated Tools.
+process operations to model influence. It shows which paths and commands a
+child process can access, how networking is restricted, and who cleans up the
+resources.
 
 ## Use the run-scoped binding
 
@@ -187,7 +188,7 @@ end
 ```
 
 This controls discovery, not authorization. The Tool must still validate the
-trusted identity and permissions it uses when called.
+caller identity and account permissions supplied by the application.
 
 ## Make concurrency and retries deliberate
 
@@ -230,9 +231,9 @@ error for trusted application inspection.
 
 ## Return values and artifacts
 
-A Tool normally returns one Ruby value. LittleGhost keeps that machine value
-for application callers and code mode, then serializes it for the model. Use
-`Tool::Result` only when the operation also produces files or media:
+A Tool normally returns one Ruby value. Application callers and code mode
+receive that value, while LittleGhost serializes it for the model. Use
+`Tool::Result` when the operation also produces files or media:
 
 ```ruby
 def call(input)
@@ -250,11 +251,12 @@ def call(input)
 end
 ```
 
-`Tool::Result#value` follows the same machine-value contract as an ordinary
-return. Each inline `Artifact` has bytes, a MIME media type, and optional name
-and metadata. Use `Artifact.deferred(reference:, media_type:, ...)` when an
-application owns the bytes elsewhere; the optional resolver configured through
-`Configuration#artifacts` can turn that opaque reference into bytes later.
+`Tool::Result#value` is the same plain Ruby value a Tool would otherwise return.
+Each inline `Artifact` has bytes, a MIME media type, and an optional name and
+metadata. Use `Artifact.deferred(reference:, media_type:, ...)` when another
+application service stores the bytes. The optional block passed to
+`Configuration#artifacts` receives the deferred Artifact and may use its
+application-defined `reference` to load the bytes later.
 
 Artifact handling is opt-in for the Runtime:
 
@@ -269,21 +271,24 @@ LittleGhost.configure do |config|
 end
 ```
 
-The one artifact lifecycle stores input images and documents, resolves and
-stores Tool artifacts, and stores oversized successful local or MCP values.
-The model receives bounded previews and stable `workspace://artifacts/...`
-references while the machine value stays unchanged. Explicit image artifacts
-are presented as images, while other explicit artifacts are presented as
-documents. Automatically stored oversized values remain reference-and-preview
-only, so their full content is not inserted back into the conversation.
-If a value exceeds the fixed storage bounds, LittleGhost keeps its machine
-value and gives the model only a bounded preview.
-Built-in per-file, batch, and Run budgets keep storage and media delivery
-bounded.
+Once enabled, artifact handling covers three cases:
 
-To resolve deferred artifacts, pass a block. It runs outside storage locks and
-may return bytes, an inline Artifact with a final MIME type, or `nil` to leave
-the opaque reference unresolved:
+- Input images and documents are stored so filesystem Tools and code mode can
+  read the same bytes.
+- Tool artifacts are stored and returned to the model as images, documents, or
+  `workspace://artifacts/...` references.
+- Oversized successful Tool values are stored automatically. The model receives
+  a short preview and a reference instead of the complete value.
+
+The Tool's Ruby return value does not change. LittleGhost limits the size of
+each stored file, the total files and bytes stored for a Run, and the media
+sent in one model turn. If an oversized value cannot be stored within those
+limits, the application still receives the complete Ruby value and the model
+receives a short preview with a storage-limit notice.
+
+To load a deferred artifact, pass a block. It may return bytes, an inline
+Artifact with a final MIME type, or `nil` when the referenced file is no longer
+available:
 
 ```ruby
 config.artifacts do |artifact, run:|
@@ -291,9 +296,15 @@ config.artifacts do |artifact, run:|
 end
 ```
 
-Declaring the named Workspace path does not grant model access. Add matching
-Sandbox and filesystem Tool policy only when the Agent should read artifact
-references directly.
+> **Safety note:** A deferred reference is data, not proof that the current
+> caller may read a file. Check it against identity established by the
+> application, restrict the storage service or network destination, and limit
+> the bytes fetched before returning them. LittleGhost applies its storage limit
+> after the resolver returns.
+
+Declaring the named Workspace path does not grant model access. When the Agent
+should read artifact references, grant the Sandbox read access to the
+`:artifacts` path and include a filesystem Tool.
 
 ## Let code mode compose the same capabilities
 
@@ -303,10 +314,10 @@ write a small Ruby program that calls several of the same Tools, combines their
 results, and returns one useful value.
 
 Each call crosses back to the parent Ruby process. LittleGhost checks the schema
-and calls the ordinary Tool method there, so permission checks inside `#call`
-still apply. Code mode receives the Tool's machine value, while artifacts
-return through the surrounding `exec` or `wait` result. Tool limits,
-callbacks, events, and tracing also follow the ordinary Tool path.
+and calls the Tool method there, so permission checks inside `#call` still
+apply. Code mode receives the Tool's Ruby return value, while artifacts return
+with the surrounding `exec` or `wait` result. Tool limits, callbacks, events,
+and tracing work the same way for direct and code-mode calls.
 
 Continue with [Structured Results and Content](structured_outputs_and_content.md)
 to give Agent responses a predictable shape and accept images or documents.

@@ -270,10 +270,10 @@ module LittleGhost
 
       def tool_declarations = tool_declarations_value # :nodoc:
 
-      # Enables code mode for this agent. +except+ names the ordinary Tools that
-      # remain model-facing; every other ordinary Tool moves into the engine
-      # catalog and is called through the parent-process Broker. Framework-owned
-      # subagent controls remain model-facing automatically.
+      # Enables code mode for this agent. +except+ names the application Tools
+      # that remain model-facing; every other application Tool moves into the
+      # engine catalog and is called through the parent-process Broker.
+      # Framework-owned subagent controls remain model-facing automatically.
       def code_mode(engine: nil, except: nil, **options)
         unknown = options.keys - %i[sandbox limits]
         raise ArgumentError, "unknown keyword: #{unknown.first.inspect}" unless unknown.empty?
@@ -723,9 +723,9 @@ module LittleGhost
     # Streams one invocation as StreamEvent objects.
     #
     # Agents built inside a run accept history, JSON-like context, cancellation,
-    # deadlines, settings, and trusted invocation template paths. An agent
-    # instance may be streamed only according to the lifecycle managed by its
-    # owning run. Every template path must be an application-created TrustedPath;
+    # deadlines, settings, and trusted invocation template paths. An Agent
+    # instance may be streamed only by its owning Run. Every template path must
+    # be an application-created TrustedPath;
     # the wrapper records a trust decision and must never contain unchecked
     # request or model input.
     def stream(
@@ -821,7 +821,7 @@ module LittleGhost
       end.freeze
     end
 
-    # The materialized tools available during this agent run.
+    # The Tool registry available during this Agent run.
     def tools = tool_registry
 
     # Closes owned tools, interjections, sandbox, and workspace resources.

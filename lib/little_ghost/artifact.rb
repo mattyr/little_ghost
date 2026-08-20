@@ -1,9 +1,22 @@
 # frozen_string_literal: true
 
 module LittleGhost
-  # Immutable content produced by a Tool or supplied to a Run. Inline artifacts
-  # carry bytes directly. Deferred artifacts carry an opaque reference that the
-  # resolver configured through Configuration#artifacts may turn into bytes.
+  # Represents a file, image, or document produced by a Tool or supplied to a
+  # Run. Inline artifacts contain their bytes. Deferred artifacts contain an
+  # application-defined reference that the block passed to
+  # Configuration#artifacts may use to load the bytes.
+  #
+  #   image = LittleGhost::Artifact.new(
+  #     data: File.binread("chart.png"),
+  #     media_type: "image/png",
+  #     name: "chart.png"
+  #   )
+  #
+  #   download = LittleGhost::Artifact.deferred(
+  #     reference: {file_id: "file-481"},
+  #     media_type: "application/pdf",
+  #     name: "report.pdf"
+  #   )
   class Artifact
     # Creates an inline artifact from binary +data+ and a MIME +media_type+.
     def initialize(data:, media_type:, name: nil, metadata: {})
@@ -20,7 +33,8 @@ module LittleGhost
       raise ArgumentError, "artifact data must be a string"
     end
 
-    # Creates an artifact whose bytes are resolved later by application policy.
+    # Creates an artifact whose bytes may be loaded later by the block passed to
+    # Configuration#artifacts.
     def self.deferred(reference:, media_type:, name: nil, metadata: {})
       raise ArgumentError, "artifact reference is required" if reference.nil?
       reference = immutable_reference(reference)
@@ -40,7 +54,8 @@ module LittleGhost
 
     # Binary content for an inline artifact, otherwise nil.
     attr_reader :data
-    # Opaque deferred or workspace reference, otherwise nil.
+    # Application-defined deferred reference, or generated Workspace reference
+    # after storage; otherwise nil.
     attr_reader :reference
     # Optional display filename.
     attr_reader :name

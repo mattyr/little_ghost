@@ -1,26 +1,59 @@
 # Connect MCP, AG-UI, and OpenTelemetry
 
 LittleGhost can load Tools from an MCP server, translate a Run stream for an
-interactive interface, and publish lifecycle traces. Each integration uses the
-same Agents and Runs you already have.
+interactive interface, and publish traces. Each integration uses the same
+Agents and Runs you already have.
 
 ## Load Tools from an MCP server
 
-Declare a reusable remote Toolset and add it through the ordinary Agent `tools`
-DSL:
+An MCP Toolset connects to one server and turns its published operations into
+LittleGhost Tool classes. Add the Toolset through the same Agent `tools`
+declaration used for local Tools:
 
 ```ruby
 require "little_ghost/mcp"
 
 class HelpCenterTools < LittleGhost::MCP::Toolset
-  connection do |binding|
-    token = McpAccessTokens.for_actor(binding.run.invocation.actor_id)
-    {
-      url: "https://mcp.example/rpc",
-      headers: {"Authorization" => "Bearer #{token}"},
-      timeout: 20
-    }
-  end
+  connection url: "https://mcp.example/rpc", timeout: 20
+end
+
+class CustomerSupportAgent < LittleGhost::Agent
+  system_prompt "Use help-center tools for published guidance."
+  tools HelpCenterTools
+end
+
+run = CustomerSupportAgent.ask("How long do refunds take?")
+run.response
+```
+
+`connection` requires `url` and also accepts `headers`, `timeout`, `signer`,
+`allow_insecure_http`, and `max_response_bytes`. Pass a block when credentials
+depend on the current Agent run:
+
+```ruby
+connection do |binding|
+  token = McpAccessTokens.for_actor(binding.run.invocation.actor_id)
+  {
+    url: "https://mcp.example/rpc",
+    headers: {"Authorization" => "Bearer #{token}"},
+    timeout: 20
+  }
+end
+```
+
+The block's `binding` gives it access to the current Run. LittleGhost evaluates
+the block before opening the MCP session, so each Agent run can use credentials
+for its authenticated caller.
+
+By default, the Agent receives every operation published by the server. Their
+normalized server names, such as `search` and `fetch`, become Tool names.
+
+Use `map_tool` when the Agent should receive only part of the server catalog or
+when a generated Tool needs a different name or configuration:
+
+```ruby
+class CuratedHelpCenterTools < LittleGhost::MCP::Toolset
+  connection url: "https://mcp.example/rpc", timeout: 20
 
   map_tool do |tool_class, definition:, binding:|
     next unless %w[search fetch].include?(definition.source_name)
@@ -29,25 +62,25 @@ class HelpCenterTools < LittleGhost::MCP::Toolset
     tool_class
   end
 end
-
-class CustomerSupportAgent < LittleGhost::Agent
-  system_prompt "Use help-center tools for published guidance."
-  tools HelpCenterTools
-end
 ```
 
-LittleGhost resolves `connection` for each `Tool::Binding`, creates a fresh
-HTTP transport and Client, and negotiates one server session. The connection
-Hash requires `url` and may include `headers`, `timeout`, `signer`,
-`allow_insecure_http`, and `max_response_bytes`.
+`definition` describes the operation published by the server, and `binding`
+identifies the current Agent run. Return the class after configuring it, or
+return `nil` to omit the operation. Renaming a generated Tool does not change
+the original `Definition#source_name` sent back to the server.
 
-`map_tool` is the single definition extension point. It receives a generated
-ordinary Tool class plus immutable `definition:` and current `binding:`.
-Return the class after configuring its name, description, schema, or exclusivity;
-return `nil` to omit it. Renaming never changes `Definition#source_name`,
-which is always sent back to the server.
+The Agent can call the generated Tools like local Tools. LittleGhost uses one
+local client and transport for the Toolset during the Agent run. The built-in
+HTTP transport does not send an MCP session-termination request. Configure
+server-side expiry, or arrange explicit remote cleanup when the server requires
+it.
 
-Map selected results without reimplementing the defaults:
+Most MCP results need no mapping. LittleGhost returns `structuredContent` as a
+Ruby Hash when present, otherwise it returns the server's text. Server images
+become Artifacts.
+
+Use `map_result` when one operation needs application-specific conversion. This
+example turns the server's download identifier into a deferred Artifact:
 
 ```ruby
 map_result do |result, call:, binding:|
@@ -65,12 +98,12 @@ map_result do |result, call:, binding:|
 end
 ```
 
-`map_result` receives immutable `MCP::Result` and `MCP::Call` values plus
-the binding. Return any Ruby value or `Tool::Result`. Returning the supplied
-MCP result unchanged applies LittleGhost's default conversion: structured
-content becomes the machine value when present, otherwise text does. MCP images
-become Artifacts and follow the same configured lifecycle as local Tool media.
-Advertised output schemas are validated as JSON Schema Draft 2020-12.
+`map_result` receives the complete `MCP::Result`, the `MCP::Call` that produced
+it, and the current binding. Return any Ruby value or `Tool::Result`. Returning
+the supplied result unchanged keeps the default conversion described above.
+MCP images and local Tool artifacts use the same storage and presentation
+rules when `Configuration#artifacts` is enabled. LittleGhost also checks results
+against server-advertised JSON Schema Draft 2020-12 output schemas.
 
 An optional server can fail discovery without preventing Agent construction:
 
@@ -89,21 +122,26 @@ into an empty Tool set. `on_error` observes only those caught failures.
 Cancellation, deadlines, configuration errors, and application callback
 failures still propagate.
 
-Discovery size, definition complexity, output-schema evaluation, and MCP media
-use fixed defensive framework limits. `HTTPTransport` separately bounds each
-wire response and requires HTTPS unless explicitly configured for local HTTP.
+LittleGhost limits the number and total size of discovered operations, the
+complexity of their schemas, and the size and number of returned images.
+`HTTPTransport` also limits each HTTP response and requires HTTPS unless local
+HTTP is explicitly enabled.
 
-> **Safety note:** An MCP server chooses its Tool definitions and results. Map
-> only the operations your application intends to expose. The server must still
-> authorize each operation from the credentials sent with the request.
+> **Safety note:** An MCP server supplies descriptions and results that the model
+> can see. Structural validation does not make that content trustworthy or
+> authorize an operation it suggests. Expose only the operations the Agent
+> needs, use narrowly scoped credentials, and have the server authorize every
+> sensitive call. If a result becomes a deferred Artifact, its resolver must
+> verify that the referenced file belongs to the authenticated caller, fetch
+> only from an intended service, and limit the response size before returning
+> bytes to LittleGhost.
 
 LittleGhost implements its documented client behavior for the [MCP 2025-06-18
 specification](https://modelcontextprotocol.io/specification/2025-06-18).
 
 Use `LittleGhost::MCP::HTTPTransport` and `LittleGhost::MCP::Client` directly
-when you need a custom transport while retaining the same generated Tool and
-result-mapping contracts.
-
+when you need a custom transport. They produce the same generated Tool classes
+and accept the same mapping callbacks as Toolset.
 
 ## Send a Run stream through AG-UI
 
@@ -172,6 +210,6 @@ conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/) where they
 apply. Flush or shut down `LittleGhost::Instrumentation` during application
 shutdown when your backend buffers data.
 
-See [Running in Production](production.md) for lifecycle and observability,
+See [Running in Production](production.md) for startup, shutdown, and observability,
 [Tools](tools.md) for local and remote Tool behavior, and [Workspaces and
 Sandboxes](sandboxing.md) for child processes and files.

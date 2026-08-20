@@ -55,8 +55,9 @@ Ruby application process
 
 ## Give files a stable home
 
-A Workspace describes storage and lifecycle. Its `root` is the default working
-directory. Named paths give important directories logical identities:
+A Workspace names the files available during a Run and controls their setup and
+cleanup. Its `root` is the default working directory. Named paths give important
+directories logical identities:
 
 ```ruby
 workspace = LittleGhost::Workspace.new(
@@ -88,7 +89,7 @@ tenant isolation, and concurrency control when several Runs share files.
 
 Images and documents normally remain provider content. When filesystem Tools
 or code mode should read the same bytes, configure the conventional artifact
-path and enable the unified lifecycle:
+path and enable artifact handling:
 
 ```ruby
 LittleGhost.configure do |config|
@@ -101,17 +102,20 @@ LittleGhost.configure do |config|
 end
 ```
 
-The runtime writes attachments after the Workspace and Sandbox open. It keeps
-the original content blocks for the provider and appends a text block with
-`workspace://artifacts/...` references. The same behavior applies to input
-interjections during the Run.
+LittleGhost stores input images and documents after the Workspace and Sandbox
+open. The model still receives the image or document in its normal input, plus
+a text block with `workspace://artifacts/...` references. Messages added while
+the Run is active receive the same treatment.
 
-Built-in message and Run budgets bound the unique files retained across the
-initial input, interjections, Tool artifacts, and oversized Tool results. A
-batch either stores completely or rolls back. Files use private
-permissions, and the Workspace provider still owns cleanup. Declaring the path
-does not grant model access; include it in the Sandbox and filesystem Tool
-policy only when the Agent should read it.
+LittleGhost limits the number and size of files stored from each message and
+across the complete Run. Those limits also include Tool artifacts and oversized
+Tool results. A successful operation stores all of its files. If storage fails
+partway through, LittleGhost attempts to remove that operation's files and
+reports a cleanup error when it cannot. Stored files use private permissions,
+and the Workspace provider still owns final cleanup.
+
+Declaring the path does not grant model access. When the Agent should read it,
+grant the Sandbox access to `:artifacts` and include a filesystem Tool.
 
 ## Pass logical paths, not host layout
 
@@ -187,7 +191,8 @@ Workspace paths:
 - `:read_only` exposes the host filesystem for development commands while
   confining writes to declared writable paths. It makes installed compilers,
   package managers, profiles, and toolchains available, but the child can also
-  read host files unless another hosting boundary protects them.
+  read host files unless the Ruby process already runs inside a container or VM
+  that prevents those reads.
 - `:read_write` grants the host filesystem directly. Treat it as unrestricted
   host authority.
 
@@ -196,7 +201,7 @@ often need them. A Scope can remove `process_spawn` for a command that does not.
 
 ## Choose an enforcement backend
 
-| Sandbox backend | Host | Boundary |
+| Sandbox backend | Host | What it enforces |
 | --- | --- | --- |
 | `:native` | macOS or Linux | Selects Seatbelt on macOS and Bubblewrap on Linux; fails closed elsewhere |
 | `:seatbelt` | macOS | Deny-default Seatbelt profile over the configured physical paths |
@@ -239,7 +244,7 @@ the visible process tree every 100 milliseconds, so it reacts only to memory
 present at a sample and may miss peaks between samples. On Linux, three
 consecutive failures to read the root process or the `/proc` snapshot end the
 process. Use an outer cgroup or container when memory must be enforced as a hard
-kernel boundary.
+limit by the operating system.
 
 A Run closes the Workspace and Sandbox it creates after success, failure, a
 partial response, or cancellation. Application-supplied instances remain
@@ -272,5 +277,5 @@ generated code.
 
 Continue with [Code Mode](code_mode.md) to see how a model-authored interpreter
 uses this setup while every Tool call stays in the parent Ruby process. For
-exact configuration and lifecycle contracts, see `LittleGhost::Workspace`,
+exact setup, access, and cleanup behavior, see `LittleGhost::Workspace`,
 `LittleGhost::Sandbox`, and `LittleGhost::Sandbox::Scope`.

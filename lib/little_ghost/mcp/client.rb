@@ -28,8 +28,8 @@ module LittleGhost
     # with later requests. Use one transport and Client for one server and one
     # authenticated user or service identity; never share that pair across
     # tenants. LittleGhost does not send MCP session-termination DELETE requests,
-    # so configure server-side expiry or manage that lifecycle outside this
-    # transport when the server requires explicit cleanup.
+    # so configure server-side expiry or send the cleanup request outside this
+    # transport when the server requires explicit session termination.
     class HTTPTransport
       # Default upper bound for one MCP response body (10 MiB).
       DEFAULT_MAX_RESPONSE_BYTES = 10 * 1024 * 1024
@@ -153,14 +153,14 @@ module LittleGhost
     #   client = LittleGhost::MCP::Client.new(transport:)
     #   client.tools.map(&:tool_name) # => ["search", "fetch"]
     #
-    # Tool names are normalized and checked for collisions. Pagination, tool
-    # count, definition structure, schemas, and media are bounded by defensive
-    # framework defaults. +tool_mapper+ and +result_mapper+ use the same
-    # immutable Definition, Result, and Call values as Toolset.
+    # Tool names are normalized and checked for collisions. LittleGhost limits
+    # catalog size, schema complexity, and returned media before creating Tool
+    # classes. +tool_mapper+ and +result_mapper+ use the same Definition,
+    # Result, and Call values as Toolset.
     #
-    # Server definitions and results remain untrusted input. LittleGhost validates
-    # them before creating tools, but applications still decide which servers and
-    # capabilities an agent may use.
+    # The server chooses its definitions and results. LittleGhost checks their
+    # structure before creating Tools, but the application still chooses which
+    # servers and operations an Agent may use.
     #
     # A client and its transport represent one authenticated server session.
     # Create a separate pair for each authenticated user or service identity. Protocol
@@ -190,8 +190,8 @@ module LittleGhost
 
       # Uses a transport that responds to +send+. +tool_mapper+ receives each
       # generated Tool class and may return a configured class or nil.
-      # +result_mapper+ receives immutable Result and Call values. Safety limits
-      # are fixed framework defaults.
+      # +result_mapper+ receives Result and Call values. Catalog, schema, and
+      # media limits use fixed framework defaults.
       def initialize(
         transport:,
         name: "mcp",
@@ -241,7 +241,7 @@ module LittleGhost
       end
 
       # Calls a generated or named Tool and returns the common Tool execution
-      # result. Names discovered through #tools resolve to their immutable
+      # result. Names discovered through #tools resolve to their stored
       # Definition; an undiscovered name is treated as a source name.
       def call(name, arguments, context: nil, binding: Tool::Binding.new)
         context&.check!

@@ -76,7 +76,7 @@ exec ──> sandboxed Ruby process
 The Tool broker receives interpreter calls in the parent Ruby process. It
 accepts only Tools registered on the Agent, then sends each call through the
 same validation, permission checks, limits, callbacks, events, and tracing used by
-an ordinary Tool call.
+a direct Tool call.
 
 Public streams show the brokered Tools by name. They omit the `exec`, `wait`,
 and `stop` bookkeeping. Traces still record the control operation around its
@@ -105,10 +105,10 @@ do not carry into a later `exec`. Within one program, the model can use:
 
 JSON Tool results arrive as ordinary Ruby hashes, arrays, strings, numbers,
 booleans, or `nil`. When a Tool returns `Tool::Result`, code mode uses its
-machine-facing `value`. Artifacts travel back through the surrounding `exec`
-or `wait` result instead of entering the interpreter protocol. A Tool failure
-raises inside the program so its Ruby code can handle the failure or return an
-error.
+Ruby `value`. Artifact bytes are not copied into program variables; the
+artifacts return to the model with the surrounding `exec` or `wait` result. A
+Tool failure raises inside the program so its Ruby code can handle the failure
+or return an error.
 
 Fresh processes keep interpreter state from leaking across programs. Each Ruby
 program also gets a temporary Workspace. LittleGhost removes it when the
@@ -116,8 +116,8 @@ program ends, so files created directly by the interpreter do not carry into a
 later `exec`.
 
 A brokered filesystem Tool uses the Agent Run's separate Workspace. Files
-written through that Tool follow the Run Workspace's configured lifecycle and
-may persist.
+written through that Tool follow the Run Workspace's cleanup rules and may
+persist.
 
 ## Check on work that takes longer
 
@@ -168,8 +168,8 @@ Exclude a Tool when the conversational model should call it as a distinct
 decision—for example, a final confirmation that must remain visible as its own
 step. `except` uses each Tool's model-visible name; `ConfirmTool` defaults to
 `confirm_tool`. Calls made inside and outside code mode share the Agent's
-Tool-call budget. The `exec`, `wait`, and `stop` controls manage execution. They
-do not consume that application Tool budget themselves.
+Tool-call limit. The `exec`, `wait`, and `stop` controls manage execution. They
+do not count toward that application Tool limit themselves.
 
 Subagent controls also stay in the conversation. They are orchestration choices
 for the parent model, not functions available inside a code-mode program.
@@ -241,7 +241,7 @@ user-visible output.
 
 MiniRacer's language-level restrictions are useful, but the operating-system
 Sandbox still contains the program. The Ruby parent owns the Tool catalog,
-permission checks, budgets, events, tracing, and resource lifecycle.
+permission checks, Tool-call limits, events, tracing, and resource cleanup.
 
 ## Build a custom engine
 

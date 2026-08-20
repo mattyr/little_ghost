@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 
 module LittleGhost
-  # Artifacts keep complete Tool results and input attachments outside the model
-  # conversation while returning stable, bounded references to agents.
+  # Stores files from Run input and Tool results, then presents them to agents
+  # as bounded images, documents, previews, or Workspace references.
   module Artifacts
   end
 end

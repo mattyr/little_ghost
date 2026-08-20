@@ -110,8 +110,7 @@ module LittleGhost
     end
 
     # Contains binary image data, its MIME media type, and an optional display
-    # name. Content.serialize base64-encodes +data+ when the block crosses a JSON
-    # boundary.
+    # name. Content.serialize base64-encodes +data+ in the serialized Hash.
     class Image < Data # :doc:
       ##
       # :singleton-method: new
@@ -134,8 +133,7 @@ module LittleGhost
     end
 
     # Contains binary document data, its MIME media type, and a display name.
-    # Content.serialize base64-encodes +data+ when the block crosses a JSON
-    # boundary.
+    # Content.serialize base64-encodes +data+ in the serialized Hash.
     class Document < Data # :doc:
       ##
       # :singleton-method: new
