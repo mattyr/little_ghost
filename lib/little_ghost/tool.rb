@@ -71,8 +71,8 @@ module LittleGhost
   # The class DSL produces the specification sent to models. During an Agent
   # run, the tool registry creates and binds one Tool instance. Tests and custom
   # integrations may call +execute+ directly; it validates the arguments, calls
-  # +call+, and returns an ExecutionResult. Tool.define offers the same contract
-  # for an embedded implementation.
+  # +call+, and returns a normalized internal result. Tool.define offers the
+  # same contract for an embedded implementation.
   #
   # Mutable Tool instance state belongs to one Agent run. Registries close tool
   # instances that implement +close+; <tt>exclusive true</tt> prevents that tool
@@ -89,6 +89,8 @@ module LittleGhost
   # from model-selected input to application context, sandbox
   # delegation, concurrency, and code mode.
   class Tool
+    UNSET_RESULT_VALUE = Object.new.freeze # :nodoc:
+
     # Supply run-scoped collaborators when tools are instantiated outside an agent.
     # A binding can be copied with selected collaborators replaced.
     #
@@ -123,19 +125,75 @@ module LittleGhost
       end
     end
 
-    # Report the caller-safe outcome of one tool execution.
-    # The result retains model-facing content, status, and the original exception
-    # for application-side inspection.
-    ExecutionResult = Data.define(:content, :status, :error, :companion_content) do # :nodoc:
-      def initialize(content:, status:, error: nil, companion_content: [])
-        companions = Array(companion_content)
-        unless companions.all? do |block|
-          block.is_a?(Content::Text) || block.is_a?(Content::Image) || block.is_a?(Content::Document)
-        end
-          raise ArgumentError, "companion content must contain only text, images, or documents"
+    Result = Data.define(:value, :artifacts) do # :nodoc:
+      def initialize(value:, artifacts: [])
+        values = Array(artifacts)
+        unless values.all? { |artifact| artifact.is_a?(Artifact) }
+          raise ArgumentError, "artifacts must contain only LittleGhost::Artifact values"
         end
 
-        super(content:, status:, error:, companion_content: companions.dup.freeze)
+        super(value:, artifacts: values.dup.freeze)
+      end
+    end
+
+    # Returns a Ruby value together with files or media produced by a Tool.
+    # Tools without artifacts should return their Ruby value directly.
+    class Result < Data # :doc:
+      ##
+      # :singleton-method: new
+      # :call-seq:
+      #   new(value:, artifacts: []) -> Result
+      #
+      # Creates a result from the Ruby +value+ and an Array of Artifact objects.
+
+      ##
+      # :attr_reader: value
+      # The ordinary Ruby value returned to application callers and code mode.
+
+      ##
+      # :attr_reader: artifacts
+      # The frozen Array of Artifact objects produced by the Tool.
+    end
+
+    # Internal normalized outcome used between Tool, Agent, and code mode.
+    ExecutionResult = Data.define(:value, :content, :status, :error, :artifacts, :presentation_content) do # :nodoc:
+      def initialize(
+        status:,
+        content: UNSET_RESULT_VALUE,
+        value: UNSET_RESULT_VALUE,
+        error: nil,
+        artifacts: [],
+        presentation_content: []
+      )
+        if content.equal?(UNSET_RESULT_VALUE) && value.equal?(UNSET_RESULT_VALUE)
+          raise ArgumentError, "tool result requires content or value"
+        end
+        content = value if content.equal?(UNSET_RESULT_VALUE)
+        value = content if value.equal?(UNSET_RESULT_VALUE)
+
+        presentations = Array(presentation_content)
+        unless presentations.all? do |block|
+          block.is_a?(Content::Text) || block.is_a?(Content::Image) || block.is_a?(Content::Document)
+        end
+          raise ArgumentError, "artifact presentation must contain only text, images, or documents"
+        end
+
+        artifact_values = Array(artifacts)
+        unless artifact_values.all? { |artifact| artifact.is_a?(Artifact) }
+          raise ArgumentError, "artifacts must contain only LittleGhost::Artifact values"
+        end
+
+        status = status.to_sym
+        raise ArgumentError, "tool result status must be success or error" unless %i[success error].include?(status)
+
+        super(
+          value:,
+          content:,
+          status:,
+          error:,
+          artifacts: artifact_values.dup.freeze,
+          presentation_content: presentations.dup.freeze
+        )
       end
 
       def success?
@@ -147,51 +205,13 @@ module LittleGhost
       end
     end
 
-    # Reports the caller-safe outcome of one tool execution. It keeps
-    # model-facing content and status beside the original exception retained for
-    # application-side inspection. Companion content lets a tool place trusted
-    # text, images, or documents in the next model request without putting those
-    # blocks inside a provider-specific tool-result shape.
-    class ExecutionResult < Data # :doc:
-      ##
-      # :singleton-method: new
-      # :call-seq:
-      #   new(content:, status:, error: nil, companion_content: []) -> ExecutionResult
-      #
-      # Collects the model-facing and application-facing parts of one result.
-
-      ##
-      # :attr_reader: content
-      # The normalized, caller-safe text returned to the model.
-
-      ##
-      # :attr_reader: status
-      # Either +:success+ or +:error+.
-
-      ##
-      # :attr_reader: error
-      # The original exception for application-side inspection, when present.
-
-      ##
-      # :attr_reader: companion_content
-      # Frozen Text, Image, and Document blocks appended as a transient user
-      # message after the ordinary tool result.
-
-      ##
-      # :method: success?
-      # Indicates that +status+ is +:success+.
-
-      ##
-      # :method: error?
-      # Indicates that +status+ is +:error+.
-    end
-
     extend Support::ClassAttributes
 
     class_attribute :tool_name_value
     class_attribute :description_value
     class_attribute :input_schema_value
     class_attribute :exclusive_value, default: false
+    class_attribute :availability_value
 
     class << self
       # :call-seq:
@@ -244,6 +264,20 @@ module LittleGhost
         return !!exclusive_value if values.empty?
 
         self.exclusive_value = !!values.fetch(0)
+      end
+
+      # Declares whether this Tool is available for a run-scoped +binding+.
+      # With no block, returns the configured predicate or nil. ToolRegistry
+      # omits a Tool whose predicate returns false before constructing it.
+      def available_if(&predicate)
+        return availability_value unless predicate
+
+        self.availability_value = predicate
+      end
+
+      # Returns whether this Tool should be registered for +binding+.
+      def available?(binding)
+        !availability_value || !!availability_value.call(binding)
       end
 
       # Creates an anonymous Tool subclass backed by +implementation+.
@@ -343,7 +377,7 @@ module LittleGhost
     # Bound sandbox, when available.
     def sandbox = binding.sandbox
 
-    # Validates +input+ and invokes the tool, returning an ExecutionResult.
+    # Validates +input+ and invokes the Tool, returning its normalized outcome.
     #
     # Cancellation, deadline, and cleanup exceptions remain control-flow
     # exceptions. ToolError and unexpected failures become sanitized error
@@ -358,8 +392,9 @@ module LittleGhost
 
       value = bound_for(context).call(input)
       return normalize_execution_result(value) if value.is_a?(ExecutionResult)
+      return success(value.value, artifacts: value.artifacts) if value.is_a?(Result)
 
-      success(sanitize(value))
+      success(value)
     rescue CancelledError, DeadlineExceededError, CleanupError
       raise
     rescue ToolError => error
@@ -404,8 +439,8 @@ module LittleGhost
       raise ToolError, "Tool returned content that cannot be serialized"
     end
 
-    def success(content)
-      ExecutionResult.new(content: content.freeze, status: :success)
+    def success(value, artifacts: [])
+      ExecutionResult.new(value:, content: sanitize(value).freeze, status: :success, artifacts:)
     end
 
     def failure(content, error:)
@@ -414,14 +449,18 @@ module LittleGhost
 
     def normalize_execution_result(result)
       ExecutionResult.new(
+        value: result.value,
         content: sanitize(result.content).freeze,
         status: result.status,
         error: result.error,
-        companion_content: result.companion_content
+        artifacts: result.artifacts,
+        presentation_content: result.presentation_content
       )
     end
 
     class SchemaValidator # :nodoc:
+      REGEXP_TIMEOUT = 0.05
+
       def initialize(schema)
         @schema = schema
       end
@@ -490,7 +529,11 @@ module LittleGhost
         pattern = schema["pattern"]
         errors << "#{path} must have at least #{minimum} characters" if minimum && value.length < minimum
         errors << "#{path} must have at most #{maximum} characters" if maximum && value.length > maximum
-        errors << "#{path} has an invalid format" if pattern && !Regexp.new(pattern).match?(value)
+        if pattern && !Regexp.new(pattern, timeout: REGEXP_TIMEOUT).match?(value)
+          errors << "#{path} has an invalid format"
+        end
+      rescue Regexp::TimeoutError
+        errors << "#{path} has an invalid format"
       rescue RegexpError
         errors << "#{path} has an invalid schema pattern"
       end

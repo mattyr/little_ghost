@@ -225,12 +225,18 @@ module LittleGhost
     # Instantiates the configured workspace, or a root-scoped Workspace by default.
     def build_workspace(invocation: nil)
       declaration = workspace_declaration
-      return Workspace.new(root: root) unless declaration
+      unless declaration
+        paths = artifacts_enabled? ? {artifacts: "artifacts"} : {}
+        return Workspace.new(root: root, paths:)
+      end
 
       provider, options = component_provider(declaration)
       provider = Workspace.resolve_provider(provider) if provider.is_a?(Symbol)
       options[:root] = resolve_component_path(options[:root]) if options.key?(:root)
       options[:root] ||= root.to_s if provider == Workspace
+      if artifacts_enabled? && provider == Workspace
+        options[:paths] = {artifacts: "artifacts"}.merge(options.fetch(:paths, {}))
+      end
       build_component(provider, options, runtime: self, invocation:)
     end
 
@@ -332,6 +338,11 @@ module LittleGhost
       run
     end
 
+    def prepare_execution(run) # :nodoc:
+      runtime_hooks.each { |hook| hook.prepare_execution(run) }
+      run
+    end
+
     def prepare_interjection(run, payload) # :nodoc:
       runtime_hooks.reduce(payload) do |prepared, hook|
         hook.prepare_interjection(run, prepared)
@@ -378,7 +389,7 @@ module LittleGhost
         return "The model returned an invalid tool call before completing the response. Please retry with a narrower request."
       end
 
-      "Agent failed: #{error.class}"
+      "I hit an error while generating a response. Please retry."
     end
 
     def resolve_agent(value) # :nodoc:
@@ -386,6 +397,10 @@ module LittleGhost
     end
 
     private
+
+    def artifacts_enabled?
+      runtime_hooks.any? { |hook| hook.is_a?(Runtime::Hooks::Artifacts) }
+    end
 
     def component_provider(declaration)
       return [declaration, {}] unless declaration.is_a?(Hash)

@@ -22,8 +22,14 @@ module LittleGhost
 
     # Contains model-visible text.
     Text = Data.define(:text) { include Serializable } # :nodoc:
-    # Contains binary image +data+ and its MIME +media_type+.
-    Image = Data.define(:data, :media_type) { include Serializable } # :nodoc:
+    # Contains binary image +data+, its MIME +media_type+, and an optional name.
+    Image = Data.define(:data, :media_type, :name) do # :nodoc:
+      include Serializable
+
+      def initialize(data:, media_type:, name: nil)
+        super
+      end
+    end
     # Contains binary document +data+, MIME +media_type+, and display +name+.
     Document = Data.define(:data, :media_type, :name) { include Serializable } # :nodoc:
     # Describes a provider-requested tool call.
@@ -103,13 +109,13 @@ module LittleGhost
       # The text shown to the model or application.
     end
 
-    # Contains binary image data and its MIME media type. Content.serialize
-    # base64-encodes +data+ when the block crosses a JSON boundary.
+    # Contains binary image data, its MIME media type, and an optional display
+    # name. Content.serialize base64-encodes +data+ in the serialized Hash.
     class Image < Data # :doc:
       ##
       # :singleton-method: new
       # :call-seq:
-      #   new(data:, media_type:) -> Image
+      #   new(data:, media_type:, name: nil) -> Image
       #
       # Wraps the supplied values without copying them.
 
@@ -120,11 +126,14 @@ module LittleGhost
       ##
       # :attr_reader: media_type
       # The image MIME type, such as +image/png+.
+
+      ##
+      # :attr_reader: name
+      # The optional filename or label used when the image is presented.
     end
 
     # Contains binary document data, its MIME media type, and a display name.
-    # Content.serialize base64-encodes +data+ when the block crosses a JSON
-    # boundary.
+    # Content.serialize base64-encodes +data+ in the serialized Hash.
     class Document < Data # :doc:
       ##
       # :singleton-method: new
@@ -295,7 +304,9 @@ module LittleGhost
           value["details"] = block.details.map(&:to_h) if block.details
         end
       when Image
-        binary("image", block.data, media_type: block.media_type)
+        binary("image", block.data, media_type: block.media_type).tap do |value|
+          value["name"] = block.name if block.name
+        end
       when Document
         binary("document", block.data, media_type: block.media_type, name: block.name)
       when ToolUse

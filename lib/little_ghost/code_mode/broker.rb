@@ -24,6 +24,10 @@ module LittleGhost
         @max_calls = max_calls && Integer(max_calls)
         @call_count = 0
         @call_mutex = Mutex.new
+        @delivery_mutex = Mutex.new
+        @presentation_content = []
+        @artifacts = []
+        @presentation_budget = Artifacts::PresentationBudget.new
       end
 
       # Returns the Tool specifications available to model-authored code.
@@ -62,31 +66,51 @@ module LittleGhost
         raise ToolError, "Tool is not available in code mode: #{name}" unless available
         raise ToolError, "Tool arguments must be an object" unless arguments.is_a?(Hash)
 
+        execution_result = nil
         result = if @dispatch
-          @dispatch.call(Call.new(id:, name:, arguments:))
+          dispatched = @dispatch.call(Call.new(id:, name:, arguments:))
+          if dispatched.respond_to?(:presentation_content) && dispatched.respond_to?(:artifacts)
+            record_delivery(dispatched.presentation_content, dispatched.artifacts)
+          end
+          dispatched
         elsif @agent
           use = Content::ToolUse.new(id:, name:, input: arguments)
           emit_brokered_tool_call(use)
-          @agent.dispatch_tools(
+          executed = @agent.dispatch_tools(
             [use],
             context: @context,
             events: @events,
             parent_operation_id: @parent_operation_id,
             parent_trace_context: @parent_trace_context
-          ).first.result
+          ).first
+          record_delivery(executed.presentation_content, executed.artifacts)
+          execution_result = executed.execution_result
         else
           tool = @registry.fetch(name)
           execution = tool.execute(arguments, context: @context)
-          return CallResult.new(id:, value: decode(execution.content), error: execution.error? ? execution.content : nil)
+          record_delivery(execution.presentation_content, execution.artifacts)
+          return CallResult.new(id:, value: execution.value, error: execution.error? ? execution.content : nil)
         end
 
         return result if result.is_a?(CallResult)
 
-        content = result.respond_to?(:content) ? result.content : result
-        status = result.respond_to?(:status) ? result.status : :success
-        CallResult.new(id:, value: decode(content), error: (content if status == :error))
+        execution_result ||= result
+        content = execution_result.respond_to?(:content) ? execution_result.content : execution_result
+        value = execution_result.respond_to?(:value) ? execution_result.value : decode(content)
+        status = execution_result.respond_to?(:status) ? execution_result.status : :success
+        CallResult.new(id:, value:, error: (content if status == :error))
       rescue ToolError => error
         CallResult.new(id:, value: nil, error: error.message)
+      end
+
+      def drain_delivery # :nodoc:
+        @delivery_mutex.synchronize do
+          delivery = [@presentation_content.freeze, @artifacts.freeze]
+          @presentation_content = []
+          @artifacts = []
+          @presentation_budget = Artifacts::PresentationBudget.new
+          delivery
+        end
       end
 
       private
@@ -101,6 +125,15 @@ module LittleGhost
         @events << StreamEvent.build(:tool_call_start, index: 0, id: tool_use.id, name: tool_use.name)
         @events << StreamEvent.build(:tool_call_delta, index: 0, arguments: JSON.generate(tool_use.input))
         @events << StreamEvent.build(:tool_call_stop, index: 0, tool_use:)
+      end
+
+      def record_delivery(presentations, artifacts)
+        return if presentations.empty? && artifacts.empty?
+
+        @delivery_mutex.synchronize do
+          @presentation_content.concat(@presentation_budget.accept(presentations))
+          @artifacts.concat(artifacts)
+        end
       end
 
       def decode(value)

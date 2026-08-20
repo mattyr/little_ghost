@@ -68,6 +68,32 @@ class SessionsTest < Minitest::Test
     assert_equal ["Keep me"], session.history.map(&:text)
   end
 
+  def test_run_scoped_artifact_references_are_sanitized_before_persistence
+    store = LittleGhost::SessionStores::Memory.new
+    session = LittleGhost::Session.new(id: "conversation", actor_id: "actor", store:)
+    reference = "workspace://artifacts/run-secret/result.json"
+
+    session.checkpoint(
+      messages: [
+        LittleGhost::Message.new(
+          role: :tool,
+          content: "Full result: #{reference}\n\nPreview:\n{\"ok\":true}",
+          metadata: {
+            "little_ghost_artifacts" => [{"reference" => reference, "media_type" => "application/json"}],
+            "application" => "kept"
+          }
+        )
+      ]
+    )
+
+    persisted = session.history.fetch(0)
+    assert_includes persisted.text, "Preview:\n{\"ok\":true}"
+    assert_includes persisted.text, "[artifact unavailable after run]"
+    refute_includes persisted.text, reference
+    assert_equal "kept", persisted.metadata["application"]
+    refute persisted.metadata.key?("little_ghost_artifacts")
+  end
+
   def test_checkpoint_result_preserves_stored_metadata
     store = LittleGhost::SessionStores::Memory.new
     store.replace(

@@ -28,9 +28,8 @@ module LittleGhost
   # advanced way to take an independent snapshot without selecting the shared
   # default.
   #
-  # Session actor resolvers belong at an authentication boundary. Multi-tenant
-  # applications should derive actor identity from trusted authenticated state,
-  # not from an unverified request field.
+  # Multi-tenant applications should derive Session actor identity from state
+  # established after authentication, not from an unverified request field.
   class Configuration
     FILE_LOAD_MUTEX = Mutex.new # :nodoc:
     CONFIGURATION_KEYS = %i[invocation service_name].freeze # :nodoc:
@@ -485,6 +484,30 @@ module LittleGhost
       hook_class
     end
 
+    # Stores input attachments, Tool artifacts, and oversized successful Tool
+    # values under the conventional +:artifacts+ Workspace path. An optional
+    # block receives deferred Artifacts and may load their bytes for the current
+    # Run. It may return a String, an inline Artifact, or nil.
+    #
+    # The block is application code. It must authorize each reference using
+    # identity established by the application and limit any file or network read
+    # before returning bytes. LittleGhost applies its storage limits afterward.
+    #
+    # :call-seq:
+    #   artifacts() -> Class<Runtime::Hook>
+    #   artifacts { |artifact, run:| bytes_or_artifact_or_nil } -> Class<Runtime::Hook>
+    def artifacts(&resolver)
+      hook = Runtime::Hooks::Artifacts.configured(resolver:)
+      ensure_configuration_open!
+      change_configuration do
+        configuration_values[:runtime_hooks].reject! do |configured|
+          configured <= Runtime::Hooks::Artifacts
+        end
+        configuration_values[:runtime_hooks] << hook
+      end
+      hook
+    end
+
     # :call-seq:
     #   session_actor() -> callable, nil
     #   session_actor(callable) -> callable
@@ -513,7 +536,7 @@ module LittleGhost
     # The resolved application root, defaulting to +Dir.pwd+.
     #
     # Setting or reading an invalid root raises ConfigurationError. Symlinks are
-    # resolved so runtimes and lookup paths share one stable boundary.
+    # resolved so runtimes and lookup paths use the same canonical directory.
     def root(value = :__read__)
       if value != :__read__
         return change_configuration { configuration_values[:root] = canonical_root(value) }

@@ -127,7 +127,7 @@ module LittleGhost
       if value.is_a?(Array)
         value.flatten.compact.each { |child| resolve(child, instances, binding:) }
       elsif value.is_a?(Class) && value <= Tool
-        instances << value.new(binding:)
+        instances << value.new(binding:) if value.available?(binding)
       elsif value.is_a?(Class)
         resolve(value.tools(binding), instances, binding:)
       else

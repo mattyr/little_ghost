@@ -435,7 +435,7 @@ class AgentTest < Minitest::Test
     assert_equal :success, result_block.status
   end
 
-  def test_appends_callback_companion_content_as_transient_user_messages
+  def test_appends_internal_artifact_presentations_as_transient_user_messages
     first = LittleGhost::Content::Document.new(
       data: "first",
       media_type: "text/plain",
@@ -448,7 +448,7 @@ class AgentTest < Minitest::Test
     uses = tools.each_with_index.map do |tool, index|
       LittleGhost::Content::ToolUse.new(id: "call-#{index}", name: tool.tool_name, input: {})
     end
-    companions = {"first" => first, "second" => second}
+    presentations = {"first" => first, "second" => second}
     agent_class = Class.new(LittleGhost::Agent) do
       after_tool do |payload|
         result = payload.fetch(:result)
@@ -458,7 +458,7 @@ class AgentTest < Minitest::Test
               content: result.content,
               status: result.status,
               error: result.error,
-              companion_content: [companions.fetch(payload.fetch(:tool).tool_name)]
+              presentation_content: [presentations.fetch(payload.fetch(:tool).tool_name)]
             )
           )
         )
@@ -474,7 +474,7 @@ class AgentTest < Minitest::Test
     assert_equal [first], request_messages.fetch(1).content
     assert_equal [second], request_messages.fetch(2).content
     assert request_messages.drop(1).all? { |message| message.metadata[:transient] }
-    refute result.messages.any? { |message| message.metadata[:little_ghost_tool_companion] }
+    refute result.messages.any? { |message| message.metadata[:little_ghost_artifact_presentation] }
     session = LittleGhost::Session.new(
       id: "session-1",
       store: LittleGhost::SessionStores::Memory.new

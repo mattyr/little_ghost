@@ -1,11 +1,11 @@
 # Build AI features that feel at home in Ruby
 
-LittleGhost is a Ruby library for building AI features with agents and composable assemblies. With `OPENROUTER_API_KEY` set, start with one class, give it a prompt, and call it like the rest of your application code:
-
 > **Using a coding agent?** Start with
 > [`llms.txt`](https://mattyr.github.io/little_ghost/llms.txt) for a concise map
 > of the guides and API. [`llms-full.txt`](https://mattyr.github.io/little_ghost/llms-full.txt)
 > contains the complete documentation in one file.
+
+LittleGhost is a Ruby library for building AI features with agents and composable assemblies. With `OPENROUTER_API_KEY` set, start with one class, give it a prompt, and call it like the rest of your application code:
 
 ```ruby
 require "little_ghost"

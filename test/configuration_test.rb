@@ -1247,7 +1247,8 @@ class ConfigurationTest < Minitest::Test
 
     with_runtime(configure: ->(harness) { harness.runtime_hook hook }) do |harness|
       assert_equal "Handled: RuntimeError", harness.runtime_instance.error_message(RuntimeError.new, nil)
-      assert_equal "Agent failed: ArgumentError", harness.runtime_instance.error_message(ArgumentError.new, nil)
+      assert_equal "I hit an error while generating a response. Please retry.",
+        harness.runtime_instance.error_message(ArgumentError.new, nil)
     end
   end
 
