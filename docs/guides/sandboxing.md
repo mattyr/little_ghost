@@ -84,6 +84,35 @@ configured teardown callback, but does not delete files by default. Use a
 run-scoped temporary root for disposable work. Use application-managed storage,
 tenant isolation, and concurrency control when several Runs share files.
 
+## Give artifacts logical references
+
+Images and documents normally remain provider content. When filesystem Tools
+or code mode should read the same bytes, configure the conventional artifact
+path and enable the unified lifecycle:
+
+```ruby
+LittleGhost.configure do |config|
+  config.workspace = {
+    provider: :directory,
+    root: "tmp/agent-runs",
+    paths: {artifacts: "artifacts"}
+  }
+  config.artifacts
+end
+```
+
+The runtime writes attachments after the Workspace and Sandbox open. It keeps
+the original content blocks for the provider and appends a text block with
+`workspace://artifacts/...` references. The same behavior applies to input
+interjections during the Run.
+
+Built-in message and Run budgets bound the unique files retained across the
+initial input, interjections, Tool artifacts, and oversized Tool results. A
+batch either stores completely or rolls back. Files use private
+permissions, and the Workspace provider still owns cleanup. Declaring the path
+does not grant model access; include it in the Sandbox and filesystem Tool
+policy only when the Agent should read it.
+
 ## Pass logical paths, not host layout
 
 The Filesystem Tool accepts root-relative paths such as `notes/today.md`.

@@ -104,8 +104,11 @@ do not carry into a later `exec`. Within one program, the model can use:
 - `finish(value)` to complete early.
 
 JSON Tool results arrive as ordinary Ruby hashes, arrays, strings, numbers,
-booleans, or `nil`. A Tool failure raises inside the program so its Ruby code
-can handle the failure or return an error.
+booleans, or `nil`. When a Tool returns `Tool::Result`, code mode uses its
+machine-facing `value`. Artifacts travel back through the surrounding `exec`
+or `wait` result instead of entering the interpreter protocol. A Tool failure
+raises inside the program so its Ruby code can handle the failure or return an
+error.
 
 Fresh processes keep interpreter state from leaking across programs. Each Ruby
 program also gets a temporary Workspace. LittleGhost removes it when the

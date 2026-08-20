@@ -174,11 +174,14 @@ module LittleGhost
           tool_name: tool_use.name,
           count: count
         )
+        warned_content = "#{warning}\n\n#{result.content}"
         replacement = Tool::ExecutionResult.new(
-          content: "#{warning}\n\n#{result.content}",
+          value: result.value,
+          content: warned_content,
           status: result.status,
           error: result.error,
-          companion_content: result.companion_content
+          artifacts: result.artifacts,
+          presentation_content: result.presentation_content
         )
         Support::Callbacks.replace(payload.merge(result: replacement))
       end

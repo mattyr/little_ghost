@@ -6,70 +6,104 @@ same Agents and Runs you already have.
 
 ## Load Tools from an MCP server
 
-Declare a reusable set of remote Tools, then add it to an Agent with the same
-`tools` DSL used for Ruby Tools:
+Declare a reusable remote Toolset and add it through the ordinary Agent `tools`
+DSL:
 
 ```ruby
 require "little_ghost/mcp"
 
 class HelpCenterTools < LittleGhost::MCP::Toolset
-  endpoint "https://mcp.example/rpc", timeout: 20
-  headers { {"Authorization" => "Bearer #{ENV.fetch("MCP_ACCESS_TOKEN")}"} }
-  prefix "help_center"
-  expose "search", "fetch"
+  connection do |binding|
+    token = McpAccessTokens.for_actor(binding.run.invocation.actor_id)
+    {
+      url: "https://mcp.example/rpc",
+      headers: {"Authorization" => "Bearer #{token}"},
+      timeout: 20
+    }
+  end
+
+  map_tool do |tool_class, definition:, binding:|
+    next unless %w[search fetch].include?(definition.source_name)
+
+    tool_class.tool_name "help_center_#{definition.source_name}"
+    tool_class
+  end
 end
 
 class CustomerSupportAgent < LittleGhost::Agent
   system_prompt "Use help-center tools for published guidance."
   tools HelpCenterTools
 end
-
-run = CustomerSupportAgent.ask("What is the return window?")
 ```
 
-`HelpCenterTools` is reusable configuration. Each Agent gets its own MCP Client
-and negotiated session when LittleGhost materializes the Toolset. `prefix` keeps
-the model-visible names distinct, and `expose` loads only the operations this
-Agent needs. Omit `expose` when the Agent should receive every valid Tool the
-server advertises.
+LittleGhost resolves `connection` for each `Tool::Binding`, creates a fresh
+HTTP transport and Client, and negotiates one server session. The connection
+Hash requires `url` and may include `headers`, `timeout`, `signer`,
+`allow_insecure_http`, and `max_response_bytes`.
 
-`HTTPTransport` uses HTTPS by default, limits response time and size, and keeps
-the negotiated MCP session ID. The `headers` block runs as each Agent is built.
-It may accept the current Run when credentials depend on the authenticated
-caller:
+`map_tool` is the single definition extension point. It receives a generated
+ordinary Tool class plus immutable `definition:` and current `binding:`.
+Return the class after configuring its name, description, schema, or exclusivity;
+return `nil` to omit it. Renaming never changes `Definition#source_name`,
+which is always sent back to the server.
+
+Map selected results without reimplementing the defaults:
+
+```ruby
+map_result do |result, call:, binding:|
+  next result unless call.definition.source_name == "export"
+
+  LittleGhost::Tool::Result.new(
+    value: result.structured_content,
+    artifacts: [
+      LittleGhost::Artifact.deferred(
+        reference: result.metadata.fetch("download_id"),
+        media_type: "application/octet-stream"
+      )
+    ]
+  )
+end
+```
+
+`map_result` receives immutable `MCP::Result` and `MCP::Call` values plus
+the binding. Return any Ruby value or `Tool::Result`. Returning the supplied
+MCP result unchanged applies LittleGhost's default conversion: structured
+content becomes the machine value when present, otherwise text does. MCP images
+become Artifacts and follow the same configured lifecycle as local Tool media.
+Advertised output schemas are validated as JSON Schema Draft 2020-12.
+
+An optional server can fail discovery without preventing Agent construction:
 
 ```ruby
 class HelpCenterTools < LittleGhost::MCP::Toolset
-  endpoint "https://mcp.example/rpc", timeout: 20
-  headers do |run|
-    token = McpAccessTokens.for_actor(run.invocation.actor_id)
-    {"Authorization" => "Bearer #{token}"}
+  connection { |binding| McpConnections.help_center(binding) }
+  optional true
+  on_error do |error, binding:|
+    McpAvailability.report(error, run_id: binding.run.invocation.run_id)
   end
-  prefix "help_center"
-  expose "search", "fetch"
 end
-
-CustomerSupportAgent.ask(
-  "What is the return window?",
-  actor_id: authenticated_user.id
-)
 ```
 
-Here, `McpAccessTokens` is an application service that returns a token for the
-authenticated actor.
+`optional true` converts expected provider and protocol discovery failures
+into an empty Tool set. `on_error` observes only those caught failures.
+Cancellation, deadlines, configuration errors, and application callback
+failures still propagate.
 
-> **Safety note:** An MCP server chooses its Tool definitions and results. Load
-> only the operations your application intends to expose. The server must check
-> caller and resource access using the credentials sent with each request;
-> `expose` limits which operations are loaded, but does not authorize them.
+Discovery size, definition complexity, output-schema evaluation, and MCP media
+use fixed defensive framework limits. `HTTPTransport` separately bounds each
+wire response and requires HTTPS unless explicitly configured for local HTTP.
+
+> **Safety note:** An MCP server chooses its Tool definitions and results. Map
+> only the operations your application intends to expose. The server must still
+> authorize each operation from the credentials sent with the request.
 
 LittleGhost implements its documented client behavior for the [MCP 2025-06-18
-specification](https://modelcontextprotocol.io/specification/2025-06-18). The
-API reference covers supported protocol options and limits.
+specification](https://modelcontextprotocol.io/specification/2025-06-18).
 
 Use `LittleGhost::MCP::HTTPTransport` and `LittleGhost::MCP::Client` directly
-when you need a custom transport or want to inspect each server definition with
-a custom filter.
+when you need a custom transport while retaining the same generated Tool and
+result-mapping contracts.
+
 
 ## Send a Run stream through AG-UI
 

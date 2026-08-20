@@ -165,6 +165,73 @@ Its message is model-visible, so keep it safe to disclose. LittleGhost hides
 unexpected exception messages from the model while retaining the original
 error for trusted application inspection.
 
+## Return values and artifacts
+
+A Tool normally returns one Ruby value. LittleGhost keeps that machine value
+for application callers and code mode, then serializes it for the model. Use
+`Tool::Result` only when the operation also produces files or media:
+
+```ruby
+def call(input)
+  report = Reports.build(input.fetch("period"))
+  LittleGhost::Tool::Result.new(
+    value: {rows: report.rows.length},
+    artifacts: [
+      LittleGhost::Artifact.new(
+        data: report.csv,
+        media_type: "text/csv",
+        name: "report.csv"
+      )
+    ]
+  )
+end
+```
+
+`Tool::Result#value` follows the same machine-value contract as an ordinary
+return. Each inline `Artifact` has bytes, a MIME media type, and optional name
+and metadata. Use `Artifact.deferred(reference:, media_type:, ...)` when an
+application owns the bytes elsewhere; the optional resolver configured through
+`Configuration#artifacts` can turn that opaque reference into bytes later.
+
+Artifact handling is opt-in for the Runtime:
+
+```ruby
+LittleGhost.configure do |config|
+  config.workspace = {
+    provider: :directory,
+    root: "tmp/agent-runs",
+    paths: {artifacts: "artifacts"}
+  }
+  config.artifacts
+end
+```
+
+The one artifact lifecycle stores input images and documents, resolves and
+stores Tool artifacts, and stores oversized successful local or MCP values.
+The model receives bounded previews and stable `workspace://artifacts/...`
+references while the machine value stays unchanged. Explicit image artifacts
+are presented as images, while other explicit artifacts are presented as
+documents. Automatically stored oversized values remain reference-and-preview
+only, so their full content is not inserted back into the conversation.
+If a value exceeds the fixed storage bounds, LittleGhost keeps its machine
+value and gives the model only a bounded preview.
+Built-in per-file, batch, and Run budgets keep storage and media delivery
+bounded.
+
+To resolve deferred artifacts, pass a block. It runs outside storage locks and
+may return bytes, an inline Artifact with a final MIME type, or `nil` to leave
+the opaque reference unresolved:
+
+```ruby
+config.artifacts do |artifact, run:|
+  StoredFiles.read(artifact.reference, actor_id: run.invocation.actor_id)
+end
+```
+
+Declaring the named Workspace path does not grant model access. Add matching
+Sandbox and filesystem Tool policy only when the Agent should read artifact
+references directly.
+
 ## Let code mode compose the same capabilities
 
 Without code mode, the model chooses one Tool operation and LittleGhost returns
@@ -174,7 +241,8 @@ results, and returns one useful value.
 
 Each call crosses back to the parent Ruby process. LittleGhost checks the schema
 and calls the ordinary Tool method there, so permission checks inside `#call`
-still apply. Tool limits,
+still apply. Code mode receives the Tool's machine value, while artifacts
+return through the surrounding `exec` or `wait` result. Tool limits,
 callbacks, events, and tracing also follow the ordinary Tool path.
 
 Continue with [Structured Results and Content](structured_outputs_and_content.md)

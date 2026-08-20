@@ -107,6 +107,8 @@ module LittleGhost
       @sandbox = sandbox
       @operation_id = SecureRandom.uuid
       @resources = []
+      @shared_resources = {}
+      @shared_resource_condition = ConditionVariable.new
       @closed = false
       @started = false
       @mutex = Mutex.new
@@ -254,6 +256,46 @@ module LittleGhost
       resource
     end
 
+    def shared_resource(key) # :nodoc:
+      raise ArgumentError, "shared_resource requires a block" unless block_given?
+
+      entry = @mutex.synchronize do
+        loop do
+          raise Error, "run is already closed" if @closed
+
+          existing = @shared_resources[key]
+          if existing
+            return existing.fetch(:value) if existing[:ready]
+
+            @shared_resource_condition.wait(@mutex)
+            next
+          end
+
+          created = {ready: false, value: nil}
+          @shared_resources[key] = created
+          break created
+        end
+      end
+
+      value = yield
+      @mutex.synchronize do
+        unless @shared_resources[key].equal?(entry) && !@closed
+          raise Error, "run closed while a shared resource was starting"
+        end
+
+        entry[:value] = value
+        entry[:ready] = true
+        @shared_resource_condition.broadcast
+      end
+      value
+    rescue
+      @mutex.synchronize do
+        @shared_resources.delete(key) if @shared_resources[key].equal?(entry)
+        @shared_resource_condition.broadcast
+      end
+      raise
+    end
+
     def synchronize_exclusive_tools(&block) # :nodoc:
       @exclusive_tools_mutex.synchronize(&block)
     end
@@ -285,6 +327,8 @@ module LittleGhost
       callbacks = @mutex.synchronize do
         return if @closed
         @closed = true
+        @shared_resources.clear
+        @shared_resource_condition.broadcast
         @resources.reverse
       end
       errors = []
@@ -334,6 +378,7 @@ module LittleGhost
       emit(:trace_context, context: trace_context) { |event| yield event } unless trace_context.nil? || trace_context.empty?
       workspace&.open(run: self)
       sandbox&.open(run: self)
+      runtime.prepare_execution(self) if runtime.respond_to?(:prepare_execution)
       @session = runtime.open_session(self)
       agent = runtime.build_assembly(@execution_class, run: self)
       @interjection_mutex.synchronize do

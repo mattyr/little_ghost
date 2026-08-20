@@ -1,7 +1,9 @@
 # frozen_string_literal: true
 
 require "digest"
+require "base64"
 require "json"
+require "json_schemer"
 require "net/http"
 require "uri"
 
@@ -145,15 +147,16 @@ module LittleGhost
 
     # Client is the lower-level interface for loading tools from an MCP server.
     # Most Agents can declare a reusable Toolset instead. Use Client directly
-    # when an application needs a custom transport or definition filter.
+    # when an application needs a custom transport.
     #
     #   transport = LittleGhost::MCP::HTTPTransport.new(url: "https://mcp.example/rpc")
-    #   client = LittleGhost::MCP::Client.new(transport:, prefix: "docs")
-    #   client.tools.map(&:tool_name) # => ["docs___search", "docs___fetch"]
+    #   client = LittleGhost::MCP::Client.new(transport:)
+    #   client.tools.map(&:tool_name) # => ["search", "fetch"]
     #
     # Tool names are normalized and checked for collisions. Pagination, tool
-    # count, and response sizes are limited. +rejected_tools+ excludes named
-    # operations; +definition_filter+ can enforce an application allowlist.
+    # count, definition structure, schemas, and media are bounded by defensive
+    # framework defaults. +tool_mapper+ and +result_mapper+ use the same
+    # immutable Definition, Result, and Call values as Toolset.
     #
     # Server definitions and results remain untrusted input. LittleGhost validates
     # them before creating tools, but applications still decide which servers and
@@ -164,68 +167,117 @@ module LittleGhost
     # initialization and subsequent requests through one client are serialized;
     # do not share its transport with another client.
     class Client
+      PreparedDefinition = Data.define(:definition, :input_schema, :output_schemer) # :nodoc:
       MAX_TOOL_NAME_LENGTH = 64 # :nodoc:
       ALIAS_DIGEST_LENGTH = 12 # :nodoc:
       DEFAULT_MAX_TOOLS = 1_000 # :nodoc:
       DEFAULT_MAX_PAGES = 100 # :nodoc:
+      DEFAULT_MAX_DISCOVERY_BYTES = 10 * 1024 * 1024 # :nodoc:
+      DEFAULT_MAX_DISCOVERY_NODES = 100_000 # :nodoc:
+      DEFAULT_MAX_CURSOR_BYTES = 16 * 1024 # :nodoc:
+      DEFAULT_MAX_DEFINITION_DEPTH = 64 # :nodoc:
+      DEFAULT_MAX_DEFINITION_NODES = 10_000 # :nodoc:
+      DEFAULT_MAX_SCHEMA_PATTERNS = 1_000 # :nodoc:
+      DEFAULT_MAX_SCHEMA_PATTERN_BYTES = 1024 * 1024 # :nodoc:
+      DEFAULT_MAX_SCHEMA_PATTERN_SOURCE_BYTES = 64 * 1024 # :nodoc:
+      DEFAULT_MAX_IMAGES = 20 # :nodoc:
+      DEFAULT_MAX_IMAGE_BYTES = 16 * 1024 * 1024 # :nodoc:
+      DEFAULT_MAX_TOTAL_IMAGE_BYTES = 64 * 1024 * 1024 # :nodoc:
+      ECMA_REGEXP_RESOLVER = lambda do |pattern| # :nodoc:
+        source = JSONSchemer::EcmaRegexp.ruby_equivalent(pattern)
+        Regexp.new(source, timeout: Tool::SchemaValidator::REGEXP_TIMEOUT)
+      end
 
-      # Uses a transport that responds to +send+.
+      # Uses a transport that responds to +send+. +tool_mapper+ receives each
+      # generated Tool class and may return a configured class or nil.
+      # +result_mapper+ receives immutable Result and Call values. Safety limits
+      # are fixed framework defaults.
       def initialize(
         transport:,
         name: "mcp",
-        prefix: nil,
-        rejected_tools: [],
-        definition_filter: nil,
-        max_tools: DEFAULT_MAX_TOOLS,
-        max_pages: DEFAULT_MAX_PAGES
+        tool_mapper: nil,
+        result_mapper: nil
       )
-        if definition_filter && !definition_filter.respond_to?(:call)
-          raise ArgumentError, "definition_filter must respond to call"
-        end
+        validate_callback(tool_mapper, :tool_mapper)
+        validate_callback(result_mapper, :result_mapper)
 
         @transport = transport
         @name = String(name)
-        @prefix = prefix&.to_s
-        @rejected_tools = rejected_tools.map(&:to_s).freeze
-        @definition_filter = definition_filter
-        @max_tools = positive_integer(max_tools, :max_tools)
-        @max_pages = positive_integer(max_pages, :max_pages)
+        @tool_mapper = tool_mapper
+        @result_mapper = result_mapper
+        @max_tools = DEFAULT_MAX_TOOLS
+        @max_pages = DEFAULT_MAX_PAGES
+        @max_discovery_bytes = DEFAULT_MAX_DISCOVERY_BYTES
+        @max_discovery_nodes = DEFAULT_MAX_DISCOVERY_NODES
+        @max_definition_depth = DEFAULT_MAX_DEFINITION_DEPTH
+        @max_definition_nodes = DEFAULT_MAX_DEFINITION_NODES
+        @max_images = DEFAULT_MAX_IMAGES
+        @max_image_bytes = DEFAULT_MAX_IMAGE_BYTES
+        @max_total_image_bytes = DEFAULT_MAX_TOTAL_IMAGE_BYTES
         @request_id = 0
         @mutex = Mutex.new
         @initialization_mutex = Mutex.new
-        @source_names_mutex = Mutex.new
-        @source_names = {}
+        @definitions_mutex = Mutex.new
+        @definitions_by_name = {}
         @initialized = false
       end
 
-      # Negotiates the protocol when needed, then provides Tool instances for
-      # the server's current definitions.
-      def tools(context: nil)
-        @initialization_mutex.synchronize do
-          initialize_protocol(context:) unless @initialized
+      # Negotiates the protocol when needed, then provides Tool classes for the
+      # server's current definitions.
+      def tools(context: nil, binding: Tool::Binding.new)
+        context&.check!
+        ensure_initialized(context:)
+        definitions = list_tool_definitions(context:).map do |raw|
+          context&.check!
+          build_definition(raw, context:).tap { context&.check! }
         end
-        definitions = list_tool_definitions(context:)
-        definitions.filter_map do |definition|
-          source_name = definition_name(definition)
-          next if @rejected_tools.include?(source_name)
-          next if @definition_filter && !@definition_filter.call(definition)
-
-          build_tool(definition)
+        tools = definitions.filter_map do |definition|
+          context&.check!
+          build_tool(definition, binding:).tap { context&.check! }
         end
+        index_tools!(tools, context:)
+        context&.check!
+        tools.freeze
       end
 
-      # Calls an exposed tool and produces text or serialized structured
-      # content. Server-declared errors raise ToolError.
-      def call(name, arguments, context: nil)
-        source_name = @source_names_mutex.synchronize { @source_names.fetch(name.to_s, name.to_s) }
-        result = request("tools/call", {name: source_name, arguments: arguments}, context:)
-        content = serialize_result(result)
-        raise ToolError, content if result["isError"]
-
-        content
+      # Calls a generated or named Tool and returns the common Tool execution
+      # result. Names discovered through #tools resolve to their immutable
+      # Definition; an undiscovered name is treated as a source name.
+      def call(name, arguments, context: nil, binding: Tool::Binding.new)
+        context&.check!
+        ensure_initialized(context:)
+        prepared = if name.is_a?(PreparedDefinition)
+          name
+        elsif name.is_a?(Definition)
+          prepare_definition(name, context:)
+        else
+          definition_for_call(name, context:)
+        end
+        definition = prepared.definition
+        call_value = Call.new(definition:, arguments:, context:, binding:)
+        raw = request(
+          "tools/call",
+          {name: definition.source_name, arguments: call_value.arguments.to_h},
+          context:
+        )
+        result = build_result(raw, prepared:)
+        context&.check!
+        mapped = if @result_mapper
+          @result_mapper.call(result, call: call_value, binding:)
+        else
+          default_value(result)
+        end
+        context&.check!
+        tool_result(mapped, protocol_result: result)
       end
 
       private
+
+      def ensure_initialized(context:)
+        @initialization_mutex.synchronize do
+          initialize_protocol(context:) unless @initialized
+        end
+      end
 
       def initialize_protocol(context:)
         result = request("initialize", {
@@ -236,12 +288,22 @@ module LittleGhost
         unless result["protocolVersion"].to_s == PROTOCOL_VERSION
           raise ProtocolError, "MCP server did not negotiate protocol #{PROTOCOL_VERSION}"
         end
+        unless result["capabilities"].is_a?(Hash)
+          raise ProtocolError, "MCP initialize result must include capabilities"
+        end
+        server_info = result["serverInfo"]
+        unless server_info.is_a?(Hash) &&
+            server_info["name"].is_a?(String) && !server_info["name"].empty? &&
+            server_info["version"].is_a?(String) && !server_info["version"].empty?
+          raise ProtocolError, "MCP initialize result must include serverInfo name and version"
+        end
 
         notify("notifications/initialized", context:)
         @initialized = true
       end
 
       def request(method, params = {}, context: nil)
+        context&.check!
         expected_id, response = @mutex.synchronize do
           @request_id += 1
           [@request_id, @transport.send(
@@ -249,17 +311,27 @@ module LittleGhost
             context:
           )]
         end
+        context&.check!
         raise ProtocolError, "MCP response must be an object" unless response.is_a?(Hash)
-        if (error = response["error"])
-          raise ProtocolError, "MCP response error must be an object" unless error.is_a?(Hash)
-
-          message = error["message"].to_s
-          raise ToolError, message.empty? ? "MCP request failed" : message
-        end
-        if response.key?("id") && response["id"] != expected_id
+        raise ProtocolError, "MCP response must use JSON-RPC 2.0" unless response["jsonrpc"] == "2.0"
+        unless response.key?("id") && response["id"] == expected_id
           raise ProtocolError, "MCP response ID did not match its request"
         end
+        has_result = response.key?("result")
+        has_error = response.key?("error")
+        unless has_result ^ has_error
+          raise ProtocolError, "MCP response must include exactly one of result or error"
+        end
+        if has_error
+          error = response["error"]
+          raise ProtocolError, "MCP response error must be an object" unless error.is_a?(Hash)
+          unless error["code"].is_a?(Integer) && error["message"].is_a?(String)
+            raise ProtocolError, "MCP response error must include an integer code and string message"
+          end
 
+          message = error["message"]
+          raise ToolError, message.empty? ? "MCP request failed" : message
+        end
         result = response["result"]
         raise ProtocolError, "MCP response did not include a result object" unless result.is_a?(Hash)
 
@@ -267,51 +339,147 @@ module LittleGhost
       end
 
       def notify(method, params = {}, context: nil)
-        @transport.send({jsonrpc: "2.0", method: method, params: params}, context:)
+        context&.check!
+        @transport.send({jsonrpc: "2.0", method: method, params: params}, context:).tap do
+          context&.check!
+        end
       end
 
       def list_tool_definitions(context:)
         definitions = []
+        discovery_bytes = 0
+        discovery_nodes = 0
         cursor = nil
         seen_cursors = {}
         pages = 0
         loop do
+          context&.check!
           pages += 1
           raise ProtocolError, "MCP tools/list exceeded #{@max_pages} pages" if pages > @max_pages
 
           result = request("tools/list", cursor ? {cursor: cursor} : {}, context:)
+          context&.check!
           tools = result.fetch("tools", [])
           raise ProtocolError, "MCP tools/list tools must be an array" unless tools.is_a?(Array)
 
+          tools.each do |definition|
+            context&.check!
+            bytes, nodes = definition_complexity(definition, context:)
+            discovery_bytes += bytes
+            discovery_nodes += nodes
+            if discovery_bytes > @max_discovery_bytes
+              raise ProtocolError, "MCP tools/list exceeded the #{@max_discovery_bytes}-byte definition limit"
+            end
+            if discovery_nodes > @max_discovery_nodes
+              raise ProtocolError, "MCP tools/list exceeded the #{@max_discovery_nodes}-node definition limit"
+            end
+          end
           definitions.concat(tools)
           raise ProtocolError, "MCP tools/list exceeded #{@max_tools} tools" if definitions.length > @max_tools
           cursor = result["nextCursor"]
-          break if cursor.nil? || cursor.empty?
+          break if cursor.nil?
+          unless cursor.is_a?(String) && !cursor.empty?
+            raise ProtocolError, "MCP tools/list nextCursor must be a non-empty string"
+          end
+          if cursor.bytesize > DEFAULT_MAX_CURSOR_BYTES
+            raise ProtocolError, "MCP tools/list nextCursor exceeded the #{DEFAULT_MAX_CURSOR_BYTES}-byte limit"
+          end
+          discovery_bytes += cursor.bytesize
+          if discovery_bytes > @max_discovery_bytes
+            raise ProtocolError, "MCP tools/list exceeded the #{@max_discovery_bytes}-byte definition limit"
+          end
 
           raise ProtocolError, "MCP tools/list repeated a pagination cursor" if seen_cursors[cursor]
 
           seen_cursors[cursor] = true
         end
+        context&.check!
         definitions
       end
 
-      def build_tool(definition)
+      def build_tool(prepared, binding:)
+        definition = prepared.definition
         client = self
-        source_name = definition_name(definition)
-        exposed_name = safe_name([@prefix, source_name].compact.join("___"))
-        @source_names_mutex.synchronize do
-          existing = @source_names[exposed_name]
-          if existing && existing != source_name
-            raise ConfigurationError, "MCP tools #{existing.inspect} and #{source_name.inspect} map to #{exposed_name.inspect}"
+        tool_class = Class.new(Tool) do
+          tool_name definition.name
+          description definition.description
+          input_schema prepared.input_schema
+
+          define_singleton_method(:mcp_definition) { definition }
+          define_method(:call) do |input|
+            client.call(prepared, input, context:, binding: self.binding)
           end
-          @source_names[exposed_name] = source_name
+        end
+        tool_class.instance_variable_set(:@little_ghost_mcp_prepared_definition, prepared)
+        return tool_class unless @tool_mapper
+
+        mapped = @tool_mapper.call(tool_class, definition:, binding:)
+        return if mapped.nil?
+        unless mapped.is_a?(Class) && mapped <= tool_class
+          raise ConfigurationError, "MCP tool mapper must return the generated Tool class, a subclass, or nil"
         end
 
-        Tool.define(
-          name: exposed_name,
-          description: present_description(definition["description"]),
-          input_schema: definition.fetch("inputSchema", {type: "object"})
-        ) { |input, context:| client.call(exposed_name, input, context:) }
+        mapped.instance_variable_set(:@little_ghost_mcp_prepared_definition, prepared)
+        mapped
+      end
+
+      def build_definition(raw, context: nil)
+        context&.check!
+        source_name = definition_name(raw)
+        definition = Definition.new(
+          source_name:,
+          name: safe_name(source_name),
+          description: present_description(raw["description"]),
+          input_schema: raw.fetch("inputSchema", {type: "object"}),
+          output_schema: raw["outputSchema"],
+          annotations: raw.fetch("annotations", {}),
+          title: raw["title"],
+          metadata: raw.fetch("_meta", {}),
+          raw:
+        )
+        prepare_definition(definition, context:)
+      rescue SystemStackError
+        raise ProtocolError, "MCP tool definition exceeds the supported nesting limit"
+      end
+
+      def definition_complexity(definition, context:)
+        nodes = 0
+        bytes = 0
+        stack = [[definition, 1]]
+        until stack.empty?
+          value, depth = stack.pop
+          raise ProtocolError, "MCP tool definition exceeds the #{@max_definition_depth}-level depth limit" if depth > @max_definition_depth
+
+          nodes += 1
+          if nodes > @max_definition_nodes
+            raise ProtocolError, "MCP tool definition exceeds the #{@max_definition_nodes}-node limit"
+          end
+          context&.check! if (nodes % 1_000).zero?
+          case value
+          when Hash
+            bytes += 2
+            value.each do |key, child|
+              raise ProtocolError, "MCP tool definition keys must be strings" unless key.is_a?(String)
+
+              bytes += key.bytesize + 3
+              stack << [child, depth + 1]
+            end
+          when Array
+            bytes += 2 + value.length
+            value.each { |child| stack << [child, depth + 1] }
+          when String
+            bytes += value.bytesize + 2
+          when Numeric
+            bytes += value.to_s.bytesize
+          when true, false
+            bytes += value ? 4 : 5
+          when nil
+            bytes += 4
+          else
+            raise ProtocolError, "MCP tool definition contains a non-JSON value"
+          end
+        end
+        [bytes, nodes]
       end
 
       def definition_name(definition)
@@ -338,23 +506,254 @@ module LittleGhost
         value.empty? ? "MCP tool from #{@name}" : value
       end
 
-      def serialize_content(content)
-        text = content.filter_map { |block| block["text"] if block["type"] == "text" }.join("\n")
-        return text unless text.empty?
-
-        JSON.generate(content)
+      def index_tools!(tools, context: nil)
+        indexed = {}
+        tools.each do |tool_class|
+          context&.check!
+          definition = tool_class.mcp_definition
+          name = tool_class.tool_name
+          existing = indexed[name]
+          if existing && existing.definition.source_name != definition.source_name
+            raise ConfigurationError,
+              "MCP tools #{existing.definition.source_name.inspect} and #{definition.source_name.inspect} map to #{name.inspect}"
+          end
+          prepared = tool_class.instance_variable_get(:@little_ghost_mcp_prepared_definition)
+          prepared ||= prepare_definition(definition, context:)
+          indexed[name] = prepared
+        end
+        @definitions_mutex.synchronize { @definitions_by_name = indexed.freeze }
       end
 
-      def serialize_result(result)
-        return serialize_content(result.fetch("content", [])) unless result.key?("structuredContent")
+      def definition_for_call(name, context: nil)
+        value = String(name)
+        @definitions_mutex.synchronize { @definitions_by_name[value] } || prepare_definition(Definition.new(
+          source_name: value,
+          name: safe_name(value),
+          description: "MCP tool from #{@name}",
+          input_schema: {type: "object"},
+          raw: {name: value}
+        ), context:)
+      end
 
-        structured = result["structuredContent"]
-        raise ProtocolError, "MCP structuredContent must be an object" unless structured.is_a?(Hash)
+      def build_result(raw, prepared:)
+        result = Result.new(
+          content: raw.fetch("content", []),
+          structured_content: raw["structuredContent"],
+          error: raw["isError"],
+          metadata: raw.fetch("_meta", {}),
+          raw:
+        )
+        validate_result_blocks!(result.content)
+        validate_structured_content!(result, prepared:)
+        result
+      end
 
-        payload = {"structuredContent" => structured}
-        content = result.fetch("content", [])
-        payload["content"] = content unless content.empty?
-        JSON.generate(payload)
+      def validate_result_blocks!(content)
+        content.each do |block|
+          raise ProtocolError, "MCP tool result content blocks must be objects" unless block.is_a?(Hash)
+          raise ProtocolError, "MCP tool result content blocks must include a type" unless block["type"].is_a?(String)
+          if block["type"] == "text" && !block["text"].is_a?(String)
+            raise ProtocolError, "MCP text content must include text"
+          end
+        end
+      end
+
+      def validate_structured_content!(result, prepared:)
+        definition = prepared.definition
+        schema = definition.output_schema
+        return unless schema
+        raise ProtocolError, "MCP tool result omitted structuredContent required by outputSchema" unless result.structured_content
+
+        errors = prepared.output_schemer.validate(result.structured_content.to_h).take(10)
+        return if errors.empty?
+
+        details = errors.filter_map { |error| error["error"] }.join("; ")
+        raise ProtocolError, "MCP structuredContent did not match outputSchema: #{details}"
+      rescue JSONSchemer::UnknownRef, JSONSchemer::InvalidRefResolution, JSONSchemer::InvalidRefPointer
+        raise ProtocolError, "MCP outputSchema contains an unresolved reference"
+      rescue Regexp::TimeoutError
+        raise ProtocolError, "MCP structuredContent exceeded the outputSchema pattern time limit"
+      end
+
+      def prepare_definition(definition, context: nil)
+        context&.check!
+        input_schema = normalized_input_schema(definition.input_schema, context:)
+        schema = definition.output_schema
+        return PreparedDefinition.new(definition:, input_schema:, output_schemer: nil) unless schema
+
+        schema_hash = schema.to_h
+        schema_patterns(schema_hash, field: "outputSchema", context:)
+        context&.check!
+        errors = JSONSchemer.validate_schema(schema_hash).take(10)
+        unless errors.empty?
+          details = errors.filter_map { |error| error["error"] }.join("; ")
+          raise ProtocolError, "MCP tool outputSchema is invalid: #{details}"
+        end
+
+        schemer = JSONSchemer.schema(schema_hash, regexp_resolver: ECMA_REGEXP_RESOLVER)
+        context&.check!
+        PreparedDefinition.new(definition:, input_schema:, output_schemer: schemer)
+      rescue JSONSchemer::UnknownRef, JSONSchemer::InvalidRefResolution, JSONSchemer::InvalidRefPointer
+        raise ProtocolError, "MCP tool outputSchema contains an unresolved reference"
+      end
+
+      def normalized_input_schema(schema, context: nil)
+        normalized = JSON.parse(JSON.generate(schema.to_h))
+        schema_patterns(normalized, field: "inputSchema", context:).each do |container, key, regexp|
+          context&.check!
+          container[key] = regexp.source if container
+        end
+        normalized
+      rescue JSON::GeneratorError, JSON::ParserError
+        raise ProtocolError, "MCP tool inputSchema is not valid JSON"
+      end
+
+      def schema_patterns(schema, field:, context: nil)
+        patterns = []
+        total_bytes = 0
+        stack = [schema]
+        until stack.empty?
+          context&.check!
+          value = stack.pop
+          case value
+          when Hash
+            if value.key?("pattern")
+              pattern = value["pattern"]
+              unless pattern.is_a?(String)
+                raise ProtocolError, "MCP tool #{field} pattern must be a string"
+              end
+              patterns << [value, "pattern", pattern]
+            end
+            pattern_properties = value["patternProperties"]
+            if pattern_properties
+              unless pattern_properties.is_a?(Hash)
+                raise ProtocolError, "MCP tool #{field} patternProperties must be an object"
+              end
+              pattern_properties.each_key { |pattern| patterns << [nil, nil, pattern] }
+            end
+            value.each_value { |child| stack << child }
+          when Array
+            value.each { |child| stack << child }
+          end
+        end
+        if patterns.length > DEFAULT_MAX_SCHEMA_PATTERNS
+          raise ProtocolError, "MCP tool #{field} exceeded the #{DEFAULT_MAX_SCHEMA_PATTERNS}-pattern limit"
+        end
+
+        patterns.map do |container, key, pattern|
+          context&.check!
+          unless pattern.is_a?(String)
+            raise ProtocolError, "MCP tool #{field} pattern must be a string"
+          end
+          if pattern.bytesize > DEFAULT_MAX_SCHEMA_PATTERN_SOURCE_BYTES
+            raise ProtocolError,
+              "MCP tool #{field} pattern exceeded the #{DEFAULT_MAX_SCHEMA_PATTERN_SOURCE_BYTES}-byte limit"
+          end
+          total_bytes += pattern.bytesize
+          if total_bytes > DEFAULT_MAX_SCHEMA_PATTERN_BYTES
+            raise ProtocolError,
+              "MCP tool #{field} patterns exceeded the #{DEFAULT_MAX_SCHEMA_PATTERN_BYTES}-byte total limit"
+          end
+          [container, key, ECMA_REGEXP_RESOLVER.call(pattern)]
+        end
+      rescue JSONSchemer::InvalidEcmaRegexp, RegexpError
+        raise ProtocolError, "MCP tool #{field} contains an invalid pattern"
+      end
+
+      def tool_result(mapped, protocol_result:)
+        media = image_artifacts(protocol_result.content)
+        mapped = default_value(mapped) if mapped.is_a?(Result)
+        value, artifacts = if mapped.is_a?(Tool::Result)
+          [mapped.value, [*mapped.artifacts, *media]]
+        else
+          [mapped, media]
+        end
+        raise ToolError, serialize_value(value) if protocol_result.error?
+
+        Tool::Result.new(value:, artifacts:)
+      end
+
+      def default_value(result)
+        return result.structured_content if result.structured_content
+
+        text = result.content.filter_map { |block| block["text"] if block["type"] == "text" }.join("\n")
+        return text unless text.empty?
+
+        visible = result.content.reject { |block| block["type"] == "image" }
+        return visible unless visible.empty?
+
+        ImmutableValue.mapping({
+          "images" => result.content.filter_map do |block|
+            next unless block["type"] == "image"
+
+            {
+              "mediaType" => block["mimeType"],
+              "name" => block["name"],
+              "bytes" => strict_base64_bytesize(block["data"])
+            }.compact
+          end
+        }, field: "image result")
+      end
+
+      def image_artifacts(content)
+        images = content.select { |block| block["type"] == "image" }
+        if images.length > @max_images
+          raise ProtocolError, "MCP image content exceeds the #{@max_images}-image limit"
+        end
+
+        total_bytes = 0
+        images.map do |block|
+          data = block["data"]
+          media_type = block["mimeType"]
+          unless data.is_a?(String) && media_type.is_a?(String) && media_type.start_with?("image/")
+            raise ProtocolError, "MCP image content is invalid"
+          end
+          decoded_bytes = strict_base64_bytesize(data)
+          if decoded_bytes > @max_image_bytes
+            raise ProtocolError, "MCP image content exceeds the #{@max_image_bytes}-byte per-image limit"
+          end
+          total_bytes += decoded_bytes
+          if total_bytes > @max_total_image_bytes
+            raise ProtocolError, "MCP image content exceeds the #{@max_total_image_bytes}-byte total limit"
+          end
+          Artifact.new(
+            data: Base64.strict_decode64(data),
+            media_type:,
+            name: block["name"]
+          )
+        rescue ArgumentError
+          raise ProtocolError, "MCP image content data must use strict base64"
+        end
+      end
+
+      def strict_base64_bytesize(data)
+        raise ArgumentError unless data.bytesize % 4 == 0
+        raise ArgumentError unless /\A(?:[A-Za-z0-9+\/]{4})*(?:[A-Za-z0-9+\/]{2}==|[A-Za-z0-9+\/]{3}=)?\z/.match?(data)
+
+        padding = if data.end_with?("==")
+          2
+        elsif data.end_with?("=")
+          1
+        else
+          0
+        end
+        (data.bytesize / 4 * 3) - padding
+      end
+
+      def serialize_value(value)
+        case value
+        when String then value
+        when nil then ""
+        when Hash, Array then JSON.generate(value)
+        else value.to_s
+        end
+      rescue JSON::GeneratorError
+        raise ToolError, "MCP result transformation could not be serialized"
+      end
+
+      def validate_callback(value, name)
+        return unless value
+        raise ArgumentError, "#{name} must respond to call" unless value.respond_to?(:call)
       end
 
       def positive_integer(value, name)

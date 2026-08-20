@@ -65,9 +65,12 @@ module LittleGhost
       before_model after_model after_model_error
       before_tool after_tool
     ].freeze # :nodoc:
-    ExecutedTool = Data.define(:result, :companion_content) do # :nodoc:
+    ExecutedTool = Data.define(:result, :execution_result) do # :nodoc:
       def status = result.status
       def content = result.content
+      def value = execution_result.value
+      def artifacts = execution_result.artifacts
+      def presentation_content = execution_result.presentation_content
     end
 
     extend Support::ClassAttributes
@@ -381,8 +384,8 @@ module LittleGhost
       ##
       # Observes or transforms a completed tool result.
       #
-      # The payload contains the before-tool fields plus +:result+
-      # (Tool::ExecutionResult). A replacement must contain +:result+.
+      # The payload contains the before-tool fields plus the normalized
+      # +:result+. A replacement must contain +:result+.
       # Cancellation is not consumed. A callback may accept <tt>context:</tt>.
       #
       # :singleton-method: after_tool
@@ -605,6 +608,9 @@ module LittleGhost
       raise ArgumentError, "max_turns must be at least 1" if @max_turns < 1
       raise ArgumentError, "max_tool_calls must be at least 1" if @max_tool_calls < 1
       raise ArgumentError, "max_tool_result_tokens must be at least 1" if @max_tool_result_tokens < 1
+      @artifact_lifecycle = if runtime&.respond_to?(:runtime_hooks)
+        runtime.runtime_hooks.find { |hook| hook.is_a?(Runtime::Hooks::Artifacts) }
+      end
       apply_cancellation_decision!(run_callbacks(:after_initialize, self))
     rescue
       @tool_registry&.close
@@ -1013,7 +1019,7 @@ module LittleGhost
             structured_result_repair_due:,
             interjections:
           )
-          messages.reject! { |message| tool_companion_message?(message) }
+          messages.reject! { |message| artifact_presentation_message?(message) }
           messages << response.message
           tool_uses = response.message.content.grep(Content::ToolUse)
           result_tool_uses = structured_result_tool_uses(tool_uses)
@@ -1215,12 +1221,12 @@ module LittleGhost
             content: executed_tools.map(&:result)
           )
           executed_tools.each do |executed_tool|
-            next if executed_tool.companion_content.empty?
+            next if executed_tool.presentation_content.empty?
 
             messages << Message.new(
               role: :user,
-              content: executed_tool.companion_content,
-              metadata: {transient: true, little_ghost_tool_companion: true}
+              content: executed_tool.presentation_content,
+              metadata: {transient: true, little_ghost_artifact_presentation: true}
             )
           end
           context.checkpoint(messages)
@@ -1534,6 +1540,7 @@ module LittleGhost
       end
 
       tool_uses.each { |tool_use| emit(events, :tool_start, tool_use: tool_use) unless code_mode_control_tool?(tool_use) }
+      presentation_budget = Artifacts::PresentationBudget.new
       pairs = tool_uses.map do |tool_use|
         [tool_use, tool_registry.fetch(tool_use.name)]
       rescue ToolError => error
@@ -1572,7 +1579,8 @@ module LittleGhost
               exception: diagnostic_tool_exception(tool, tool:)
             }
           )
-          next ExecutedTool.new(result:, companion_content: [])
+          execution_result = Tool::ExecutionResult.new(content: result.content, status: :error, error: tool)
+          next ExecutedTool.new(result:, execution_result:)
         end
 
         context.check!
@@ -1604,7 +1612,8 @@ module LittleGhost
               exception: diagnostic_tool_exception(rejection, tool:)
             }
           )
-          next ExecutedTool.new(result:, companion_content: [])
+          execution_result = Tool::ExecutionResult.new(content: result.content, status: :error, error: rejection)
+          next ExecutedTool.new(result:, execution_result:)
         end
 
         execution_context = ToolExecution.new(
@@ -1637,6 +1646,15 @@ module LittleGhost
           context: context
         )
         tool_result = replacement_value(after_decision, :result, tool_result)
+        if @artifact_lifecycle
+          tool_result = @artifact_lifecycle.prepare_tool_result(
+            tool_result,
+            tool_use:,
+            run: @run,
+            workspace:,
+            context:
+          )
+        end
         result = build_tool_result(
           tool_use_id: tool_use.id,
           content: tool_result.content,
@@ -1657,7 +1675,8 @@ module LittleGhost
             exception: tool_error && diagnostic_tool_exception(tool_error, tool:)
           }.compact
         )
-        ExecutedTool.new(result:, companion_content: tool_result.companion_content)
+        tool_result = bound_artifact_presentation(tool_result, presentation_budget)
+        ExecutedTool.new(result:, execution_result: tool_result)
       rescue ToolError => error
         result = build_tool_result(tool_use_id: tool_use.id, content: error.message, status: :error)
         finish_instrumentation(
@@ -1673,7 +1692,8 @@ module LittleGhost
             exception: diagnostic_tool_exception(error, tool:)
           }
         )
-        ExecutedTool.new(result:, companion_content: [])
+        execution_result = Tool::ExecutionResult.new(content: result.content, status: :error, error:)
+        ExecutedTool.new(result:, execution_result:)
       rescue => error
         finish_instrumentation(
           tool_handle,
@@ -1705,6 +1725,20 @@ module LittleGhost
           execution.call(tool_use, tool)
         end
       end
+    end
+
+    def bound_artifact_presentation(result, budget)
+      accepted = budget.accept(result.presentation_content)
+      return result if accepted.equal?(result.presentation_content) || accepted == result.presentation_content
+
+      Tool::ExecutionResult.new(
+        value: result.value,
+        content: result.content,
+        status: result.status,
+        error: result.error,
+        artifacts: result.artifacts,
+        presentation_content: accepted
+      )
     end
 
     def invoke_tool(tool_use, tool, context, operation_id:, parent_operation_id:)
@@ -2209,8 +2243,8 @@ module LittleGhost
       value.respond_to?(:role) ? diagnostic_message(value) : value.to_s
     end
 
-    def tool_companion_message?(message)
-      message.metadata[:little_ghost_tool_companion] || message.metadata["little_ghost_tool_companion"]
+    def artifact_presentation_message?(message)
+      message.metadata[:little_ghost_artifact_presentation] || message.metadata["little_ghost_artifact_presentation"]
     end
 
     def diagnostic_tool_exception(error, tool:)

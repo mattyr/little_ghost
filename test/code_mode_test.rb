@@ -1070,6 +1070,26 @@ class CodeModeTest < Minitest::Test
     agent&.close
   end
 
+  def test_brokered_tools_preserve_machine_values_and_artifacts
+    engine = AgentEngine.new
+    artifact = LittleGhost::Artifact.deferred(
+      reference: "record:1",
+      media_type: "application/json"
+    )
+    nested = LittleGhost::Tool.define(name: "nested", description: "Nested") do |_input|
+      LittleGhost::Tool::Result.new(value: {"items" => [1, 2]}, artifacts: [artifact])
+    end
+    agent_class = Class.new(LittleGhost::Agent) { code_mode(engine:) }
+    agent = agent_class.new(model: ScriptedModel.new, tools: [nested])
+
+    result = agent.code_mode_runtime.execute(source: "1", context: LittleGhost::RunContext.new)
+
+    assert_equal({"items" => [1, 2]}, engine.sessions.first.results.first.value)
+    assert_equal [artifact], result.artifacts
+  ensure
+    agent&.close
+  end
+
   def test_brokered_tool_cannot_reenter_code_mode_close
     engine = AgentEngine.new
     nested = Class.new(LittleGhost::Tool) do
@@ -1321,7 +1341,7 @@ class CodeModeTest < Minitest::Test
     agent = agent_class.new(model:, tools: [nested])
 
     assert_equal "done", agent.call("go").text
-    assert_includes engine.sessions.first.results.last.value, LittleGhost::Agent::ToolLoop::WARNING
+    assert_equal "same", engine.sessions.first.results.last.value
   ensure
     agent&.close
   end

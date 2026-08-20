@@ -85,7 +85,7 @@ class OptionalIntegrationsTest < Minitest::Test
       require "little_ghost/mcp"
 
       class RemoteTools < LittleGhost::MCP::Toolset
-        endpoint "https://mcp.example/rpc"
+        connection url: "https://mcp.example/rpc"
       end
 
       class RemoteAgent < LittleGhost::Agent

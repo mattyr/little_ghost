@@ -485,6 +485,26 @@ module LittleGhost
       hook_class
     end
 
+    # Enables the unified Artifact lifecycle. Input attachments and Tool
+    # artifacts use the conventional +:artifacts+ Workspace path; oversized
+    # Tool values are stored there automatically. An optional resolver turns
+    # deferred Artifact references into bytes for the current Run.
+    #
+    # :call-seq:
+    #   artifacts() -> Class<Runtime::Hook>
+    #   artifacts { |artifact, run:| bytes_or_artifact_or_nil } -> Class<Runtime::Hook>
+    def artifacts(&resolver)
+      hook = Runtime::Hooks::Artifacts.configured(resolver:)
+      ensure_configuration_open!
+      change_configuration do
+        configuration_values[:runtime_hooks].reject! do |configured|
+          configured <= Runtime::Hooks::Artifacts
+        end
+        configuration_values[:runtime_hooks] << hook
+      end
+      hook
+    end
+
     # :call-seq:
     #   session_actor() -> callable, nil
     #   session_actor(callable) -> callable

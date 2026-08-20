@@ -2,175 +2,193 @@
 
 module LittleGhost
   module MCP
-    # Toolset gives an Agent a reusable MCP server declaration. Subclass it once,
-    # then add that class through the ordinary Agent tools DSL.
-    #
-    #   class HelpCenterTools < LittleGhost::MCP::Toolset
-    #     endpoint "https://mcp.example/rpc"
-    #     headers { {"Authorization" => "Bearer #{ENV.fetch("MCP_ACCESS_TOKEN")}"} }
-    #     prefix "help_center"
-    #     expose "search", "fetch"
-    #   end
-    #
-    #   class CustomerSupportAgent < LittleGhost::Agent
-    #     tools HelpCenterTools
-    #   end
-    #
-    # The declaration is shared, but its connection state is not. LittleGhost
-    # creates a new HTTPTransport and Client whenever it materializes an Agent's
-    # tools, so negotiated MCP sessions are not shared between Agent runs.
-    #
-    # A +headers+ block is evaluated at that point. A block with one parameter
-    # receives the current Run, which lets an application select credentials for
-    # the authenticated caller. The MCP server remains responsible for checking
-    # what those credentials may access. +expose+ limits which advertised tools
-    # are available to the Agent; it does not grant access at the server.
-    #
-    # Use HTTPTransport and Client directly when an application needs a custom
-    # transport or definition filter.
+    # Declares one reusable MCP server as an ordinary Agent tool provider.
+    # Connections are resolved for each Tool::Binding. One mapping hook may omit
+    # or configure generated Tool classes, and one may map immutable results.
     class Toolset
       extend Support::ClassAttributes
 
-      TRANSPORT_OPTIONS = %i[timeout signer allow_insecure_http max_response_bytes].freeze # :nodoc:
+      CONNECTION_OPTIONS = %i[url headers timeout signer allow_insecure_http max_response_bytes].freeze # :nodoc:
       UNSET = Object.new.freeze # :nodoc:
 
-      class_attribute :endpoint_value
-      class_attribute :headers_value, default: {}.freeze
-      class_attribute :headers_endpoint_value
-      class_attribute :prefix_value
-      class_attribute :exposed_tool_names_value
-      class_attribute :transport_options_value, default: {}.freeze
+      class CallbackFailure < Error # :nodoc:
+        attr_reader :original
+
+        def initialize(original)
+          @original = original
+          super(original.message)
+        end
+      end
+
+      class_attribute :connection_value
+      class_attribute :tool_mapping_value
+      class_attribute :result_mapping_value
+      class_attribute :optional_value, default: false
+      class_attribute :error_callback_value
 
       class << self
+        # Declares a static connection Hash or a resolver called with the
+        # current Tool::Binding. The Hash requires +url+ and may include
+        # +headers+, +timeout+, +signer+, +allow_insecure_http+, and
+        # +max_response_bytes+.
+        #
         # :call-seq:
-        #   endpoint() -> String, nil
-        #   endpoint(url, **transport_options) -> String
-        #
-        # Sets the MCP Streamable HTTP URL. Supported transport options are
-        # +timeout+, +signer+, +allow_insecure_http+, and +max_response_bytes+.
-        def endpoint(*values, **options)
-          return endpoint_value if values.empty? && options.empty?
-
-          raise ArgumentError, "endpoint requires one URL" unless values.length == 1
-
-          unknown = options.keys - TRANSPORT_OPTIONS
-          raise ArgumentError, "unknown keyword: #{unknown.first.inspect}" unless unknown.empty?
-
-          self.endpoint_value = String(values.fetch(0)).freeze
-          self.transport_options_value = options.dup.freeze
-          endpoint_value
-        end
-
-        # :call-seq:
-        #   headers() -> Hash, Proc
-        #   headers(values) -> Hash
-        #   headers { |run| ... } -> Proc
-        #
-        # Sets static request headers or a resolver evaluated for each Agent.
-        # A resolver with one parameter receives the current Run.
-        #
-        # Declare +endpoint+ before +headers+. Toolset settings are inherited;
-        # when a subclass changes its endpoint, it must also redeclare headers.
-        # This prevents credentials configured for one server from being sent to
-        # another.
-        def headers(value = UNSET, &resolver)
-          return headers_value if value.equal?(UNSET) && !resolver
-          raise ArgumentError, "provide headers or a block, not both" unless value.equal?(UNSET) || !resolver
-          raise ConfigurationError, "#{toolset_name} must declare an MCP endpoint before headers" unless endpoint_value
+        #   connection() -> Hash, Proc, nil
+        #   connection(values) -> Hash
+        #   connection { |binding| ... } -> Proc
+        def connection(value = UNSET, &resolver)
+          return connection_value if value.equal?(UNSET) && !resolver
+          raise ArgumentError, "provide a connection or a block, not both" unless value.equal?(UNSET) || !resolver
 
           configured = resolver || value
           unless configured.is_a?(Hash) || configured.respond_to?(:call)
-            raise ArgumentError, "headers must be a hash or callable"
+            raise ArgumentError, "connection must be a hash or callable"
           end
 
-          self.headers_value = configured.is_a?(Hash) ? normalize_headers(configured) : configured
-          self.headers_endpoint_value = endpoint_value
-          headers_value
+          self.connection_value = configured.is_a?(Hash) ? normalize_connection(configured) : configured
         end
 
-        # :call-seq:
-        #   prefix() -> String, nil
-        #   prefix(value) -> String
+        # Maps each generated Tool class. The block receives +definition:+ and
+        # +binding:+ keywords. Return the configured Tool class, or nil to omit
+        # it. Changing Tool#tool_name never changes source-name dispatch.
         #
-        # Adds +value+ to every model-visible MCP tool name.
-        def prefix(*values)
-          return prefix_value if values.empty?
+        # :call-seq:
+        #   map_tool() -> Proc, nil
+        #   map_tool { |tool_class, definition:, binding:| ... } -> Proc
+        def map_tool(&mapping)
+          return tool_mapping_value unless mapping
 
-          raise ArgumentError, "prefix requires one value" unless values.length == 1
-
-          self.prefix_value = String(values.fetch(0)).freeze
+          self.tool_mapping_value = mapping
         end
 
-        # :call-seq:
-        #   expose() -> Array<String>, nil
-        #   expose(*names) -> Array<String>
+        # Maps each immutable MCP::Result. The block receives +call:+ and
+        # +binding:+ keywords and returns any Ruby value or Tool::Result.
         #
-        # Limits this Toolset to the named MCP tools. Without +expose+, every
-        # valid tool advertised by the server is available.
-        def expose(*names)
-          return exposed_tool_names_value if names.empty?
+        # :call-seq:
+        #   map_result() -> Proc, nil
+        #   map_result { |result, call:, binding:| ... } -> Proc
+        def map_result(&mapping)
+          return result_mapping_value unless mapping
 
-          values = names.flatten.map { |name| String(name).freeze }.uniq.freeze
-          raise ArgumentError, "expose requires at least one tool name" if values.empty?
-
-          self.exposed_tool_names_value = values
+          self.result_mapping_value = mapping
         end
 
+        # Makes expected provider and protocol discovery failures produce no
+        # tools. Configuration, cancellation, deadline, and callback failures
+        # still propagate.
+        #
         # :call-seq:
-        #   tools(binding) -> Array<Class<LittleGhost::Tool>>
+        #   optional() -> true or false
+        #   optional(value) -> true or false
+        def optional(value = UNSET)
+          return optional_value if value.equal?(UNSET)
+
+          self.optional_value = !!value
+        end
+
+        # Observes an expected discovery failure caught by +optional true+.
+        # Exceptions raised by this callback propagate.
         #
-        # Returns generated MCP-backed Tool classes. Agent and ToolRegistry call
-        # this provider hook automatically for a Toolset named in the Agent
-        # +tools+ DSL, then ToolRegistry instantiates those classes with +binding+;
-        # applications normally do not call it.
-        #
-        # Raises ConfigurationError when no endpoint is declared, when inherited
-        # headers belong to a different endpoint, or when resolved headers are
-        # not a Hash.
+        # :call-seq:
+        #   on_error() -> Proc, nil
+        #   on_error { |error, binding:| ... } -> Proc
+        def on_error(&callback)
+          return error_callback_value unless callback
+
+          self.error_callback_value = callback
+        end
+
+        # Generates Tool classes for an Agent's current binding.
         def tools(binding)
-          url = endpoint_value
-          raise ConfigurationError, "#{toolset_name} must declare an MCP endpoint" if url.nil? || url.empty?
-
-          allowed = exposed_tool_names_value
-          definition_filter = if allowed
-            ->(definition) { allowed.include?(definition.fetch("name")) }
-          end
-          transport = HTTPTransport.new(
-            url:,
-            headers: resolved_headers(binding.run),
-            **transport_options_value
-          )
-          client = Client.new(
-            transport:,
-            name: toolset_name,
-            prefix: prefix_value,
-            definition_filter:
-          )
+          options = resolved_connection(binding)
           context = binding.run.context if binding.run&.respond_to?(:context)
-          client.tools(context:)
+          mapper = tool_mapping_value
+          result_mapper = result_mapping_value
+          options = connection_with_wrapped_signer(options)
+          Instrumentation.instrument(:mcp_discovery, toolset: toolset_name) do |telemetry|
+            client = Client.new(
+              transport: HTTPTransport.new(**options),
+              name: toolset_name,
+              tool_mapper: mapper && lambda do |tool_class, definition:, binding:|
+                invoke_application_callback do
+                  mapper.call(tool_class, definition:, binding:)
+                end
+              end,
+              result_mapper: result_mapper && lambda do |result, call:, binding:|
+                result_mapper.call(result, call:, binding:)
+              end
+            )
+            discovered = client.tools(context:, binding:)
+            telemetry[:outcome] = :success
+            telemetry[:tool_count] = discovered.length
+            discovered
+          end
+        rescue CallbackFailure => error
+          raise error.original
+        rescue ProviderError, ProtocolError, ToolError => error
+          raise unless optional_value
+
+          error_callback_value&.call(error, binding:)
+          []
         end
 
         private
 
-        def resolved_headers(run)
-          if headers_endpoint_value && headers_endpoint_value != endpoint_value
-            raise ConfigurationError, "#{toolset_name} must redeclare headers after changing its MCP endpoint"
-          end
+        def resolved_connection(binding)
+          configured = connection_value
+          raise ConfigurationError, "#{toolset_name} must declare an MCP connection" unless configured
 
-          value = headers_value
-          if value.respond_to?(:call)
-            parameters = value.is_a?(Proc) ? value.parameters : value.method(:call).parameters
-            value = parameters.empty? ? value.call : value.call(run)
+          value = if configured.respond_to?(:call)
+            invoke_application_callback { configured.call(binding) }
+          else
+            configured
           end
-          raise ConfigurationError, "#{toolset_name} headers must resolve to a hash" unless value.is_a?(Hash)
+          normalize_connection(value)
+        end
 
-          normalize_headers(value)
+        def normalize_connection(value)
+          hash = Hash.try_convert(value)
+          raise ConfigurationError, "#{toolset_name} connection must resolve to a hash" unless hash
+
+          normalized = hash.each_with_object({}) do |(name, child), result|
+            key = name.to_sym
+            raise ConfigurationError, "#{toolset_name} connection contains duplicate #{key}" if result.key?(key)
+
+            result[key] = child
+          end
+          unknown = normalized.keys - CONNECTION_OPTIONS
+          unless unknown.empty?
+            raise ConfigurationError, "#{toolset_name} connection contains unknown option #{unknown.first.inspect}"
+          end
+          url = normalized[:url]
+          raise ConfigurationError, "#{toolset_name} connection must include a URL" if url.nil? || url.to_s.empty?
+
+          normalized[:url] = String(url).freeze
+          normalized[:headers] = normalize_headers(normalized.fetch(:headers, {}))
+          normalized.freeze
+        rescue NoMethodError
+          raise ConfigurationError, "#{toolset_name} connection keys must be strings or symbols"
         end
 
         def normalize_headers(headers)
           headers.each_with_object({}) do |(name, value), normalized|
             normalized[String(name).dup.freeze] = String(value).dup.freeze
           end.freeze
+        end
+
+        def connection_with_wrapped_signer(options)
+          signer = options[:signer]
+          return options unless signer
+
+          options.merge(
+            signer: ->(request) { invoke_application_callback { signer.call(request) } }
+          ).freeze
+        end
+
+        def invoke_application_callback
+          yield
+        rescue ProviderError, ProtocolError, ToolError => error
+          raise CallbackFailure.new(error)
         end
 
         def toolset_name

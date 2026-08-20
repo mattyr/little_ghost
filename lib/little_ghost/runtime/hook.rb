@@ -20,6 +20,11 @@ module LittleGhost
       # lifecycle and close in reverse order.
       def prepare_run(run) = run
 
+      # Prepares a Run after its Workspace and Sandbox have opened, but before
+      # session history or the entrypoint Agent is built. Hooks may safely
+      # store run-scoped files here.
+      def prepare_execution(run) = run
+
       # Transforms an interjection payload before it reaches the agent.
       def prepare_interjection(_run, payload) = payload
 

@@ -4,7 +4,7 @@ module LittleGhost
   module CodeMode
     Call = Data.define(:id, :name, :arguments) # :nodoc:
     CallResult = Data.define(:id, :value, :error) # :nodoc:
-    ProgramResult = Data.define(:output, :value, :status, :error) # :nodoc:
+    ProgramResult = Data.define(:output, :value, :status, :error, :artifacts, :presentation_content) # :nodoc:
 
     # Describes one observation of a code-mode program. Its output contains text
     # produced since the previous observation.
@@ -32,8 +32,15 @@ module LittleGhost
 
       # Creates a program observation with empty output and a successful status
       # by default.
-      def initialize(output: "", value: nil, status: :completed, error: nil)
-        super
+      def initialize(output: "", value: nil, status: :completed, error: nil, artifacts: [], presentation_content: [])
+        super(
+          output:,
+          value:,
+          status:,
+          error:,
+          artifacts: Array(artifacts).dup.freeze,
+          presentation_content: Array(presentation_content).dup.freeze
+        )
       end
 
       # Whether the program completed successfully.
@@ -41,6 +48,11 @@ module LittleGhost
 
       # Whether the program remains active after this observation.
       def still_working? = status == :still_working
+
+      ##
+      # :attr_reader: artifacts
+      # Artifact descriptors produced by brokered Tools since the previous
+      # observation.
     end
   end
 end

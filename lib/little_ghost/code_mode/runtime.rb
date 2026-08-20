@@ -31,7 +31,9 @@ module LittleGhost
         state = state_for(context)
         with_control(state) do
           bind_broker(state.broker, context)
-          session_for(state).execute(source:, catalog: state.broker.catalog, context:, **options)
+          with_delivery(state.broker) do
+            session_for(state).execute(source:, catalog: state.broker.catalog, context:, **options)
+          end
         end
       end
 
@@ -41,7 +43,7 @@ module LittleGhost
 
         with_control(state) do
           bind_broker(state.broker, context)
-          session_for(state).wait(context:, **options)
+          with_delivery(state.broker) { session_for(state).wait(context:, **options) }
         end
       end
 
@@ -51,7 +53,7 @@ module LittleGhost
 
         with_control(state) do
           bind_broker(state.broker, context)
-          session_for(state).stop(context:, **options)
+          with_delivery(state.broker) { session_for(state).stop(context:, **options) }
         end
       end
 
@@ -90,6 +92,22 @@ module LittleGhost
           parent_operation_id: execution&.operation_id,
           parent_trace_context: trace_context
         )
+      end
+
+      def with_delivery(broker)
+        result = yield
+        presentations, artifacts = broker.drain_delivery
+        ProgramResult.new(
+          output: result.output,
+          value: result.value,
+          status: result.status,
+          error: result.error,
+          artifacts: [*result.artifacts, *artifacts],
+          presentation_content: [*result.presentation_content, *presentations]
+        )
+      rescue
+        broker.drain_delivery
+        raise
       end
 
       def state_for(context)
@@ -160,6 +178,8 @@ module LittleGhost
           state.session.tap { state.session = nil }
         end
         close_session(state, session)
+      ensure
+        state.broker.drain_delivery
       end
 
       def close_session(state, session)
@@ -240,12 +260,19 @@ module LittleGhost
       private
 
       def serialize(result)
-        {
+        value = {
           status: result.status,
           output: result.output,
           value: result.value,
           error: result.error
         }.compact
+        Tool::ExecutionResult.new(
+          value:,
+          content: value,
+          status: :success,
+          artifacts: result.artifacts,
+          presentation_content: result.presentation_content
+        )
       end
     end
 
