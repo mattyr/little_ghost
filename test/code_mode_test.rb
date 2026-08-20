@@ -269,6 +269,32 @@ class CodeModeTest < Minitest::Test
     registry&.close
   end
 
+  def test_ruby_dynamic_calls_accept_the_tools_method_prefix
+    calls = []
+    tool = LittleGhost::Tool.define(
+      name: "load_slack_thread_attachment",
+      description: "Load an attachment.",
+      input_schema: {type: "object"}
+    ) do |input|
+      calls << input
+      "loaded"
+    end
+    registry = LittleGhost::ToolRegistry.new([tool])
+    broker = LittleGhost::CodeMode::Broker.new(registry:)
+    session = ruby_session(broker:)
+
+    result = session.execute(
+      source: "tools.call('tools.load_slack_thread_attachment', {file_id: 'F123'})",
+      catalog: broker.catalog
+    )
+
+    assert_equal "loaded", result.value
+    assert_equal [{"file_id" => "F123"}], calls
+  ensure
+    session&.close
+    registry&.close
+  end
+
   def test_ruby_engine_returns_non_ascii_tool_results_across_binary_frames
     template = {type: "result", id: "call-1", value: "—", error: nil}
     value = "—#{"a" * (128 - JSON.generate(template).bytesize)}"
@@ -1086,6 +1112,99 @@ class CodeModeTest < Minitest::Test
 
     assert_equal({"items" => [1, 2]}, engine.sessions.first.results.first.value)
     assert_equal [artifact], result.artifacts
+  ensure
+    agent&.close
+  end
+
+  def test_exec_reports_artifact_references_when_brokered_media_exceeds_the_count_limit
+    engine = AgentEngine.new
+    reference = "workspace://artifacts/image.png"
+    artifact = LittleGhost::Artifact.materialized(
+      reference:,
+      bytes: 1,
+      media_type: "image/png",
+      name: "image.png"
+    )
+    presentation = LittleGhost::Content::Image.new(data: "x", media_type: "image/png", name: "image.png")
+    nested = LittleGhost::Tool.define(name: "nested", description: "Returns an image") { "loaded" }
+    agent_class = Class.new(LittleGhost::Agent) do
+      code_mode(engine:)
+      after_tool do |payload|
+        next payload unless payload.fetch(:tool).tool_name == "nested"
+
+        result = payload.fetch(:result)
+        LittleGhost::Support::Callbacks.replace(
+          payload.merge(
+            result: LittleGhost::Tool::ExecutionResult.new(
+              value: result.value,
+              content: result.content,
+              status: result.status,
+              artifacts: [artifact],
+              presentation_content: [presentation]
+            )
+          )
+        )
+      end
+    end
+    exec = LittleGhost::Content::ToolUse.new(id: "exec-1", name: "exec", input: {"source" => "5"})
+    model = ScriptedModel.new(response([exec], stop_reason: :tool_use), response("done"))
+    agent = agent_class.new(model:, tools: [nested])
+
+    assert_equal "done", agent.call("go").text
+
+    messages = model.requests.last.messages
+    tool_result = messages.flat_map(&:content).find { |block| block.is_a?(LittleGhost::Content::ToolResult) }
+    assert_includes tool_result.content, reference
+    assert_equal 4, messages.flat_map(&:content).count { |block| block.is_a?(LittleGhost::Content::Image) }
+  ensure
+    agent&.close
+  end
+
+  def test_exec_reports_artifact_references_when_brokered_media_exceeds_the_byte_limit
+    engine = AgentEngine.new
+    bytes = LittleGhost::Artifacts::PresentationBudget::MAX_BYTES + 1
+    reference = "workspace://artifacts/large-image.png"
+    artifact = LittleGhost::Artifact.materialized(
+      reference:,
+      bytes:,
+      media_type: "image/png",
+      name: "large-image.png"
+    )
+    presentation = LittleGhost::Content::Image.new(
+      data: "x" * bytes,
+      media_type: "image/png",
+      name: "large-image.png"
+    )
+    nested = LittleGhost::Tool.define(name: "nested", description: "Returns a large image") { "loaded" }
+    agent_class = Class.new(LittleGhost::Agent) do
+      code_mode(engine:)
+      after_tool do |payload|
+        next payload unless payload.fetch(:tool).tool_name == "nested"
+
+        result = payload.fetch(:result)
+        LittleGhost::Support::Callbacks.replace(
+          payload.merge(
+            result: LittleGhost::Tool::ExecutionResult.new(
+              value: result.value,
+              content: result.content,
+              status: result.status,
+              artifacts: [artifact],
+              presentation_content: [presentation]
+            )
+          )
+        )
+      end
+    end
+    exec = LittleGhost::Content::ToolUse.new(id: "exec-1", name: "exec", input: {"source" => "1"})
+    model = ScriptedModel.new(response([exec], stop_reason: :tool_use), response("done"))
+    agent = agent_class.new(model:, tools: [nested])
+
+    assert_equal "done", agent.call("go").text
+
+    messages = model.requests.last.messages
+    tool_result = messages.flat_map(&:content).find { |block| block.is_a?(LittleGhost::Content::ToolResult) }
+    assert_includes tool_result.content, reference
+    refute messages.flat_map(&:content).any? { |block| block.is_a?(LittleGhost::Content::Image) }
   ensure
     agent&.close
   end

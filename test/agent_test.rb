@@ -449,16 +449,26 @@ class AgentTest < Minitest::Test
       LittleGhost::Content::ToolUse.new(id: "call-#{index}", name: tool.tool_name, input: {})
     end
     presentations = {"first" => first, "second" => second}
+    artifacts = presentations.to_h do |name, content|
+      [name, LittleGhost::Artifact.materialized(
+        reference: "workspace://artifacts/#{name}",
+        bytes: content.data.bytesize,
+        media_type: content.media_type,
+        name: content.respond_to?(:name) ? content.name : nil
+      )]
+    end
     agent_class = Class.new(LittleGhost::Agent) do
       after_tool do |payload|
         result = payload.fetch(:result)
+        name = payload.fetch(:tool).tool_name
         LittleGhost::Support::Callbacks.replace(
           payload.merge(
             result: LittleGhost::Tool::ExecutionResult.new(
               content: result.content,
               status: result.status,
               error: result.error,
-              presentation_content: [presentations.fetch(payload.fetch(:tool).tool_name)]
+              artifacts: [artifacts.fetch(name)],
+              presentation_content: [presentations.fetch(name)]
             )
           )
         )
@@ -473,6 +483,9 @@ class AgentTest < Minitest::Test
     assert_equal %i[tool user user], request_messages.map(&:role)
     assert_equal [first], request_messages.fetch(1).content
     assert_equal [second], request_messages.fetch(2).content
+    request_messages.first.content.each do |tool_result|
+      refute_includes tool_result.content, "workspace://artifacts/"
+    end
     assert request_messages.drop(1).all? { |message| message.metadata[:transient] }
     refute result.messages.any? { |message| message.metadata[:little_ghost_artifact_presentation] }
     session = LittleGhost::Session.new(
@@ -481,6 +494,49 @@ class AgentTest < Minitest::Test
     )
     session.replace(messages: request_messages)
     refute session.history.any? { |message| message.metadata[:transient] }
+  ensure
+    agent&.close
+  end
+
+  def test_uses_artifact_references_only_when_native_delivery_exceeds_the_budget
+    reference = "workspace://artifacts/large-image.png"
+    artifact = LittleGhost::Artifact.materialized(
+      reference:,
+      bytes: LittleGhost::Artifacts::PresentationBudget::MAX_BYTES + 1,
+      media_type: "image/png",
+      name: "large-image.png"
+    )
+    presentation = LittleGhost::Content::Image.new(
+      data: "x" * artifact.bytes,
+      media_type: artifact.media_type,
+      name: artifact.name
+    )
+    tool = LittleGhost::Tool.define(name: "image", description: "Returns an image") { "loaded" }
+    use = LittleGhost::Content::ToolUse.new(id: "call-1", name: "image", input: {})
+    agent_class = Class.new(LittleGhost::Agent) do
+      after_tool do |payload|
+        result = payload.fetch(:result)
+        LittleGhost::Support::Callbacks.replace(
+          payload.merge(
+            result: LittleGhost::Tool::ExecutionResult.new(
+              content: result.content,
+              status: result.status,
+              artifacts: [artifact],
+              presentation_content: [presentation]
+            )
+          )
+        )
+      end
+    end
+    model = ScriptedModel.new(response([use], stop_reason: :tool_use), response("done"))
+    agent = agent_class.new(model:, tools: [tool])
+
+    assert_equal "done", agent.call("go").text
+
+    request = model.requests.last
+    result = request.messages.last.content.fetch(0)
+    assert_includes result.content, reference
+    refute request.messages.any? { |message| message.metadata[:little_ghost_artifact_presentation] }
   ensure
     agent&.close
   end

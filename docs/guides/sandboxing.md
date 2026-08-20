@@ -103,9 +103,10 @@ end
 ```
 
 LittleGhost stores input images and documents after the Workspace and Sandbox
-open. The model still receives the image or document in its normal input, plus
-a text block with `workspace://artifacts/...` references. Messages added while
-the Run is active receive the same treatment.
+open. The model receives the image or document in its normal input without a
+second text reference. Filesystem Tools can list `workspace://artifacts` when a
+later operation needs the stored copy. Messages added while the Run is active
+receive the same treatment.
 
 LittleGhost limits the number and size of files stored from each message and
 across the complete Run. Those limits also include Tool artifacts and oversized

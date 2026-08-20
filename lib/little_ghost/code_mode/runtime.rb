@@ -96,9 +96,14 @@ module LittleGhost
 
       def with_delivery(broker)
         result = yield
-        presentations, artifacts = broker.drain_delivery
+        presentations, artifacts, fallback_references = broker.drain_delivery
+        output = result.output
+        unless fallback_references.empty?
+          fallback = "Artifacts:\n#{fallback_references.join("\n")}"
+          output = output.to_s.empty? ? fallback : "#{output}\n\n#{fallback}"
+        end
         ProgramResult.new(
-          output: result.output,
+          output:,
           value: result.value,
           status: result.status,
           error: result.error,
