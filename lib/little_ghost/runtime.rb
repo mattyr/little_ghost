@@ -389,7 +389,7 @@ module LittleGhost
         return "The model returned an invalid tool call before completing the response. Please retry with a narrower request."
       end
 
-      "Agent failed: #{error.class}"
+      "I hit an error while generating a response. Please retry."
     end
 
     def resolve_agent(value) # :nodoc:

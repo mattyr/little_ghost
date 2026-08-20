@@ -212,6 +212,7 @@ module LittleGhost
     class_attribute :description_value
     class_attribute :input_schema_value
     class_attribute :exclusive_value, default: false
+    class_attribute :availability_value
 
     class << self
       # :call-seq:
@@ -264,6 +265,20 @@ module LittleGhost
         return !!exclusive_value if values.empty?
 
         self.exclusive_value = !!values.fetch(0)
+      end
+
+      # Declares whether this Tool is available for a run-scoped +binding+.
+      # With no block, returns the configured predicate or nil. ToolRegistry
+      # omits a Tool whose predicate returns false before constructing it.
+      def available_if(&predicate)
+        return availability_value unless predicate
+
+        self.availability_value = predicate
+      end
+
+      # Returns whether this Tool should be registered for +binding+.
+      def available?(binding)
+        !availability_value || !!availability_value.call(binding)
       end
 
       # Creates an anonymous Tool subclass backed by +implementation+.

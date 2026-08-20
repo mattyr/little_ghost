@@ -126,6 +126,18 @@ Registries close Tool instances that implement `#close`. Tool instance state
 therefore belongs to one Agent run unless your Tool deliberately talks to a
 shared application service.
 
+Use `available_if` when the run itself determines whether an operation exists.
+The predicate receives the same binding and runs before the Tool is constructed:
+
+```ruby
+class UpdateSlackMessageTool < LittleGhost::Tool
+  available_if { |binding| binding.run.invocation.interface == "slack" }
+end
+```
+
+This controls discovery, not authorization. The Tool must still validate the
+trusted identity and permissions it uses when called.
+
 ## Make concurrency and retries deliberate
 
 LittleGhost may run independent Tool calls concurrently. Mark a Tool

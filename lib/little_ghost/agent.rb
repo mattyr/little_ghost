@@ -1218,7 +1218,8 @@ module LittleGhost
           end
           messages << Message.new(
             role: :tool,
-            content: executed_tools.map(&:result)
+            content: executed_tools.map(&:result),
+            metadata: artifact_message_metadata(executed_tools)
           )
           executed_tools.each do |executed_tool|
             next if executed_tool.presentation_content.empty?
@@ -1739,6 +1740,24 @@ module LittleGhost
         artifacts: result.artifacts,
         presentation_content: accepted
       )
+    end
+
+    def artifact_message_metadata(executed_tools)
+      artifacts = executed_tools.flat_map(&:artifacts).select do |artifact|
+        artifact.reference.is_a?(String) && artifact.bytes
+      end
+      return {} if artifacts.empty?
+
+      {
+        "little_ghost_artifacts" => artifacts.map do |artifact|
+          {
+            "reference" => artifact.reference,
+            "name" => artifact.name,
+            "media_type" => artifact.media_type,
+            "bytes" => artifact.bytes
+          }.compact
+        end
+      }
     end
 
     def invoke_tool(tool_use, tool, context, operation_id:, parent_operation_id:)

@@ -31,6 +31,28 @@ class ToolRegistryTest < Minitest::Test
     assert_same run, registry.fetch("dynamic").run
   end
 
+  def test_omits_unavailable_tools_before_construction
+    constructions = 0
+    run = Object.new
+    tool = Class.new(LittleGhost::Tool) do
+      tool_name "conditional"
+      description "Conditional"
+      available_if { |binding| binding.run.equal?(run) }
+
+      define_method(:initialize) do |binding:|
+        constructions += 1
+        super(binding:)
+      end
+    end
+
+    available = LittleGhost::ToolRegistry.new([tool], binding: LittleGhost::Tool::Binding.new(run:))
+    unavailable = LittleGhost::ToolRegistry.new([tool], binding: LittleGhost::Tool::Binding.new(run: Object.new))
+
+    assert_equal ["conditional"], available.names
+    assert_empty unavailable.names
+    assert_equal 1, constructions
+  end
+
   def test_resolves_grouped_tool_classes_with_their_binding
     tool = build_tool("provided")
     provider = Class.new do

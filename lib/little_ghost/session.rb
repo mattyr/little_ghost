@@ -216,8 +216,27 @@ module LittleGhost
         sanitized = message.without_reasoning
         next if sanitized.content.empty? && !message.content.empty?
 
-        sanitized
+        sanitize_artifact_references(sanitized)
       end.freeze
+    end
+
+    def sanitize_artifact_references(message)
+      descriptors = Array(message.metadata["little_ghost_artifacts"])
+      return message if descriptors.empty?
+
+      references = descriptors.filter_map do |descriptor|
+        descriptor["reference"] || descriptor[:reference] if descriptor.respond_to?(:[])
+      end.map(&:to_s).reject(&:empty?)
+      metadata = message.metadata.to_h.reject { |key, _| key.to_s == "little_ghost_artifacts" }
+      content = message.content.map do |block|
+        next block unless block.is_a?(Content::Text)
+
+        text = references.reduce(block.text) do |value, reference|
+          value.gsub(reference, "[artifact unavailable after run]")
+        end
+        Content::Text.new(text:)
+      end
+      Message.new(role: message.role, content:, metadata:)
     end
   end
 end
