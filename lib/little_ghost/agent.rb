@@ -254,8 +254,9 @@ module LittleGhost
 
       # Adds tool or provider classes to the agent.
       #
-      # Every declaration must be a class. A provider class can supply tools
-      # dynamically by implementing <tt>tools(binding)</tt>.
+      # Every declaration must be a class. Pass Tool classes directly, or pass
+      # provider classes that supply tools dynamically through
+      # <tt>tools(binding)</tt>. Multiple declarations are cumulative.
       def tools(*values)
         invalid = values.flatten.compact.find { |value| !value.is_a?(Class) }
         if invalid

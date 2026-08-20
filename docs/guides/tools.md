@@ -35,6 +35,57 @@ the Tool, LittleGhost checks the arguments, calls `#call`, and returns the
 result to the model. That loop can happen several times before the Agent writes
 its final answer.
 
+## Declare one Tool or a collection
+
+An Agent's `tools` declaration accepts one or more classes. Pass a Tool class
+directly for one operation:
+
+```ruby
+class CustomerSupportAgent < LittleGhost::Agent
+  tools HelpCenterLookupTool
+end
+```
+
+Pass several classes in one declaration, or use several declarations. They are
+equivalent and inherited declarations are retained:
+
+```ruby
+class CustomerSupportAgent < LittleGhost::Agent
+  tools HelpCenterLookupTool, OrderStatusTool
+  tools EscalateConversationTool
+end
+```
+
+For a related or dynamically discovered collection, pass a provider class that
+implements `self.tools(binding)`. It may return Tool classes, Tool instances,
+nested arrays, or `nil`; LittleGhost flattens the result and binds every Tool to
+the current run:
+
+```ruby
+class AccountTools
+  def self.tools(binding)
+    [
+      AccountStatusTool,
+      (CloseAccountTool if binding.run.invocation.context["may_close_account"])
+    ]
+  end
+end
+
+class CustomerSupportAgent < LittleGhost::Agent
+  tools HelpCenterLookupTool, AccountTools
+end
+```
+
+Prefer `available_if` on an individual Tool when only that operation is
+conditional. Use a provider when the collection itself owns discovery,
+construction, or shared integration policy.
+
+LittleGhost does not enforce class names. A useful application convention is
+to end one model-callable operation with `Tool` and a provider of multiple
+operations with `Tools`—for example, `OrderStatusTool` and `AccountTools`.
+The suffix makes `tools AccountTools` readable without introducing a framework
+base class or hiding ordinary Ruby composition.
+
 ## Check permission in Ruby
 
 A schema answers “Is this input shaped correctly?” It does not answer “May this
