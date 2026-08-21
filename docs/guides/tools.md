@@ -220,11 +220,16 @@ class UpdateDraftTool < LittleGhost::Tool
 end
 ```
 
-With an active Fiber scheduler, concurrent Tool calls may run as interleaved
-fibers on one thread. A Tool that performs blocking work must offload it or the
-application must select the `:thread` concurrency backend. `exclusive true`
-prevents overlap with another exclusive Tool; it does not move the Tool to a
-worker thread.
+When LittleGhost selects the fiber backend, concurrent Tool calls can run as
+fibers on one thread. If a Tool calls a library that blocks that thread, every
+other fiber on it must wait too. Move that call to a worker thread or configure
+LittleGhost to use the `:thread` backend. A custom extension can use its
+scheduler library's supported blocking-operation facility; LittleGhost does
+not expose a public offload API.
+`exclusive true` prevents overlap with another exclusive Tool; it does not
+change where the Tool runs. [Running in
+Production](production.md#use-an-existing-fiber-scheduler) shows the scheduler
+choices and extension contract.
 
 Retries can repeat a Tool call. Prefer read-only operations, idempotency keys,
 or writes that are safe to apply more than once. Do not rely on the prompt to

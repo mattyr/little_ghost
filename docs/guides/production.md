@@ -75,30 +75,37 @@ The controller supplies identity and account access from authenticated applicati
 
 Configure LittleGhost before the first Agent or Assembly call. Once application services start successfully, the configuration is locked so every request sees one stable setup.
 
-## Run with a Fiber scheduler
+## Use an existing Fiber scheduler
 
-LittleGhost uses an active Ruby Fiber scheduler for its structured concurrent
-work. It does not install or control the scheduler. Without one, the same work
-runs on bounded worker threads.
+If your application already runs inside a Ruby Fiber scheduler, LittleGhost
+uses that scheduler for work that can overlap: parallel Tool calls, Workflow
+and Graph branches, subagent turns, background Executions, and nested code-mode
+Tool calls. LittleGhost does not install or run a scheduler. Work started
+outside a scheduled fiber uses worker threads instead.
 
-For example, an application using Async can run independent requests on one
-scheduler thread while network waits allow the other tasks to progress:
+For example, an application using the optional `async` gem can let several
+requests make progress on one thread while each request waits for network I/O.
+Add `gem "async"` to the application's bundle, then start the calls inside an
+Async task:
 
 ```ruby
 require "async"
 
-Async do |task|
-  requests = questions.map do |question|
-    task.async { CustomerSupportAgent.ask(question) }
-  end
+questions = [
+  "How long do refunds take?",
+  "Can I update my delivery address?"
+]
 
-  requests.map(&:wait)
-end
+answers = Async do |task|
+  questions.map do |question|
+    task.async { CustomerSupportAgent.ask(question).response }
+  end.map(&:wait)
+end.wait
 ```
 
-The default `:auto` concurrency backend selects scheduled fibers only from an
-active, nonblocking scheduler fiber. Force worker threads for an application
-whose Tools or extensions perform blocking work:
+The default `:auto` backend selects fibers only when work begins inside a fiber
+managed by the active scheduler. Otherwise, it selects threads. Force threads
+when your Tools or extensions call libraries that block the current thread:
 
 ```ruby
 LittleGhost.configure do |config|
@@ -106,23 +113,28 @@ LittleGhost.configure do |config|
 end
 ```
 
-Set the backend to `:fiber` when every call must begin inside an active
-scheduler. LittleGhost raises `LittleGhost::ConfigurationError` if it cannot
-schedule the work instead of silently changing that requirement.
+Set the backend to `:fiber` when starting work outside a scheduled fiber should
+be an application error. LittleGhost then raises
+`LittleGhost::ConfigurationError` instead of falling back to a thread.
 
-Fiber scheduling improves concurrency while work waits for I/O. It does not
-make CPU-heavy Ruby code run in parallel. LittleGhost keeps opaque provider
-streams, native SDK calls, and process supervision on worker threads when
-prompt cancellation or forceful cleanup needs that boundary. Built-in
-filesystem stores and sandboxes also move blocking filesystem operations away
-from the scheduler thread.
+Fiber scheduling helps while work waits for I/O; it does not make CPU-heavy
+Ruby code run in parallel. Some built-in provider, SDK, filesystem, and process
+operations still use worker threads so a blocking call does not stop the
+scheduler and owned work can be interrupted during cleanup. Fiber mode reduces
+orchestration threads; it does not promise a thread-free Run.
 
-Custom Tools, providers, SessionStores, hooks, and callbacks may run in
-interleaved fibers under `:auto`. They must avoid blocking the scheduler or
-offload that work themselves. They must also remain safe when several threads
-call the same shared object. Ruby's `Thread.current[:key]` storage is local to a
-fiber, while values written with `thread_variable_set` are shared by every
-fiber on that thread.
+Custom Tools, providers, SessionStores, hooks, and callbacks can be entered by
+several threads or by fibers interleaved on one thread. Protect shared mutable
+state, keep lock scope narrow, and do not call application callbacks while
+holding a lock. Use your scheduler library's blocking-operation facility for a
+call that does not cooperate with Ruby's Fiber scheduler. If the extension
+cannot do that, select the `:thread` backend for its Runtime.
+
+Pass request-specific values through the Invocation context or another explicit
+argument. Do not use `thread_variable_set` for request state because every
+fiber on the thread shares those values. `Thread.current[:key]` is fiber-local,
+but LittleGhost does not copy application-defined entries into each worker
+task.
 
 ## Preserve conversation with Sessions
 
@@ -155,7 +167,8 @@ Every Run has a session ID so LittleGhost can checkpoint its progress. If you do
 
 ## Stream or supervise long-running work
 
-`.stream_ask` runs in the caller's execution context and yields `StreamEvent` values as the answer arrives:
+`.stream_ask` runs on the caller's fiber or thread and yields `StreamEvent`
+values as the answer arrives:
 
 ```ruby
 stream = CustomerSupportAgent.stream_ask(question)
@@ -187,12 +200,13 @@ execution.wait(deadline: Time.now + 30)
 execution.run.completed?
 ```
 
-The event block runs on the worker task, which may be a scheduled fiber or a
-worker thread. Keep it quick and safe to interleave with other scheduled work.
-Cancellation, deadlines, and `close` ask the work to stop; they cannot forcibly
-end arbitrary provider or Tool code. They also cannot undo actions that already
-happened. Keep the application's scheduler running until a scheduler-backed
-Execution finishes.
+The event block runs on the Execution's background task. With `:auto`, that is
+a scheduled fiber when `start_execution` is called from a scheduled fiber, and
+a worker thread otherwise. Keep the block quick because it applies backpressure
+to the Run's event stream. Cancellation, deadlines, and `close` ask the work to
+stop; they cannot forcibly end arbitrary provider or Tool code or undo actions
+that already happened. Keep the application's scheduler running until a
+scheduler-backed Execution finishes or closes.
 
 ## Keep Tool permission checks in application code
 
@@ -293,15 +307,16 @@ agent = CustomerSupportAgent.new(runtime: runtime)
 An explicit Runtime has its own independent configuration. It does not replace
 LittleGhost's shared default.
 
-One Runtime can serve independent calls from several threads and interleaved
-fibers. Each call gets its own Run, participants, Tools, and Runtime-created
-Workspace and Sandbox. An Agent or Assembly already bound to an active Run must
-stay with that Run.
+One Runtime can serve independent calls from several threads and fibers. Each
+call gets its own Run, participants, Tools, and Runtime-created Workspace and
+Sandbox. An Agent or Assembly already bound to an active Run must stay with
+that Run.
 
 Within one SessionStore instance, LittleGhost serializes calls sharing a
 Session. Multi-process deployments need coordination from their store. Custom
-stores and other shared extension objects may receive concurrent calls and
-must be safe across both threads and interleaved fibers.
+stores and other shared extension objects may receive concurrent calls. A
+scheduler-aware I/O wait can let another fiber enter the same object on the
+same thread, so protect shared mutable state without relying on thread identity.
 
 Runtime has no shutdown step. Shared services supplied by the application keep their own lifecycle. Shut those services down with the rest of your application. If you installed process-wide instrumentation subscribers, flush or shut down `LittleGhost::Instrumentation` during application shutdown.
 

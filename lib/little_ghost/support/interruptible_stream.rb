@@ -8,9 +8,9 @@ module LittleGhost
     #
     # The producer receives an emitter callable. Ending enumeration early stops
     # and joins the producer; CleanupError is raised if it cannot be stopped
-    # within the fixed shutdown bound. The producer deliberately remains on a
-    # worker thread even when the consumer uses a Fiber scheduler because an
-    # opaque SDK or socket read may require forceful interruption.
+    # within the fixed shutdown bound. The producer remains on a worker thread
+    # even when the consumer uses a Fiber scheduler, allowing cleanup to
+    # interrupt a provider SDK or socket read that remains blocked.
     #
     #   stream = LittleGhost::Support::InterruptibleStream.new(
     #     cancellation_token: token

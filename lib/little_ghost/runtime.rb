@@ -53,10 +53,14 @@ module LittleGhost
   # security boundary for untrusted work.
   #
   # Shared stores, resolvers, hooks, subscribers, providers, and resource
-  # factories may receive calls from several threads or interleaved fibers and
-  # must be safe in both execution contexts. One SessionStore instance
-  # serializes calls for the same Session. A store must provide its own
-  # coordination across processes.
+  # factories may receive concurrent calls. A scheduler-aware I/O wait can let
+  # another fiber enter the same object on the same thread, so extensions must
+  # protect shared mutable state without relying on thread identity. One
+  # SessionStore instance serializes calls for the same Session. A store must
+  # provide its own coordination across processes.
+  #
+  # See {Running in Production}[rdoc-ref:docs/guides/production.md] for
+  # scheduler selection and the shared-extension contract.
   #
   # Runtime has no shutdown operation. Runs close resources created for their
   # request. The application shuts down shared services and process-wide

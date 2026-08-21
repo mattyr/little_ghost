@@ -197,10 +197,18 @@ module LittleGhost
       end
     end
 
-    # Selects how subsequently built runtimes schedule framework concurrency.
-    # +:auto+ uses scheduler-owned fibers when called from a managed nonblocking
-    # fiber and threads otherwise. +:thread+ always uses threads. +:fiber+
-    # requires an active scheduler when work is started.
+    # Selects how subsequently built runtimes start independent work such as
+    # parallel Tool calls and Workflow branches.
+    #
+    # The default, +:auto+, uses scheduler-owned fibers when work starts inside
+    # a fiber managed by the active scheduler, and threads otherwise. +:thread+
+    # always uses threads. +:fiber+ requires an active scheduler-managed fiber
+    # and raises ConfigurationError when work cannot be scheduled. Any other
+    # value raises ArgumentError.
+    #
+    #   LittleGhost.configure do |config|
+    #     config.concurrency_backend = :thread
+    #   end
     #
     # :call-seq:
     #   concurrency_backend() -> :auto, :thread, :fiber

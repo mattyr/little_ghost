@@ -29,9 +29,8 @@ how to choose where each Agent sends its requests.
 
 ## Install the gem
 
-LittleGhost requires Ruby 3.3 or newer. It uses an active Ruby Fiber scheduler
-for structured concurrent work and falls back to bounded worker threads when no
-scheduler is active. Add it to your bundle and provide a provider credential:
+LittleGhost requires Ruby 3.3 or newer. Add it to your bundle and provide a
+provider credential:
 
 ```ruby
 gem "little_ghost"

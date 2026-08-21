@@ -21,18 +21,20 @@ module LittleGhost
     # pass it directly when opening a Session. Calls for the same session wait
     # for one writer, including when separate Ruby processes share the root.
     #
-    # **Warning:** The root contains readable session data and is not encrypted.
-    # Its complete path must be application-controlled: anyone able to read it
-    # can read session data, and anyone able to replace it can alter sessions.
+    # >>>
+    #   <b>Safety note:</b> The root contains readable session data and is not
+    #   encrypted. Its complete path must be application-controlled: anyone able
+    #   to read it can read session data, and anyone able to replace it can alter
+    #   sessions.
     #
     # Session data is stored as ordinary JSON with canonical String keys. A
     # value outside that boundary raises ProtocolError without replacing the
     # previous snapshot. Shared roots require filesystem support for file
-    # locking and atomic rename. From an active scheduler fiber, LittleGhost
-    # performs each complete lock-and-write transaction on a joined blocking
-    # worker so filesystem latency does not stop unrelated fibers. Store calls
-    # do not accept cancellation or deadlines, so a lock wait continues until
-    # the other process releases it.
+    # locking and atomic rename. From an active scheduler fiber, initialization
+    # and each locked read or write run on a worker thread. The calling fiber
+    # waits for the result while unrelated scheduler fibers can continue. Store
+    # calls do not accept cancellation or deadlines, so a cross-process lock
+    # wait continues until the other process releases it.
     class Filesystem < SessionStore
       FORMAT_VERSION = 1 # :nodoc:
       LOCK_RETRY_INTERVAL = 0.01 # :nodoc:

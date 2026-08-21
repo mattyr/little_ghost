@@ -260,11 +260,11 @@ contains model-written code. An engine may request named runtime paths for its
 interpreter libraries. Those paths are visible to the child process, but they
 never become filesystem grants available through Tools.
 
-The session owns every Workspace, Sandbox, child process, worker task, and
+The session owns every Workspace, Sandbox, child process, background task, and
 communication channel it creates. It closes those resources in reverse order.
-LittleGhost may use one registered engine instance for concurrent Agent Runs,
-so the engine must keep each program's mutable state inside its session and be
-safe across threads and interleaved fibers.
+One registered engine can open several sessions concurrently on threads or
+fibers. Keep each program's mutable state inside the returned session, and
+synchronize any state the engine shares across sessions.
 
 A sandboxed engine must use a backend that owns the complete child process tree
 or can prevent child processes. An explicitly unrestricted backend may run an
