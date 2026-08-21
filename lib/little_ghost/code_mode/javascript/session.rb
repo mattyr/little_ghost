@@ -17,10 +17,9 @@ module LittleGhost
       Deadline = Struct.new(:task, :cancelled, :expiring, :finished, :error)
 
       def initialize(broker:, client:, sandbox: nil, workspace: nil, max_concurrency: 8,
-        wall_seconds: 3_600, observation_seconds: OBSERVATION_SECONDS, cleanup_timeout: CLEANUP_TIMEOUT,
-        task_runner: nil)
+        wall_seconds: 3_600, observation_seconds: OBSERVATION_SECONDS, cleanup_timeout: CLEANUP_TIMEOUT)
         @broker = broker
-        @task_runner = task_runner || broker.task_runner
+        @task_runner = broker.task_runner
         @client = client
         @sandbox = sandbox
         @workspace = workspace
@@ -132,7 +131,7 @@ module LittleGhost
           @frames[program_id] = javascript_catalog
           @current_program_id = program_id
         end
-        ensure_worker
+        ensure_worker if @task_runner.backend != :thread && Fiber.current_scheduler
         @client.start_program(
           owner: self, dispatcher: self, source:, tools: javascript_catalog.host_definitions, program_id:
         )
@@ -199,6 +198,7 @@ module LittleGhost
         @mutex.synchronize do
           raise LittleGhost::ToolError, "Code-mode session is closed" if @closed
 
+          ensure_worker
           register_dispatch(batch)
           @queue.push(ToolBatch.new(calls: batch), true)
         end
@@ -453,26 +453,24 @@ module LittleGhost
       def start_deadline(program_id)
         deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + @wall_seconds
         state = Deadline.new(nil, false, false, false, nil)
-        @deadline_mutex.synchronize { @deadlines[program_id] = state }
-        task = @task_runner.spawn do
-          expired = @deadline_mutex.synchronize do
-            loop do
-              break false if state.cancelled
+        @deadline_mutex.synchronize do
+          @deadlines[program_id] = state
+          state.task = @task_runner.spawn do
+            expired = @deadline_mutex.synchronize do
+              loop do
+                break false if state.cancelled
 
-              remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
-              break true unless remaining.positive?
+                remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+                break true unless remaining.positive?
 
-              @deadline_condition.wait(@deadline_mutex, remaining)
+                @deadline_condition.wait(@deadline_mutex, remaining)
+              end
             end
+            expire_program(program_id, state) if expired
+          rescue => error
+            finish_deadline(program_id, state, error)
           end
-          expire_program(program_id, state) if expired
-        rescue => error
-          finish_deadline(program_id, state, error)
         end
-        @deadline_mutex.synchronize { state.task = task }
-      rescue
-        @deadline_mutex.synchronize { @deadlines.delete(program_id) if @deadlines[program_id].equal?(state) }
-        raise
       end
 
       def expire_program(program_id, state)

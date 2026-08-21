@@ -216,11 +216,7 @@ module LittleGhost
         @max_total_image_bytes = DEFAULT_MAX_TOTAL_IMAGE_BYTES
         @request_id = 0
         @mutex = Mutex.new
-        @transport_condition = ConditionVariable.new
-        @transport_busy = false
         @initialization_mutex = Mutex.new
-        @initialization_condition = ConditionVariable.new
-        @initializing = false
         @definitions_mutex = Mutex.new
         @definitions_by_name = {}
         @initialized = false
@@ -278,30 +274,8 @@ module LittleGhost
       private
 
       def ensure_initialized(context:)
-        owns_initialization = false
-        loop do
-          initialize = @initialization_mutex.synchronize do
-            return if @initialized
-            if @initializing
-              @initialization_condition.wait(@initialization_mutex, 0.01)
-              false
-            else
-              @initializing = true
-              owns_initialization = true
-            end
-          end
-          break if initialize
-
-          context&.check!
-        end
-        initialize_protocol(context:)
-        @initialization_mutex.synchronize { @initialized = true }
-      ensure
-        if owns_initialization
-          @initialization_mutex.synchronize do
-            @initializing = false
-            @initialization_condition.broadcast
-          end
+        @initialization_mutex.synchronize do
+          initialize_protocol(context:) unless @initialized
         end
       end
 
@@ -325,15 +299,18 @@ module LittleGhost
         end
 
         notify("notifications/initialized", context:)
+        @initialized = true
       end
 
       def request(method, params = {}, context: nil)
         context&.check!
-        expected_id = acquire_transport(context:)
-        response = @transport.send(
-          {jsonrpc: "2.0", id: expected_id, method: method, params: params},
-          context:
-        )
+        expected_id, response = @mutex.synchronize do
+          @request_id += 1
+          [@request_id, @transport.send(
+            {jsonrpc: "2.0", id: @request_id, method: method, params: params},
+            context:
+          )]
+        end
         context&.check!
         raise ProtocolError, "MCP response must be an object" unless response.is_a?(Hash)
         raise ProtocolError, "MCP response must use JSON-RPC 2.0" unless response["jsonrpc"] == "2.0"
@@ -359,37 +336,6 @@ module LittleGhost
         raise ProtocolError, "MCP response did not include a result object" unless result.is_a?(Hash)
 
         result
-      ensure
-        release_transport if expected_id
-      end
-
-      def acquire_transport(context:)
-        loop do
-          request_id = @mutex.synchronize do
-            if @transport_busy
-              if @transport_owner.equal?(Fiber.current)
-                raise ProtocolError, "MCP transport cannot be called reentrantly"
-              end
-              @transport_condition.wait(@mutex, 0.01)
-              nil
-            else
-              @transport_busy = true
-              @transport_owner = Fiber.current
-              @request_id += 1
-            end
-          end
-          return request_id if request_id
-
-          context&.check!
-        end
-      end
-
-      def release_transport
-        @mutex.synchronize do
-          @transport_busy = false
-          @transport_owner = nil
-          @transport_condition.broadcast
-        end
       end
 
       def notify(method, params = {}, context: nil)

@@ -31,9 +31,11 @@ module LittleGhost
     # value outside that boundary raises ProtocolError without replacing the
     # previous snapshot. Shared roots require filesystem support for file
     # locking and atomic rename. Lock contention uses scheduler-aware polling;
-    # durable transactions use a small, lazily created blocking pool. Store
-    # calls do not accept cancellation or deadlines, so a cross-process lock
-    # wait continues until the other process releases it.
+    # durable transactions use LittleGhost's lazily created blocking pool. Set
+    # LittleGhost.blocking_pool_capacity before the pool starts when measured
+    # contention requires more than its two default workers. Store calls do not
+    # accept cancellation or deadlines, so a cross-process lock wait continues
+    # until the other process releases it.
     class Filesystem < SessionStore
       FORMAT_VERSION = 1 # :nodoc:
       LOCK_RETRY_INTERVAL = 0.01 # :nodoc:
@@ -144,7 +146,7 @@ module LittleGhost
           loop do
             if lock.flock(File::LOCK_EX | File::LOCK_NB)
               begin
-                accepted, value = Support::BlockingOperation.try_call(lane: :filesystem) { yield }
+                accepted, value = Support::BlockingOperation.try_call { yield }
                 return value if accepted
               ensure
                 lock.flock(File::LOCK_UN)

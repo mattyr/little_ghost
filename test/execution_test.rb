@@ -28,6 +28,10 @@ class ExecutionTest < Minitest::Test
       @close_count += 1
     end
 
+    def close
+      @close_count += 1
+    end
+
     def prepare_interjection(payload)
       payload.merge(message: "prepared: #{payload.fetch(:message)}")
     end
@@ -79,6 +83,18 @@ class ExecutionTest < Minitest::Test
     assert_instance_of LittleGhost::Execution, execution
     assert_equal payload, received_payloads.pop
     assert_same run, execution.wait(deadline: Time.now + 1)
+  end
+
+  def test_start_closes_the_run_when_the_configured_fiber_backend_has_no_scheduler
+    run = ControlledRun.new
+    runner = LittleGhost::Support::TaskRunner.new(backend: :fiber)
+    run.runtime = Data.define(:task_runner).new(runner)
+
+    assert_raises(LittleGhost::ConfigurationError) do
+      LittleGhost::Execution.start(run)
+    end
+
+    assert_equal 1, run.close_count
   end
 
   def test_wait_re_raises_event_consumer_failures
@@ -163,7 +179,6 @@ class ExecutionTest < Minitest::Test
           observed = [
             Thread.current.object_id,
             Fiber.current.object_id,
-            LittleGhost::Support::Task.current.backend,
             LittleGhost::ExecutionState[:request_id]
           ]
         end
@@ -172,8 +187,7 @@ class ExecutionTest < Minitest::Test
       assert_same run, execution.wait(deadline: Time.now + 1)
       assert_equal calling_thread, observed.fetch(0)
       refute_equal calling_fiber, observed.fetch(1)
-      assert_equal :fiber, observed.fetch(2)
-      assert_equal "request-1", observed.fetch(3)
+      assert_equal "request-1", observed.fetch(2)
     end.wait
   end
 

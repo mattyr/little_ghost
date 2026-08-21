@@ -24,7 +24,8 @@ module LittleGhost
     attr_reader :run
 
     class << self
-      # Starts +run+ immediately and returns its supervising Execution.
+      # Starts +run+ immediately and returns its supervising Execution. If the
+      # background task cannot start, this method closes +run+ before raising.
       #
       # The optional block receives each StreamEvent on the background task. It
       # may run on a scheduled fiber or worker thread, according to the Runtime's
@@ -45,12 +46,10 @@ module LittleGhost
       @run = run
       @event_consumer = event_consumer
       @state = :pending
-      @error = nil
       @mutex = Mutex.new
       @condition = ConditionVariable.new
       @active_interjections = 0
       @closing = false
-      @execution_state = ExecutionState.capture
       @task_runner = run.runtime.task_runner
     end
 
@@ -61,7 +60,7 @@ module LittleGhost
 
     # Returns an event-delivery or cleanup exception raised by the worker.
     def error
-      @mutex.synchronize { @error }
+      @mutex.synchronize { @worker }&.error
     end
 
     # Indicates that the worker or an interjection call is still active.
@@ -110,7 +109,7 @@ module LittleGhost
     def wait(deadline: nil)
       worker = wait_until_finished(deadline:)
       worker.wait
-      caught = error
+      caught = worker.error
       raise caught if caught
 
       run
@@ -137,20 +136,17 @@ module LittleGhost
       self
     rescue
       @mutex.synchronize do
-        @state = :pending
+        @state = :finished
         @condition.broadcast
       end
+      run.close
       raise
     end
 
     private
 
     def execute
-      ExecutionState.with(@execution_state) do
-        run.each { |event| @event_consumer&.call(event) }
-      end
-    rescue => caught
-      @mutex.synchronize { @error = caught }
+      run.each { |event| @event_consumer&.call(event) }
     ensure
       @mutex.synchronize do
         @state = :finished

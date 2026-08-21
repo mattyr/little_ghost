@@ -67,34 +67,6 @@ class HTTPClientTest < Minitest::Test
     server&.close
   end
 
-  def test_bounded_request_cancellation_interrupts_a_stalled_read
-    token = LittleGhost::Support::CancellationToken.new
-    server = TCPServer.new("127.0.0.1", 0)
-    transport = LittleGhost::Support::HTTPClient.new(open_timeout: 1, read_timeout: 60)
-    runner = Thread.new do
-      transport.request(
-        uri: URI("http://127.0.0.1:#{server.local_address.ip_port}/models"),
-        allow_insecure_http: true,
-        cancellation_token: token
-      )
-    rescue => error
-      error
-    end
-    runner.report_on_exception = false
-    socket = server.accept
-
-    token.cancel
-
-    assert runner.join(1), "stalled bounded HTTP request did not stop after cancellation"
-    assert_instance_of LittleGhost::CancelledError, runner.value
-  ensure
-    token&.cancel
-    runner&.kill
-    runner&.join
-    socket&.close
-    server&.close
-  end
-
   def test_wraps_transient_network_and_protocol_failures_as_retryable_http_errors
     errors = [
       Net::WriteTimeout.new("write timed out"),

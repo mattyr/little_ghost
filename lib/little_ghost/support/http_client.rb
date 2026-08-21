@@ -83,20 +83,15 @@ module LittleGhost
       def request(uri:, method: :get, headers: {}, body: nil, allow_insecure_http: false,
         cancellation_token: nil, deadline: nil)
         response_body = +""
-        cancellation_token ||= Support::CancellationToken.new
-        deadline ||= Time.now + @read_timeout
-        stream = Support::InterruptibleStream.new(cancellation_token:, deadline:) do |emit|
-          each_chunk(
-            uri:,
-            method:,
-            headers:,
-            body:,
-            cancellation_token:,
-            deadline:,
-            allow_insecure_http:
-          ) { |chunk| emit.call(chunk) }
-        end
-        stream.each { |chunk| response_body << chunk }
+        each_chunk(
+          uri:,
+          method:,
+          headers:,
+          body:,
+          cancellation_token:,
+          deadline: deadline || Time.now + @read_timeout,
+          allow_insecure_http:
+        ) { |chunk| response_body << chunk }
         response_body
       end
 

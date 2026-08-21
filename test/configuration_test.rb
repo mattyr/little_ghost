@@ -93,7 +93,8 @@ class ConfigurationTest < Minitest::Test
       configuration = LittleGhost::Configuration.new(root:)
       configuration.define_singleton_method(:load_file!) do |root: nil|
         task = LittleGhost::Support::TaskRunner.new(backend: :fiber).spawn { runtime }
-        task.value(deadline: Time.now + 1)
+        task.wait(deadline: Time.now + 1)
+        raise task.error if task.error
         super(root:)
       end
 

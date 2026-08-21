@@ -4,19 +4,18 @@ require "async"
 require "test_helper"
 
 class BlockingOperationTest < Minitest::Test
-  def test_offloads_from_a_scheduled_fiber_and_propagates_execution_state
-    result = nil
+  def test_offloads_from_a_scheduled_fiber
+    operation_thread = nil
+    scheduler_thread = nil
 
     Async do
       scheduler_thread = Thread.current
-      LittleGhost::ExecutionState.with(blocking_operation_test: "present") do
-        result = LittleGhost::Support::BlockingOperation.call do
-          [Thread.current.equal?(scheduler_thread), LittleGhost::ExecutionState[:blocking_operation_test]]
-        end
+      LittleGhost::Support::BlockingOperation.call do
+        operation_thread = Thread.current
       end
     end
 
-    assert_equal [false, "present"], result
+    refute_same scheduler_thread, operation_thread
   end
 
   def test_runs_inline_without_a_current_scheduler
@@ -40,13 +39,67 @@ class BlockingOperationTest < Minitest::Test
           end
         end
       end
-      2.times { entered.pop }
+      LittleGhost.blocking_pool_capacity.times { entered.pop }
       50.times { release << true }
     end.wait
 
-    assert_equal 2, 50.times.map { workers.pop }.uniq.length
+    assert_equal LittleGhost.blocking_pool_capacity, 50.times.map { workers.pop }.uniq.length
   ensure
     50.times { release&.push(true) }
+  end
+
+  def test_global_capacity_can_be_set_before_the_pool_starts
+    reader, writer = IO.pipe
+    pid = fork do
+      reader.close
+      LittleGhost.blocking_pool_capacity = 3
+      Marshal.dump(LittleGhost.blocking_pool_capacity, writer)
+      writer.close
+      exit! 0
+    end
+    writer.close
+
+    assert_equal 3, Marshal.load(reader)
+    _pid, status = Process.waitpid2(pid)
+    assert_predicate status, :success?
+  ensure
+    reader&.close
+    writer&.close unless writer&.closed?
+  end
+
+  def test_global_capacity_rejects_invalid_values
+    error = assert_raises(ArgumentError) { LittleGhost.blocking_pool_capacity = 0 }
+
+    assert_equal "blocking_pool_capacity must be a positive integer", error.message
+    assert_raises(ArgumentError) { LittleGhost.blocking_pool_capacity = 2.9 }
+  end
+
+  def test_global_capacity_cannot_change_after_the_pool_starts
+    reader, writer = IO.pipe
+    pid = fork do
+      reader.close
+      Async { LittleGhost::Support::BlockingOperation.call { nil } }.wait
+      error = begin
+        LittleGhost.blocking_pool_capacity = 3
+        nil
+      rescue => caught
+        caught
+      end
+      Marshal.dump([error.class.name, error.message], writer)
+      writer.close
+      exit! 0
+    end
+    writer.close
+
+    assert_equal [
+      "LittleGhost::ConfigurationError",
+      "blocking_pool_capacity cannot change after the blocking pool starts"
+    ], Marshal.load(reader)
+    _pid, status = Process.waitpid2(pid)
+    assert_predicate status, :success?
+  ensure
+    reader&.close
+    writer&.close unless writer&.closed?
   end
 
   def test_propagates_worker_errors
@@ -61,55 +114,18 @@ class BlockingOperationTest < Minitest::Test
     assert_equal "bad operation", error.message
   end
 
-  def test_worker_creation_failure_does_not_leave_the_operation_queued
-    reader, writer = IO.pipe
-    pid = fork do
-      reader.close
-      first_operation_ran = false
-      creation_attempts = 0
-      original_new = Thread.method(:new)
-
-      Thread.stub(:new, lambda { |*arguments, &block|
-        creation_attempts += 1
-        raise ThreadError, "unavailable" if creation_attempts == 1
-
-        original_new.call(*arguments, &block)
-      }) do
-        Async do
-          assert_raises(ThreadError) do
-            LittleGhost::Support::BlockingOperation.call { first_operation_ran = true }
-          end
-          assert_equal :second, LittleGhost::Support::BlockingOperation.call { :second }
-        end.wait
-      end
-      Marshal.dump(first_operation_ran, writer)
-      writer.close
-      exit! 0
-    end
-    writer.close
-
-    refute Marshal.load(reader)
-    _pid, status = Process.waitpid2(pid)
-    assert_predicate status, :success?
-  ensure
-    reader&.close
-    writer&.close unless writer&.closed?
-  end
-
   def test_cancellation_waits_for_the_submitted_operation
     started = Queue.new
     release = Queue.new
     completed = false
-    cleaned = nil
     waiting_after_stop = false
 
     Async do |task|
       child = task.async do
-        LittleGhost::Support::BlockingOperation.call(on_interruption: ->(value) { cleaned = value }) do
+        LittleGhost::Support::BlockingOperation.call do
           started << true
           release.pop
           completed = true
-          :completed
         end
       end
       started.pop
@@ -122,7 +138,6 @@ class BlockingOperationTest < Minitest::Test
 
     assert waiting_after_stop
     assert completed
-    assert_equal :completed, cleaned
   ensure
     release&.push(true)
   end

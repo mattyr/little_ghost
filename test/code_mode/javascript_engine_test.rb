@@ -178,7 +178,7 @@ class CodeModeEngineTest < Minitest::Test
   def test_dispatches_javascript_tools_on_scheduler_tasks
     observations = []
     broker = Broker.new do |_name, arguments, id|
-      observations << [Thread.current.object_id, Fiber.current.object_id, LittleGhost::Support::Task.current.backend]
+      observations << [Thread.current.object_id, Fiber.current.object_id]
       Result.new(id:, value: arguments.fetch("value"), error: nil)
     end
     session = open_session(broker)
@@ -192,7 +192,6 @@ class CodeModeEngineTest < Minitest::Test
       assert_equal 1, observations.length
       assert_equal calling_thread, observations.first.fetch(0)
       refute_equal calling_fiber, observations.first.fetch(1)
-      assert_equal :fiber, observations.first.fetch(2)
       session.close
     end.wait
   end
@@ -207,7 +206,7 @@ class CodeModeEngineTest < Minitest::Test
       deadline = session.instance_variable_get(:@deadlines).fetch(program_id)
 
       assert_predicate result, :still_working?
-      assert_equal :fiber, deadline.task.backend
+      assert_predicate deadline.task, :alive?
       session.stop
       session.close
     end.wait

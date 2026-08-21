@@ -109,6 +109,19 @@ require_relative "little_ghost/runtime"
 # independent configuration for one execution context.
 module LittleGhost
   class << self
+    # Returns the maximum number of process-wide workers used for blocking
+    # Filesystem SessionStore transactions and certificate generation. Workers
+    # are created lazily. The default is 2.
+    def blocking_pool_capacity
+      Support::BlockingOperation.capacity
+    end
+
+    # Sets the process-wide blocking worker capacity before the first blocking
+    # worker starts. +value+ must be a positive Integer.
+    def blocking_pool_capacity=(value)
+      Support::BlockingOperation.capacity = value
+    end
+
     # The configuration active in the current execution context, falling back to
     # the process-wide default.
     def configuration

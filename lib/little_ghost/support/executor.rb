@@ -36,16 +36,10 @@ module LittleGhost
         error_mutex = Mutex.new
         first_worker_error = nil
         worker_count = [@max_concurrency, items.length].min
-        start_mutex = Mutex.new
-        start_condition = ConditionVariable.new
-        start_workers = false
         workers = []
         begin
           worker_count.times do
             workers << @task_runner.spawn do
-              start_mutex.synchronize do
-                start_condition.wait(start_mutex) until start_workers
-              end
               loop do
                 index = begin
                   queue.pop(true)
@@ -68,15 +62,7 @@ module LittleGhost
               completions << :worker_finished
             end
           end
-          start_mutex.synchronize do
-            start_workers = true
-            start_condition.broadcast
-          end
         rescue
-          start_mutex.synchronize do
-            start_workers = true
-            start_condition.broadcast
-          end
           cancellation_token.cancel
           workers.each(&:wait)
           raise

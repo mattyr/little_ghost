@@ -3,78 +3,87 @@
 module LittleGhost
   module Support
     # Runs the small number of framework-owned hot-path operations that cannot
-    # cooperate with a Fiber Scheduler on lazily created, bounded thread pools.
+    # reliably cooperate with a Fiber Scheduler on a lazy, bounded thread pool.
     # Once submitted, a caller waits through completion rather than abandoning
     # or forcibly killing the operation.
     module BlockingOperation # :nodoc:
-      Job = Data.define(:operation, :execution_state, :response)
-      Pool = Struct.new(:name, :limit, :queue, :workers, :in_flight, :condition)
-      POOL_LIMITS = {default: 2, filesystem: 4}.freeze
+      DEFAULT_CAPACITY = 2
+      Job = Data.define(:operation, :response)
+      Pool = Struct.new(:capacity, :queue, :workers, :in_flight, :condition)
       MUTEX = Mutex.new
-      private_constant :Job, :Pool, :POOL_LIMITS, :MUTEX
+      private_constant :Job, :Pool, :MUTEX
 
       module_function
 
-      def call(lane: :default, on_interruption: nil, &operation)
+      def capacity
+        MUTEX.synchronize do
+          reset_after_fork
+          @capacity ||= DEFAULT_CAPACITY
+        end
+      end
+
+      def capacity=(value)
+        unless value.is_a?(Integer) && value.positive?
+          raise ArgumentError, "blocking_pool_capacity must be a positive integer"
+        end
+
+        MUTEX.synchronize do
+          reset_after_fork
+          if @pool && @capacity != value
+            raise ConfigurationError, "blocking_pool_capacity cannot change after the blocking pool starts"
+          end
+
+          @capacity = value
+        end
+      end
+
+      def call(&operation)
         return operation.call unless Fiber.current_scheduler
 
         job = build_job(operation)
-        submit(pool(lane), job, wait: true)
-        receive(job, on_interruption:)
+        submit(pool, job, wait: true)
+        receive(job)
       end
 
-      def try_call(lane:, on_interruption: nil, &operation)
+      def try_call(&operation)
         return [true, operation.call] unless Fiber.current_scheduler
 
         job = build_job(operation)
-        return [false, nil] unless submit(pool(lane), job, wait: false)
+        return [false, nil] unless submit(pool, job, wait: false)
 
-        [true, receive(job, on_interruption:)]
+        [true, receive(job)]
       end
 
       def build_job(operation)
-        Job.new(operation:, execution_state: ExecutionState.capture, response: Queue.new)
+        Job.new(operation:, response: Queue.new)
       end
 
-      def pool(lane)
-        limit = POOL_LIMITS.fetch(lane) { raise ArgumentError, "unknown blocking-operation lane: #{lane.inspect}" }
+      def pool
         MUTEX.synchronize do
-          if @worker_pid != Process.pid
-            @worker_pid = Process.pid
-            @pools = {}
-          end
-          @pools[lane] ||= Pool.new(lane, limit, SizedQueue.new(limit), [], 0, ConditionVariable.new)
+          reset_after_fork
+          @capacity ||= DEFAULT_CAPACITY
+          @pool ||= Pool.new(@capacity, Queue.new, [], 0, ConditionVariable.new)
         end
       end
 
       def submit(pool, job, wait:)
         MUTEX.synchronize do
-          while pool.in_flight >= pool.limit
+          while pool.in_flight >= pool.capacity
             return false unless wait
 
             pool.condition.wait(MUTEX)
           end
+
+          pool.workers.select!(&:alive?)
+          target = [pool.in_flight + 1, pool.capacity].min
+          pool.workers << Thread.new(pool) { |worker_pool| work(worker_pool) } while pool.workers.length < target
           pool.in_flight += 1
           pool.queue.push(job)
-          pool.workers.select!(&:alive?)
-          target = [pool.in_flight, pool.limit].min
-          begin
-            pool.workers << Thread.new(pool) { |worker_pool| work(worker_pool) } while pool.workers.length < target
-          rescue ThreadError
-            if pool.workers.empty?
-              queued_job = pool.queue.pop(true)
-              raise "blocking-operation admission lost its queued job" unless queued_job.equal?(job)
-
-              pool.in_flight -= 1
-              pool.condition.broadcast
-              raise
-            end
-          end
         end
         true
       end
 
-      def receive(job, on_interruption:)
+      def receive(job)
         outcome = nil
         interruption = nil
         until outcome
@@ -85,24 +94,21 @@ module LittleGhost
           end
         end
 
+        raise interruption if interruption
+
         status, value = outcome
-        if interruption
-          on_interruption&.call(value) if status == :ok
-          raise interruption
-        end
         raise value if status == :error
 
         value
       end
 
       def work(pool)
-        Thread.current.name = "little-ghost-blocking-#{pool.name}"
+        Thread.current.name = "little-ghost-blocking"
         Thread.current.report_on_exception = false
         loop do
           job = pool.queue.pop
           begin
-            value = ExecutionState.with(job.execution_state, &job.operation)
-            job.response.push([:ok, value])
+            job.response.push([:ok, job.operation.call])
           rescue Exception => error # rubocop:disable Lint/RescueException
             job.response.push([:error, error])
           ensure
@@ -112,6 +118,13 @@ module LittleGhost
             end
           end
         end
+      end
+
+      def reset_after_fork
+        return if @worker_pid == Process.pid
+
+        @worker_pid = Process.pid
+        @pool = nil
       end
     end
   end

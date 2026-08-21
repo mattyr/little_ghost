@@ -15,9 +15,6 @@ module LittleGhost
         end
       end
 
-      # The resolved +:thread+ or +:fiber+ backend.
-      attr_reader :backend
-
       def initialize(backend:, execution_state:, &work) # :nodoc:
         @backend = backend
         @execution_state = execution_state
@@ -25,7 +22,6 @@ module LittleGhost
         @mutex = Mutex.new
         @condition = ConditionVariable.new
         @finished = false
-        @result = nil
         @error = nil
       end
 
@@ -52,18 +48,8 @@ module LittleGhost
           end
           @worker
         end
-        worker.join if backend == :thread && worker != Thread.current
+        worker.join if @backend == :thread && worker != Thread.current
         self
-      end
-      alias_method :join, :wait
-
-      # Waits, re-raises a worker failure, and returns the worker result.
-      def value(deadline: nil)
-        wait(deadline:)
-        caught, result = @mutex.synchronize { [@error, @result] }
-        raise caught if caught
-
-        result
       end
 
       # Returns the worker failure after completion, or nil.
@@ -76,11 +62,6 @@ module LittleGhost
         @mutex.synchronize { !@finished }
       end
 
-      # Indicates that the task has finished.
-      def finished?
-        !alive?
-      end
-
       # Indicates that the caller is this task's worker execution context.
       def current?
         equal?(self.class.current)
@@ -91,7 +72,7 @@ module LittleGhost
       # returns false for them. The owner remains responsible for a bounded
       # wait after termination.
       def terminate
-        return false if backend == :fiber || current?
+        return false if @backend == :fiber || current?
 
         worker = @mutex.synchronize { @worker unless @finished }
         return false unless worker
@@ -106,10 +87,9 @@ module LittleGhost
       end
 
       def call # :nodoc:
-        result = ExecutionState.with(@execution_state) do
+        ExecutionState.with(@execution_state) do
           ExecutionState.with(CURRENT_KEY => self) { @work.call }
         end
-        @mutex.synchronize { @result = result }
       rescue => caught
         @mutex.synchronize { @error = caught }
       ensure

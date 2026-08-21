@@ -112,12 +112,11 @@ class ExecutorTest < Minitest::Test
           condition.broadcast
           condition.wait(mutex) until started == 2
         end
-        [Thread.current.object_id, Fiber.current.object_id, LittleGhost::Support::Task.current.backend]
+        [Thread.current.object_id, Fiber.current.object_id]
       end
 
-      assert observations.all? { |thread_id, _fiber_id, _backend| thread_id == calling_thread }
-      assert observations.all? { |_thread_id, fiber_id, _backend| fiber_id != calling_fiber }
-      assert_equal %i[fiber fiber], observations.map(&:last)
+      assert observations.all? { |thread_id, _fiber_id| thread_id == calling_thread }
+      assert observations.all? { |_thread_id, fiber_id| fiber_id != calling_fiber }
       assert_equal 2, observations.map { |observation| observation.fetch(1) }.uniq.length
     end.wait
   end
@@ -128,11 +127,10 @@ class ExecutorTest < Minitest::Test
       calling_thread = Thread.current.object_id
       runner = LittleGhost::Support::TaskRunner.new(backend: :thread)
       observations = LittleGhost::Support::Executor.new(task_runner: runner).map([:work]) do
-        [Thread.current.object_id, LittleGhost::Support::Task.current.backend]
+        Thread.current.object_id
       end
 
-      refute_equal calling_thread, observations.first.first
-      assert_equal :thread, observations.first.last
+      refute_equal calling_thread, observations.first
     end.wait
   end
 
@@ -155,9 +153,11 @@ class ExecutorTest < Minitest::Test
     scheduler.define_singleton_method(:close) {}
     Fiber.set_scheduler(scheduler)
 
-    task = LittleGhost::Support::TaskRunner.new.spawn { LittleGhost::Support::Task.current.backend }
+    worker_thread = nil
+    task = LittleGhost::Support::TaskRunner.new.spawn { worker_thread = Thread.current }
 
-    assert_equal :thread, task.value(deadline: Time.now + 1)
+    task.wait(deadline: Time.now + 1)
+    refute_same Thread.current, worker_thread
   ensure
     Fiber.set_scheduler(nil)
   end
