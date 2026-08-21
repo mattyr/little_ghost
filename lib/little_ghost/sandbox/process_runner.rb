@@ -68,7 +68,7 @@ module LittleGhost
       def terminate(pid)
         Process.kill("TERM", -pid)
         deadline = monotonic_time + TERMINATION_GRACE
-        Thread.pass while monotonic_time < deadline && process_group_alive?(pid)
+        sleep(POLL_INTERVAL) while monotonic_time < deadline && process_group_alive?(pid)
         Process.kill("KILL", -pid) if process_group_alive?(pid)
       rescue Errno::ESRCH, Errno::EPERM
         nil

@@ -15,6 +15,9 @@ class SwarmTest < Minitest::Test
     attr_reader :calls, :tools
     attr_accessor :assembly_transition
 
+    def self.assembly_id = "fake_agent"
+    def self.assembly_kind = :agent
+
     def initialize(result:, transition: nil, failure_usage: LittleGhost::Usage.new)
       @result = result
       @assembly_transition = transition
@@ -42,6 +45,7 @@ class SwarmTest < Minitest::Test
     end
 
     def interject(...) = nil
+    def bind_agent_stream_path(_path) = self
     def close = @closed = true
     def closed? = @closed == true
   end
@@ -54,8 +58,9 @@ class SwarmTest < Minitest::Test
       @built = []
     end
 
-    def build_agent(agent_class, run:, tools:)
+    def build_agent(agent_class, run:, tools:, agent_stream_path:)
       agent = @agents.fetch(agent_class).shift
+      agent.bind_agent_stream_path(agent_stream_path)
       agent.tools.define_singleton_method(:fetch) do |_name|
         raise KeyError unless tools.first
 
@@ -68,7 +73,7 @@ class SwarmTest < Minitest::Test
     def template_locals(run:, agent:) = {run:, agent:}
   end
 
-  Run = Struct.new(:runtime)
+  Run = Struct.new(:runtime, :workspace, :sandbox)
 
   def test_hides_handoff_content_and_streams_the_final_member
     swarm_class = Class.new(LittleGhost::Swarm) do

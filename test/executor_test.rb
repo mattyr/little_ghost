@@ -1,8 +1,30 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "async"
 
 class ExecutorTest < Minitest::Test
+  def test_submit_returns_a_task_with_the_worker_result
+    task = LittleGhost::Support::Executor.new.submit { 42 }
+
+    task.wait
+
+    assert_equal 42, task.result
+    assert_nil task.error
+  end
+
+  def test_call_returns_the_worker_result
+    assert_equal 42, LittleGhost::Support::Executor.new.call { 42 }
+  end
+
+  def test_call_raises_the_worker_error
+    error = assert_raises(ArgumentError) do
+      LittleGhost::Support::Executor.new.call { raise ArgumentError, "bad work" }
+    end
+
+    assert_equal "bad work", error.message
+  end
+
   def test_preserves_input_order_while_running_concurrently
     mutex = Mutex.new
     condition = ConditionVariable.new
@@ -93,5 +115,71 @@ class ExecutorTest < Minitest::Test
     end
 
     assert_equal "causal failure", error.message
+  end
+
+  def test_auto_backend_uses_scheduler_fibers_on_the_calling_thread
+    observations = nil
+    Async do
+      calling_thread = Thread.current.object_id
+      calling_fiber = Fiber.current.object_id
+      mutex = Mutex.new
+      condition = ConditionVariable.new
+      started = 0
+      executor = LittleGhost::Support::Executor.new(max_concurrency: 2)
+
+      observations = executor.map(%i[first second]) do
+        mutex.synchronize do
+          started += 1
+          condition.broadcast
+          condition.wait(mutex) until started == 2
+        end
+        [Thread.current.object_id, Fiber.current.object_id]
+      end
+
+      assert observations.all? { |thread_id, _fiber_id| thread_id == calling_thread }
+      assert observations.all? { |_thread_id, fiber_id| fiber_id != calling_fiber }
+      assert_equal 2, observations.map { |observation| observation.fetch(1) }.uniq.length
+    end.wait
+  end
+
+  def test_thread_backend_forces_worker_threads_inside_a_scheduler
+    observations = nil
+    Async do
+      calling_thread = Thread.current.object_id
+      runner = LittleGhost::Support::TaskRunner.new(backend: :thread)
+      observations = LittleGhost::Support::Executor.new(runner:).map([:work]) do
+        Thread.current.object_id
+      end
+
+      refute_equal calling_thread, observations.first
+    end.wait
+  end
+
+  def test_fiber_backend_requires_a_managed_scheduler_fiber
+    runner = LittleGhost::Support::TaskRunner.new(backend: :fiber)
+
+    error = assert_raises(LittleGhost::ConfigurationError) { runner.spawn { :work } }
+
+    assert_includes error.message, "calling from a scheduled fiber"
+  end
+
+  def test_auto_backend_does_not_use_a_scheduler_from_the_blocking_root_fiber
+    scheduler = Object.new
+    scheduler.define_singleton_method(:block) { |*| nil }
+    scheduler.define_singleton_method(:unblock) { |*| nil }
+    scheduler.define_singleton_method(:kernel_sleep) { |*| nil }
+    scheduler.define_singleton_method(:io_wait) { |*| nil }
+    scheduler.define_singleton_method(:fiber_interrupt) { |*| nil }
+    scheduler.define_singleton_method(:fiber) { raise "root fiber must not schedule work" }
+    scheduler.define_singleton_method(:close) {}
+    Fiber.set_scheduler(scheduler)
+
+    worker_thread = nil
+    task = LittleGhost::Support::TaskRunner.new.spawn { worker_thread = Thread.current }
+
+    task.wait(deadline: Time.now + 1)
+    refute_same Thread.current, worker_thread
+  ensure
+    Fiber.set_scheduler(nil)
   end
 end

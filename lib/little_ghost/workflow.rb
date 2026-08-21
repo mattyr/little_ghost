@@ -318,8 +318,8 @@ module LittleGhost
 
       token = @cancellation_token.child
       queue = SizedQueue.new(1_000)
-      worker = Thread.new do
-        results = Support::Executor.new(max_concurrency:).map(
+      worker = task_runner.spawn do
+        results = Support::Executor.new(max_concurrency:, runner: task_runner).map(
           invocations,
           cancellation_token: token,
           on_result: ->(_index, execution) { record_workflow_steps(execution.fetch(:steps)) }
@@ -345,7 +345,7 @@ module LittleGhost
       executions.map { |execution| execution.fetch(:output) }
     ensure
       token&.cancel
-      worker&.join
+      worker&.wait
     end
 
     def execute_workflow_invocation(reference:, participant:, input:, history:, context:, policies:, checkpoint:)

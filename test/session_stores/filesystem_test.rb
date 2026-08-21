@@ -3,6 +3,7 @@
 require "fileutils"
 require "json"
 require "tmpdir"
+require "async"
 require "test_helper"
 
 class FilesystemSessionStoreTest < Minitest::Test
@@ -144,6 +145,117 @@ class FilesystemSessionStoreTest < Minitest::Test
         expected_count: 0
       )
     end
+  end
+
+  def test_waiting_for_one_filesystem_lock_does_not_block_other_sessions
+    store = filesystem_store
+    lock_path = File.join(
+      @root,
+      "#{Digest::SHA256.hexdigest("little_ghost/filesystem_session/v1\0conversation")}.lock"
+    )
+    locked = Queue.new
+    release = Queue.new
+    owner = Thread.new do
+      File.open(lock_path, File::RDWR | File::CREAT, 0o600) do |lock|
+        lock.flock(File::LOCK_EX)
+        locked << true
+        release.pop
+      end
+    end
+    locked.pop
+    unrelated_completed_before_release = false
+
+    Async do |task|
+      waiting = task.async { store.load("conversation", actor_id: "actor") }
+      assert_nil store.load("unrelated", actor_id: "actor")
+      unrelated_completed_before_release = true
+      release << true
+      assert_nil waiting.wait
+    end
+
+    assert unrelated_completed_before_release
+  ensure
+    release << true if release && release.empty?
+    owner&.join
+  end
+
+  def test_cancellation_keeps_the_filesystem_lock_until_the_transaction_finishes
+    store = filesystem_store
+    lock_path = File.join(
+      @root,
+      "#{Digest::SHA256.hexdigest("little_ghost/filesystem_session/v1\0conversation")}.lock"
+    )
+    started = Queue.new
+    release = Queue.new
+    retained_while_finishing = false
+
+    Async do |task|
+      store.stub(:write_snapshot, lambda { |_id, _snapshot|
+        started << true
+        release.pop
+      }) do
+        child = task.async do
+          store.append(
+            "conversation",
+            actor_id: "actor",
+            messages: [LittleGhost::Message.new(role: :user, content: "Hello")],
+            state: {},
+            metadata: {},
+            expected_count: 0
+          )
+        end
+        started.pop
+        child.stop
+        File.open(lock_path, File::RDWR) do |competitor|
+          retained_while_finishing = !competitor.flock(File::LOCK_EX | File::LOCK_NB)
+        end
+        release << true
+        child.wait
+      end
+    end.wait
+
+    assert retained_while_finishing
+    File.open(lock_path, File::RDWR) do |competitor|
+      assert competitor.flock(File::LOCK_EX | File::LOCK_NB)
+    end
+  ensure
+    release&.push(true)
+  end
+
+  def test_waiting_for_worker_capacity_does_not_hold_the_filesystem_lock
+    store = filesystem_store
+    lock_path = File.join(
+      @root,
+      "#{Digest::SHA256.hexdigest("little_ghost/filesystem_session/v1\0conversation")}.lock"
+    )
+    File.open(lock_path, File::RDWR | File::CREAT, 0o600, &:close)
+    entered = Queue.new
+    release = Queue.new
+    lock_available = false
+
+    Async do |task|
+      workers = LittleGhost.configuration.blocking_pool_capacity.times.map do
+        task.async do
+          LittleGhost.offload_blocking do
+            entered << true
+            release.pop
+          end
+        end
+      end
+      LittleGhost.configuration.blocking_pool_capacity.times { entered.pop }
+      waiting = task.async { store.load("conversation", actor_id: "actor") }
+      sleep(0.02)
+      File.open(lock_path, File::RDWR) do |competitor|
+        lock_available = competitor.flock(File::LOCK_EX | File::LOCK_NB)
+      end
+      LittleGhost.configuration.blocking_pool_capacity.times { release << true }
+      workers.each(&:wait)
+      assert_nil waiting.wait
+    end.wait
+
+    assert lock_available
+  ensure
+    LittleGhost.configuration.blocking_pool_capacity.times { release&.push(true) }
   end
 
   private

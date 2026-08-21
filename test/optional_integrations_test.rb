@@ -13,6 +13,8 @@ class OptionalIntegrationsTest < Minitest::Test
       abort if defined?(LittleGhost::MCP)
       abort if defined?(LittleGhost::EventSink)
       abort if defined?(LittleGhost::CodeMode::JavascriptEngine)
+      abort if defined?(Async)
+      abort if $LOADED_FEATURES.any? { |path| path.include?("/async/") || path.end_with?("async.rb") }
       abort if $LOADED_FEATURES.any? { |path| path.end_with?("mini_racer.rb") }
     RUBY
 

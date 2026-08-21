@@ -10,6 +10,12 @@ module LittleGhost
       module_function
 
       def create(root:, hosts:, trust_root: File.join(root, "trust"))
+        LittleGhost.offload_blocking do
+          create_material(root:, hosts:, trust_root:)
+        end
+      end
+
+      def create_material(root:, hosts:, trust_root:)
         Dir.mkdir(trust_root, 0o700) unless Dir.exist?(trust_root)
         ca_key = OpenSSL::PKey::RSA.new(3072)
         ca_certificate = certificate(

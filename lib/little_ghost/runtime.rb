@@ -53,9 +53,14 @@ module LittleGhost
   # security boundary for untrusted work.
   #
   # Shared stores, resolvers, hooks, subscribers, providers, and resource
-  # factories may receive calls from several threads and must be thread-safe.
-  # One SessionStore instance serializes calls for the same Session. A store
-  # must provide its own coordination across processes.
+  # factories may receive concurrent calls. Calls can overlap on different
+  # threads, or fibers can take turns entering the same object on one thread.
+  # Extensions must protect shared mutable state without relying on thread
+  # identity. One SessionStore instance serializes calls for the same Session.
+  # A store must provide its own coordination across processes.
+  #
+  # See {Running in Production}[rdoc-ref:docs/guides/production.md] for
+  # choosing a concurrency backend and protecting shared extensions.
   #
   # Runtime has no shutdown operation. Runs close resources created for their
   # request. The application shuts down shared services and process-wide
@@ -87,6 +92,7 @@ module LittleGhost
     attr_reader :code_mode_configuration
     # Runtime hooks called around request and session preparation.
     attr_reader :runtime_hooks
+    attr_reader :task_runner # :nodoc:
 
     # Starts a runtime from +configuration+ or an existing settings snapshot.
     def initialize(configuration:, settings: nil)
@@ -105,6 +111,9 @@ module LittleGhost
           configuration.load_file!(root: bootstrap_root)
           @settings = configuration.settings(root: bootstrap_root)
         end
+        @task_runner = Support::TaskRunner.new(
+          backend: @settings.fetch(:concurrency_backend, :auto)
+        )
         report_startup(status: "starting")
         @startup_reported = true
         @root = canonical_application_root(@settings.fetch(:root))

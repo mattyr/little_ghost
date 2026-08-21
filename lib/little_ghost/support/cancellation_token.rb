@@ -3,8 +3,8 @@
 module LittleGhost
   module Support
     # CancellationToken lets related work stop cooperatively without killing its
-    # calling thread. Child tokens make cancellation flow through a run's tree of
-    # work.
+    # calling thread or fiber. Child tokens make cancellation flow through a
+    # run's tree of work.
     #
     # Cancellation is idempotent and flows only downward. Long-running
     # extensions should call #raise_if_cancelled! at bounded intervals.

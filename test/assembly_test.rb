@@ -117,8 +117,8 @@ class AssemblyTest < Minitest::Test
       end
     end
     runtime = Object.new
-    run = Struct.new(:runtime, :operation_id).new(runtime, "run-1")
-    runtime.define_singleton_method(:build_assembly) do |klass, run:|
+    run = Struct.new(:runtime, :operation_id, :workspace, :sandbox).new(runtime, "run-1")
+    runtime.define_singleton_method(:build_assembly) do |klass, run:, agent_stream_path:|
       klass.new(run:, runtime: self)
     end
     assembly = assembly_class.new(run:, runtime:)

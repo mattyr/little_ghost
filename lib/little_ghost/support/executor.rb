@@ -6,15 +6,38 @@ module LittleGhost
     # the final results. It gives framework extensions bounded parallelism without
     # losing cancellation or request-scoped state.
     #
-    # ExecutionState is copied to workers. +on_result+ runs on the calling
-    # thread in completion order. After all workers join, the first cleanup
-    # error, or otherwise the first input-order error, is raised.
-    class Executor
-      # Sets the maximum number of worker threads.
-      def initialize(max_concurrency: 8)
+    # ExecutionState is copied to workers. +on_result+ runs on the caller in
+    # completion order. After all workers join, the first
+    # cleanup error, or otherwise the first input-order error, is raised.
+    class Executor # :nodoc:
+      # Sets the maximum number of batch workers and their execution policy.
+      def initialize(max_concurrency: 8, runner: TaskRunner.new, wait_through_interruptions: false)
         raise ArgumentError, "max_concurrency must be at least 1" if max_concurrency < 1
 
         @max_concurrency = max_concurrency
+        @runner = runner
+        @wait_through_interruptions = wait_through_interruptions
+      end
+
+      attr_reader :runner # :nodoc:
+
+      # Submits one unit of work and returns its Task.
+      def submit(&work)
+        @runner.spawn(&work)
+      end
+
+      # Runs one unit of work and returns its result.
+      def call(&work)
+        resolve(submit(&work))
+      end
+
+      # Runs one unit of work only when runner capacity is immediately
+      # available. Returns an accepted flag and the result.
+      def try_call(&work)
+        task = @runner.try_spawn(&work)
+        return [false, nil] unless task
+
+        [true, resolve(task)]
       end
 
       # Maps +values+ with at most the configured number of workers.
@@ -34,11 +57,10 @@ module LittleGhost
         error_mutex = Mutex.new
         first_worker_error = nil
         worker_count = [@max_concurrency, items.length].min
-        execution_state = ExecutionState.capture
-
-        workers = worker_count.times.map do
-          Thread.new do
-            ExecutionState.with(execution_state) do
+        workers = []
+        begin
+          worker_count.times do
+            workers << submit do
               loop do
                 index = begin
                   queue.pop(true)
@@ -57,15 +79,29 @@ module LittleGhost
                   completions << index
                 end
               end
+            ensure
+              completions << :worker_finished
             end
           end
+        rescue
+          cancellation_token.cancel
+          workers.each(&:wait)
+          raise
         end
         callback_error = nil
         begin
-          items.length.times do
-            index = completions.pop
+          completed_items = 0
+          finished_workers = 0
+          until completed_items == items.length || finished_workers == workers.length
+            completion = completions.pop
+            if completion == :worker_finished
+              finished_workers += 1
+              next
+            end
+
+            completed_items += 1
             begin
-              on_result.call(index, results[index]) if on_result && !errors[index]
+              on_result.call(completion, results[completion]) if on_result && !errors[completion]
             rescue => error
               callback_error = error
               cancellation_token.cancel
@@ -73,14 +109,47 @@ module LittleGhost
             end
           end
         ensure
-          workers.each(&:join)
+          workers.each(&:wait)
         end
 
         raise callback_error if callback_error
+        task_error = workers.filter_map(&:error).first
+        raise task_error if task_error
+
         first_error = errors.compact.find { |error| error.is_a?(CleanupError) } || first_worker_error
         raise first_error if first_error
 
         results
+      end
+
+      private
+
+      def resolve(task)
+        interruption = nil
+        loop do
+          task.wait
+          break
+        rescue Exception => error # rubocop:disable Lint/RescueException
+          raise unless @wait_through_interruptions
+
+          interruption ||= error
+          break unless task.alive?
+        end
+        raise interruption if interruption
+        raise task.error if task.error
+
+        task.result
+      end
+
+      # The process-wide Executor for work moved off a scheduler thread.
+      BLOCKING = new(
+        runner: PooledThreadRunner.new,
+        wait_through_interruptions: true
+      ) # :nodoc:
+      private_constant :BLOCKING
+
+      class << self
+        def blocking = BLOCKING # :nodoc:
       end
     end
   end

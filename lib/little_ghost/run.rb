@@ -112,7 +112,6 @@ module LittleGhost
       @closed = false
       @started = false
       @mutex = Mutex.new
-      @event_mutex = Mutex.new
       @subagent_instrumentation_mutex = Mutex.new
       @subagent_instrumentation = {}
       @assembly_step_instrumentation_mutex = Mutex.new
@@ -146,9 +145,10 @@ module LittleGhost
       return enum_for(__method__) unless block_given?
 
       begin_execution!
-      @emitter = lambda do |event|
-        @event_mutex.synchronize { yield_event(event) { |value| yield value } }
+      dispatcher = Support::SerializedDispatcher.new do |event|
+        yield_event(event) { |value| yield value }
       end
+      @emitter = dispatcher.method(:call)
       Instrumentation.with_context(correlation_attributes.except(:operation_id)) do
         execute { |event| @emitter.call(event) }
       end
@@ -175,8 +175,8 @@ module LittleGhost
 
     # Adds an interjection to the active entrypoint and waits for its response.
     #
-    # Raises LittleGhost::AgentInterjectionError before the entrypoint is ready,
-    # after it finishes, or when the entrypoint does not support interjections.
+    # Raises LittleGhost::AgentInterjectionError before the entrypoint is ready
+    # or after it finishes.
     def interject(
       message,
       interjection_id: nil,
@@ -211,10 +211,6 @@ module LittleGhost
         @active_interjections += 1
         @entrypoint
       end
-      unless entrypoint.respond_to?(:interject)
-        raise AgentInterjectionError, "Run entrypoint does not support interjections"
-      end
-
       message, options = yield
       entrypoint.interject(message, **options)
     ensure
@@ -378,7 +374,7 @@ module LittleGhost
       emit(:trace_context, context: trace_context) { |event| yield event } unless trace_context.nil? || trace_context.empty?
       workspace&.open(run: self)
       sandbox&.open(run: self)
-      runtime.prepare_execution(self) if runtime.respond_to?(:prepare_execution)
+      runtime.prepare_execution(self)
       @session = runtime.open_session(self)
       agent = runtime.build_assembly(@execution_class, run: self)
       @interjection_mutex.synchronize do
@@ -560,17 +556,15 @@ module LittleGhost
     def workflow_run? = defined?(Workflow) && entrypoint_class <= Workflow
 
     def entrypoint_kind
-      return entrypoint_class.assembly_kind if entrypoint_class.respond_to?(:assembly_kind)
-
-      workflow_run? ? :workflow : :agent
+      entrypoint_class.assembly_kind
     end
 
     def entrypoint_name
       return entrypoint_class.name.to_s if workflow_run?
 
-      return @entrypoint.entrypoint_name if @entrypoint&.respond_to?(:entrypoint_name)
+      return @entrypoint.entrypoint_name if @entrypoint
 
-      entrypoint_class.respond_to?(:assembly_id) ? entrypoint_class.assembly_id : entrypoint_class.name.to_s
+      entrypoint_class.assembly_id
     end
 
     def instrument_subagent(data)

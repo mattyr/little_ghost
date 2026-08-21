@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 
 module LittleGhost
-  # Runs one dormant Run in a supervised worker while the caller remains free to
-  # serve health checks, deliver interjections, or coordinate process shutdown.
+  # Runs one dormant Run in the background while the caller remains free to
+  # serve health checks, deliver interjections, or coordinate shutdown.
   #
   #   execution = agent.start_execution(message: "Investigate transfer 481") do |event|
   #     event_buffer << event
@@ -12,21 +12,24 @@ module LittleGhost
   #   execution.wait(deadline: Time.now + 30)
   #   execution.run.completed? # => true
   #
-  # An execution owns its worker. The worker receives a snapshot of the caller's
-  # request-scoped ExecutionState. The Run continues to own its workspace,
+  # The Runtime selects a scheduled fiber or worker thread for the execution.
+  # LittleGhost copies the caller's ExecutionState, but not other application
+  # fiber-local or thread-local values. The Run continues to own its workspace,
   # sandbox, session, entrypoint, and registered resources. +close+ requests
-  # cooperative cancellation and waits for both the worker and in-flight
+  # cooperative cancellation and waits for the execution and any in-flight
   # interjection calls.
   class Execution
     # The supervised Run.
     attr_reader :run
 
     class << self
-      # Starts +run+ immediately and returns its supervising Execution.
+      # Starts +run+ immediately and returns its supervising Execution. If the
+      # work cannot start, this method closes +run+ before raising.
       #
-      # The optional block receives each StreamEvent on the worker thread. It
-      # must be safe to call from that thread and should not retain sensitive
-      # event content longer than the application requires.
+      # The optional block receives each StreamEvent from the fiber or thread
+      # running the Execution. It must not depend on a particular thread and
+      # should not pause the scheduler or retain sensitive event content longer
+      # than the application requires.
       def start(run, &event_consumer)
         new(run, event_consumer:).send(:start)
       end
@@ -41,12 +44,11 @@ module LittleGhost
       @run = run
       @event_consumer = event_consumer
       @state = :pending
-      @error = nil
       @mutex = Mutex.new
       @condition = ConditionVariable.new
       @active_interjections = 0
       @closing = false
-      @execution_state = ExecutionState.capture
+      @task_runner = run.runtime.task_runner
     end
 
     # Returns +:pending+, +:running+, or +:finished+.
@@ -54,17 +56,17 @@ module LittleGhost
       @mutex.synchronize { @state }
     end
 
-    # Returns an event-delivery or cleanup exception raised by the worker.
+    # Returns an event-delivery or cleanup exception raised by the Execution.
     def error
-      @mutex.synchronize { @error }
+      @mutex.synchronize { @worker }&.error
     end
 
-    # Indicates that the worker or an interjection call is still active.
+    # Indicates that the Execution or an interjection call is still active.
     def active?
       @mutex.synchronize { @state != :finished || @active_interjections.positive? }
     end
 
-    # Indicates that the worker and all interjection calls have finished.
+    # Indicates that the Execution and all interjection calls have finished.
     def finished?
       !active?
     end
@@ -97,15 +99,15 @@ module LittleGhost
       self
     end
 
-    # Waits for the worker and in-flight interjections, then returns the Run.
+    # Waits for the Execution and in-flight interjections, then returns the Run.
     #
     # +deadline+ is an absolute Time. Reaching it raises DeadlineExceededError
     # without cancelling the run. An event-delivery or cleanup failure raised by
-    # the worker is re-raised after all supervised work finishes.
+    # the Execution is re-raised after all supervised work finishes.
     def wait(deadline: nil)
       worker = wait_until_finished(deadline:)
-      worker.join
-      caught = error
+      worker.wait
+      caught = worker.error
       raise caught if caught
 
       run
@@ -126,19 +128,23 @@ module LittleGhost
         raise Error, "execution has already started" unless @state == :pending
 
         @state = :running
-        @worker = Thread.new { execute }
       end
+      worker = @task_runner.spawn { execute }
+      @mutex.synchronize { @worker = worker }
       self
+    rescue
+      @mutex.synchronize do
+        @state = :finished
+        @condition.broadcast
+      end
+      run.close
+      raise
     end
 
     private
 
     def execute
-      ExecutionState.with(@execution_state) do
-        run.each { |event| @event_consumer&.call(event) }
-      end
-    rescue => caught
-      @mutex.synchronize { @error = caught }
+      run.each { |event| @event_consumer&.call(event) }
     ensure
       @mutex.synchronize do
         @state = :finished

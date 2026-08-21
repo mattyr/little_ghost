@@ -1,16 +1,19 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "async"
 
 class ExecutionTest < Minitest::Test
   class ControlledRun < LittleGhost::Run
     attr_reader :cancellation_token, :interjections, :started, :close_count
+    attr_accessor :runtime
 
     def initialize(events: [], release: nil, interject_release: nil)
       @events = events
       @release = release
       @interject_release = interject_release
       @cancellation_token = LittleGhost::Support::CancellationToken.new
+      @runtime = Data.define(:task_runner).new(LittleGhost::Support::TaskRunner.new)
       @interjections = []
       @started = Queue.new
       @close_count = 0
@@ -22,6 +25,10 @@ class ExecutionTest < Minitest::Test
       @events.each { |event| yield event }
       self
     ensure
+      @close_count += 1
+    end
+
+    def close
       @close_count += 1
     end
 
@@ -76,6 +83,18 @@ class ExecutionTest < Minitest::Test
     assert_instance_of LittleGhost::Execution, execution
     assert_equal payload, received_payloads.pop
     assert_same run, execution.wait(deadline: Time.now + 1)
+  end
+
+  def test_start_closes_the_run_when_the_configured_fiber_backend_has_no_scheduler
+    run = ControlledRun.new
+    runner = LittleGhost::Support::TaskRunner.new(backend: :fiber)
+    run.runtime = Data.define(:task_runner).new(runner)
+
+    assert_raises(LittleGhost::ConfigurationError) do
+      LittleGhost::Execution.start(run)
+    end
+
+    assert_equal 1, run.close_count
   end
 
   def test_wait_re_raises_event_consumer_failures
@@ -142,6 +161,81 @@ class ExecutionTest < Minitest::Test
     release_run << true if execution&.active?
     release_interject << true if interjection&.alive?
     interjection&.join
+  end
+
+  def test_uses_the_runtime_scheduler_for_its_worker_task
+    event = LittleGhost::StreamEvent.build(:text_delta, text: "hello")
+    run = ControlledRun.new(events: [event])
+    observed = nil
+
+    Async do
+      calling_thread = Thread.current.object_id
+      calling_fiber = Fiber.current.object_id
+      run.runtime = Data.define(:task_runner).new(
+        LittleGhost::Support::TaskRunner.new(backend: :auto)
+      )
+      execution = LittleGhost::ExecutionState.with(request_id: "request-1") do
+        LittleGhost::Execution.start(run) do
+          observed = [
+            Thread.current.object_id,
+            Fiber.current.object_id,
+            LittleGhost::ExecutionState[:request_id]
+          ]
+        end
+      end
+
+      assert_same run, execution.wait(deadline: Time.now + 1)
+      assert_equal calling_thread, observed.fetch(0)
+      refute_equal calling_fiber, observed.fetch(1)
+      assert_equal "request-1", observed.fetch(2)
+    end.wait
+  end
+
+  def test_runtime_can_force_a_worker_thread_inside_a_scheduler
+    run = ControlledRun.new(events: [LittleGhost::StreamEvent.build(:message_start)])
+    observed_thread = nil
+
+    Async do
+      calling_thread = Thread.current.object_id
+      run.runtime = Data.define(:task_runner).new(
+        LittleGhost::Support::TaskRunner.new(backend: :thread)
+      )
+      execution = LittleGhost::Execution.start(run) do
+        observed_thread = Thread.current.object_id
+      end
+
+      execution.wait(deadline: Time.now + 1)
+      refute_equal calling_thread, observed_thread
+    end.wait
+  end
+
+  def test_close_from_another_thread_cooperatively_stops_a_fiber_worker
+    execution_queue = Queue.new
+    run = ControlledRun.new
+    run.runtime = Data.define(:task_runner).new(
+      LittleGhost::Support::TaskRunner.new(backend: :auto)
+    )
+    run.define_singleton_method(:each) do
+      started << true
+      cancellation_token.wait(1)
+      self
+    end
+    scheduler_thread = Thread.new do
+      Async do
+        execution = LittleGhost::Execution.start(run)
+        execution_queue << execution
+        execution.wait(deadline: Time.now + 2)
+      end.wait
+    end
+    execution = execution_queue.pop
+    run.started.pop
+
+    assert_same run, execution.close(deadline: Time.now + 1)
+    assert scheduler_thread.join(1), "scheduler thread did not stop"
+    assert_predicate execution, :finished?
+  ensure
+    execution&.cancel
+    scheduler_thread&.join(1)
   end
 
   private

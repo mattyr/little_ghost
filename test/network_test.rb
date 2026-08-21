@@ -4,6 +4,7 @@ require "json"
 require "openssl"
 require "socket"
 require "tmpdir"
+require "async"
 require "test_helper"
 require "little_ghost/network"
 require "little_ghost/network/authorizer_server"
@@ -100,6 +101,36 @@ class NetworkTest < Minitest::Test
       refute_equal File.dirname(paths.fetch(:private_key)), paths.fetch(:trust_root)
       assert_empty Dir.glob(File.join(paths.fetch(:trust_root), "*.key"))
     end
+  end
+
+  def test_certificate_authority_does_not_block_the_scheduler_thread
+    started = Queue.new
+    release = Queue.new
+    operation_thread = nil
+    scheduler_thread = nil
+    result = nil
+
+    Async do |task|
+      scheduler_thread = Thread.current
+      generation = task.async do
+        LittleGhost::Network::CertificateAuthority.stub(:create_material, lambda { |**|
+          operation_thread = Thread.current
+          started << true
+          release.pop
+          {ca_certificate: "ca.pem"}
+        }) do
+          result = LittleGhost::Network::CertificateAuthority.create(root: "/tmp", hosts: ["example.test"])
+        end
+      end
+      started.pop
+      release << true
+      generation.wait
+    end.wait
+
+    assert_equal({ca_certificate: "ca.pem"}, result)
+    refute_same scheduler_thread, operation_thread
+  ensure
+    release&.push(true)
   end
 
   def test_docker_envoy_rejects_http_inspection_instead_of_weakening_it

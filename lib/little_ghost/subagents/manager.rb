@@ -3,6 +3,7 @@
 require "securerandom"
 require "base64"
 require "digest"
+require "monitor"
 require "time"
 require_relative "definition"
 require_relative "control_tool"
@@ -37,7 +38,9 @@ module LittleGhost
     # With a parent session, durable definitions retain only committed compact
     # transcripts and limited state snapshots. Failed or cancelled turns never
     # become committed conversation history. Call #close to cancel and join
-    # workers owned by a directly constructed manager.
+    # workers owned by a directly constructed manager. If cooperative fiber
+    # cleanup exceeds the deadline, the manager remains closed to new work and
+    # a later #close retries cleanup.
     class Manager
       # Raised when one or more managed workers cannot stop within the cleanup
       # deadline.
@@ -100,7 +103,6 @@ module LittleGhost
         :progress_message,
         :progress_sequence
       )
-
       class Completion # :nodoc:
         def initialize
           @mutex = Mutex.new
@@ -248,12 +250,17 @@ module LittleGhost
         @cancellation_token = cancellation_token.child
         @deadline = deadline
         @observer = observer
+        @observer_events = []
+        @observer_flushing = false
+        @task_runner = runtime ? runtime.task_runner : Support::TaskRunner.new
         @parent_session = parent_session
         @parent_agent_path = AgentPath.validate!(parent_agent_path)
         @parent_link = parent_session && self.class.parent_link(parent_session)
         @registry_session = parent_session && registry_session
         @capacity = Capacity.new(max_concurrent)
         @mutex = Mutex.new
+        @close_monitor = Monitor.new
+        @close_active = false
         @registry_mutex = Mutex.new
         @restore_mutex = Mutex.new
         @condition = ConditionVariable.new
@@ -262,6 +269,8 @@ module LittleGhost
         @identity_slots = 0
         @turn_count = 0
         @closed = false
+        @close_complete = false
+        @closed_agents = {}
         restore_identities
       end
 
@@ -330,14 +339,28 @@ module LittleGhost
           raise Error, "Subagent manager is closed"
         end
 
-        turn, queued_snapshot = enqueue(
-          identity,
-          task,
-          event: "spawned",
-          count_turn: false,
-          parent_operation_id:,
-          context:
-        )
+        begin
+          turn, queued_snapshot = enqueue(
+            identity,
+            task,
+            event: "spawned",
+            count_turn: false,
+            parent_operation_id:,
+            context:
+          )
+        rescue
+          synchronize_close do
+            should_close = @mutex.synchronize do
+              if @identities.delete(subagent_id)
+                @identity_slots -= 1
+                @turn_count -= 1
+              end
+              !@closed_agents.key?(agent.object_id)
+            end
+            agent.close if should_close && agent.respond_to?(:close)
+          end
+          raise
+        end
         return {status: "working", subagent: queued_snapshot} if mode == "async"
 
         turn.completion.value(cancellation_token: @cancellation_token, deadline: @deadline)
@@ -665,61 +688,99 @@ module LittleGhost
       end
 
       # Cancels queued work, cooperatively stops workers, and closes child
-      # agents. Raises CleanupError if workers do not stop within the bound.
+      # agents. Raises CleanupError if workers do not stop within the bound. A
+      # later call retries unfinished cleanup without accepting new work.
       def close
-        workers = @mutex.synchronize do
-          return if @closed
+        synchronize_close { perform_close }
+      end
 
-          @closed = true
-          @cancellation_token.cancel
-          @identities.each_value do |identity|
-            next if %w[idle failed cancelled persisting].include?(identity.status)
+      private
 
-            turn = identity.current
-            identity.status = "cancelled"
-            turn&.completion&.resolve(cancelled_turn(identity, turn))
-            identity.progress_message = nil
-            identity.current_turn = nil
-            identity.current = nil
-            cancel_queued_turns(identity)
-            emit("cancelled", identity, turn:)
+      def synchronize_close
+        @close_monitor.synchronize do
+          return if @close_active
+
+          @close_active = true
+          begin
+            yield
+          ensure
+            @close_active = false
           end
-          @condition.broadcast
-          @identities.values.filter_map(&:worker)
         end
+      end
 
-        deadline = monotonic_time + @close_timeout
-        cooperative_deadline = monotonic_time + (@close_timeout / 2.0)
+      def perform_close
+        started_at = monotonic_time
+        deadline = started_at + @close_timeout
+        cooperative_deadline = started_at + (@close_timeout / 2.0)
+        identities = @mutex.synchronize do
+          return if @close_complete
+
+          unless @closed
+            @closed = true
+            @cancellation_token.cancel
+            @identities.each_value do |identity|
+              next if %w[idle failed cancelled persisting].include?(identity.status)
+
+              turn = identity.current
+              identity.status = "cancelled"
+              turn&.completion&.resolve(cancelled_turn(identity, turn))
+              identity.progress_message = nil
+              identity.current_turn = nil
+              identity.current = nil
+              cancel_queued_turns(identity)
+              queue_observer_event("cancelled", identity, turn:)
+            end
+            @condition.broadcast
+          end
+
+          @identities.values.dup
+        end
+        flush_observer_events
+
+        worker_entries = identities.filter_map do |identity|
+          worker = identity.worker
+          [identity, worker] if worker
+        end
+        workers = worker_entries.map(&:last)
         workers.each do |worker|
           remaining = cooperative_deadline - monotonic_time
           break unless remaining.positive?
 
-          worker.join(remaining)
+          wait_for_worker(worker, remaining)
         end
-        workers.select(&:alive?).each(&:kill)
+        workers.select(&:alive?).each(&:terminate)
         workers.each do |worker|
           remaining = deadline - monotonic_time
           break unless remaining.positive?
 
-          worker.join(remaining)
+          wait_for_worker(worker, remaining)
         end
         first_error = nil
-        survivors = workers.select(&:alive?)
-        unless survivors.empty?
+        surviving_task_entries = worker_entries.select { |_identity, worker| worker.alive? }
+        surviving_identities = surviving_task_entries.map(&:first).uniq(&:object_id)
+        unless surviving_identities.empty?
           first_error ||= CleanupError.new(
-            "#{survivors.length} subagent worker(s) did not stop within #{@close_timeout} seconds"
+            "#{surviving_identities.length} subagent worker(s) did not stop within #{@close_timeout} seconds"
           )
         end
-        agents = @mutex.synchronize { @identities.values.map(&:agent).reverse.uniq(&:object_id) }
+
+        blocked_identities = surviving_task_entries.map(&:first)
+        blocked_agents = blocked_identities.filter_map(&:agent).to_h { |agent| [agent.object_id, true] }
+        agents = identities.reverse.filter_map(&:agent).uniq(&:object_id).reject do |agent|
+          blocked_agents.key?(agent.object_id) || @mutex.synchronize { @closed_agents.key?(agent.object_id) }
+        end
         agents.each do |agent|
           agent.close if agent.respond_to?(:close)
+          @mutex.synchronize { @closed_agents[agent.object_id] = true }
         rescue => error
           first_error ||= error
         end
         raise first_error if first_error
-      end
 
-      private
+        @mutex.synchronize { @close_complete = true }
+        nil
+      end
 
       def restore_identities
         return unless @registry_session
@@ -1086,6 +1147,8 @@ module LittleGhost
             return rejection if rejection
           end
 
+          worker = @task_runner.spawn { run_identity(identity) } unless identity.worker&.alive?
+
           turn = Turn.new(
             number: identity.next_turn,
             message: message,
@@ -1100,17 +1163,14 @@ module LittleGhost
           @turn_count += 1 if count_turn
           identity.queue << turn
           identity.status = "queued" unless identity.status == "running"
-          emit(event, identity, turn:)
+          identity.worker = worker if worker
+          queue_observer_event(event, identity, turn:)
           queued_snapshot = snapshot(identity)
-          unless identity.worker&.alive?
-            execution_state = ExecutionState.capture
-            identity.worker = Thread.new do
-              ExecutionState.with(execution_state) { run_identity(identity) }
-            end
-          end
           @condition.broadcast
         end
         [turn, queued_snapshot]
+      ensure
+        flush_observer_events
       end
 
       def run_identity(identity)
@@ -1145,11 +1205,12 @@ module LittleGhost
                   identity.status = "running"
                   identity.progress_message = nil
                   identity.progress_sequence += 1
-                  emit("turn_started", identity, turn:)
+                  queue_observer_event("turn_started", identity, turn:)
                   @condition.broadcast
                   true
                 end
               end
+              flush_observer_events
               next unless should_run
 
               begin
@@ -1194,9 +1255,10 @@ module LittleGhost
         end
       ensure
         @mutex.synchronize do
-          identity.worker = nil if identity.worker == Thread.current
+          identity.worker = nil if identity.worker&.current?
           @condition.broadcast
         end
+        flush_observer_events
       end
 
       def run_agent_turn(identity, turn, options)
@@ -1221,11 +1283,12 @@ module LittleGhost
           @condition.broadcast
           if tool_use
             event_name = (event.type == :tool_start) ? "tool_started" : "tool_finished"
-            emit(event_name, identity, turn:, tool_call_id: tool_use.id, tool_name: tool_use.name)
+            queue_observer_event(event_name, identity, turn:, tool_call_id: tool_use.id, tool_name: tool_use.name)
           else
-            emit("activity", identity, turn:)
+            queue_observer_event("activity", identity, turn:)
           end
         end
+        flush_observer_events
       end
 
       def progress_message(event)
@@ -1321,9 +1384,10 @@ module LittleGhost
           }
           value[:response_truncated] = true if truncated
           turn.completion.resolve(value)
-          emit("turn_finished", identity, turn:)
+          queue_observer_event("turn_finished", identity, turn:)
           @condition.broadcast
         end
+        flush_observer_events
       end
 
       def retain_agent_conversation(identity, turn, result, persisted_response, interject_exchanges)
@@ -1384,10 +1448,11 @@ module LittleGhost
               error: identity.latest_error
             )
           end
-          emit("turn_failed", identity, turn:, error_type: error.class.name)
+          queue_observer_event("turn_failed", identity, turn:, error_type: error.class.name)
           fail_queued_turns(identity)
           @condition.broadcast
         end
+        flush_observer_events
       end
 
       def cancel_unrun_turn(identity, turn)
@@ -1400,9 +1465,10 @@ module LittleGhost
           identity.current = nil
           identity.status = "cancelled"
           cancel_queued_turns(identity)
-          emit("cancelled", identity, turn:) if newly_cancelled
+          queue_observer_event("cancelled", identity, turn:) if newly_cancelled
           @condition.broadcast
         end
+        flush_observer_events
       end
 
       def cancelled_turn(identity, turn)
@@ -1418,7 +1484,7 @@ module LittleGhost
       def cancel_queued_turns(identity)
         identity.queue.each do |turn|
           turn.completion.resolve(cancelled_turn(identity, turn))
-          emit("cancelled", identity, turn:)
+          queue_observer_event("cancelled", identity, turn:)
         end
         identity.queue.clear
       end
@@ -1432,7 +1498,7 @@ module LittleGhost
             turn: turn.number,
             error: "A previous turn failed; spawn a new identity."
           )
-          emit("turn_failed", identity, turn:)
+          queue_observer_event("turn_failed", identity, turn:)
         end
         identity.queue.clear
       end
@@ -1526,7 +1592,7 @@ module LittleGhost
         %w[idle failed cancelled].include?(identity.status)
       end
 
-      def emit(event, identity, turn: nil, **attributes)
+      def queue_observer_event(event, identity, turn: nil, **attributes)
         return unless @observer
 
         value = {
@@ -1545,9 +1611,7 @@ module LittleGhost
           end
         end
         value.merge!(attributes)
-        @observer.call(value.freeze)
-      rescue
-        nil
+        @observer_events << value.freeze
       end
 
       def observe_delegated_activity(identity)
@@ -1565,21 +1629,57 @@ module LittleGhost
           @condition.broadcast
           identity.current
         end
-        emit("activity", identity, turn:) if turn
+        if turn
+          @mutex.synchronize { queue_observer_event("activity", identity, turn:) }
+          flush_observer_events
+        end
       end
 
       def emit_factory_failure(definition, subagent_id, error, parent_operation_id: nil)
         return unless @observer
 
-        @observer.call({
-          event: "factory_failed",
-          subagent_id:,
-          kind: definition.kind,
-          status: "failed",
-          error_type: error.class.name,
-          parent_operation_id:
-        }.compact.freeze)
-      rescue
+        @mutex.synchronize do
+          @observer_events << {
+            event: "factory_failed",
+            subagent_id:,
+            kind: definition.kind,
+            status: "failed",
+            error_type: error.class.name,
+            parent_operation_id:
+          }.compact.freeze
+        end
+        flush_observer_events
+      end
+
+      def flush_observer_events
+        return unless @observer
+
+        should_flush = @mutex.synchronize do
+          next false if @observer_flushing || @observer_events.empty?
+
+          @observer_flushing = true
+        end
+        return unless should_flush
+
+        loop do
+          value = @mutex.synchronize do
+            event = @observer_events.shift
+            @observer_flushing = false unless event
+            event
+          end
+          break unless value
+
+          begin
+            @observer.call(value)
+          rescue
+            nil
+          end
+        end
+      end
+
+      def wait_for_worker(worker, timeout)
+        worker.wait(deadline: Time.now + timeout)
+      rescue DeadlineExceededError
         nil
       end
 

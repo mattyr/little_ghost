@@ -220,6 +220,32 @@ class UpdateDraftTool < LittleGhost::Tool
 end
 ```
 
+When LittleGhost selects the fiber backend, concurrent Tool calls can run as
+fibers on one thread. If a Tool calls a library that blocks that thread, every
+other fiber on it must wait too. Suppose the help center lookup later moves to
+a client whose `lookup` method is documented to behave this way. Change only
+the Tool method:
+
+```ruby
+def call(input)
+  LittleGhost.offload_blocking do
+    HelpCenterClient.lookup(input.fetch("topic"))
+  end
+end
+```
+
+Many Ruby I/O calls already let the scheduler run other fibers. Keep those
+calls unchanged. Use `offload_blocking` only when documentation or measurement
+shows that the exact call pauses other fibers and the work can continue on
+another Ruby thread. Configure the call's own timeout or cancellation when it
+provides one.
+
+If most of a Tool's implementation blocks, configure LittleGhost to use the
+`:thread` backend instead of wrapping each call. `exclusive true` prevents
+overlap with another exclusive Tool; it does not change where the Tool runs.
+[Running in Production](production.md#use-an-existing-fiber-scheduler) explains
+the concurrency settings and when to adjust the shared thread pool.
+
 Retries can repeat a Tool call. Prefer read-only operations, idempotency keys,
 or writes that are safe to apply more than once. Do not rely on the prompt to
 prevent duplicate side effects.

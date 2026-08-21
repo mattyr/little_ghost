@@ -1,9 +1,9 @@
 # frozen_string_literal: true
 
 module LittleGhost
-  # ExecutionState carries request-scoped values across fibers and the worker
-  # threads LittleGhost creates. It keeps event and instrumentation context from
-  # leaking between concurrent runs.
+  # ExecutionState carries request-scoped values across scheduled fibers and
+  # worker threads. It keeps event and instrumentation context from leaking
+  # between concurrent runs.
   #
   # Framework extensions may use #capture and #with to preserve event and
   # instrumentation context. Captured hashes are immutable; values within them

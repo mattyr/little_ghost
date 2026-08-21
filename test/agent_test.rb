@@ -3,6 +3,7 @@
 require "fileutils"
 require "test_helper"
 require "tmpdir"
+require "async"
 
 class AgentTest < Minitest::Test
   class ScriptedModel
@@ -322,6 +323,22 @@ class AgentTest < Minitest::Test
     assert_equal %i[user assistant], result.messages.map(&:role)
   end
 
+  def test_uses_artifact_hooks_from_the_runs_runtime
+    hook = LittleGhost::Runtime::Hooks::Artifacts.configured.new
+    runtime = Struct.new(:task_runner, :runtime_hooks, :code_mode_configuration).new(
+      LittleGhost::Support::TaskRunner.new,
+      [hook],
+      nil
+    )
+    run = Struct.new(:runtime, :workspace, :sandbox).new(runtime)
+
+    agent = LittleGhost::Agent.new(model: Object.new.extend(LittleGhost::ModelInterface), run:)
+
+    assert_same hook, agent.instance_variable_get(:@artifact_lifecycle)
+  ensure
+    agent&.close
+  end
+
   def test_agent_hooks_wrap_invocations_model_tools_and_tool_execution
     tool = LittleGhost::Tool.define(name: "echo", description: "Echo input.") { |input| input.fetch("value") }
     tool_use = LittleGhost::Content::ToolUse.new(id: "echo-1", name: "echo", input: {"value" => "ready"})
@@ -629,6 +646,31 @@ class AgentTest < Minitest::Test
     release_slow << true if release_slow && runner&.alive?
     runner&.join(1)
     runner&.kill
+    agent&.close
+  end
+
+  def test_parallel_tools_use_scheduler_fibers
+    workers = Queue.new
+    tool = lambda do |name|
+      LittleGhost::Tool.define(name:, description: name) do
+        workers << [Thread.current.object_id, Fiber.current.object_id, Fiber.blocking?]
+        Async::Task.current.yield
+        name
+      end
+    end
+    tool_uses = %w[first second].map do |name|
+      LittleGhost::Content::ToolUse.new(id: "#{name}-call", name:, input: {})
+    end
+    model = ScriptedModel.new(response(tool_uses, stop_reason: :tool_use), response("done"))
+    agent = LittleGhost::Agent.new(model:, tools: [tool.call("first"), tool.call("second")])
+
+    Async { agent.call("go") }.wait
+
+    contexts = 2.times.map { workers.pop }
+    assert_equal 1, contexts.map(&:first).uniq.length
+    assert_equal 2, contexts.map { |context| context.fetch(1) }.uniq.length
+    assert contexts.none?(&:last)
+  ensure
     agent&.close
   end
 

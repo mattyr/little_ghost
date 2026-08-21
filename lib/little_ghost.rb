@@ -109,6 +109,23 @@ require_relative "little_ghost/runtime"
 # independent configuration for one execution context.
 module LittleGhost
   class << self
+    # :call-seq:
+    #   LittleGhost.offload_blocking { ... } -> object
+    #
+    # Runs a call that is known or measured to pause other fibers and can make
+    # progress on another Ruby thread. Inside a scheduled fiber, the block uses
+    # a shared thread pool. Otherwise, it runs inline. Returns the block's value.
+    #
+    # Once the pool accepts the block, LittleGhost waits for it to finish before
+    # re-raising an interruption. The block's own exception is also re-raised.
+    # The helper does not add a timeout or cancellation mechanism, so configure
+    # those limits on the underlying operation when it supports them.
+    def offload_blocking(&operation)
+      raise ArgumentError, "a blocking operation block is required" unless operation
+
+      Support::Executor.blocking.call(&operation)
+    end
+
     # The configuration active in the current execution context, falling back to
     # the process-wide default.
     def configuration

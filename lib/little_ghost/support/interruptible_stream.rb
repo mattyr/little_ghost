@@ -8,7 +8,9 @@ module LittleGhost
     #
     # The producer receives an emitter callable. Ending enumeration early stops
     # and joins the producer; CleanupError is raised if it cannot be stopped
-    # within the fixed shutdown bound.
+    # within the fixed shutdown bound. The producer remains on a worker thread
+    # even when the consumer uses a Fiber scheduler, allowing cleanup to
+    # interrupt a provider SDK or socket read that remains blocked.
     #
     #   stream = LittleGhost::Support::InterruptibleStream.new(
     #     cancellation_token: token
@@ -36,7 +38,7 @@ module LittleGhost
       end
 
       # Yields produced values, raising producer, cancellation, deadline, or
-      # cleanup errors in the consuming thread.
+      # cleanup errors in the caller.
       def each
         return enum_for(__method__) unless block_given?
 

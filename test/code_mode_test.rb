@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "async"
 
 class CodeModeTest < Minitest::Test
   CapabilitySandbox = Data.define(:capabilities)
@@ -456,6 +457,18 @@ class CodeModeTest < Minitest::Test
     registry&.close
   end
 
+  def test_broker_inherits_the_agents_runtime_task_runner
+    task_runner = LittleGhost::Support::TaskRunner.new(backend: :thread)
+    runtime = Struct.new(:task_runner).new(task_runner)
+    agent = Struct.new(:runtime).new(runtime)
+    registry = LittleGhost::ToolRegistry.new([])
+    broker = LittleGhost::CodeMode::Broker.new(agent:, registry:)
+
+    assert_same task_runner, broker.task_runner
+  ensure
+    registry&.close
+  end
+
   def test_engine_rejects_normalized_and_reserved_method_collisions
     registry = LittleGhost::ToolRegistry.new([])
     broker = LittleGhost::CodeMode::Broker.new(registry:)
@@ -496,6 +509,103 @@ class CodeModeTest < Minitest::Test
 
     assert_equal [1, 2], result.value
     assert_equal 2, entered
+  ensure
+    session&.close
+    registry&.close
+  end
+
+  def test_ruby_nested_tools_use_scheduler_tasks
+    observations = []
+    tool = LittleGhost::Tool.define(name: "observe", description: "Observe execution.") do |_input|
+      observations << [Thread.current.object_id, Fiber.current.object_id]
+      "observed"
+    end
+    registry = LittleGhost::ToolRegistry.new([tool])
+    broker = LittleGhost::CodeMode::Broker.new(registry:)
+    session = ruby_session(broker:)
+
+    Async do
+      calling_thread = Thread.current.object_id
+      calling_fiber = Fiber.current.object_id
+      result = session.execute(source: "tools.observe", catalog: broker.catalog)
+
+      assert_equal "observed", result.value
+      assert_equal 1, observations.length
+      assert_equal calling_thread, observations.first.fetch(0)
+      refute_equal calling_fiber, observations.first.fetch(1)
+    end.wait
+  ensure
+    session&.close
+    registry&.close
+  end
+
+  def test_ruby_nested_tools_honor_the_runtime_thread_backend
+    observations = []
+    tool = LittleGhost::Tool.define(name: "observe", description: "Observe execution.") do
+      raise "the broker dispatcher should handle this call"
+    end
+    dispatch = lambda do |call|
+      observations << Thread.current.object_id
+      LittleGhost::CodeMode::CallResult.new(id: call.id, value: "observed", error: nil)
+    end
+    task_runner = LittleGhost::Support::TaskRunner.new(backend: :thread)
+    runtime = Struct.new(:task_runner).new(task_runner)
+    agent = Struct.new(:runtime).new(runtime)
+    registry = LittleGhost::ToolRegistry.new([tool])
+    broker = LittleGhost::CodeMode::Broker.new(agent:, registry:, dispatch:)
+    session = ruby_session(broker:)
+
+    Async do
+      calling_thread = Thread.current.object_id
+      result = session.execute(source: "tools.observe", catalog: broker.catalog)
+
+      assert_equal "observed", result.value
+      assert_equal 1, observations.length
+      refute_equal calling_thread, observations.first
+    end.wait
+  ensure
+    session&.close
+    registry&.close
+  end
+
+  def test_ruby_scheduler_task_reports_an_immediate_nested_tool_failure
+    tool = LittleGhost::Tool.define(name: "fail", description: "Fail.") { "unused" }
+    registry = LittleGhost::ToolRegistry.new([tool])
+    broker = LittleGhost::CodeMode::Broker.new(
+      registry:,
+      dispatch: ->(_call) { raise "nested failure" }
+    )
+    session = ruby_session(broker:)
+
+    Async do
+      error = assert_raises(RuntimeError) do
+        session.execute(source: "tools.fail", catalog: broker.catalog)
+      end
+
+      assert_equal "nested failure", error.message
+    end.wait
+  ensure
+    begin
+      session&.close
+    rescue RuntimeError
+      nil
+    end
+    registry&.close
+  end
+
+  def test_ruby_program_watchdog_uses_a_scheduler_task
+    registry = LittleGhost::ToolRegistry.new([])
+    broker = LittleGhost::CodeMode::Broker.new(registry:)
+    session = ruby_session(broker:, observation_seconds: 0.005)
+
+    Async do
+      result = session.execute(source: "sleep 1", catalog: [])
+      watchdog = session.instance_variable_get(:@watchdog)
+
+      assert_predicate result, :still_working?
+      assert_predicate watchdog, :alive?
+      session.stop
+    end.wait
   ensure
     session&.close
     registry&.close

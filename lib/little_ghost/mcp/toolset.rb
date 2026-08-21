@@ -111,7 +111,7 @@ module LittleGhost
         # Generates Tool classes for an Agent's current binding.
         def tools(binding)
           options = resolved_connection(binding)
-          context = binding.run.context if binding.run&.respond_to?(:context)
+          context = binding.run&.context
           mapper = tool_mapping_value
           result_mapper = result_mapping_value
           options = connection_with_wrapped_signer(options)

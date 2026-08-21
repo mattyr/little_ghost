@@ -14,6 +14,7 @@ module LittleGhost
 
         def initialize(broker:, sandbox_factory:, subprocess_policy:, limits:, observation_seconds: OBSERVATION_SECONDS)
           @broker = broker
+          @task_runner = broker.task_runner
           @sandbox_factory = sandbox_factory
           @subprocess_policy = subprocess_policy
           @limits = limits
@@ -28,7 +29,7 @@ module LittleGhost
           @control_mutex = Mutex.new
           @programs = 0
           @call_mutex = Mutex.new
-          @call_threads = []
+          @call_tasks = []
           @call_errors = []
           @closing_marker = {closing: false}
           @lifecycle_mutex = Mutex.new
@@ -268,20 +269,18 @@ module LittleGhost
         end
 
         def dispatch_call(message, process)
-          thread = @call_mutex.synchronize do
-            active = @call_threads.count(&:alive?)
+          @call_mutex.synchronize do
+            active = @call_tasks.count(&:alive?)
             raise ProtocolError, "code-mode concurrent tool call limit exceeded" if active >= @limits.fetch(:concurrency)
 
             call_errors = @call_errors
             closing_marker = @closing_marker
-            Thread.new do
+            @call_tasks << @task_runner.spawn do
               answer_call(message, process, closing_marker)
             rescue => error
               @call_mutex.synchronize { call_errors << error }
             end
           end
-          thread.report_on_exception = false
-          @call_mutex.synchronize { @call_threads << thread }
         end
 
         def append_output(value)
@@ -342,14 +341,14 @@ module LittleGhost
           end
           target, session, sandbox, workspace, directory = claimed
           watchdog = cancel_watchdog(target)
-          threads, call_errors = @call_mutex.synchronize do
-            current_threads = @call_threads
+          tasks, call_errors = @call_mutex.synchronize do
+            current_tasks = @call_tasks
             current_errors = @call_errors
             @closing_marker[:closing] = true
-            @call_threads = []
+            @call_tasks = []
             @call_errors = []
             @closing_marker = {closing: false}
-            [current_threads, current_errors]
+            [current_tasks, current_errors]
           end
           first_error = nil
           begin
@@ -358,17 +357,19 @@ module LittleGhost
             first_error ||= error
           end
           deadline = monotonic_time + @limits.fetch(:cleanup_seconds)
-          threads.each do |thread|
+          tasks.each do |task|
             remaining = deadline - monotonic_time
             break unless remaining.positive?
 
             begin
-              thread.join(remaining)
+              task.wait(deadline: Time.now + remaining)
+            rescue DeadlineExceededError
+              break
             rescue => error
               first_error ||= error
             end
           end
-          if threads.any?(&:alive?)
+          if tasks.any?(&:alive?)
             @closed = true
             first_error ||= CleanupError.new("Code-mode nested tool cleanup timed out")
           end
@@ -389,14 +390,14 @@ module LittleGhost
           rescue => error
             first_error ||= error
           end
-          watchdog&.join unless watchdog.equal?(Thread.current)
+          watchdog&.wait unless watchdog&.current?
           raise first_error if first_error
         end
 
         def start_watchdog(generation, deadline)
           @watchdog_mutex.synchronize do
             @watchdog_generation = generation
-            @watchdog = Thread.new do
+            @watchdog = @task_runner.spawn do
               expired = @watchdog_mutex.synchronize do
                 loop do
                   break false unless @watchdog_generation.equal?(generation)
@@ -411,7 +412,6 @@ module LittleGhost
             rescue => error
               record_program_error(generation, error)
             end
-            @watchdog.report_on_exception = false
           end
         end
 
@@ -419,11 +419,11 @@ module LittleGhost
           @watchdog_mutex.synchronize do
             return unless !generation || @watchdog_generation.equal?(generation)
 
-            thread = @watchdog
+            task = @watchdog
             @watchdog_generation = nil
             @watchdog = nil
             @watchdog_condition.broadcast
-            thread
+            task
           end
         end
 

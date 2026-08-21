@@ -4,6 +4,7 @@ require "fileutils"
 require "tmpdir"
 require "test_helper"
 require "little_ghost/ag_ui"
+require "async"
 
 class ConfigurationTest < Minitest::Test
   def test_code_mode_configuration_is_explicit_and_frozen
@@ -43,6 +44,136 @@ class ConfigurationTest < Minitest::Test
 
       assert_equal 1, runtimes.map(&:object_id).uniq.length
       assert_same configuration.runtime, runtimes.first
+    end
+  end
+
+  def test_configuration_builds_its_shared_runtime_once_across_sibling_fibers
+    Dir.mktmpdir do |root|
+      started = Queue.new
+      release = Queue.new
+      configuration = LittleGhost::Configuration.new(root:)
+      configuration.define_singleton_method(:load_file!) do |root: nil|
+        started << true
+        release.pop
+        super(root:)
+      end
+
+      runtimes = nil
+      Async do |task|
+        first = task.async { configuration.runtime }
+        started.pop
+        second = task.async { configuration.runtime }
+        task.yield
+        release << true
+        runtimes = [first.wait, second.wait]
+      end.wait
+
+      assert_same runtimes.first, runtimes.last
+    ensure
+      release << true if release
+    end
+  end
+
+  def test_recursive_runtime_build_in_the_same_execution_context_is_rejected
+    Dir.mktmpdir do |root|
+      configuration = LittleGhost::Configuration.new(root:)
+      configuration.define_singleton_method(:load_file!) do |root: nil|
+        runtime
+        super(root:)
+      end
+
+      error = assert_raises(LittleGhost::ConfigurationError) { configuration.runtime }
+
+      assert_includes error.message, "cannot be called while the shared Runtime is starting"
+    end
+  end
+
+  def test_recursive_runtime_build_in_a_descendant_scheduled_fiber_is_rejected
+    Dir.mktmpdir do |root|
+      configuration = LittleGhost::Configuration.new(root:)
+      configuration.define_singleton_method(:load_file!) do |root: nil|
+        task = LittleGhost::Support::TaskRunner.new(backend: :fiber).spawn { runtime }
+        task.wait(deadline: Time.now + 1)
+        raise task.error if task.error
+        super(root:)
+      end
+
+      error = nil
+      Async do
+        error = assert_raises(LittleGhost::ConfigurationError) { configuration.runtime }
+      end.wait
+
+      assert_includes error.message, "cannot be called while the shared Runtime is starting"
+    end
+  end
+
+  def test_unrelated_sibling_fiber_cannot_mutate_configuration_during_file_loading
+    Dir.mktmpdir do |root|
+      started = Queue.new
+      release = Queue.new
+      config_path = File.join(root, "config/little_ghost.rb")
+      FileUtils.mkdir_p(File.dirname(config_path))
+      File.write(config_path, "# loaded by the test override\n")
+      configuration = LittleGhost::Configuration.new(root:)
+      configuration.define_singleton_method(:load_configuration_file) do |_path|
+        editable_values = copy_configuration_value(@configuration_values)
+        @lifecycle_monitor.synchronize do
+          @configuration_values = editable_values
+          @configuration_file_loading = true
+        end
+        started << true
+        release.pop
+        prompt_paths << "file/prompts"
+      ensure
+        sealed_values = freeze_configuration_copy(@configuration_values)
+        @lifecycle_monitor.synchronize do
+          @configuration_values = sealed_values
+          @configuration_file_loading = false
+        end
+      end
+
+      runtime = nil
+      Async do |task|
+        builder = task.async { configuration.runtime }
+        started.pop
+        assert_raises(LittleGhost::ConfigurationError) do
+          configuration.prompt_paths << "sibling/prompts"
+        end
+        release << true
+        runtime = builder.wait
+      end.wait
+
+      paths = runtime.prompt_paths.to_a.map { |entry| entry.path.to_s }
+      assert paths.any? { |path| path.end_with?("/file/prompts") }
+      refute paths.any? { |path| path.end_with?("/sibling/prompts") }
+    ensure
+      release << true if release
+    end
+  end
+
+  def test_concurrency_backend_is_validated_and_copied_to_the_runtime
+    configuration = LittleGhost::Configuration.new(concurrency_backend: :thread)
+
+    assert_equal :auto, LittleGhost::Configuration.new.concurrency_backend
+    assert_equal :thread, configuration.concurrency_backend
+    assert_equal :thread, LittleGhost::Runtime.new(configuration:).task_runner.backend
+    assert_equal :fiber, configuration.concurrency_backend(:fiber)
+    assert_raises(ArgumentError) { configuration.concurrency_backend = :unknown }
+    assert_raises(ArgumentError) { configuration[:concurrency_backend] = :unknown }
+  end
+
+  def test_blocking_pool_capacity_is_configuration
+    configuration = LittleGhost::Configuration.new
+    current_capacity = LittleGhost::Support::Executor.blocking.runner.capacity
+
+    assert_equal current_capacity, configuration.blocking_pool_capacity
+    assert_equal current_capacity, configuration[:blocking_pool_capacity]
+    assert_equal current_capacity, configuration.blocking_pool_capacity(current_capacity)
+    assert_raises(ArgumentError) do
+      LittleGhost::Configuration.new(blocking_pool_capacity: 0)
+    end
+    assert_raises(ArgumentError) do
+      LittleGhost::Configuration.new[:blocking_pool_capacity] = 2.9
     end
   end
 

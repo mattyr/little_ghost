@@ -174,7 +174,6 @@ module LittleGhost
           raise ToolError, "Command timed out" if monotonic_time >= deadline
 
           wait_thread.join(0.01)
-          Thread.pass
         end
       rescue
         terminate(wait_thread.pid)
@@ -187,7 +186,7 @@ module LittleGhost
         while monotonic_time < deadline
           return unless process_group_alive?(pid)
 
-          Thread.pass
+          sleep(0.01)
         end
 
         Process.kill("KILL", -pid)

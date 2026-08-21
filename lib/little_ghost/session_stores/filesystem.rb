@@ -21,16 +21,24 @@ module LittleGhost
     # pass it directly when opening a Session. Calls for the same session wait
     # for one writer, including when separate Ruby processes share the root.
     #
-    # **Warning:** The root contains readable session data and is not encrypted.
-    # Its complete path must be application-controlled: anyone able to read it
-    # can read session data, and anyone able to replace it can alter sessions.
+    # >>>
+    #   <b>Safety note:</b> The root contains readable session data and is not
+    #   encrypted. Its complete path must be application-controlled: anyone able
+    #   to read it can read session data, and anyone able to replace it can alter
+    #   sessions.
     #
     # Session data is stored as ordinary JSON with canonical String keys. A
-    # value outside that boundary raises ProtocolError without replacing the
-    # previous snapshot. Shared roots require filesystem support for file
-    # locking and atomic rename.
+    # value that cannot be represented that way raises ProtocolError without
+    # replacing the previous snapshot. Shared roots require filesystem support for file
+    # locking and atomic rename. Waiting for another process does not pause other
+    # scheduled fibers. In a scheduled fiber, file transactions use
+    # LittleGhost's shared thread pool. Set Configuration#blocking_pool_capacity
+    # during process startup if measurements show calls waiting for its two
+    # default workers. Store calls do not accept cancellation or deadlines, so
+    # a cross-process lock wait continues until the other process releases it.
     class Filesystem < SessionStore
       FORMAT_VERSION = 1 # :nodoc:
+      LOCK_RETRY_INTERVAL = 0.01 # :nodoc:
 
       # Creates a store rooted at +root+ and creates the directory when needed.
       #
@@ -62,9 +70,10 @@ module LittleGhost
       # Atomically appends sanitized +messages+ and returns the updated snapshot.
       #
       # +expected_count+ must match the stored history length. +state+ and
-      # +metadata+ must meet this store's JSON boundary. Raises ProtocolError
-      # when another writer changed the session or the snapshot cannot be read
-      # or written. Raises Error when +actor_id+ does not match the session.
+      # +metadata+ must contain values this store can represent as JSON. Raises
+      # ProtocolError when another writer changed the session or the snapshot
+      # cannot be read or written. Raises Error when +actor_id+ does not match
+      # the session.
       def append(id, messages:, state:, metadata:, expected_count:, actor_id: nil)
         messages = persistable_messages(messages)
         state = canonical_map(state)
@@ -135,10 +144,17 @@ module LittleGhost
         path = lock_path(id)
         validate_entry!(path) if File.exist?(path) || File.symlink?(path)
         File.open(path, File::RDWR | File::CREAT, 0o600) do |lock|
-          lock.flock(File::LOCK_EX)
-          yield
-        ensure
-          lock.flock(File::LOCK_UN)
+          loop do
+            if lock.flock(File::LOCK_EX | File::LOCK_NB)
+              begin
+                accepted, value = Support::Executor.blocking.try_call { yield }
+                return value if accepted
+              ensure
+                lock.flock(File::LOCK_UN)
+              end
+            end
+            sleep(LOCK_RETRY_INTERVAL)
+          end
         end
       end
 

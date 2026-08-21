@@ -70,6 +70,7 @@ module LittleGhost
             method: :post,
             headers:,
             body:,
+            cancellation_token:,
             deadline:,
             allow_insecure_http: @allow_insecure_http,
             label: "Provider"
@@ -119,7 +120,12 @@ module LittleGhost
         http.write_timeout = remaining_timeout(deadline, @read_timeout)
         http.request(request) do |response|
           unless response.is_a?(Net::HTTPSuccess)
-            response_body = read_limited(response, @max_error_body_bytes)
+            response_body = read_limited(
+              response,
+              @max_error_body_bytes,
+              cancellation_token:,
+              deadline:
+            )
             raise Providers::HTTPError.new(
               "#{label} failed with HTTP #{response.code}",
               status: response.code.to_i,
@@ -165,9 +171,10 @@ module LittleGhost
         [remaining, maximum].min
       end
 
-      def read_limited(response, limit)
+      def read_limited(response, limit, cancellation_token:, deadline:)
         body = +""
         response.read_body do |chunk|
+          check_control!(cancellation_token, deadline)
           remaining = limit - body.bytesize
           body << chunk.byteslice(0, remaining) if remaining.positive?
           break if body.bytesize >= limit
