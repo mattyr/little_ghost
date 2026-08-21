@@ -107,7 +107,7 @@ class PromptResolverTest < Minitest::Test
     assert_equal((0...10).map { |index| "Hello #{index}" }, results)
   end
 
-  def test_offloads_template_reads_without_moving_erb_evaluation
+  def test_template_reads_and_erb_evaluation_use_the_scheduler_thread
     write(@application, "system.erb", "Hello <%= PromptSchedulerProbe.call %>")
     evaluation_thread = nil
     Object.const_set(:PromptSchedulerProbe, lambda {
@@ -137,7 +137,7 @@ class PromptResolverTest < Minitest::Test
     end.wait
 
     assert_equal "Hello Ghost", result
-    refute_same scheduler_thread, read_thread
+    assert_same scheduler_thread, read_thread
     assert_same scheduler_thread, evaluation_thread
   ensure
     release&.push(true)

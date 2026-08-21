@@ -30,9 +30,8 @@ module LittleGhost
     # Session data is stored as ordinary JSON with canonical String keys. A
     # value outside that boundary raises ProtocolError without replacing the
     # previous snapshot. Shared roots require filesystem support for file
-    # locking and atomic rename. From an active scheduler fiber, initialization
-    # and each locked read or write run on a worker thread. The calling fiber
-    # waits for the result while unrelated scheduler fibers can continue. Store
+    # locking and atomic rename. Lock contention uses scheduler-aware polling;
+    # durable transactions use a small, lazily created blocking pool. Store
     # calls do not accept cancellation or deadlines, so a cross-process lock
     # wait continues until the other process releases it.
     class Filesystem < SessionStore
@@ -49,10 +48,8 @@ module LittleGhost
         @root = File.expand_path(String(root))
         raise ArgumentError, "root must not be empty" if root.to_s.empty?
 
-        Support::BlockingOperation.call do
-          FileUtils.mkdir_p(@root, mode: 0o700)
-          validate_root!
-        end
+        FileUtils.mkdir_p(@root, mode: 0o700)
+        validate_root!
       end
 
       # Returns the stored snapshot for +id+, or +nil+ before the first write.
@@ -141,14 +138,19 @@ module LittleGhost
       end
 
       def with_lock(id)
-        Support::BlockingOperation.call do
-          path = lock_path(id)
-          validate_entry!(path) if File.exist?(path) || File.symlink?(path)
-          File.open(path, File::RDWR | File::CREAT, 0o600) do |lock|
-            sleep(LOCK_RETRY_INTERVAL) until lock.flock(File::LOCK_EX | File::LOCK_NB)
-            yield
-          ensure
-            lock.flock(File::LOCK_UN)
+        path = lock_path(id)
+        validate_entry!(path) if File.exist?(path) || File.symlink?(path)
+        File.open(path, File::RDWR | File::CREAT, 0o600) do |lock|
+          loop do
+            if lock.flock(File::LOCK_EX | File::LOCK_NB)
+              begin
+                accepted, value = Support::BlockingOperation.try_call(lane: :filesystem) { yield }
+                return value if accepted
+              ensure
+                lock.flock(File::LOCK_UN)
+              end
+            end
+            sleep(LOCK_RETRY_INTERVAL)
           end
         end
       end

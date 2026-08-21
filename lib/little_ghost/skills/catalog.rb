@@ -65,7 +65,7 @@ module LittleGhost
         @only = Array(only).map(&:to_s).freeze if only
         @resource_root = ResourceRoot.normalize(resource_root)
         validate_workspace_resource_root!(workspace, sandbox)
-        @skills = Support::BlockingOperation.call { load_skills }
+        @skills = load_skills
         validate_workspace_resource_aliases!(sandbox)
       end
 
@@ -135,7 +135,7 @@ module LittleGhost
         metadata << "Compatibility: #{skill.compatibility}" if skill.compatibility
         metadata << "Location: #{skill.path}"
         parts << "\n---\n#{metadata.join("\n")}" unless metadata.empty?
-        resources = Support::BlockingOperation.call { skill_resources(skill) }
+        resources = skill_resources(skill)
         unless resources.empty?
           parts << "\nAvailable resources:\n#{resources.map { |path| "  #{path}" }.join("\n")}"
         end
@@ -278,12 +278,9 @@ module LittleGhost
           raise ConfigurationError, "workspace resource_root requires the Sandbox bound to its Workspace"
         end
 
-        physical_root, source_roots = Support::BlockingOperation.call do
-          resolved_root = File.realpath(workspace.resolve(@resource_root))
-          roots = @paths.filter_map do |root|
-            File.realpath(root.path) if Dir.exist?(root.path)
-          end
-          [resolved_root, roots]
+        physical_root = File.realpath(workspace.resolve(@resource_root))
+        source_roots = @paths.filter_map do |root|
+          File.realpath(root.path) if Dir.exist?(root.path)
         end
         unless source_roots.all? { |source_root| source_root == physical_root }
           raise ConfigurationError, "workspace resource_root must map to each skill path"
@@ -293,11 +290,9 @@ module LittleGhost
           raise ConfigurationError, "workspace resource_root must be tool-readable and read-only"
         end
         grants = writable_tool_grants(sandbox)
-        writable_inside_root = Support::BlockingOperation.call do
-          grants.any? do |grant|
-            source = File.realpath(grant.source)
-            source == physical_root || source.start_with?("#{physical_root}#{File::SEPARATOR}")
-          end
+        writable_inside_root = grants.any? do |grant|
+          source = File.realpath(grant.source)
+          source == physical_root || source.start_with?("#{physical_root}#{File::SEPARATOR}")
         end
         if writable_inside_root
           raise ConfigurationError, "workspace resource_root must not contain writable file grants"
@@ -311,12 +306,10 @@ module LittleGhost
         return unless @workspace_physical_root
 
         grants = writable_tool_grants(sandbox)
-        aliased = Support::BlockingOperation.call do
-          protected_identities = protected_directory_identities
-          grants.any? do |grant|
-            stat = File.stat(grant.source)
-            protected_identities.include?([stat.dev, stat.ino])
-          end
+        protected_identities = protected_directory_identities
+        aliased = grants.any? do |grant|
+          stat = File.stat(grant.source)
+          protected_identities.include?([stat.dev, stat.ino])
         end
         if aliased
           raise ConfigurationError, "workspace resource_root must not contain writable file grants"

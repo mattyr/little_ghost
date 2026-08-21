@@ -53,6 +53,20 @@ module LittleGhost
             raise value if state == :failure
             next if state == :retry
 
+            if Fiber.current_scheduler&.respond_to?(:fiber)
+              begin
+                Fiber.schedule do
+                  refresh(value, cancellation_token: nil, deadline: nil)
+                rescue
+                  nil
+                end
+              rescue => error
+                finish_refresh(value, failure: error)
+                raise
+              end
+              next
+            end
+
             return refresh(value, cancellation_token:, deadline:)
           end
         end
@@ -67,15 +81,13 @@ module LittleGhost
           check_control!(cancellation_token, deadline)
           file = @environment["GOOGLE_APPLICATION_CREDENTIALS"]
           token, expires_in = begin
-            Support::BlockingOperation.call do
-              if file
-                service_account_token(file, cancellation_token: nil, deadline: nil)
-              else
-                metadata_token(cancellation_token: nil, deadline: nil)
-              end
+            if file
+              service_account_token(file, cancellation_token:, deadline:)
+            else
+              metadata_token(cancellation_token:, deadline:)
             end
           rescue => error
-            @mutex.synchronize { @refresh_failure = [generation, error] }
+            finish_refresh(generation, failure: error)
             raise
           end
           @mutex.synchronize do
@@ -86,7 +98,12 @@ module LittleGhost
           check_control!(cancellation_token, deadline)
           token
         ensure
+          finish_refresh(generation) if @mutex.synchronize { @refreshing && @refresh_generation == generation }
+        end
+
+        def finish_refresh(generation, failure: nil)
           @mutex.synchronize do
+            @refresh_failure = [generation, failure] if failure
             @refreshing = false
             @condition.broadcast
           end

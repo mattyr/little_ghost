@@ -10,12 +10,9 @@ module LittleGhost
   # links immediately and rejects missing or non-directory paths.
   TrustedPath = Data.define(:path) do # :nodoc:
     def initialize(path:)
-      expanded = Support::BlockingOperation.call do
-        real_path = File.realpath(path)
-        raise ArgumentError, "trusted template path must be a directory" unless File.directory?(real_path)
+      expanded = File.realpath(path)
+      raise ArgumentError, "trusted template path must be a directory" unless File.directory?(expanded)
 
-        real_path
-      end
       super(path: expanded.freeze)
     rescue Errno::ENOENT
       raise ArgumentError, "trusted template path must exist"
@@ -137,7 +134,7 @@ module LittleGhost
     end
 
     def resolve(name, roots)
-      path = Support::BlockingOperation.call { resolve_filesystem(name, roots) }
+      path = resolve_filesystem(name, roots)
       return path if path
 
       raise MissingPromptTemplateError, "Prompt template not found: #{name}"
@@ -163,18 +160,16 @@ module LittleGhost
     end
 
     def compiled_template(path)
-      Support::BlockingOperation.call do
-        stat = File.stat(path)
-        fingerprint = [stat.mtime.to_r, stat.size]
+      stat = File.stat(path)
+      fingerprint = [stat.mtime.to_r, stat.size]
 
-        @cache_mutex.synchronize do
-          cached = @cache[path]
-          next cached[:template] if cached && cached[:fingerprint] == fingerprint
+      @cache_mutex.synchronize do
+        cached = @cache[path]
+        return cached[:template] if cached && cached[:fingerprint] == fingerprint
 
-          template = ERB.new(File.read(path), trim_mode: "-")
-          @cache[path] = {fingerprint: fingerprint, template: template}
-          template
-        end
+        template = ERB.new(File.read(path), trim_mode: "-")
+        @cache[path] = {fingerprint: fingerprint, template: template}
+        template
       end
     end
 

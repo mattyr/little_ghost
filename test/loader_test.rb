@@ -39,7 +39,7 @@ class LoaderTest < Minitest::Test
     end
   end
 
-  def test_eager_load_runs_off_the_scheduler_and_keeps_loader_lock_reentrant
+  def test_eager_load_runs_on_the_scheduler_and_keeps_loader_lock_reentrant
     Dir.mktmpdir do |root|
       loader = LittleGhost::Support::Loader.new(root:)
       Object.const_set(:SchedulerLoaderUnderTest, loader)
@@ -56,7 +56,7 @@ class LoaderTest < Minitest::Test
         loader.eager_load
       end.wait
 
-      refute_same scheduler_thread, SchedulerLoaderFixture::THREAD
+      assert_same scheduler_thread, SchedulerLoaderFixture::THREAD
       assert_same SchedulerLoaderFixture, loader.constant("SchedulerLoaderFixture")
     ensure
       Object.send(:remove_const, :SchedulerLoaderFixture) if Object.const_defined?(:SchedulerLoaderFixture, false)

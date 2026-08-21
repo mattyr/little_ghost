@@ -142,6 +142,8 @@ class VertexAICredentialResolverTest < Minitest::Test
     entered = Queue.new
     release = Queue.new
     owner_error = nil
+    owner_finished = Queue.new
+    owner_finished_before_release = false
     waiter_result = nil
     calls = 0
 
@@ -158,20 +160,38 @@ class VertexAICredentialResolverTest < Minitest::Test
           resolver.call(deadline: Time.now + 0.02)
         rescue => error
           owner_error = error
+        ensure
+          owner_finished << true
         end
         entered.pop
         task.async { waiter_result = resolver.call }
         task.async do |child|
           child.sleep(0.05)
+          owner_finished_before_release = !owner_finished.empty?
           release << true
         end
       end
     end
 
     assert_instance_of LittleGhost::DeadlineExceededError, owner_error
+    assert owner_finished_before_release
     assert_equal "shared-token", waiter_result
     assert_equal 1, calls
   ensure
     release << true if release && release.empty?
+  end
+
+  def test_refresh_uses_caller_control_without_a_scheduler
+    resolver = LittleGhost::Providers::VertexAI::CredentialResolver.new(environment: {})
+    token = LittleGhost::Support::CancellationToken.new
+    deadline = Time.now + 1
+
+    stub_http_client(lambda { |**arguments|
+      assert_same token, arguments.fetch(:cancellation_token)
+      assert_same deadline, arguments.fetch(:deadline)
+      JSON.generate(access_token: "token", expires_in: 3600)
+    }) do
+      assert_equal "token", resolver.call(cancellation_token: token, deadline: deadline)
+    end
   end
 end

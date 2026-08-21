@@ -72,7 +72,7 @@ class ArtifactsTest < Minitest::Test
     end
   end
 
-  def test_workspace_store_materializes_off_the_scheduler_thread
+  def test_workspace_store_uses_scheduler_native_file_io
     with_workspace do |workspace|
       materializer_thread = nil
 
@@ -86,7 +86,7 @@ class ArtifactsTest < Minitest::Test
         end
 
         store.write(data: "report", media_type: "text/plain")
-        refute_same scheduler_thread, materializer_thread
+        assert_same scheduler_thread, materializer_thread
       end
     end
   end

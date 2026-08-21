@@ -71,6 +71,75 @@ class SandboxProcessRunnerTest < Minitest::Test
     assert heartbeat_before_finish
   end
 
+  def test_process_spawn_does_not_block_the_scheduler_thread
+    started = Queue.new
+    release = Queue.new
+    spawn_thread = nil
+    scheduler_thread = nil
+    session = nil
+    original_spawn = Process.method(:spawn)
+
+    Async do |task|
+      scheduler_thread = Thread.current
+      opening = task.async do
+        Process.stub(:spawn, lambda { |*arguments, **options|
+          spawn_thread = Thread.current
+          started << true
+          release.pop
+          original_spawn.call(*arguments, **options)
+        }) do
+          session = LittleGhost::Sandbox::ProcessSession.new(command: [Gem.ruby, "-e", "exit"])
+        end
+      end
+      started.pop
+      release << true
+      opening.wait
+    end.wait
+
+    refute_same scheduler_thread, spawn_thread
+  ensure
+    release&.push(true)
+    session&.close
+  end
+
+  def test_cancellation_during_process_spawn_terminates_the_spawned_process
+    started = Queue.new
+    release = Queue.new
+    spawned = Queue.new
+    original_spawn = Process.method(:spawn)
+
+    Async do |task|
+      opening = task.async do
+        Process.stub(:spawn, lambda { |*arguments, **options|
+          started << true
+          release.pop
+          pid = original_spawn.call(*arguments, **options)
+          spawned << pid
+          pid
+        }) do
+          LittleGhost::Sandbox::ProcessSession.new(command: [Gem.ruby, "-e", "sleep 30"])
+        end
+      end
+      started.pop
+      opening.stop
+      release << true
+      @cancelled_spawn_pid = spawned.pop
+      opening.wait
+    end.wait
+
+    assert_raises(Errno::ESRCH) { Process.kill(0, @cancelled_spawn_pid) }
+  ensure
+    release&.push(true)
+    if @cancelled_spawn_pid
+      begin
+        Process.kill("KILL", -@cancelled_spawn_pid)
+        Process.waitpid(@cancelled_spawn_pid)
+      rescue Errno::ESRCH, Errno::ECHILD
+        nil
+      end
+    end
+  end
+
   def test_process_session_enforces_parent_supervised_memory
     samples = Queue.new
     session = LittleGhost::Sandbox::ProcessSession.new(

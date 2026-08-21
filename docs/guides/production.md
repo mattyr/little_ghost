@@ -118,10 +118,21 @@ be an application error. LittleGhost then raises
 `LittleGhost::ConfigurationError` instead of falling back to a thread.
 
 Fiber scheduling helps while work waits for I/O; it does not make CPU-heavy
-Ruby code run in parallel. Some built-in provider, SDK, filesystem, and process
-operations still use worker threads so a blocking call does not stop the
-scheduler and owned work can be interrupted during cleanup. Fiber mode reduces
-orchestration threads; it does not promise a thread-free Run.
+Ruby code run in parallel. Ordinary IO, including local file reads and writes,
+stays on the scheduled fiber and uses Ruby's scheduler hooks. Configuration,
+loading, and extension construction run in the calling context. A slow
+filesystem or blocking library in any of those paths can pause the other
+fibers on that thread.
+
+A few boundaries remain threaded because their cleanup or durability contract
+requires it. Blocking provider or subprocess adapters may own dedicated
+threads that can be interrupted or kept draining during cleanup. Run-scoped
+certificate generation and process startup share a small, lazily created
+blocking pool. The Filesystem SessionStore uses a separate bounded pool for
+durable transactions; it releases a session lock instead of holding it while
+waiting for worker capacity.
+Fiber mode removes orchestration threads; it does not promise a thread-free
+Run.
 
 Custom Tools, providers, SessionStores, hooks, and callbacks can be entered by
 several threads or by fibers interleaved on one thread. Protect shared mutable

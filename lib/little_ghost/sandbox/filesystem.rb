@@ -35,33 +35,31 @@ module LittleGhost
         @max_read_bytes = positive_integer(max_read_bytes, "read limit")
         @max_write_bytes = positive_integer(max_write_bytes, "write limit")
         @max_list_entries = positive_integer(max_list_entries, "listing limit")
-        @mount_identities = Support::BlockingOperation.call do
-          @mounts.to_h do |mount|
-            root = File.realpath(mount.source)
-            stat = File.stat(root)
-            [mount, [root.freeze, stat.dev, stat.ino].freeze]
-          rescue Errno::ENOENT
-            raise ToolError, "Sandbox mount source does not exist"
-          end.freeze
-        end
+        @mount_identities = @mounts.to_h do |mount|
+          root = File.realpath(mount.source)
+          stat = File.stat(root)
+          [mount, [root.freeze, stat.dev, stat.ino].freeze]
+        rescue Errno::ENOENT
+          raise ToolError, "Sandbox mount source does not exist"
+        end.freeze
       end
 
       attr_reader :mounts, :relative_root
 
       def allows?(operation, path)
-        Support::BlockingOperation.call { allows_blocking?(operation, path) }
+        allows_path?(operation, path)
       end
 
       def read(path, context: nil)
-        Support::BlockingOperation.call { read_blocking(path, context:) }
+        read_path(path, context:)
       end
 
       def list(path = ".", context: nil)
-        Support::BlockingOperation.call { list_blocking(path, context:) }
+        list_path(path, context:)
       end
 
       def write(path, content, context: nil)
-        Support::BlockingOperation.call { write_blocking(path, content, context:) }
+        write_path(path, content, context:)
       end
 
       def replace(path, old_text, new_text, context: nil)
@@ -78,7 +76,7 @@ module LittleGhost
 
       private
 
-      def allows_blocking?(operation, path)
+      def allows_path?(operation, path)
         writable = %i[filesystem_write filesystem_replace].include?(operation.to_sym)
         mount, relative = resolve(path, allow_root: true)
         return false if writable && !mount.writable?
@@ -88,7 +86,7 @@ module LittleGhost
         false
       end
 
-      def read_blocking(path, context: nil)
+      def read_path(path, context: nil)
         context&.check!
         mount, relative = resolve(path)
         with_file(mount, relative, flags: read_flags, mode: "r") do |file|
@@ -109,7 +107,7 @@ module LittleGhost
         raise ToolError, "Path does not exist"
       end
 
-      def list_blocking(path = ".", context: nil)
+      def list_path(path = ".", context: nil)
         context&.check!
         normalized_path = virtual_path(path)
         children = virtual_children(normalized_path)
@@ -135,7 +133,7 @@ module LittleGhost
         raise ToolError, "Path is not a directory"
       end
 
-      def write_blocking(path, content, context: nil)
+      def write_path(path, content, context: nil)
         context&.check!
         mount, relative = resolve(path)
         raise ToolError, "Sandbox scope is read-only" unless mount.writable?

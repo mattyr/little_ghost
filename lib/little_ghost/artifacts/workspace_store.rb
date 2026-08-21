@@ -70,7 +70,7 @@ module LittleGhost
         @artifacts = {}
         @total_bytes = 0
         @namespace = SecureRandom.hex(8).freeze
-        @root, @root_identity = Support::BlockingOperation.call { validate_root! }
+        @root, @root_identity = validate_root!
       end
 
       # Materializes +data+ once for an identical name, media type, and byte
@@ -87,29 +87,27 @@ module LittleGhost
 
         context&.check!
         control = context_control(context)
-        Support::BlockingOperation.call do
-          prepared = entries.map { |entry| prepare_entry(entry) }
-          @mutex.synchronize do
-            control&.check!
-            created = []
-            begin
-              prepared.map do |entry|
-                control&.check!
-                digest = entry.fetch(:digest)
-                next @artifacts.fetch(digest) if @artifacts.key?(digest)
+        prepared = entries.map { |entry| prepare_entry(entry) }
+        @mutex.synchronize do
+          control&.check!
+          created = []
+          begin
+            prepared.map do |entry|
+              control&.check!
+              digest = entry.fetch(:digest)
+              next @artifacts.fetch(digest) if @artifacts.key?(digest)
 
-                reserve!(entry.fetch(:data).bytesize)
-                record = entry.merge(materialized: false)
-                created << record
-                artifact = materialize(**entry, control:)
-                @artifacts[digest] = artifact
-                record[:materialized] = true
-                artifact
-              end.freeze
-            rescue => error
-              rollback_batch(created, error:)
-              raise
-            end
+              reserve!(entry.fetch(:data).bytesize)
+              record = entry.merge(materialized: false)
+              created << record
+              artifact = materialize(**entry, control:)
+              @artifacts[digest] = artifact
+              record[:materialized] = true
+              artifact
+            end.freeze
+          rescue => error
+            rollback_batch(created, error:)
+            raise
           end
         end
       end

@@ -122,14 +122,12 @@ module LittleGhost
     def validate!
       return self unless @identities
 
-      Support::BlockingOperation.call do
-        {root: root}.merge(paths).each do |name, path|
-          realpath = File.realpath(path)
-          stat = File.stat(realpath)
-          expected = @identities.fetch(name)
-          unless [realpath, stat.dev, stat.ino] == expected
-            raise ToolError, "workspace path changed after opening: #{name}"
-          end
+      {root: root}.merge(paths).each do |name, path|
+        realpath = File.realpath(path)
+        stat = File.stat(realpath)
+        expected = @identities.fetch(name)
+        unless [realpath, stat.dev, stat.ino] == expected
+          raise ToolError, "workspace path changed after opening: #{name}"
         end
       end
       self
@@ -144,10 +142,8 @@ module LittleGhost
       @run = run
       @active = true
       @setup&.call(workspace: self, run:)
-      Support::BlockingOperation.call do
-        materialize!
-        capture_identities!
-      end
+      materialize!
+      capture_identities!
       @opened = true
       self
     rescue

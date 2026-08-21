@@ -74,7 +74,7 @@ class ConfigurationTest < Minitest::Test
     end
   end
 
-  def test_configuration_file_loading_yields_the_scheduler_and_keeps_build_context
+  def test_configuration_file_loading_uses_the_scheduler_and_keeps_build_context
     Dir.mktmpdir do |root|
       probe = Struct.new(:started, :release, :thread).new(Queue.new, Queue.new)
       Object.const_set(:ConfigurationFileSchedulerProbe, probe)
@@ -103,7 +103,7 @@ class ConfigurationTest < Minitest::Test
       end.wait
 
       assert progressed_while_loading
-      refute_same scheduler_thread, probe.thread
+      assert_same scheduler_thread, probe.thread
       assert_equal "loaded from file", runtime.service_name
     ensure
       probe&.release&.push(true)

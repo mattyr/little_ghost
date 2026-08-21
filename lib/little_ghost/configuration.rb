@@ -630,19 +630,17 @@ module LittleGhost
 
     def load_file!(root: nil) # :nodoc:
       requested_root = canonical_root(root || self.root)
-      Support::BlockingOperation.call do
-        FILE_LOAD_MUTEX.synchronize do
-          (@configuration_file_mutex ||= Mutex.new).synchronize do
-            if @configuration_file_root
-              next if @configuration_file_root == requested_root
+      FILE_LOAD_MUTEX.synchronize do
+        (@configuration_file_mutex ||= Mutex.new).synchronize do
+          if @configuration_file_root
+            return self if @configuration_file_root == requested_root
 
-              raise ConfigurationError, "configuration file is already loaded for #{@configuration_file_root}"
-            end
-
-            path = File.join(requested_root, "config/little_ghost.rb")
-            load_configuration_file(path) if File.file?(path)
-            @configuration_file_root = requested_root
+            raise ConfigurationError, "configuration file is already loaded for #{@configuration_file_root}"
           end
+
+          path = File.join(requested_root, "config/little_ghost.rb")
+          load_configuration_file(path) if File.file?(path)
+          @configuration_file_root = requested_root
         end
       end
 
@@ -875,12 +873,10 @@ module LittleGhost
     end
 
     def canonical_root(value)
-      Support::BlockingOperation.call do
-        path = Pathname.new(File.realpath(File.expand_path(value)))
-        raise ConfigurationError, "application root must be a directory" unless path.directory?
+      path = Pathname.new(File.realpath(File.expand_path(value)))
+      raise ConfigurationError, "application root must be a directory" unless path.directory?
 
-        path
-      end
+      path
     rescue Errno::ENOENT
       raise ConfigurationError, "application root must exist"
     end

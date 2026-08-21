@@ -114,7 +114,7 @@ module LittleGhost
 
         @region = region
         @client_factory = client_factory || -> { build_client(@region) }
-        @client = client || Support::BlockingOperation.call { @client_factory.call }
+        @client = client || @client_factory.call
         @clock = clock
         @operation_context_key = :"little_ghost_session_store_operation_#{object_id}"
         @client_mutex = Mutex.new
@@ -333,7 +333,7 @@ module LittleGhost
       end
 
       def build_replacement_client(generation, previous_client)
-        replacement = Support::BlockingOperation.call { @client_factory.call }
+        replacement = @client_factory.call
         @client_mutex.synchronize do
           if @client.equal?(previous_client)
             @client = replacement

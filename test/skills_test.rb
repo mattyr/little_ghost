@@ -36,7 +36,7 @@ class SkillsTest < Minitest::Test
     end
   end
 
-  def test_catalog_loading_yields_the_scheduler_while_reading_skills
+  def test_catalog_uses_scheduler_native_file_reads
     Dir.mktmpdir do |directory|
       skill_directory = File.join(directory, "review")
       Dir.mkdir(skill_directory)
@@ -65,7 +65,7 @@ class SkillsTest < Minitest::Test
       end.wait
 
       assert_equal ["review"], catalog.names
-      refute_same scheduler_thread, read_thread
+      assert_same scheduler_thread, read_thread
     ensure
       release&.push(true)
     end

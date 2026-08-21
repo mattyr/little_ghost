@@ -153,7 +153,7 @@ class AgentCoreMemoryTest < Minitest::Test
     end
   end
 
-  def test_builds_the_sdk_client_off_the_scheduler_thread
+  def test_builds_the_sdk_client_on_the_calling_thread
     factory_thread = nil
 
     Async do
@@ -165,7 +165,7 @@ class AgentCoreMemoryTest < Minitest::Test
           Client.new
         }
       )
-      refute_same scheduler_thread, factory_thread
+      assert_same scheduler_thread, factory_thread
     end
   end
 

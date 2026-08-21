@@ -33,6 +33,8 @@ module LittleGhost
         @stdin_r, @stdin_w = IO.pipe
         @stdout_r, @stdout_w = IO.pipe
         @stderr_r, @stderr_w = IO.pipe
+        @status = nil
+        @reap_mutex = Mutex.new
         options = {
           in: @stdin_r,
           out: @stdout_w,
@@ -43,7 +45,10 @@ module LittleGhost
         options[:chdir] = chdir if chdir
         options[:rlimit_cpu] = [Integer(cpu_seconds), Integer(cpu_seconds)] if cpu_seconds
         options[:rlimit_fsize] = [Integer(file_bytes), Integer(file_bytes)] if file_bytes
-        @pid = Support::BlockingOperation.call do
+        @pid = Support::BlockingOperation.call(on_interruption: lambda { |pid|
+          @pid = pid
+          terminate
+        }) do
           Process.spawn(
             environment.transform_keys(&:to_s).transform_values(&:to_s),
             *Array(command).map(&:to_s),
@@ -54,9 +59,7 @@ module LittleGhost
         @stdout_w.close
         @stderr_w.close
         @captured_bytes = 0
-        @status = nil
         @closed = false
-        @reap_mutex = Mutex.new
         @write_mutex = Mutex.new
         @memory_monitor = Thread.new { monitor_memory } if @memory_bytes
       rescue

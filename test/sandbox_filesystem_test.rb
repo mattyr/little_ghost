@@ -4,14 +4,14 @@ require "test_helper"
 require "async"
 
 class SandboxFilesystemTest < Minitest::Test
-  def test_filesystem_operations_run_off_the_scheduler_thread
+  def test_filesystem_operations_use_scheduler_native_io
     Dir.mktmpdir do |root|
       workspace = LittleGhost::Workspace.new(root:).open
       sandbox = LittleGhost::Sandboxes::Unrestricted.new(workspace:)
       filesystem = sandbox.scope.instance_variable_get(:@filesystem)
       operation_thread = nil
-      original = filesystem.method(:read_blocking)
-      filesystem.define_singleton_method(:read_blocking) do |path, context: nil|
+      original = filesystem.method(:read_path)
+      filesystem.define_singleton_method(:read_path) do |path, context: nil|
         operation_thread = Thread.current
         original.call(path, context:)
       end
@@ -20,7 +20,7 @@ class SandboxFilesystemTest < Minitest::Test
       Async do
         scheduler_thread = Thread.current
         assert_equal "hello", filesystem.read("note.txt")
-        refute_same scheduler_thread, operation_thread
+        assert_same scheduler_thread, operation_thread
       end
     ensure
       workspace&.close

@@ -76,7 +76,7 @@ class WorkspaceTest < Minitest::Test
     end
   end
 
-  def test_open_offloads_filesystem_work_but_keeps_setup_on_the_scheduler
+  def test_open_keeps_setup_and_filesystem_work_on_the_scheduler_thread
     Dir.mktmpdir do |root|
       started = Queue.new
       release = Queue.new
@@ -105,7 +105,7 @@ class WorkspaceTest < Minitest::Test
       end.wait
 
       assert_same scheduler_thread, setup_thread
-      refute_same scheduler_thread, filesystem_thread
+      assert_same scheduler_thread, filesystem_thread
       assert_same workspace, workspace.validate!
     ensure
       release&.push(true)
