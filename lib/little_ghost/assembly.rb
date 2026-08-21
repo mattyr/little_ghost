@@ -187,7 +187,7 @@ module LittleGhost
       runtime.build_run(payload, **options)
     end
 
-    # Starts +payload+ on a supervised worker and returns an Execution.
+    # Starts +payload+ on a supervised worker task and returns an Execution.
     # Composite assemblies include contextual +:agent_stream+ events in the
     # consumer by default. Set +include_agent_events+ to +false+ in +payload+
     # to keep only the ordinary public stream.
@@ -340,6 +340,14 @@ module LittleGhost
     protected
 
     def standalone? = @standalone # :nodoc:
+
+    def task_runner # :nodoc:
+      @task_runner ||= if runtime.respond_to?(:task_runner)
+        runtime.task_runner
+      else
+        Support::TaskRunner.new
+      end
+    end
 
     def with_active_assembly(assembly) # :nodoc:
       @assembly_mutex.synchronize do

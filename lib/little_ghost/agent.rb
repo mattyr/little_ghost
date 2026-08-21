@@ -547,7 +547,7 @@ module LittleGhost
       template_resolver: nil,
       template_paths: [],
       run: nil,
-      executor: Support::Executor.new,
+      executor: nil,
       delegation_activity: nil,
       agent_path: Subagents::AgentPath::ROOT,
       max_turns: 100,
@@ -591,7 +591,7 @@ module LittleGhost
       )
       @model_settings = model_settings.to_h.freeze
       @template_resolver = template_resolver || default_template_resolver(template_paths)
-      @executor = executor
+      @executor = executor || Support::Executor.new(task_runner:)
       @delegation_activity = delegation_activity
       @agent_path = Subagents::AgentPath.validate!(agent_path)
       @max_turns = Integer(max_turns)

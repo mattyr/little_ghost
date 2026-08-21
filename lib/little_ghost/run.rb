@@ -112,7 +112,6 @@ module LittleGhost
       @closed = false
       @started = false
       @mutex = Mutex.new
-      @event_mutex = Mutex.new
       @subagent_instrumentation_mutex = Mutex.new
       @subagent_instrumentation = {}
       @assembly_step_instrumentation_mutex = Mutex.new
@@ -146,9 +145,10 @@ module LittleGhost
       return enum_for(__method__) unless block_given?
 
       begin_execution!
-      @emitter = lambda do |event|
-        @event_mutex.synchronize { yield_event(event) { |value| yield value } }
+      dispatcher = Support::SerializedDispatcher.new do |event|
+        yield_event(event) { |value| yield value }
       end
+      @emitter = dispatcher.method(:call)
       Instrumentation.with_context(correlation_attributes.except(:operation_id)) do
         execute { |event| @emitter.call(event) }
       end

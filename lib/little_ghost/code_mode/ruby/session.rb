@@ -12,8 +12,10 @@ module LittleGhost
       class Session < CodeMode::Session # :nodoc:
         OBSERVATION_SECONDS = 60
 
-        def initialize(broker:, sandbox_factory:, subprocess_policy:, limits:, observation_seconds: OBSERVATION_SECONDS)
+        def initialize(broker:, sandbox_factory:, subprocess_policy:, limits:, observation_seconds: OBSERVATION_SECONDS,
+          task_runner: nil)
           @broker = broker
+          @task_runner = task_runner || (broker.task_runner if broker.respond_to?(:task_runner)) || Support::TaskRunner.new
           @sandbox_factory = sandbox_factory
           @subprocess_policy = subprocess_policy
           @limits = limits
@@ -22,13 +24,16 @@ module LittleGhost
           @session = nil
           @workspace = nil
           @sandbox = nil
+          @deferred_cleanup = nil
           @output = +""
           @closed = false
           @close_complete = false
           @control_mutex = Mutex.new
           @programs = 0
           @call_mutex = Mutex.new
-          @call_threads = []
+          @call_condition = ConditionVariable.new
+          @call_tasks = []
+          @call_spawns = 0
           @call_errors = []
           @closing_marker = {closing: false}
           @lifecycle_mutex = Mutex.new
@@ -268,20 +273,26 @@ module LittleGhost
         end
 
         def dispatch_call(message, process)
-          thread = @call_mutex.synchronize do
-            active = @call_threads.count(&:alive?)
+          call_errors, closing_marker = @call_mutex.synchronize do
+            active = @call_tasks.count(&:alive?)
             raise ProtocolError, "code-mode concurrent tool call limit exceeded" if active >= @limits.fetch(:concurrency)
 
-            call_errors = @call_errors
-            closing_marker = @closing_marker
-            Thread.new do
-              answer_call(message, process, closing_marker)
-            rescue => error
-              @call_mutex.synchronize { call_errors << error }
+            @call_spawns += 1
+            [@call_errors, @closing_marker]
+          end
+          task = @task_runner.spawn do
+            answer_call(message, process, closing_marker)
+          rescue => error
+            @call_mutex.synchronize { call_errors << error }
+          end
+          @call_mutex.synchronize { @call_tasks << task }
+        ensure
+          if call_errors
+            @call_mutex.synchronize do
+              @call_spawns -= 1
+              @call_condition.broadcast
             end
           end
-          thread.report_on_exception = false
-          @call_mutex.synchronize { @call_threads << thread }
         end
 
         def append_output(value)
@@ -327,50 +338,86 @@ module LittleGhost
         end
 
         def close_process(generation: nil)
+          pending_call_cleanup = @call_mutex.synchronize do
+            @call_spawns.positive? || !@call_tasks.empty? || !@call_errors.empty?
+          end
           claimed = @lifecycle_mutex.synchronize do
-            target = generation || @generation
-            if target
-              return unless @generation.equal?(target)
-            elsif !@session && !@sandbox && !@workspace && !@workspace_directory
-              return
-            end
+            if @deferred_cleanup
+              deferred = @deferred_cleanup
+              return if generation && !deferred.first.equal?(generation)
 
-            values = [target, @session, @sandbox, @workspace, @workspace_directory]
-            @generation = nil
-            @session = @sandbox = @workspace = @workspace_directory = nil
-            values
+              @deferred_cleanup = nil
+              deferred
+            elsif !pending_call_cleanup && !@session && !@sandbox && !@workspace && !@workspace_directory
+              return
+            else
+              target = generation || @generation
+              if target
+                return unless @generation.equal?(target)
+              end
+
+              values = [target, @session, @sandbox, @workspace, @workspace_directory]
+              @generation = nil
+              @session = @sandbox = @workspace = @workspace_directory = nil
+              values
+            end
           end
           target, session, sandbox, workspace, directory = claimed
           watchdog = cancel_watchdog(target)
-          threads, call_errors = @call_mutex.synchronize do
-            current_threads = @call_threads
-            current_errors = @call_errors
+          deadline = monotonic_time + @limits.fetch(:cleanup_seconds)
+          handoff_timed_out = false
+          tasks, call_errors = @call_mutex.synchronize do
             @closing_marker[:closing] = true
-            @call_threads = []
-            @call_errors = []
-            @closing_marker = {closing: false}
-            [current_threads, current_errors]
+            while @call_spawns.positive?
+              remaining = deadline - monotonic_time
+              unless remaining.positive?
+                handoff_timed_out = true
+                break
+              end
+
+              @call_condition.wait(@call_mutex, remaining)
+            end
+            if handoff_timed_out
+              [[], []]
+            else
+              current_tasks = @call_tasks
+              current_errors = @call_errors
+              @call_tasks = []
+              @call_errors = []
+              @closing_marker = {closing: false}
+              [current_tasks, current_errors]
+            end
+          end
+          if handoff_timed_out
+            @closed = true
+            defer_process_cleanup(claimed)
+            watchdog&.wait unless watchdog&.current?
+            raise CleanupError, "Code-mode nested tool cleanup timed out"
           end
           first_error = nil
-          begin
-            session&.close
-          rescue => error
-            first_error ||= error
-          end
-          deadline = monotonic_time + @limits.fetch(:cleanup_seconds)
-          threads.each do |thread|
+          tasks.each do |task|
             remaining = deadline - monotonic_time
             break unless remaining.positive?
 
             begin
-              thread.join(remaining)
+              task.wait(deadline: Time.now + remaining)
+            rescue DeadlineExceededError
+              break
             rescue => error
               first_error ||= error
             end
           end
-          if threads.any?(&:alive?)
+          if tasks.any?(&:alive?)
             @closed = true
-            first_error ||= CleanupError.new("Code-mode nested tool cleanup timed out")
+            defer_call_cleanup(tasks, call_errors)
+            defer_process_cleanup(claimed)
+            watchdog&.wait unless watchdog&.current?
+            raise CleanupError, "Code-mode nested tool cleanup timed out"
+          end
+          begin
+            session&.close
+          rescue => error
+            first_error ||= error
           end
           call_error = @call_mutex.synchronize { call_errors.shift }
           first_error ||= call_error
@@ -389,41 +436,66 @@ module LittleGhost
           rescue => error
             first_error ||= error
           end
-          watchdog&.join unless watchdog.equal?(Thread.current)
+          watchdog&.wait unless watchdog&.current?
           raise first_error if first_error
+        end
+
+        def defer_call_cleanup(tasks, call_errors)
+          @call_mutex.synchronize do
+            @call_tasks.concat(tasks)
+            @call_errors.concat(call_errors)
+            @closing_marker[:closing] = true
+          end
+        end
+
+        def defer_process_cleanup(claimed)
+          @lifecycle_mutex.synchronize { @deferred_cleanup ||= claimed }
         end
 
         def start_watchdog(generation, deadline)
           @watchdog_mutex.synchronize do
             @watchdog_generation = generation
-            @watchdog = Thread.new do
-              expired = @watchdog_mutex.synchronize do
-                loop do
-                  break false unless @watchdog_generation.equal?(generation)
-
-                  remaining = deadline - monotonic_time
-                  break true unless remaining.positive?
-
-                  @watchdog_condition.wait(@watchdog_mutex, remaining)
-                end
-              end
-              expire_program(generation) if expired
-            rescue => error
-              record_program_error(generation, error)
-            end
-            @watchdog.report_on_exception = false
           end
+          task = @task_runner.spawn do
+            expired = @watchdog_mutex.synchronize do
+              loop do
+                break false unless @watchdog_generation.equal?(generation)
+
+                remaining = deadline - monotonic_time
+                break true unless remaining.positive?
+
+                @watchdog_condition.wait(@watchdog_mutex, remaining)
+              end
+            end
+            expire_program(generation) if expired
+          rescue => error
+            record_program_error(generation, error)
+          end
+          installed = @watchdog_mutex.synchronize do
+            if @watchdog_generation.equal?(generation)
+              @watchdog = task
+              true
+            else
+              false
+            end
+          end
+          task.wait unless installed || task.current?
+        rescue
+          @watchdog_mutex.synchronize do
+            @watchdog_generation = nil if @watchdog_generation.equal?(generation)
+          end
+          raise
         end
 
         def cancel_watchdog(generation)
           @watchdog_mutex.synchronize do
             return unless !generation || @watchdog_generation.equal?(generation)
 
-            thread = @watchdog
+            task = @watchdog
             @watchdog_generation = nil
             @watchdog = nil
             @watchdog_condition.broadcast
-            thread
+            task
           end
         end
 

@@ -38,35 +38,39 @@ module LittleGhost
 
       # Installs autoloads for the current registry and returns self.
       def setup
-        PROCESS_LOCK.synchronize do
-          return self if @setup
+        blocking do
+          PROCESS_LOCK.synchronize do
+            next if @setup
 
-          registry.each do |constant_name, path|
-            namespace, name = namespace_for(constant_name)
-            if namespace.const_defined?(name, false) || namespace.autoload?(name)
-              existing = namespace.autoload?(name)
-              next if existing && File.expand_path(existing) == path
-              next if !existing && constant_source_location(constant_name)&.then { |location| File.realpath(location.first) == path }
-              raise ConflictError, "#{constant_name} is already defined"
+            registry.each do |constant_name, path|
+              namespace, name = namespace_for(constant_name)
+              if namespace.const_defined?(name, false) || namespace.autoload?(name)
+                existing = namespace.autoload?(name)
+                next if existing && File.expand_path(existing) == path
+                next if !existing && constant_source_location(constant_name)&.then { |location| File.realpath(location.first) == path }
+                raise ConflictError, "#{constant_name} is already defined"
+              end
+              namespace.autoload(name, path)
             end
-            namespace.autoload(name, path)
+            @setup = true
           end
-          @setup = true
         end
         self
       end
 
       # Loads every registered constant and verifies its defining file.
       def eager_load
-        PROCESS_LOCK.synchronize do
-          setup
-          registry.each_key do |constant_name|
-            validate_registered_path!(constant_name)
-            constantize(constant_name)
-            @loaded_constants[constant_name] = registry.fetch(constant_name)
-          rescue NameError => error
-            raise unless expected_constant_missing?(error, constant_name)
-            raise ExpectedConstantError, "#{registry.fetch(constant_name)} must define #{constant_name}"
+        blocking do
+          PROCESS_LOCK.synchronize do
+            setup
+            registry.each_key do |constant_name|
+              validate_registered_path!(constant_name)
+              constantize(constant_name)
+              @loaded_constants[constant_name] = registry.fetch(constant_name)
+            rescue NameError => error
+              raise unless expected_constant_missing?(error, constant_name)
+              raise ExpectedConstantError, "#{registry.fetch(constant_name)} must define #{constant_name}"
+            end
           end
         end
         self
@@ -75,15 +79,21 @@ module LittleGhost
       # Finds a relative file beneath configured paths, returning its resolved
       # path or nil.
       def find(relative_path)
-        clean = clean_path(relative_path)
-        @paths.each do |path_root|
-          candidate = File.expand_path(clean, path_root)
-          next unless inside?(candidate, path_root)
-          next unless File.file?(candidate)
-          real_candidate = File.realpath(candidate)
-          return real_candidate if inside?(real_candidate, real_path_root(path_root))
+        blocking do
+          clean = clean_path(relative_path)
+          found = nil
+          @paths.each do |path_root|
+            candidate = File.expand_path(clean, path_root)
+            next unless inside?(candidate, path_root)
+            next unless File.file?(candidate)
+            real_candidate = File.realpath(candidate)
+            if inside?(real_candidate, real_path_root(path_root))
+              found = real_candidate
+              break
+            end
+          end
+          found
         end
-        nil
       end
 
       # Finds a relative file or raises LoadError.
@@ -93,31 +103,35 @@ module LittleGhost
 
       # Reads a relative file using +encoding+.
       def read(relative_path, encoding: "UTF-8")
-        File.read(fetch(relative_path), encoding:)
+        blocking { File.read(fetch(relative_path), encoding:) }
       end
 
       # Finds resolved paths matching a relative glob without root escapes.
       def glob(pattern)
-        clean = clean_path(pattern)
-        @paths.flat_map do |path_root|
-          next [] unless Dir.exist?(path_root)
-          real_root = real_path_root(path_root)
-          Dir.glob(File.join(path_root, clean)).filter_map do |candidate|
-            expanded = File.expand_path(candidate)
-            next unless inside?(expanded, path_root)
-            real_candidate = File.realpath(candidate)
-            real_candidate if inside?(real_candidate, real_root)
-          rescue Errno::ENOENT
-            nil
-          end
-        end.uniq.sort
+        blocking do
+          clean = clean_path(pattern)
+          @paths.flat_map do |path_root|
+            next [] unless Dir.exist?(path_root)
+            real_root = real_path_root(path_root)
+            Dir.glob(File.join(path_root, clean)).filter_map do |candidate|
+              expanded = File.expand_path(candidate)
+              next unless inside?(expanded, path_root)
+              real_candidate = File.realpath(candidate)
+              real_candidate if inside?(real_candidate, real_root)
+            rescue Errno::ENOENT
+              nil
+            end
+          end.uniq.sort
+        end
       end
 
       # Loads an application constant after installing autoloads.
       def constant(name)
-        PROCESS_LOCK.synchronize do
-          setup
-          constantize(name.to_s)
+        blocking do
+          PROCESS_LOCK.synchronize do
+            setup
+            constantize(name.to_s)
+          end
         end
       rescue NameError => error
         raise unless expected_constant_missing?(error, name.to_s)
@@ -126,33 +140,39 @@ module LittleGhost
 
       # Copies registered constant names and resolved paths.
       def registered_constants
-        registry.dup.freeze
+        blocking { registry.dup.freeze }
       end
 
       # Checks whether +name+ was loaded from its registered source path.
       def loaded_constant?(name)
-        PROCESS_LOCK.synchronize do
-          path = registry[name.to_s]
-          return false unless path
+        blocking do
+          PROCESS_LOCK.synchronize do
+            path = registry[name.to_s]
+            next false unless path
 
-          names = name.to_s.split("::")
-          leaf = names.pop
-          namespace = names.inject(Object) do |parent, child|
-            break unless parent.const_defined?(child, false)
+            names = name.to_s.split("::")
+            leaf = names.pop
+            namespace = names.inject(Object) do |parent, child|
+              break unless parent.const_defined?(child, false)
 
-            parent.const_get(child, false)
+              parent.const_get(child, false)
+            end
+            autoload_path = namespace&.autoload?(leaf)
+            next File.realpath(autoload_path) == path if autoload_path
+
+            location = constant_source_location(name.to_s)
+            location && File.realpath(location.first) == path
           end
-          autoload_path = namespace&.autoload?(leaf)
-          return File.realpath(autoload_path) == path if autoload_path
-
-          location = constant_source_location(name.to_s)
-          location && File.realpath(location.first) == path
         end
       rescue Errno::ENOENT
         false
       end
 
       private
+
+      def blocking(&operation)
+        BlockingOperation.call(&operation)
+      end
 
       def registry
         @registry ||= @paths.each_with_object({}) do |path_root, index|

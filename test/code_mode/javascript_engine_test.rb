@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "async"
 require "json"
 require "rbconfig"
 require "timeout"
@@ -21,10 +22,11 @@ class CodeModeEngineTest < Minitest::Test
       }
     }].freeze
 
-    attr_reader :catalog, :calls, :maximum_concurrency
+    attr_reader :catalog, :calls, :maximum_concurrency, :task_runner
 
-    def initialize(catalog: DEFAULT_CATALOG, &behavior)
+    def initialize(catalog: DEFAULT_CATALOG, task_runner: LittleGhost::Support::TaskRunner.new, &behavior)
       @catalog = catalog
+      @task_runner = task_runner
       @behavior = behavior
       @calls = []
       @active = 0
@@ -171,6 +173,44 @@ class CodeModeEngineTest < Minitest::Test
     assert_equal :completed, result.status
     assert_equal [{"echoed" => "one"}, {"echoed" => "two"}, {"echoed" => "three"}], JSON.parse(result.output)
     assert_operator broker.maximum_concurrency, :>, 1
+  end
+
+  def test_dispatches_javascript_tools_on_scheduler_tasks
+    observations = []
+    broker = Broker.new do |_name, arguments, id|
+      observations << [Thread.current.object_id, Fiber.current.object_id, LittleGhost::Support::Task.current.backend]
+      Result.new(id:, value: arguments.fetch("value"), error: nil)
+    end
+    session = open_session(broker)
+
+    Async do
+      calling_thread = Thread.current.object_id
+      calling_fiber = Fiber.current.object_id
+      result = execute(session, broker, 'text(await tools.echo_value({value: "fiber"}));')
+
+      assert_equal "fiber", result.output
+      assert_equal 1, observations.length
+      assert_equal calling_thread, observations.first.fetch(0)
+      refute_equal calling_fiber, observations.first.fetch(1)
+      assert_equal :fiber, observations.first.fetch(2)
+      session.close
+    end.wait
+  end
+
+  def test_javascript_program_deadline_uses_a_scheduler_task
+    broker = Broker.new
+    session = open_session(broker, observation_seconds: 0.01)
+
+    Async do
+      result = execute(session, broker, "await new Promise(() => {});")
+      program_id = session.instance_variable_get(:@current_program_id)
+      deadline = session.instance_variable_get(:@deadlines).fetch(program_id)
+
+      assert_predicate result, :still_working?
+      assert_equal :fiber, deadline.task.backend
+      session.stop
+      session.close
+    end.wait
   end
 
   def test_bounds_parallel_tool_dispatch

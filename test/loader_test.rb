@@ -3,6 +3,7 @@
 require "fileutils"
 require "tmpdir"
 require "test_helper"
+require "async"
 
 class LoaderTest < Minitest::Test
   def test_eager_loads_agents_assemblies_and_tools_with_namespaces
@@ -14,6 +15,7 @@ class LoaderTest < Minitest::Test
       loader = LittleGhost::Support::Loader.new(root:)
       loader.eager_load
 
+      assert_nil loader.find("missing.rb")
       assert_equal LoaderFixture::MainAgent, loader.constant("LoaderFixture::MainAgent")
       assert_equal LoaderFixture::SupportFlowGraph, loader.constant("LoaderFixture::SupportFlowGraph")
       assert_equal LoaderFixture::EchoTool, loader.constant("LoaderFixture::EchoTool")
@@ -34,6 +36,31 @@ class LoaderTest < Minitest::Test
       assert loaders.all? { |loader| loader.loaded_constant?("ConcurrentLoaderFixture::Agent") }
     ensure
       Object.send(:remove_const, :ConcurrentLoaderFixture) if Object.const_defined?(:ConcurrentLoaderFixture, false)
+    end
+  end
+
+  def test_eager_load_runs_off_the_scheduler_and_keeps_loader_lock_reentrant
+    Dir.mktmpdir do |root|
+      loader = LittleGhost::Support::Loader.new(root:)
+      Object.const_set(:SchedulerLoaderUnderTest, loader)
+      write(root, "app/agents/scheduler_loader_fixture.rb", <<~RUBY)
+        SchedulerLoaderUnderTest.setup
+        class SchedulerLoaderFixture
+          THREAD = Thread.current
+        end
+      RUBY
+
+      scheduler_thread = nil
+      Async do
+        scheduler_thread = Thread.current
+        loader.eager_load
+      end.wait
+
+      refute_same scheduler_thread, SchedulerLoaderFixture::THREAD
+      assert_same SchedulerLoaderFixture, loader.constant("SchedulerLoaderFixture")
+    ensure
+      Object.send(:remove_const, :SchedulerLoaderFixture) if Object.const_defined?(:SchedulerLoaderFixture, false)
+      Object.send(:remove_const, :SchedulerLoaderUnderTest) if Object.const_defined?(:SchedulerLoaderUnderTest, false)
     end
   end
 

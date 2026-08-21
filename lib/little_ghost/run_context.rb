@@ -7,7 +7,8 @@ module LittleGhost
   #
   # Tools and workflows use it to share JSON-like state, check
   # cancellation and deadlines, checkpoint messages, and accumulate usage.
-  # Access to framework-managed fields is thread-safe.
+  # Access to framework-managed fields is safe across threads and interleaved
+  # fibers.
   class RunContext
     # Mutable DataMap state supplied to this invocation. A top-level Run starts
     # with restored Session state merged with current Invocation context; child

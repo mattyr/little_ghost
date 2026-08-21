@@ -1,19 +1,22 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "async"
 
 class GraphTest < Minitest::Test
   class FakeAssembly
     attr_reader :calls
 
-    def initialize(result, failure_usage: LittleGhost::Usage.new)
+    def initialize(result, failure_usage: LittleGhost::Usage.new, mutation: nil)
       @result = result
       @failure_usage = failure_usage
+      @mutation = mutation
       @calls = []
     end
 
     def stream(input, **options)
       calls << [input, options]
+      @mutation&.call
       events = @result.is_a?(Exception) ? [
         LittleGhost::StreamEvent.build(:invocation_error, error: @result, usage: @failure_usage, metadata: {})
       ] : [
@@ -34,9 +37,13 @@ class GraphTest < Minitest::Test
   class Runtime
     attr_reader :built
 
-    def initialize(assemblies)
+    attr_reader :task_runner
+
+    def initialize(assemblies = nil, task_runner: LittleGhost::Support::TaskRunner.new, **assembly_keywords)
+      assemblies ||= assembly_keywords
       @assemblies = assemblies.transform_values(&:dup)
       @built = []
+      @task_runner = task_runner
     end
 
     def build_assembly(declaration, run:)
@@ -271,6 +278,42 @@ class GraphTest < Minitest::Test
       [steps.fetch("research").id, steps.fetch("verify").id].sort,
       steps.fetch("answer").predecessor_ids.sort
     )
+  end
+
+  def test_fork_branches_use_scheduler_fibers
+    workers = Queue.new
+    capture_worker = lambda do
+      workers << [Thread.current.object_id, Fiber.current.object_id, Fiber.blocking?]
+      Async::Task.current.yield
+    end
+    graph_class = Class.new(LittleGhost::Graph) do
+      node :plan, :plan
+      node :research, :research
+      node :verify, :verify
+      node :answer, :answer
+      start :plan
+      edge :plan, [:research, :verify], max_concurrency: 2
+      edge [:research, :verify], :answer
+      finish :answer
+    end
+    runtime = Runtime.new(
+      {
+        plan: [FakeAssembly.new(result("plan"))],
+        research: [FakeAssembly.new(result("facts"), mutation: capture_worker)],
+        verify: [FakeAssembly.new(result("checked"), mutation: capture_worker)],
+        answer: [FakeAssembly.new(result("done"))]
+      },
+      task_runner: LittleGhost::Support::TaskRunner.new(backend: :auto)
+    )
+
+    Async do
+      graph_class.new(run: Run.new(runtime), runtime:).stream("request").to_a
+    end.wait
+
+    contexts = 2.times.map { workers.pop }
+    assert_equal 1, contexts.map(&:first).uniq.length
+    assert_equal 2, contexts.map { |context| context.fetch(1) }.uniq.length
+    assert contexts.none?(&:last)
   end
 
   def test_fan_in_input_mapper_replaces_the_default_input

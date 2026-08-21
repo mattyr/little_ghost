@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 
 module LittleGhost
-  # Runs one dormant Run in a supervised worker while the caller remains free to
-  # serve health checks, deliver interjections, or coordinate process shutdown.
+  # Runs one dormant Run in a supervised worker task while the caller remains
+  # free to serve health checks, deliver interjections, or coordinate shutdown.
   #
   #   execution = agent.start_execution(message: "Investigate transfer 481") do |event|
   #     event_buffer << event
@@ -12,7 +12,7 @@ module LittleGhost
   #   execution.wait(deadline: Time.now + 30)
   #   execution.run.completed? # => true
   #
-  # An execution owns its worker. The worker receives a snapshot of the caller's
+  # An execution owns its worker task. The task receives a snapshot of the caller's
   # request-scoped ExecutionState. The Run continues to own its workspace,
   # sandbox, session, entrypoint, and registered resources. +close+ requests
   # cooperative cancellation and waits for both the worker and in-flight
@@ -24,9 +24,9 @@ module LittleGhost
     class << self
       # Starts +run+ immediately and returns its supervising Execution.
       #
-      # The optional block receives each StreamEvent on the worker thread. It
-      # must be safe to call from that thread and should not retain sensitive
-      # event content longer than the application requires.
+      # The optional block receives each StreamEvent on the worker execution
+      # context. It must support the Runtime's concurrency policy and should not
+      # retain sensitive event content longer than the application requires.
       def start(run, &event_consumer)
         new(run, event_consumer:).send(:start)
       end
@@ -47,6 +47,11 @@ module LittleGhost
       @active_interjections = 0
       @closing = false
       @execution_state = ExecutionState.capture
+      @task_runner = if run.respond_to?(:runtime) && run.runtime.respond_to?(:task_runner)
+        run.runtime.task_runner
+      else
+        Support::TaskRunner.new
+      end
     end
 
     # Returns +:pending+, +:running+, or +:finished+.
@@ -104,7 +109,7 @@ module LittleGhost
     # the worker is re-raised after all supervised work finishes.
     def wait(deadline: nil)
       worker = wait_until_finished(deadline:)
-      worker.join
+      worker.wait
       caught = error
       raise caught if caught
 
@@ -126,9 +131,16 @@ module LittleGhost
         raise Error, "execution has already started" unless @state == :pending
 
         @state = :running
-        @worker = Thread.new { execute }
       end
+      worker = @task_runner.spawn { execute }
+      @mutex.synchronize { @worker = worker }
       self
+    rescue
+      @mutex.synchronize do
+        @state = :pending
+        @condition.broadcast
+      end
+      raise
     end
 
     private

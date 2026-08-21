@@ -7,14 +7,16 @@ module LittleGhost
     # losing cancellation or request-scoped state.
     #
     # ExecutionState is copied to workers. +on_result+ runs on the calling
-    # thread in completion order. After all workers join, the first cleanup
-    # error, or otherwise the first input-order error, is raised.
+    # execution context in completion order. After all workers join, the first
+    # cleanup error, or otherwise the first input-order error, is raised.
     class Executor
-      # Sets the maximum number of worker threads.
-      def initialize(max_concurrency: 8)
+      # Sets the maximum number of worker tasks and their scheduling policy.
+      def initialize(max_concurrency: 8, task_runner: TaskRunner.new)
         raise ArgumentError, "max_concurrency must be at least 1" if max_concurrency < 1
+        raise ArgumentError, "task_runner must be a LittleGhost::Support::TaskRunner" unless task_runner.is_a?(TaskRunner)
 
         @max_concurrency = max_concurrency
+        @task_runner = task_runner
       end
 
       # Maps +values+ with at most the configured number of workers.
@@ -34,11 +36,16 @@ module LittleGhost
         error_mutex = Mutex.new
         first_worker_error = nil
         worker_count = [@max_concurrency, items.length].min
-        execution_state = ExecutionState.capture
-
-        workers = worker_count.times.map do
-          Thread.new do
-            ExecutionState.with(execution_state) do
+        start_mutex = Mutex.new
+        start_condition = ConditionVariable.new
+        start_workers = false
+        workers = []
+        begin
+          worker_count.times do
+            workers << @task_runner.spawn do
+              start_mutex.synchronize do
+                start_condition.wait(start_mutex) until start_workers
+              end
               loop do
                 index = begin
                   queue.pop(true)
@@ -57,15 +64,37 @@ module LittleGhost
                   completions << index
                 end
               end
+            ensure
+              completions << :worker_finished
             end
           end
+          start_mutex.synchronize do
+            start_workers = true
+            start_condition.broadcast
+          end
+        rescue
+          start_mutex.synchronize do
+            start_workers = true
+            start_condition.broadcast
+          end
+          cancellation_token.cancel
+          workers.each(&:wait)
+          raise
         end
         callback_error = nil
         begin
-          items.length.times do
-            index = completions.pop
+          completed_items = 0
+          finished_workers = 0
+          until completed_items == items.length || finished_workers == workers.length
+            completion = completions.pop
+            if completion == :worker_finished
+              finished_workers += 1
+              next
+            end
+
+            completed_items += 1
             begin
-              on_result.call(index, results[index]) if on_result && !errors[index]
+              on_result.call(completion, results[completion]) if on_result && !errors[completion]
             rescue => error
               callback_error = error
               cancellation_token.cancel
@@ -73,10 +102,13 @@ module LittleGhost
             end
           end
         ensure
-          workers.each(&:join)
+          workers.each(&:wait)
         end
 
         raise callback_error if callback_error
+        task_error = workers.filter_map(&:error).first
+        raise task_error if task_error
+
         first_error = errors.compact.find { |error| error.is_a?(CleanupError) } || first_worker_error
         raise first_error if first_error
 

@@ -43,11 +43,13 @@ module LittleGhost
         options[:chdir] = chdir if chdir
         options[:rlimit_cpu] = [Integer(cpu_seconds), Integer(cpu_seconds)] if cpu_seconds
         options[:rlimit_fsize] = [Integer(file_bytes), Integer(file_bytes)] if file_bytes
-        @pid = Process.spawn(
-          environment.transform_keys(&:to_s).transform_values(&:to_s),
-          *Array(command).map(&:to_s),
-          **options
-        )
+        @pid = Support::BlockingOperation.call do
+          Process.spawn(
+            environment.transform_keys(&:to_s).transform_values(&:to_s),
+            *Array(command).map(&:to_s),
+            **options
+          )
+        end
         @stdin_r.close
         @stdout_w.close
         @stderr_w.close
@@ -301,12 +303,16 @@ module LittleGhost
       end
 
       def reap(blocking)
-        @reap_mutex.synchronize do
-          return @status if @status
+        loop do
+          status = @reap_mutex.synchronize do
+            next @status if @status
 
-          pid, status = Process.waitpid2(@pid, blocking ? 0 : Process::WNOHANG)
-          @status = status if pid
-          @status
+            pid, status = Process.waitpid2(@pid, Process::WNOHANG)
+            @status = status if pid
+          end
+          return status if status || !blocking
+
+          sleep(0.01)
         end
       rescue Errno::ECHILD
         @status

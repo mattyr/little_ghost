@@ -4,6 +4,7 @@ require "fileutils"
 require "tmpdir"
 require "test_helper"
 require "little_ghost/ag_ui"
+require "async"
 
 class ConfigurationTest < Minitest::Test
   def test_code_mode_configuration_is_explicit_and_frozen
@@ -44,6 +45,157 @@ class ConfigurationTest < Minitest::Test
       assert_equal 1, runtimes.map(&:object_id).uniq.length
       assert_same configuration.runtime, runtimes.first
     end
+  end
+
+  def test_configuration_builds_its_shared_runtime_once_across_sibling_fibers
+    Dir.mktmpdir do |root|
+      started = Queue.new
+      release = Queue.new
+      configuration = LittleGhost::Configuration.new(root:)
+      configuration.define_singleton_method(:load_file!) do |root: nil|
+        started << true
+        release.pop
+        super(root:)
+      end
+
+      runtimes = nil
+      Async do |task|
+        first = task.async { configuration.runtime }
+        started.pop
+        second = task.async { configuration.runtime }
+        task.yield
+        release << true
+        runtimes = [first.wait, second.wait]
+      end.wait
+
+      assert_same runtimes.first, runtimes.last
+    ensure
+      release << true if release
+    end
+  end
+
+  def test_configuration_file_loading_yields_the_scheduler_and_keeps_build_context
+    Dir.mktmpdir do |root|
+      probe = Struct.new(:started, :release, :thread).new(Queue.new, Queue.new)
+      Object.const_set(:ConfigurationFileSchedulerProbe, probe)
+      config_path = File.join(root, "config/little_ghost.rb")
+      FileUtils.mkdir_p(File.dirname(config_path))
+      File.write(config_path, <<~RUBY)
+        ConfigurationFileSchedulerProbe.thread = Thread.current
+        ConfigurationFileSchedulerProbe.started << true
+        ConfigurationFileSchedulerProbe.release.pop
+        LittleGhost.configure { |configuration| configuration.service_name "loaded from file" }
+      RUBY
+      configuration = LittleGhost::Configuration.new(root:)
+      scheduler_thread = nil
+      progressed_while_loading = false
+      runtime = nil
+
+      Async do |task|
+        scheduler_thread = Thread.current
+        build = task.async do
+          LittleGhost.with_configuration(configuration) { configuration.runtime }
+        end
+        probe.started.pop
+        progressed_while_loading = true
+        probe.release << true
+        runtime = build.wait
+      end.wait
+
+      assert progressed_while_loading
+      refute_same scheduler_thread, probe.thread
+      assert_equal "loaded from file", runtime.service_name
+    ensure
+      probe&.release&.push(true)
+      Object.send(:remove_const, :ConfigurationFileSchedulerProbe) if Object.const_defined?(:ConfigurationFileSchedulerProbe, false)
+    end
+  end
+
+  def test_recursive_runtime_build_in_the_same_execution_context_is_rejected
+    Dir.mktmpdir do |root|
+      configuration = LittleGhost::Configuration.new(root:)
+      configuration.define_singleton_method(:load_file!) do |root: nil|
+        runtime
+        super(root:)
+      end
+
+      error = assert_raises(LittleGhost::ConfigurationError) { configuration.runtime }
+
+      assert_includes error.message, "cannot be called while the shared Runtime is starting"
+    end
+  end
+
+  def test_recursive_runtime_build_in_a_descendant_scheduled_fiber_is_rejected
+    Dir.mktmpdir do |root|
+      configuration = LittleGhost::Configuration.new(root:)
+      configuration.define_singleton_method(:load_file!) do |root: nil|
+        task = LittleGhost::Support::TaskRunner.new(backend: :fiber).spawn { runtime }
+        task.value(deadline: Time.now + 1)
+        super(root:)
+      end
+
+      error = nil
+      Async do
+        error = assert_raises(LittleGhost::ConfigurationError) { configuration.runtime }
+      end.wait
+
+      assert_includes error.message, "cannot be called while the shared Runtime is starting"
+    end
+  end
+
+  def test_unrelated_sibling_fiber_cannot_mutate_configuration_during_file_loading
+    Dir.mktmpdir do |root|
+      started = Queue.new
+      release = Queue.new
+      config_path = File.join(root, "config/little_ghost.rb")
+      FileUtils.mkdir_p(File.dirname(config_path))
+      File.write(config_path, "# loaded by the test override\n")
+      configuration = LittleGhost::Configuration.new(root:)
+      configuration.define_singleton_method(:load_configuration_file) do |_path|
+        editable_values = copy_configuration_value(@configuration_values)
+        @lifecycle_monitor.synchronize do
+          @configuration_values = editable_values
+          @configuration_file_loading = true
+        end
+        started << true
+        release.pop
+        prompt_paths << "file/prompts"
+      ensure
+        sealed_values = freeze_configuration_copy(@configuration_values)
+        @lifecycle_monitor.synchronize do
+          @configuration_values = sealed_values
+          @configuration_file_loading = false
+        end
+      end
+
+      runtime = nil
+      Async do |task|
+        builder = task.async { configuration.runtime }
+        started.pop
+        assert_raises(LittleGhost::ConfigurationError) do
+          configuration.prompt_paths << "sibling/prompts"
+        end
+        release << true
+        runtime = builder.wait
+      end.wait
+
+      paths = runtime.prompt_paths.to_a.map { |entry| entry.path.to_s }
+      assert paths.any? { |path| path.end_with?("/file/prompts") }
+      refute paths.any? { |path| path.end_with?("/sibling/prompts") }
+    ensure
+      release << true if release
+    end
+  end
+
+  def test_concurrency_backend_is_validated_and_copied_to_the_runtime
+    configuration = LittleGhost::Configuration.new(concurrency_backend: :thread)
+
+    assert_equal :auto, LittleGhost::Configuration.new.concurrency_backend
+    assert_equal :thread, configuration.concurrency_backend
+    assert_equal :thread, LittleGhost::Runtime.new(configuration:).task_runner.backend
+    assert_equal :fiber, configuration.concurrency_backend(:fiber)
+    assert_raises(ArgumentError) { configuration.concurrency_backend = :unknown }
+    assert_raises(ArgumentError) { configuration[:concurrency_backend] = :unknown }
   end
 
   def test_execution_scoped_configurations_have_independent_shared_runtimes

@@ -307,13 +307,22 @@ module LittleGhost
 
         Process.kill("TERM", -@envoy_pid)
         deadline = monotonic_time + 2
+        finished = nil
         until monotonic_time >= deadline
           finished = Process.waitpid(@envoy_pid, Process::WNOHANG)
           break if finished
           sleep(0.01)
         end
-        Process.kill("KILL", -@envoy_pid)
-        Process.waitpid(@envoy_pid)
+        unless finished
+          Process.kill("KILL", -@envoy_pid)
+          deadline = monotonic_time + 2
+          until Process.waitpid(@envoy_pid, Process::WNOHANG)
+            if monotonic_time >= deadline
+              raise CleanupError, "Envoy did not exit after it was killed"
+            end
+            sleep(0.01)
+          end
+        end
       rescue Errno::ESRCH, Errno::ECHILD
         nil
       ensure

@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "async"
 
 class CodeModeTest < Minitest::Test
   CapabilitySandbox = Data.define(:capabilities)
@@ -456,6 +457,18 @@ class CodeModeTest < Minitest::Test
     registry&.close
   end
 
+  def test_broker_inherits_the_agents_runtime_task_runner
+    task_runner = LittleGhost::Support::TaskRunner.new(backend: :thread)
+    runtime = Struct.new(:task_runner).new(task_runner)
+    agent = Struct.new(:runtime).new(runtime)
+    registry = LittleGhost::ToolRegistry.new([])
+    broker = LittleGhost::CodeMode::Broker.new(agent:, registry:)
+
+    assert_same task_runner, broker.task_runner
+  ensure
+    registry&.close
+  end
+
   def test_engine_rejects_normalized_and_reserved_method_collisions
     registry = LittleGhost::ToolRegistry.new([])
     broker = LittleGhost::CodeMode::Broker.new(registry:)
@@ -496,6 +509,105 @@ class CodeModeTest < Minitest::Test
 
     assert_equal [1, 2], result.value
     assert_equal 2, entered
+  ensure
+    session&.close
+    registry&.close
+  end
+
+  def test_ruby_nested_tools_use_scheduler_tasks
+    observations = []
+    tool = LittleGhost::Tool.define(name: "observe", description: "Observe execution.") do |_input|
+      observations << [Thread.current.object_id, Fiber.current.object_id, LittleGhost::Support::Task.current.backend]
+      "observed"
+    end
+    registry = LittleGhost::ToolRegistry.new([tool])
+    broker = LittleGhost::CodeMode::Broker.new(registry:)
+    session = ruby_session(broker:)
+
+    Async do
+      calling_thread = Thread.current.object_id
+      calling_fiber = Fiber.current.object_id
+      result = session.execute(source: "tools.observe", catalog: broker.catalog)
+
+      assert_equal "observed", result.value
+      assert_equal 1, observations.length
+      assert_equal calling_thread, observations.first.fetch(0)
+      refute_equal calling_fiber, observations.first.fetch(1)
+      assert_equal :fiber, observations.first.fetch(2)
+    end.wait
+  ensure
+    session&.close
+    registry&.close
+  end
+
+  def test_ruby_nested_tools_honor_the_runtime_thread_backend
+    observations = []
+    tool = LittleGhost::Tool.define(name: "observe", description: "Observe execution.") do
+      raise "the broker dispatcher should handle this call"
+    end
+    dispatch = lambda do |call|
+      observations << [Thread.current.object_id, LittleGhost::Support::Task.current.backend]
+      LittleGhost::CodeMode::CallResult.new(id: call.id, value: "observed", error: nil)
+    end
+    task_runner = LittleGhost::Support::TaskRunner.new(backend: :thread)
+    runtime = Struct.new(:task_runner).new(task_runner)
+    agent = Struct.new(:runtime).new(runtime)
+    registry = LittleGhost::ToolRegistry.new([tool])
+    broker = LittleGhost::CodeMode::Broker.new(agent:, registry:, dispatch:)
+    session = ruby_session(broker:)
+
+    Async do
+      calling_thread = Thread.current.object_id
+      result = session.execute(source: "tools.observe", catalog: broker.catalog)
+
+      assert_equal "observed", result.value
+      assert_equal 1, observations.length
+      refute_equal calling_thread, observations.first.fetch(0)
+      assert_equal :thread, observations.first.fetch(1)
+    end.wait
+  ensure
+    session&.close
+    registry&.close
+  end
+
+  def test_ruby_scheduler_task_reports_an_immediate_nested_tool_failure
+    tool = LittleGhost::Tool.define(name: "fail", description: "Fail.") { "unused" }
+    registry = LittleGhost::ToolRegistry.new([tool])
+    broker = LittleGhost::CodeMode::Broker.new(
+      registry:,
+      dispatch: ->(_call) { raise "nested failure" }
+    )
+    session = ruby_session(broker:)
+
+    Async do
+      error = assert_raises(RuntimeError) do
+        session.execute(source: "tools.fail", catalog: broker.catalog)
+      end
+
+      assert_equal "nested failure", error.message
+    end.wait
+  ensure
+    begin
+      session&.close
+    rescue RuntimeError
+      nil
+    end
+    registry&.close
+  end
+
+  def test_ruby_program_watchdog_uses_a_scheduler_task
+    registry = LittleGhost::ToolRegistry.new([])
+    broker = LittleGhost::CodeMode::Broker.new(registry:)
+    session = ruby_session(broker:, observation_seconds: 0.005)
+
+    Async do
+      result = session.execute(source: "sleep 1", catalog: [])
+      watchdog = session.instance_variable_get(:@watchdog)
+
+      assert_predicate result, :still_working?
+      assert_equal :fiber, watchdog.backend
+      session.stop
+    end.wait
   ensure
     session&.close
     registry&.close
@@ -667,6 +779,89 @@ class CodeModeTest < Minitest::Test
     assert_raises(LittleGhost::ToolError) { session.execute(source: "42", catalog: []) }
   ensure
     release << true if release && release.empty?
+    begin
+      session&.close
+    rescue RuntimeError
+      nil
+    end
+    registry&.close
+  end
+
+  def test_ruby_cleanup_bounds_a_nested_tool_spawn_handoff
+    spawn_entered = Queue.new
+    spawn_release = Queue.new
+    tool_entered = Queue.new
+    tool_release = Queue.new
+    runner_class = Class.new(LittleGhost::Support::TaskRunner) do
+      def initialize(spawn_entered:, spawn_release:, tool_entered:)
+        super(backend: :thread)
+        @spawn_entered = spawn_entered
+        @spawn_release = spawn_release
+        @tool_entered = tool_entered
+        @spawn_count = 0
+      end
+
+      def spawn(&work)
+        @spawn_count += 1
+        task = super
+        if @spawn_count == 2
+          @tool_entered.pop
+          @spawn_entered << true
+          @spawn_release.pop
+        end
+        task
+      end
+    end
+    task_runner = runner_class.new(spawn_entered:, spawn_release:, tool_entered:)
+    tool = LittleGhost::Tool.define(name: "slow", description: "Wait.") { "unused" }
+    registry = LittleGhost::ToolRegistry.new([tool])
+    broker = LittleGhost::CodeMode::Broker.new(
+      registry:,
+      dispatch: lambda do |call|
+        tool_entered << true
+        tool_release.pop
+        LittleGhost::CodeMode::CallResult.new(id: call.id, value: "done", error: nil)
+      end
+    )
+    session = ruby_session(
+      broker:, task_runner:, cleanup_seconds: 0.01, observation_seconds: 0.1
+    )
+    execution = Thread.new do
+      session.execute(source: "tools.slow", catalog: broker.catalog)
+    rescue => error
+      error
+    end
+    Timeout.timeout(5) { spawn_entered.pop }
+    sandbox = session.instance_variable_get(:@sandbox)
+    directory = session.instance_variable_get(:@workspace_directory)
+    sandbox_close_count = 0
+    original_close = sandbox.method(:close)
+    sandbox.define_singleton_method(:close) do
+      sandbox_close_count += 1
+      original_close.call
+    end
+
+    error = assert_raises(LittleGhost::CleanupError) do
+      Timeout.timeout(1) { session.send(:close_process) }
+    end
+
+    assert_equal "Code-mode nested tool cleanup timed out", error.message
+    assert_predicate execution, :alive?
+    assert_equal 0, sandbox_close_count
+    assert File.exist?(directory)
+    spawn_release << true
+    tool_release << true
+    execution.join
+    session.close
+
+    assert_equal 1, sandbox_close_count
+    refute File.exist?(directory)
+    session.close
+    assert_equal 1, sandbox_close_count
+  ensure
+    spawn_release << true if spawn_release && spawn_release.empty?
+    tool_release << true if tool_release && tool_release.empty?
+    execution&.join
     begin
       session&.close
     rescue RuntimeError
@@ -1518,7 +1713,7 @@ class CodeModeTest < Minitest::Test
     LittleGhost::ModelResponse.new(message:, stop_reason:, usage: LittleGhost::Usage.new)
   end
 
-  def ruby_session(broker:, **limits)
+  def ruby_session(broker:, task_runner: nil, **limits)
     observation_seconds = limits.delete(:observation_seconds) || LittleGhost::CodeMode::Ruby::Session::OBSERVATION_SECONDS
     factory = lambda do |workspace:, required_runtime_paths:|
       assert_empty required_runtime_paths
@@ -1534,7 +1729,8 @@ class CodeModeTest < Minitest::Test
         memory_bytes: 128 * 1024 * 1024,
         **limits
       ),
-      observation_seconds:
+      observation_seconds:,
+      task_runner:
     )
   end
 end

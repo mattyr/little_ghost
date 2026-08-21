@@ -808,9 +808,12 @@ module LittleGhost
       deadline:, settings:, template_locals:, template_paths:, parent_operation_id:, events:)
       token = cancellation_token.child
       queue = SizedQueue.new(1_000)
-      worker = Thread.new do
+      worker = task_runner.spawn do
         completed = []
-        results = Support::Executor.new(max_concurrency: fork.max_concurrency).map(
+        results = Support::Executor.new(
+          max_concurrency: fork.max_concurrency,
+          task_runner:
+        ).map(
           fork.to,
           cancellation_token: token,
           on_result: ->(_index, result) { completed << result }
@@ -840,7 +843,7 @@ module LittleGhost
       end
     ensure
       token&.cancel
-      worker&.join
+      worker&.wait
     end
 
     def run_graph_branch(start:, source:, source_step_id:, join:, nodes:, edges:,

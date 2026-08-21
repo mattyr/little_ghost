@@ -539,10 +539,7 @@ module LittleGhost
     def enqueue_assembly_event(queue, value, cancellation_token)
       loop do
         cancellation_token.raise_if_cancelled!
-        queue.push(value, true)
-        return
-      rescue ThreadError
-        cancellation_token.wait(0.01)
+        return if queue.push(value, timeout: 0.01)
       end
     end
 

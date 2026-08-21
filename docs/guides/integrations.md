@@ -170,7 +170,7 @@ events.each { |event| websocket.write(JSON.generate(event)) }
 
 The adapter translates text, reasoning, Tool activity, usage, retries, trace
 context, subagent activity, and terminal outcomes. It is stateless between
-calls. Your application still owns the connection, thread storage,
+calls. Your application still owns the connection, execution-local storage,
 backpressure, and disconnect behavior.
 
 LittleGhost also emits namespaced custom events. Consumers should preserve or
@@ -182,7 +182,7 @@ client.
 > results, errors, and participant activity. Check that the connected user may
 > see the complete Run, then filter fields before sending or storing events.
 
-Enumeration drives the source stream on the current thread. When a client
+Enumeration drives the source stream in the current execution context. When a client
 disconnects, stop enumerating and apply the cancellation behavior your
 application needs. Closing the socket can't undo Tool work that already ran.
 

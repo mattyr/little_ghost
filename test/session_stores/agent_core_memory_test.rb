@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "async"
 require "little_ghost/session_stores/agent_core_memory"
 
 unless defined?(Aws::BedrockAgentCore::Errors::ExpiredTokenException)
@@ -150,6 +151,107 @@ class AgentCoreMemoryTest < Minitest::Test
     assert_raises(LittleGhost::ConfigurationError) do
       store.replace("session", messages: [], state: {}, metadata: {})
     end
+  end
+
+  def test_builds_the_sdk_client_off_the_scheduler_thread
+    factory_thread = nil
+
+    Async do
+      scheduler_thread = Thread.current
+      LittleGhost::SessionStores::AgentCoreMemory.new(
+        memory_id: "memory",
+        client_factory: -> {
+          factory_thread = Thread.current
+          Client.new
+        }
+      )
+      refute_same scheduler_thread, factory_thread
+    end
+  end
+
+  def test_concurrent_client_refreshes_share_one_factory_call
+    previous = Client.new
+    replacement = Client.new
+    entered = Queue.new
+    release = Queue.new
+    factory_calls = 0
+    results = []
+    store = LittleGhost::SessionStores::AgentCoreMemory.new(
+      memory_id: "memory",
+      client: previous,
+      client_factory: -> {
+        factory_calls += 1
+        entered << true
+        release.pop
+        replacement
+      }
+    )
+
+    Async do |task|
+      task.async { results << store.send(:refresh_client, previous) }
+      entered.pop
+      task.async { results << store.send(:refresh_client, previous) }
+      task.async do |child|
+        child.sleep(0.02)
+        release << true
+      end
+    end
+
+    assert_equal 1, factory_calls
+    assert_equal 2, results.length
+    assert_includes results, true
+    assert_includes results, false
+    assert_same replacement, store.send(:current_client)
+  ensure
+    release << true if release && release.empty?
+  end
+
+  def test_concurrent_client_refresh_waiters_receive_the_same_failure
+    previous = Client.new
+    entered = Queue.new
+    release = Queue.new
+    failure = RuntimeError.new("factory failed")
+    replacement = Client.new
+    factory_calls = 0
+    errors = []
+    store = LittleGhost::SessionStores::AgentCoreMemory.new(
+      memory_id: "memory",
+      client: previous,
+      client_factory: -> {
+        factory_calls += 1
+        if factory_calls == 1
+          entered << true
+          release.pop
+          raise failure
+        end
+        replacement
+      }
+    )
+
+    Async do |task|
+      task.async do
+        store.send(:refresh_client, previous)
+      rescue => error
+        errors << error
+      end
+      entered.pop
+      task.async do
+        store.send(:refresh_client, previous)
+      rescue => error
+        errors << error
+      end
+      task.async do |child|
+        child.sleep(0.02)
+        release << true
+      end
+    end
+
+    assert_equal [failure, failure], errors
+    assert store.send(:refresh_client, previous)
+    assert_equal 2, factory_calls
+    assert_same replacement, store.send(:current_client)
+  ensure
+    release << true if release && release.empty?
   end
 
   def test_refreshes_the_client_after_an_expired_token_during_load

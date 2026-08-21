@@ -99,6 +99,56 @@ class MCPTest < Minitest::Test
     end
   end
 
+  def test_client_waiting_for_the_transport_honors_its_own_cancellation
+    transport = Transport.new
+    client = LittleGhost::MCP::Client.new(transport:)
+    client.tools
+    entered = Queue.new
+    release = Queue.new
+    original_send = transport.method(:send)
+    transport.define_singleton_method(:send) do |payload, context: nil|
+      if payload[:method] == "tools/call"
+        entered << true
+        release.pop
+      end
+      original_send.call(payload, context:)
+    end
+    first = Thread.new { client.call("search", {}) }
+    entered.pop
+    token = LittleGhost::Support::CancellationToken.new
+    context = LittleGhost::RunContext.new(cancellation_token: token)
+    second = Thread.new do
+      client.call("search", {}, context:)
+    rescue => error
+      error
+    end
+    second.report_on_exception = false
+    token.cancel
+
+    assert second.join(1), "MCP transport waiter did not observe cancellation"
+    assert_instance_of LittleGhost::CancelledError, second.value
+  ensure
+    release << true if release && release.empty?
+    first&.join
+    second&.kill
+    second&.join
+  end
+
+  def test_client_rejects_reentrant_transport_calls
+    transport = Transport.new
+    client = LittleGhost::MCP::Client.new(transport:)
+    client.tools
+    original_send = transport.method(:send)
+    transport.define_singleton_method(:send) do |payload, context: nil|
+      client.call("nested", {}) if payload[:method] == "tools/call"
+      original_send.call(payload, context:)
+    end
+
+    error = assert_raises(LittleGhost::ProtocolError) { client.call("search", {}) }
+
+    assert_equal "MCP transport cannot be called reentrantly", error.message
+  end
+
   def test_toolset_resolves_one_connection_for_the_current_binding
     binding = LittleGhost::Tool::Binding.new(workspace: Object.new)
     seen = nil

@@ -3,6 +3,7 @@
 require "fileutils"
 require "json"
 require "tmpdir"
+require "async"
 require "test_helper"
 
 class FilesystemSessionStoreTest < Minitest::Test
@@ -144,6 +145,39 @@ class FilesystemSessionStoreTest < Minitest::Test
         expected_count: 0
       )
     end
+  end
+
+  def test_waiting_for_a_filesystem_lock_does_not_stall_the_scheduler
+    store = filesystem_store
+    lock_path = File.join(
+      @root,
+      "#{Digest::SHA256.hexdigest("little_ghost/filesystem_session/v1\0conversation")}.lock"
+    )
+    locked = Queue.new
+    release = Queue.new
+    owner = Thread.new do
+      File.open(lock_path, File::RDWR | File::CREAT, 0o600) do |lock|
+        lock.flock(File::LOCK_EX)
+        locked << true
+        release.pop
+      end
+    end
+    locked.pop
+    progressed = false
+
+    Async do |task|
+      task.async do |child|
+        child.sleep(0.01)
+        progressed = true
+        release << true
+      end
+      assert_nil store.load("conversation", actor_id: "actor")
+    end
+
+    assert progressed
+  ensure
+    release << true if release && release.empty?
+    owner&.join
   end
 
   private

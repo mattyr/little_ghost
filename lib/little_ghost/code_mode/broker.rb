@@ -14,6 +14,11 @@ module LittleGhost
       def initialize(agent: nil, registry: nil, context: RunContext.new, events: [],
         parent_operation_id: nil, parent_trace_context: nil, except: nil, dispatch: nil, max_calls: nil)
         @agent = agent
+        @task_runner = if agent&.runtime&.respond_to?(:task_runner)
+          agent.runtime.task_runner
+        else
+          Support::TaskRunner.new
+        end
         @registry = registry || agent&.tool_registry
         @context = context
         @events = events
@@ -44,6 +49,8 @@ module LittleGhost
       end
 
       attr_writer :context # :nodoc:
+
+      attr_reader :task_runner # :nodoc:
 
       def bind(context:, events:, parent_operation_id:, parent_trace_context: nil) # :nodoc:
         @context = context

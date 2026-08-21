@@ -33,7 +33,8 @@ module LittleGhost
     # Override the callbacks a backend supports. +start+ and +finish+ receive the
     # same operation name and correlated attributes. +emit+ receives point
     # events. Implementations may return a propagation carrier from
-    # #trace_context. Callbacks should be thread-safe.
+    # #trace_context. Callbacks should be safe across threads and interleaved
+    # fibers.
     class Subscriber
       # Called when a lifecycle operation starts.
       def start(_name, _attributes) = nil

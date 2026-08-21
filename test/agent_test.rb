@@ -3,6 +3,7 @@
 require "fileutils"
 require "test_helper"
 require "tmpdir"
+require "async"
 
 class AgentTest < Minitest::Test
   class ScriptedModel
@@ -629,6 +630,31 @@ class AgentTest < Minitest::Test
     release_slow << true if release_slow && runner&.alive?
     runner&.join(1)
     runner&.kill
+    agent&.close
+  end
+
+  def test_parallel_tools_use_scheduler_fibers
+    workers = Queue.new
+    tool = lambda do |name|
+      LittleGhost::Tool.define(name:, description: name) do
+        workers << [Thread.current.object_id, Fiber.current.object_id, Fiber.blocking?]
+        Async::Task.current.yield
+        name
+      end
+    end
+    tool_uses = %w[first second].map do |name|
+      LittleGhost::Content::ToolUse.new(id: "#{name}-call", name:, input: {})
+    end
+    model = ScriptedModel.new(response(tool_uses, stop_reason: :tool_use), response("done"))
+    agent = LittleGhost::Agent.new(model:, tools: [tool.call("first"), tool.call("second")])
+
+    Async { agent.call("go") }.wait
+
+    contexts = 2.times.map { workers.pop }
+    assert_equal 1, contexts.map(&:first).uniq.length
+    assert_equal 2, contexts.map { |context| context.fetch(1) }.uniq.length
+    assert contexts.none?(&:last)
+  ensure
     agent&.close
   end
 

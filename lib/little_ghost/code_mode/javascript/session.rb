@@ -14,11 +14,13 @@ module LittleGhost
 
       ToolCall = Data.define(:program_id, :call_id, :name, :arguments)
       ToolBatch = Data.define(:calls)
-      Deadline = Struct.new(:thread, :cancelled, :expiring, :finished, :error)
+      Deadline = Struct.new(:task, :cancelled, :expiring, :finished, :error)
 
       def initialize(broker:, client:, sandbox: nil, workspace: nil, max_concurrency: 8,
-        wall_seconds: 3_600, observation_seconds: OBSERVATION_SECONDS, cleanup_timeout: CLEANUP_TIMEOUT)
+        wall_seconds: 3_600, observation_seconds: OBSERVATION_SECONDS, cleanup_timeout: CLEANUP_TIMEOUT,
+        task_runner: nil)
         @broker = broker
+        @task_runner = task_runner || (broker.task_runner if broker.respond_to?(:task_runner)) || Support::TaskRunner.new
         @client = client
         @sandbox = sandbox
         @workspace = workspace
@@ -82,8 +84,12 @@ module LittleGhost
         begin
           @client.close_owner(self)
           wait_for_dispatches(program_ids)
-          unless !worker || worker.join(@cleanup_timeout)
-            raise LittleGhost::CleanupError, "Code-mode dispatch worker cleanup timed out"
+          if worker
+            begin
+              worker.wait(deadline: Time.now + @cleanup_timeout)
+            rescue LittleGhost::DeadlineExceededError
+              raise LittleGhost::CleanupError, "Code-mode dispatch worker cleanup timed out"
+            end
           end
         ensure
           @client.close
@@ -126,6 +132,7 @@ module LittleGhost
           @frames[program_id] = javascript_catalog
           @current_program_id = program_id
         end
+        ensure_worker
         @client.start_program(
           owner: self, dispatcher: self, source:, tools: javascript_catalog.host_definitions, program_id:
         )
@@ -192,7 +199,6 @@ module LittleGhost
         @mutex.synchronize do
           raise LittleGhost::ToolError, "Code-mode session is closed" if @closed
 
-          ensure_worker
           register_dispatch(batch)
           @queue.push(ToolBatch.new(calls: batch), true)
         end
@@ -264,8 +270,7 @@ module LittleGhost
       def ensure_worker
         return if @worker&.alive?
 
-        @worker = Thread.new { dispatch }
-        @worker.report_on_exception = false
+        @worker = @task_runner.spawn { dispatch }
       end
 
       def drain_dispatch_queue
@@ -317,17 +322,12 @@ module LittleGhost
           invalid.each { |call| reject(call, "Unknown or invalid code-mode tool call: #{call.name}") }
           next if valid.empty?
 
-          results = valid.each_slice(@max_concurrency).flat_map do |slice|
-            threads = slice.map do |call|
-              Thread.new do
-                definition = catalog.fetch(call.name)
-                @broker.call(
-                  definition.fetch("canonical_name"), call.arguments,
-                  id: "code-mode-#{call.program_id}-#{call.call_id}"
-                )
-              end.tap { |thread| thread.report_on_exception = false }
-            end
-            threads.map(&:value)
+          results = Support::Executor.new(max_concurrency: @max_concurrency, task_runner: @task_runner).map(valid) do |call|
+            definition = catalog.fetch(call.name)
+            @broker.call(
+              definition.fetch("canonical_name"), call.arguments,
+              id: "code-mode-#{call.program_id}-#{call.call_id}"
+            )
           end
           valid.zip(results).each do |call, result|
             if result.error.nil?
@@ -453,25 +453,26 @@ module LittleGhost
       def start_deadline(program_id)
         deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + @wall_seconds
         state = Deadline.new(nil, false, false, false, nil)
-        @deadline_mutex.synchronize do
-          @deadlines[program_id] = state
-          state.thread = Thread.new do
-            expired = @deadline_mutex.synchronize do
-              loop do
-                break false if state.cancelled
+        @deadline_mutex.synchronize { @deadlines[program_id] = state }
+        task = @task_runner.spawn do
+          expired = @deadline_mutex.synchronize do
+            loop do
+              break false if state.cancelled
 
-                remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
-                break true unless remaining.positive?
+              remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+              break true unless remaining.positive?
 
-                @deadline_condition.wait(@deadline_mutex, remaining)
-              end
+              @deadline_condition.wait(@deadline_mutex, remaining)
             end
-            expire_program(program_id, state) if expired
-          rescue => error
-            finish_deadline(program_id, state, error)
           end
-          state.thread.report_on_exception = false
+          expire_program(program_id, state) if expired
+        rescue => error
+          finish_deadline(program_id, state, error)
         end
+        @deadline_mutex.synchronize { state.task = task }
+      rescue
+        @deadline_mutex.synchronize { @deadlines.delete(program_id) if @deadlines[program_id].equal?(state) }
+        raise
       end
 
       def expire_program(program_id, state)
@@ -509,7 +510,7 @@ module LittleGhost
       end
 
       def cancel_deadline(program_id)
-        thread = @deadline_mutex.synchronize do
+        task = @deadline_mutex.synchronize do
           state = @deadlines[program_id]
           return unless state
 
@@ -520,9 +521,9 @@ module LittleGhost
             @deadline_condition.broadcast
           end
           @deadlines.delete(program_id)
-          state.thread
+          state.task
         end
-        thread&.join unless thread.equal?(Thread.current)
+        task&.wait unless task&.current?
       end
 
       def cancel_all_deadlines
@@ -541,12 +542,12 @@ module LittleGhost
       end
 
       def raise_pending_deadline_error!
-        error, thread = @deadline_mutex.synchronize do
+        error, task = @deadline_mutex.synchronize do
           pair = @pending_deadline_errors.shift
           state = @deadlines.delete(pair&.first)
-          [pair&.last, state&.thread]
+          [pair&.last, state&.task]
         end
-        thread&.join unless thread.equal?(Thread.current)
+        task&.wait unless task&.current?
         raise error if error
       end
 

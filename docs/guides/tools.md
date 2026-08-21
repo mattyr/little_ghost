@@ -220,6 +220,12 @@ class UpdateDraftTool < LittleGhost::Tool
 end
 ```
 
+With an active Fiber scheduler, concurrent Tool calls may run as interleaved
+fibers on one thread. A Tool that performs blocking work must offload it or the
+application must select the `:thread` concurrency backend. `exclusive true`
+prevents overlap with another exclusive Tool; it does not move the Tool to a
+worker thread.
+
 Retries can repeat a Tool call. Prefer read-only operations, idempotency keys,
 or writes that are safe to apply more than once. Do not rely on the prompt to
 prevent duplicate side effects.

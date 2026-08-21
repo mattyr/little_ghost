@@ -28,9 +28,14 @@ module LittleGhost
     # Session data is stored as ordinary JSON with canonical String keys. A
     # value outside that boundary raises ProtocolError without replacing the
     # previous snapshot. Shared roots require filesystem support for file
-    # locking and atomic rename.
+    # locking and atomic rename. From an active scheduler fiber, LittleGhost
+    # performs each complete lock-and-write transaction on a joined blocking
+    # worker so filesystem latency does not stop unrelated fibers. Store calls
+    # do not accept cancellation or deadlines, so a lock wait continues until
+    # the other process releases it.
     class Filesystem < SessionStore
       FORMAT_VERSION = 1 # :nodoc:
+      LOCK_RETRY_INTERVAL = 0.01 # :nodoc:
 
       # Creates a store rooted at +root+ and creates the directory when needed.
       #
@@ -42,8 +47,10 @@ module LittleGhost
         @root = File.expand_path(String(root))
         raise ArgumentError, "root must not be empty" if root.to_s.empty?
 
-        FileUtils.mkdir_p(@root, mode: 0o700)
-        validate_root!
+        Support::BlockingOperation.call do
+          FileUtils.mkdir_p(@root, mode: 0o700)
+          validate_root!
+        end
       end
 
       # Returns the stored snapshot for +id+, or +nil+ before the first write.
@@ -132,13 +139,15 @@ module LittleGhost
       end
 
       def with_lock(id)
-        path = lock_path(id)
-        validate_entry!(path) if File.exist?(path) || File.symlink?(path)
-        File.open(path, File::RDWR | File::CREAT, 0o600) do |lock|
-          lock.flock(File::LOCK_EX)
-          yield
-        ensure
-          lock.flock(File::LOCK_UN)
+        Support::BlockingOperation.call do
+          path = lock_path(id)
+          validate_entry!(path) if File.exist?(path) || File.symlink?(path)
+          File.open(path, File::RDWR | File::CREAT, 0o600) do |lock|
+            sleep(LOCK_RETRY_INTERVAL) until lock.flock(File::LOCK_EX | File::LOCK_NB)
+            yield
+          ensure
+            lock.flock(File::LOCK_UN)
+          end
         end
       end
 

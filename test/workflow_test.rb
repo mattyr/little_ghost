@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "async"
 
 class WorkflowTest < Minitest::Test
   class FakeAgent
@@ -53,9 +54,13 @@ class WorkflowTest < Minitest::Test
   class Application
     attr_reader :built
 
-    def initialize(agents)
+    attr_reader :task_runner
+
+    def initialize(agents = nil, task_runner: LittleGhost::Support::TaskRunner.new, **agent_keywords)
+      agents ||= agent_keywords
       @agents = agents.transform_values(&:dup)
       @built = []
+      @task_runner = task_runner
     end
 
     def build_assembly(agent_class_or_name, run:)
@@ -301,6 +306,37 @@ class WorkflowTest < Minitest::Test
     assert_equal %w[first second main], result.steps.map(&:participant)
     assert result.trajectory.concurrent?(result.steps[0].id, result.steps[1].id)
     assert_equal 5, result.usage.input_tokens
+  end
+
+  def test_parallel_invocations_use_scheduler_fibers
+    workers = Queue.new
+    parallel_agent = lambda do |text|
+      FakeAgent.new(
+        result(text:),
+        mutation: lambda do |_context|
+          workers << [Thread.current.object_id, Fiber.current.object_id, Fiber.blocking?]
+          Async::Task.current.yield
+        end
+      )
+    end
+    runtime = Application.new(
+      {
+        first: [parallel_agent.call("one")],
+        second: [parallel_agent.call("two")],
+        main: [FakeAgent.new(result(text: "done"))]
+      },
+      task_runner: LittleGhost::Support::TaskRunner.new(backend: :auto)
+    )
+
+    Async do
+      workflow = ParallelWorkflow.new(run: Run.new(runtime))
+      workflow.stream("request").to_a
+    end.wait
+
+    contexts = 2.times.map { workers.pop }
+    assert_equal 1, contexts.map(&:first).uniq.length
+    assert_equal 2, contexts.map { |context| context.fetch(1) }.uniq.length
+    assert contexts.none?(&:last)
   end
 
   def test_retries_only_explicit_errors_and_records_each_attempt

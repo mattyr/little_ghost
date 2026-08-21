@@ -2,6 +2,8 @@
 
 require "test_helper"
 require "little_ghost/subagents/manager"
+require "async"
+require "timeout"
 
 class SubagentManagerTest < Minitest::Test
   class Gate
@@ -20,6 +22,35 @@ class SubagentManagerTest < Minitest::Test
         @open = true
         @condition.broadcast
       end
+    end
+  end
+
+  class ImmediateTask
+    def backend = :thread
+    def alive? = false
+    def wait(deadline: nil) = self
+  end
+
+  class ImmediateTaskRunner
+    def spawn(&work)
+      work.call
+      ImmediateTask.new
+    end
+  end
+
+  class BlockingSpawnTaskRunner
+    attr_reader :entered, :release
+
+    def initialize
+      @entered = Queue.new
+      @release = Queue.new
+    end
+
+    def spawn(&work)
+      entered << true
+      release.pop
+      work.call
+      ImmediateTask.new
     end
   end
 
@@ -84,6 +115,17 @@ class SubagentManagerTest < Minitest::Test
     def close = @closed = true
   end
 
+  class CountingClosableAgent < ControlledAgent
+    attr_reader :close_count
+
+    def initialize(...)
+      super
+      @close_count = 0
+    end
+
+    def close = @close_count += 1
+  end
+
   class InterruptibleAgent < ControlledAgent
     attr_reader :interjections, :interject_target
 
@@ -132,6 +174,25 @@ class SubagentManagerTest < Minitest::Test
     assert_equal "explore", definition.kind
     assert_equal "Explore code", definition.description
     assert_same factory, definition.factory
+  end
+
+  def test_worker_spawn_can_run_immediately_without_holding_the_manager_lock
+    runtime = Struct.new(:task_runner).new(ImmediateTaskRunner.new)
+    manager = manager_for(->(_id) { ControlledAgent.new }, runtime:)
+
+    result = Timeout.timeout(1) do
+      manager.spawn(
+        kind: "explore",
+        task_name: "explore",
+        task: "inspect",
+        mode: "sync"
+      )
+    end
+
+    assert_equal "finished", result[:status]
+    assert_equal "inspect", result[:response]
+  ensure
+    manager&.close
   end
 
   def test_built_in_tools_are_subagent_control_tools
@@ -581,15 +642,14 @@ class SubagentManagerTest < Minitest::Test
         token.raise_if_cancelled!
       end
     end
-    manager = manager_for(->(_id) { agent }, observer: ->(event) { events << event })
-    original_emit = manager.method(:emit)
-    manager.define_singleton_method(:emit) do |event, identity, turn: nil, **attributes|
-      if event == "tool_started"
+    observer = lambda do |event|
+      if event[:event] == "tool_started"
         activity_entered << true
         emit_gate.wait
       end
-      original_emit.call(event, identity, turn:, **attributes)
+      events << event
     end
+    manager = manager_for(->(_id) { agent }, observer:)
 
     manager.spawn(kind: "explore", task_name: "explore", task: "inspect", mode: "async")
     activity_entered.pop
@@ -603,6 +663,30 @@ class SubagentManagerTest < Minitest::Test
   ensure
     emit_gate&.open
     closer&.join
+    manager&.close
+  end
+
+  def test_observer_can_reenter_manager_without_deadlocking
+    observations = Queue.new
+    manager = nil
+    observer = lambda do |event|
+      observations << [event[:event], manager.list[:subagents].length]
+    end
+    manager = manager_for(->(_id) { ControlledAgent.new }, observer:)
+
+    result = manager.spawn(
+      kind: "explore",
+      task_name: "explore",
+      task: "inspect",
+      mode: "sync"
+    )
+
+    assert_equal "finished", result[:status]
+    events = []
+    events << observations.pop until observations.empty?
+    assert_equal %w[spawned turn_started turn_finished], events.map(&:first)
+    assert events.all? { |_event, count| count == 1 }
+  ensure
     manager&.close
   end
 
@@ -1727,6 +1811,112 @@ class SubagentManagerTest < Minitest::Test
     assert_equal "Subagent turn was cancelled.", result[:error]
   ensure
     gate&.open
+  end
+
+  def test_close_can_retry_a_scheduler_fiber_after_cleanup_times_out
+    gate = Gate.new
+    started = Queue.new
+    finished = Queue.new
+    close_count = 0
+    agent = Object.new
+    agent.define_singleton_method(:call) do |_message, cancellation_token:|
+      started << true
+      gate.wait
+      cancellation_token.raise_if_cancelled!
+    ensure
+      finished << true
+    end
+    agent.define_singleton_method(:close) { close_count += 1 }
+    runtime = Struct.new(:task_runner).new(
+      LittleGhost::Support::TaskRunner.new(backend: :auto)
+    )
+
+    Async do
+      manager = manager_for(->(_id) { agent }, runtime:, close_timeout: 0)
+      manager.spawn(kind: "explore", task_name: "explore", task: "slow", mode: "async")
+      started.pop
+
+      assert_raises(LittleGhost::Subagents::Manager::CleanupError) { manager.close }
+      assert_equal 0, close_count
+      assert_raises(LittleGhost::Error) do
+        manager.spawn(kind: "explore", task_name: "another", task: "work", mode: "async")
+      end
+
+      gate.open
+      finished.pop
+      Async::Task.current.yield
+      assert_nil manager.close
+      assert_equal 1, close_count
+      assert_nil manager.close
+      assert_equal 1, close_count
+    end.wait
+  ensure
+    gate&.open
+  end
+
+  def test_close_deadline_bounds_an_unresolved_worker_reservation
+    runner = BlockingSpawnTaskRunner.new
+    runtime = Struct.new(:task_runner).new(runner)
+    agent = CountingClosableAgent.new
+    manager = manager_for(->(_id) { agent }, runtime:, close_timeout: 0.02)
+    caller = Thread.new do
+      manager.spawn(kind: "explore", task_name: "explore", task: "slow", mode: "async")
+    end
+    runner.entered.pop
+
+    started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    assert_raises(LittleGhost::Subagents::Manager::CleanupError) { manager.close }
+    elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
+
+    assert_operator elapsed, :<, 0.2
+    assert_equal 0, agent.close_count
+
+    runner.release << true
+    caller.join
+    assert_nil manager.close
+    assert_equal 1, agent.close_count
+    assert_nil manager.close
+    assert_equal 1, agent.close_count
+  ensure
+    runner&.release&.push(true) if caller&.alive?
+    caller&.join
+  end
+
+  def test_close_keeps_agent_open_while_terminated_thread_is_still_unwinding
+    work_gate = Gate.new
+    ensure_gate = Gate.new
+    started = Queue.new
+    ensure_entered = Queue.new
+    ensure_finished = Queue.new
+    close_count = 0
+    agent = Object.new
+    agent.define_singleton_method(:call) do |_message, cancellation_token:|
+      started << true
+      work_gate.wait
+      cancellation_token.raise_if_cancelled!
+    ensure
+      ensure_entered << true
+      ensure_gate.wait
+      ensure_finished << true
+    end
+    agent.define_singleton_method(:close) { close_count += 1 }
+    manager = manager_for(->(_id) { agent }, close_timeout: 0.02)
+    manager.spawn(kind: "explore", task_name: "explore", task: "slow", mode: "async")
+    started.pop
+
+    assert_raises(LittleGhost::Subagents::Manager::CleanupError) { manager.close }
+    ensure_entered.pop
+    assert_equal 0, close_count
+
+    ensure_gate.open
+    ensure_finished.pop
+    assert_nil manager.close
+    assert_equal 1, close_count
+    assert_nil manager.close
+    assert_equal 1, close_count
+  ensure
+    work_gate&.open
+    ensure_gate&.open
   end
 
   def test_sync_turn_delivers_cleanup_error_once

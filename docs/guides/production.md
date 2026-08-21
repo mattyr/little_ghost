@@ -75,6 +75,55 @@ The controller supplies identity and account access from authenticated applicati
 
 Configure LittleGhost before the first Agent or Assembly call. Once application services start successfully, the configuration is locked so every request sees one stable setup.
 
+## Run with a Fiber scheduler
+
+LittleGhost uses an active Ruby Fiber scheduler for its structured concurrent
+work. It does not install or control the scheduler. Without one, the same work
+runs on bounded worker threads.
+
+For example, an application using Async can run independent requests on one
+scheduler thread while network waits allow the other tasks to progress:
+
+```ruby
+require "async"
+
+Async do |task|
+  requests = questions.map do |question|
+    task.async { CustomerSupportAgent.ask(question) }
+  end
+
+  requests.map(&:wait)
+end
+```
+
+The default `:auto` concurrency backend selects scheduled fibers only from an
+active, nonblocking scheduler fiber. Force worker threads for an application
+whose Tools or extensions perform blocking work:
+
+```ruby
+LittleGhost.configure do |config|
+  config.concurrency_backend = :thread
+end
+```
+
+Set the backend to `:fiber` when every call must begin inside an active
+scheduler. LittleGhost raises `LittleGhost::ConfigurationError` if it cannot
+schedule the work instead of silently changing that requirement.
+
+Fiber scheduling improves concurrency while work waits for I/O. It does not
+make CPU-heavy Ruby code run in parallel. LittleGhost keeps opaque provider
+streams, native SDK calls, and process supervision on worker threads when
+prompt cancellation or forceful cleanup needs that boundary. Built-in
+filesystem stores and sandboxes also move blocking filesystem operations away
+from the scheduler thread.
+
+Custom Tools, providers, SessionStores, hooks, and callbacks may run in
+interleaved fibers under `:auto`. They must avoid blocking the scheduler or
+offload that work themselves. They must also remain safe when several threads
+call the same shared object. Ruby's `Thread.current[:key]` storage is local to a
+fiber, while values written with `thread_variable_set` are shared by every
+fiber on that thread.
+
 ## Preserve conversation with Sessions
 
 A **Session** lets one request continue an earlier conversation. Pass the same session ID and trusted actor ID with each related call:
@@ -106,7 +155,7 @@ Every Run has a session ID so LittleGhost can checkpoint its progress. If you do
 
 ## Stream or supervise long-running work
 
-`.stream_ask` runs on the caller's thread and yields `StreamEvent` values as the answer arrives:
+`.stream_ask` runs in the caller's execution context and yields `StreamEvent` values as the answer arrives:
 
 ```ruby
 stream = CustomerSupportAgent.stream_ask(question)
@@ -138,7 +187,12 @@ execution.wait(deadline: Time.now + 30)
 execution.run.completed?
 ```
 
-The event block runs on the worker thread, so keep it quick. Cancellation, deadlines, and `close` ask the work to stop; they cannot forcibly end arbitrary provider or tool code. They also cannot undo actions that already happened.
+The event block runs on the worker task, which may be a scheduled fiber or a
+worker thread. Keep it quick and safe to interleave with other scheduled work.
+Cancellation, deadlines, and `close` ask the work to stop; they cannot forcibly
+end arbitrary provider or Tool code. They also cannot undo actions that already
+happened. Keep the application's scheduler running until a scheduler-backed
+Execution finishes.
 
 ## Keep Tool permission checks in application code
 
@@ -239,14 +293,15 @@ agent = CustomerSupportAgent.new(runtime: runtime)
 An explicit Runtime has its own independent configuration. It does not replace
 LittleGhost's shared default.
 
-One Runtime can serve independent calls from several threads. Each call gets
-its own Run, participants, Tools, and Runtime-created Workspace and Sandbox. An
-Agent or Assembly already bound to an active Run must stay with that Run.
+One Runtime can serve independent calls from several threads and interleaved
+fibers. Each call gets its own Run, participants, Tools, and Runtime-created
+Workspace and Sandbox. An Agent or Assembly already bound to an active Run must
+stay with that Run.
 
 Within one SessionStore instance, LittleGhost serializes calls sharing a
 Session. Multi-process deployments need coordination from their store. Custom
 stores and other shared extension objects may receive concurrent calls and
-must be thread-safe.
+must be safe across both threads and interleaved fibers.
 
 Runtime has no shutdown step. Shared services supplied by the application keep their own lifecycle. Shut those services down with the rest of your application. If you installed process-wide instrumentation subscribers, flush or shut down `LittleGhost::Instrumentation` during application shutdown.
 

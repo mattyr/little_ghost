@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "async"
 require "little_ghost/sandbox/process_runner"
 require "little_ghost/sandbox/process_session"
 
@@ -47,6 +48,27 @@ class SandboxProcessRunnerTest < Minitest::Test
     end
 
     assert_includes error.message, "timed out"
+  end
+
+  def test_termination_grace_does_not_stall_the_scheduler
+    finished = false
+    heartbeat_before_finish = false
+
+    Async do |task|
+      task.async do |child|
+        child.sleep(0.4)
+        heartbeat_before_finish = !finished
+      end
+      assert_raises(LittleGhost::ToolError) do
+        LittleGhost::Sandbox::ProcessRunner.run(
+          command: [Gem.ruby, "-e", 'trap("TERM") {}; sleep 30'],
+          timeout: 0.3
+        )
+      end
+      finished = true
+    end
+
+    assert heartbeat_before_finish
   end
 
   def test_process_session_enforces_parent_supervised_memory

@@ -33,6 +33,7 @@ module LittleGhost
   class Configuration
     FILE_LOAD_MUTEX = Mutex.new # :nodoc:
     CONFIGURATION_KEYS = %i[invocation service_name].freeze # :nodoc:
+    RUNTIME_BUILD_CONTEXT_KEY = :little_ghost_runtime_build_context # :nodoc:
     DEFAULT_PROMPT_PATHS = ["app/prompts"].freeze # :nodoc:
     DEFAULT_SKILL_PATHS = ["app/skills"].freeze # :nodoc:
     ##
@@ -97,8 +98,12 @@ module LittleGhost
         sandbox: nil,
         code_mode: nil,
         instrumentation_subscribers: [],
-        runtime_hooks: []
+        runtime_hooks: [],
+        concurrency_backend: :auto
       }.merge(values)
+      @configuration_values[:concurrency_backend] = normalize_concurrency_backend(
+        @configuration_values[:concurrency_backend]
+      )
       @configuration_values[:prompt_paths] = Array(@configuration_values[:prompt_paths]).dup
       @configuration_values[:skill_paths] = Array(@configuration_values[:skill_paths]).dup
       @configuration_values[:skill_resource_root] = Skills::ResourceRoot.normalize(
@@ -136,11 +141,11 @@ module LittleGhost
     # other writes are rejected. A failed build leaves the configuration
     # editable for a later attempt.
     def runtime
-      build_generation = @lifecycle_monitor.synchronize do
+      build_generation, build_context = @lifecycle_monitor.synchronize do
         loop do
           return @default_runtime if @default_runtime
           if @runtime_building
-            if @runtime_builder_thread.equal?(Thread.current)
+            if current_runtime_build_context.equal?(@runtime_build_context)
               raise ConfigurationError, "LittleGhost.runtime cannot be called while the shared Runtime is starting"
             end
 
@@ -154,14 +159,14 @@ module LittleGhost
             sealed_values = freeze_configuration_copy(@configuration_values)
             @runtime_generation = @runtime_generation.to_i + 1
             @runtime_building = true
-            @runtime_builder_thread = Thread.current
+            @runtime_build_context = Object.new
             @configuration_values = sealed_values
-            break @runtime_generation
+            break [@runtime_generation, @runtime_build_context]
           end
         end
       end
 
-      begin
+      ExecutionState.with(RUNTIME_BUILD_CONTEXT_KEY => build_context) do
         runtime_root = root
         load_file!(root: runtime_root)
         runtime_settings = settings(root: runtime_root)
@@ -186,10 +191,31 @@ module LittleGhost
       ensure
         @lifecycle_monitor.synchronize do
           @runtime_building = false
-          @runtime_builder_thread = nil
+          @runtime_build_context = nil
           @runtime_condition.broadcast
         end
       end
+    end
+
+    # Selects how subsequently built runtimes schedule framework concurrency.
+    # +:auto+ uses scheduler-owned fibers when called from a managed nonblocking
+    # fiber and threads otherwise. +:thread+ always uses threads. +:fiber+
+    # requires an active scheduler when work is started.
+    #
+    # :call-seq:
+    #   concurrency_backend() -> :auto, :thread, :fiber
+    #   concurrency_backend(value) -> :auto, :thread, :fiber
+    def concurrency_backend(value = :__read__)
+      return configuration_values[:concurrency_backend] if value == :__read__
+
+      normalized = normalize_concurrency_backend(value)
+      change_configuration { configuration_values[:concurrency_backend] = normalized }
+      normalized
+    end
+
+    # Replaces the concurrency backend for subsequently built runtimes.
+    def concurrency_backend=(value)
+      concurrency_backend(value)
     end
 
     # Workspace declaration used for subsequently built runtimes.
@@ -431,6 +457,8 @@ module LittleGhost
         self.sandbox = value
       when :code_mode
         self.code_mode = value
+      when :concurrency_backend
+        self.concurrency_backend = value
       else
         change_configuration { configuration_values[name.to_sym] = value }
       end
@@ -594,17 +622,19 @@ module LittleGhost
 
     def load_file!(root: nil) # :nodoc:
       requested_root = canonical_root(root || self.root)
-      FILE_LOAD_MUTEX.synchronize do
-        (@configuration_file_mutex ||= Mutex.new).synchronize do
-          if @configuration_file_root
-            return self if @configuration_file_root == requested_root
+      Support::BlockingOperation.call do
+        FILE_LOAD_MUTEX.synchronize do
+          (@configuration_file_mutex ||= Mutex.new).synchronize do
+            if @configuration_file_root
+              next if @configuration_file_root == requested_root
 
-            raise ConfigurationError, "configuration file is already loaded for #{@configuration_file_root}"
+              raise ConfigurationError, "configuration file is already loaded for #{@configuration_file_root}"
+            end
+
+            path = File.join(requested_root, "config/little_ghost.rb")
+            load_configuration_file(path) if File.file?(path)
+            @configuration_file_root = requested_root
           end
-
-          path = File.join(requested_root, "config/little_ghost.rb")
-          load_configuration_file(path) if File.file?(path)
-          @configuration_file_root = requested_root
         end
       end
 
@@ -615,7 +645,7 @@ module LittleGhost
 
     def configuration_values
       @lifecycle_monitor.synchronize do
-        if @runtime_building && !@runtime_builder_thread.equal?(Thread.current)
+        if @runtime_building && !current_runtime_build_context.equal?(@runtime_build_context)
           raise_locked_configuration!
         end
 
@@ -701,7 +731,18 @@ module LittleGhost
       return false if @default_runtime
       return true unless @runtime_building
 
-      @configuration_file_loading && @runtime_builder_thread.equal?(Thread.current)
+      @configuration_file_loading && current_runtime_build_context.equal?(@runtime_build_context)
+    end
+
+    def current_runtime_build_context
+      ExecutionState[RUNTIME_BUILD_CONTEXT_KEY]
+    end
+
+    def normalize_concurrency_backend(value)
+      normalized = value.to_sym if value.respond_to?(:to_sym)
+      return normalized if Support::TaskRunner::BACKENDS.include?(normalized)
+
+      raise ArgumentError, "concurrency_backend must be :auto, :thread, or :fiber"
     end
 
     def load_configuration_file(path)
@@ -826,10 +867,12 @@ module LittleGhost
     end
 
     def canonical_root(value)
-      path = Pathname.new(File.realpath(File.expand_path(value)))
-      raise ConfigurationError, "application root must be a directory" unless path.directory?
+      Support::BlockingOperation.call do
+        path = Pathname.new(File.realpath(File.expand_path(value)))
+        raise ConfigurationError, "application root must be a directory" unless path.directory?
 
-      path
+        path
+      end
     rescue Errno::ENOENT
       raise ConfigurationError, "application root must exist"
     end

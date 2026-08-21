@@ -114,10 +114,14 @@ module LittleGhost
 
         @region = region
         @client_factory = client_factory || -> { build_client(@region) }
-        @client = client || @client_factory.call
+        @client = client || Support::BlockingOperation.call { @client_factory.call }
         @clock = clock
         @operation_context_key = :"little_ghost_session_store_operation_#{object_id}"
         @client_mutex = Mutex.new
+        @client_condition = ConditionVariable.new
+        @client_refreshing = false
+        @client_refresh_generation = 0
+        @client_refresh_failure = nil
         @persistence_locks = {}
         @persistence_locks_mutex = Mutex.new
       end
@@ -302,11 +306,50 @@ module LittleGhost
       end
 
       def refresh_client(previous_client)
-        @client_mutex.synchronize do
-          return false unless @client.equal?(previous_client)
+        loop do
+          state, value = @client_mutex.synchronize do
+            if !@client.equal?(previous_client)
+              [:installed, false]
+            elsif @client_refreshing
+              generation = @client_refresh_generation
+              @client_condition.wait(@client_mutex, 0.01)
+              if @client_refresh_failure&.first == generation
+                [:failure, @client_refresh_failure.last]
+              else
+                [:retry, nil]
+              end
+            else
+              @client_refreshing = true
+              @client_refresh_generation += 1
+              [:owner, @client_refresh_generation]
+            end
+          end
+          return value if state == :installed
+          raise value if state == :failure
+          next if state == :retry
 
-          @client = @client_factory.call
-          true
+          return build_replacement_client(value, previous_client)
+        end
+      end
+
+      def build_replacement_client(generation, previous_client)
+        replacement = Support::BlockingOperation.call { @client_factory.call }
+        @client_mutex.synchronize do
+          if @client.equal?(previous_client)
+            @client = replacement
+            @client_refresh_failure = nil
+            true
+          else
+            false
+          end
+        end
+      rescue => error
+        @client_mutex.synchronize { @client_refresh_failure = [generation, error] }
+        raise
+      ensure
+        @client_mutex.synchronize do
+          @client_refreshing = false
+          @client_condition.broadcast
         end
       end
 
