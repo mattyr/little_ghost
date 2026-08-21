@@ -4,6 +4,27 @@ require "test_helper"
 require "async"
 
 class ExecutorTest < Minitest::Test
+  def test_submit_returns_a_task_with_the_worker_result
+    task = LittleGhost::Support::Executor.new.submit { 42 }
+
+    task.wait
+
+    assert_equal 42, task.result
+    assert_nil task.error
+  end
+
+  def test_call_returns_the_worker_result
+    assert_equal 42, LittleGhost::Support::Executor.new.call { 42 }
+  end
+
+  def test_call_raises_the_worker_error
+    error = assert_raises(ArgumentError) do
+      LittleGhost::Support::Executor.new.call { raise ArgumentError, "bad work" }
+    end
+
+    assert_equal "bad work", error.message
+  end
+
   def test_preserves_input_order_while_running_concurrently
     mutex = Mutex.new
     condition = ConditionVariable.new
@@ -126,7 +147,7 @@ class ExecutorTest < Minitest::Test
     Async do
       calling_thread = Thread.current.object_id
       runner = LittleGhost::Support::TaskRunner.new(backend: :thread)
-      observations = LittleGhost::Support::Executor.new(task_runner: runner).map([:work]) do
+      observations = LittleGhost::Support::Executor.new(runner:).map([:work]) do
         Thread.current.object_id
       end
 

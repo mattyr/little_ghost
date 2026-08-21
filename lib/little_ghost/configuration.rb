@@ -203,8 +203,8 @@ module LittleGhost
     # The default, +:auto+, uses scheduler-owned fibers when work starts inside
     # a fiber managed by the active scheduler, and threads otherwise. +:thread+
     # always uses threads. +:fiber+ requires an active scheduler-managed fiber
-    # and raises ConfigurationError when work cannot be scheduled. Any other
-    # value raises ArgumentError.
+    # that supports Fiber.schedule, and raises ConfigurationError when no
+    # scheduler is active. Any other value raises ArgumentError.
     #
     #   LittleGhost.configure do |config|
     #     config.concurrency_backend = :thread

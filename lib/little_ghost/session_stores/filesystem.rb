@@ -146,7 +146,7 @@ module LittleGhost
           loop do
             if lock.flock(File::LOCK_EX | File::LOCK_NB)
               begin
-                accepted, value = Support::BlockingOperation.try_call { yield }
+                accepted, value = Support::Executor.blocking.try_call { yield }
                 return value if accepted
               ensure
                 lock.flock(File::LOCK_UN)

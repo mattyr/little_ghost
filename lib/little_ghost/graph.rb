@@ -812,7 +812,7 @@ module LittleGhost
         completed = []
         results = Support::Executor.new(
           max_concurrency: fork.max_concurrency,
-          task_runner:
+          runner: task_runner
         ).map(
           fork.to,
           cancellation_token: token,

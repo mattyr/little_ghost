@@ -81,7 +81,8 @@ If your application already runs inside a Ruby Fiber scheduler, LittleGhost
 uses that scheduler for work that can overlap: parallel Tool calls, Workflow
 and Graph branches, subagent turns, background Executions, and nested code-mode
 Tool calls. LittleGhost does not install or run a scheduler. Work started
-outside a scheduled fiber uses worker threads instead.
+outside a scheduled fiber uses worker threads instead. The scheduler must
+support `Fiber.schedule`, as full scheduler implementations such as `async` do.
 
 For example, an application using the optional `async` gem can let several
 requests make progress on one thread while each request waits for network I/O.
@@ -105,7 +106,8 @@ end.wait
 
 The default `:auto` backend selects fibers only when work begins inside a fiber
 managed by the active scheduler. Otherwise, it selects threads. Force threads
-when your Tools or extensions call libraries that block the current thread:
+when blocking work is pervasive or cannot be isolated behind the narrow
+`offload_blocking` boundary described below:
 
 ```ruby
 LittleGhost.configure do |config|
@@ -118,22 +120,40 @@ be an application error. LittleGhost then raises
 `LittleGhost::ConfigurationError` instead of falling back to a thread.
 
 Fiber scheduling helps while work waits for I/O; it does not make CPU-heavy
-Ruby code run in parallel. Ruby routes ordinary socket and file IO through the
-active scheduler when the operation has a scheduler hook. Configuration,
-loading, and extension construction run in the calling context. A library that
-does not cooperate with the scheduler can pause the other fibers on that
-thread.
+Ruby code run in parallel. Whether an IO call cooperates depends on the Ruby
+version, scheduler, and library. Configuration, loading, and extension
+construction run in the calling context. A library call that does not cooperate
+can pause the other fibers on that thread.
 
 A few boundaries remain threaded because their cleanup or durability contract
 requires it. Provider and subprocess streams may own dedicated threads that
 can be interrupted or kept draining during cleanup. Certificate generation and
-Filesystem SessionStore transactions share a small, lazily created blocking pool.
-Fiber mode removes orchestration threads; it does not promise a thread-free
-Run.
+Filesystem SessionStore transactions share a small, lazily created pool of
+reusable threads. Fiber mode removes orchestration threads; it does not promise
+a thread-free Run.
+
+For application code, start without an offload. When library documentation or
+measurement shows that a specific call stalls sibling fibers—and the work can
+make progress on another Ruby thread—wrap that call rather than the whole Tool
+or callback:
+
+```ruby
+result = LittleGhost.offload_blocking do
+  LegacyExportClient.fetch_archive(report_id)
+end
+```
+
+The block runs inline outside a scheduler-managed fiber. Inside a scheduled
+fiber, LittleGhost submits it to the same bounded pool used by its internal
+blocking boundaries. Once accepted, the block finishes before an interruption is
+re-raised, which keeps ownership of writes and other side effects clear. The
+helper does not impose a timeout or cancellation on the operation itself, so
+use the library's controls when available. If most work in your extensions
+blocks, use the `:thread` concurrency backend instead.
 
 The blocking pool allows two operations at a time by default. Applications
 that measure sustained contention at those boundaries can set its process-wide
-capacity before the pool first starts:
+capacity during process startup, before the first Run can start the pool:
 
 ```ruby
 LittleGhost.blocking_pool_capacity = 4
@@ -145,9 +165,7 @@ change Tool, Workflow, Graph, or subagent concurrency.
 Custom Tools, providers, SessionStores, hooks, and callbacks can be entered by
 several threads or by fibers interleaved on one thread. Protect shared mutable
 state, keep lock scope narrow, and do not call application callbacks while
-holding a lock. Use your scheduler library's blocking-operation facility for a
-call that does not cooperate with Ruby's Fiber scheduler. If the extension
-cannot do that, select the `:thread` backend for its Runtime.
+holding a lock.
 
 Pass request-specific values through the Invocation context or another explicit
 argument. Do not use `thread_variable_set` for request state because every

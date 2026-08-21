@@ -591,7 +591,7 @@ module LittleGhost
       )
       @model_settings = model_settings.to_h.freeze
       @template_resolver = template_resolver || default_template_resolver(template_paths)
-      @executor = executor || Support::Executor.new(task_runner:)
+      @executor = executor || Support::Executor.new(runner: task_runner)
       @delegation_activity = delegation_activity
       @agent_path = Subagents::AgentPath.validate!(agent_path)
       @max_turns = Integer(max_turns)

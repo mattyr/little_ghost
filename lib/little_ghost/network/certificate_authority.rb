@@ -10,7 +10,7 @@ module LittleGhost
       module_function
 
       def create(root:, hosts:, trust_root: File.join(root, "trust"))
-        Support::BlockingOperation.call do
+        LittleGhost.offload_blocking do
           create_material(root:, hosts:, trust_root:)
         end
       end

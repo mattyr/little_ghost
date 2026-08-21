@@ -15,14 +15,17 @@ module LittleGhost
         end
       end
 
-      def initialize(backend:, execution_state:, &work) # :nodoc:
-        @backend = backend
+      def initialize(execution_state:, capture_interruptions: false, &work) # :nodoc:
         @execution_state = execution_state
+        @capture_interruptions = capture_interruptions
         @work = work
         @mutex = Mutex.new
         @condition = ConditionVariable.new
         @finished = false
+        @result = nil
         @error = nil
+        @terminable = false
+        @joinable = false
       end
 
       # Waits for completion and returns this Task.
@@ -35,7 +38,7 @@ module LittleGhost
         monotonic_deadline = if deadline
           monotonic_time + [deadline - Time.now, 0].max
         end
-        worker = @mutex.synchronize do
+        worker, joinable = @mutex.synchronize do
           until @finished
             if monotonic_deadline
               remaining = monotonic_deadline - monotonic_time
@@ -46,10 +49,15 @@ module LittleGhost
               @condition.wait(@mutex)
             end
           end
-          @worker
+          [@worker, @joinable]
         end
-        worker.join if @backend == :thread && worker != Thread.current
+        worker.join if joinable
         self
+      end
+
+      # Returns the task result after completion.
+      def result
+        @mutex.synchronize { @result }
       end
 
       # Returns the worker failure after completion, or nil.
@@ -72,7 +80,8 @@ module LittleGhost
       # returns false for them. The owner remains responsible for a bounded
       # wait after termination.
       def terminate
-        return false if @backend == :fiber || current?
+        return false unless @terminable
+        return false if current?
 
         worker = @mutex.synchronize { @worker unless @finished }
         return false unless worker
@@ -81,16 +90,25 @@ module LittleGhost
         true
       end
 
-      def start(worker) # :nodoc:
-        @mutex.synchronize { @worker = worker }
+      def start(worker = nil, terminable: false, joinable: false) # :nodoc:
+        @mutex.synchronize do
+          @worker = worker
+          @terminable = terminable
+          @joinable = joinable
+        end
         self
       end
 
       def call # :nodoc:
         ExecutionState.with(@execution_state) do
-          ExecutionState.with(CURRENT_KEY => self) { @work.call }
+          result = ExecutionState.with(CURRENT_KEY => self) { @work.call }
+          @mutex.synchronize { @result = result }
         end
       rescue => caught
+        @mutex.synchronize { @error = caught }
+      rescue Exception => caught # rubocop:disable Lint/RescueException
+        raise unless @capture_interruptions
+
         @mutex.synchronize { @error = caught }
       ensure
         @mutex.synchronize do

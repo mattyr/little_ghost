@@ -196,6 +196,20 @@ class CodeModeEngineTest < Minitest::Test
     end.wait
   end
 
+  def test_thread_backend_keeps_the_dispatch_worker_lazy_inside_a_scheduler
+    runner = LittleGhost::Support::TaskRunner.new(backend: :thread)
+    broker = Broker.new(task_runner: runner)
+    session = open_session(broker)
+
+    Async do
+      result = execute(session, broker, 'text("done");')
+
+      assert_equal "done", result.output
+      assert_nil session.instance_variable_get(:@worker)
+      session.close
+    end.wait
+  end
+
   def test_javascript_program_deadline_uses_a_scheduler_task
     broker = Broker.new
     session = open_session(broker, observation_seconds: 0.01)

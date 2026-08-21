@@ -222,10 +222,27 @@ end
 
 When LittleGhost selects the fiber backend, concurrent Tool calls can run as
 fibers on one thread. If a Tool calls a library that blocks that thread, every
-other fiber on it must wait too. Move that call to a worker thread or configure
-LittleGhost to use the `:thread` backend. A custom extension can use its
-scheduler library's supported blocking-operation facility; LittleGhost does
-not expose a public offload API.
+other fiber on it must wait too. Wrap only that call with
+`LittleGhost.offload_blocking`:
+
+```ruby
+def call(input)
+  LittleGhost.offload_blocking do
+    LegacySearchClient.lookup(input.fetch("query"))
+  end
+end
+```
+
+Many Ruby IO operations cooperate with a scheduler, depending on the Ruby
+version, scheduler, and library. Use this boundary only for a specific call
+that its library documents—or your application measures—as stalling sibling
+fibers, and only when that work can make progress on another Ruby thread. The
+block runs inline outside a scheduler-managed fiber. Inside a scheduled fiber,
+it uses a small process-wide pool so other fibers can keep moving. Configure
+the operation's own timeout or cancellation when it provides one.
+
+If most of a Tool's implementation blocks, configure LittleGhost to use the
+`:thread` backend instead of wrapping each call.
 `exclusive true` prevents overlap with another exclusive Tool; it does not
 change where the Tool runs. [Running in
 Production](production.md#use-an-existing-fiber-scheduler) shows the scheduler

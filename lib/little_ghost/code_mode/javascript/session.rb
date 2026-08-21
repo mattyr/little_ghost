@@ -131,7 +131,7 @@ module LittleGhost
           @frames[program_id] = javascript_catalog
           @current_program_id = program_id
         end
-        ensure_worker if @task_runner.backend != :thread && Fiber.current_scheduler
+        ensure_worker if @task_runner.uses_current_scheduler?
         @client.start_program(
           owner: self, dispatcher: self, source:, tools: javascript_catalog.host_definitions, program_id:
         )
@@ -322,7 +322,7 @@ module LittleGhost
           invalid.each { |call| reject(call, "Unknown or invalid code-mode tool call: #{call.name}") }
           next if valid.empty?
 
-          results = Support::Executor.new(max_concurrency: @max_concurrency, task_runner: @task_runner).map(valid) do |call|
+          results = Support::Executor.new(max_concurrency: @max_concurrency, runner: @task_runner).map(valid) do |call|
             definition = catalog.fetch(call.name)
             @broker.call(
               definition.fetch("canonical_name"), call.arguments,

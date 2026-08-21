@@ -3,25 +3,42 @@
 require "async"
 require "test_helper"
 
-class BlockingOperationTest < Minitest::Test
-  def test_offloads_from_a_scheduled_fiber
+class PooledThreadRunnerTest < Minitest::Test
+  def test_public_helper_offloads_from_a_scheduled_fiber
     operation_thread = nil
     scheduler_thread = nil
 
     Async do
       scheduler_thread = Thread.current
-      LittleGhost::Support::BlockingOperation.call do
-        operation_thread = Thread.current
-      end
+      LittleGhost.offload_blocking { operation_thread = Thread.current }
     end
 
     refute_same scheduler_thread, operation_thread
   end
 
-  def test_runs_inline_without_a_current_scheduler
-    thread = Thread.current
+  def test_public_helper_runs_inline_without_a_current_scheduler
+    assert_same Thread.current, LittleGhost.offload_blocking { Thread.current }
+  end
 
-    assert_same thread, LittleGhost::Support::BlockingOperation.call { Thread.current }
+  def test_public_helper_requires_a_block
+    error = assert_raises(ArgumentError) { LittleGhost.offload_blocking }
+
+    assert_equal "a blocking operation block is required", error.message
+  end
+
+  def test_public_helper_propagates_execution_state
+    observed = nil
+
+    Async do
+      LittleGhost::ExecutionState.with(request_id: "request-1") do
+        observed = LittleGhost.offload_blocking do
+          [LittleGhost::ExecutionState[:request_id], Thread.current]
+        end
+      end
+    end
+
+    assert_equal "request-1", observed.first
+    refute_same Thread.current, observed.last
   end
 
   def test_bounds_and_reuses_workers_for_concurrent_scheduler_calls
@@ -32,7 +49,7 @@ class BlockingOperationTest < Minitest::Test
     Async do |task|
       50.times do
         task.async do
-          workers << LittleGhost::Support::BlockingOperation.call do
+          workers << LittleGhost.offload_blocking do
             entered << true
             release.pop
             Thread.current
@@ -78,7 +95,7 @@ class BlockingOperationTest < Minitest::Test
     reader, writer = IO.pipe
     pid = fork do
       reader.close
-      Async { LittleGhost::Support::BlockingOperation.call { nil } }.wait
+      Async { LittleGhost.offload_blocking { nil } }.wait
       error = begin
         LittleGhost.blocking_pool_capacity = 3
         nil
@@ -102,12 +119,12 @@ class BlockingOperationTest < Minitest::Test
     writer&.close unless writer&.closed?
   end
 
-  def test_propagates_worker_errors
+  def test_public_helper_propagates_worker_errors
     error = nil
 
     Async do
       error = assert_raises(ArgumentError) do
-        LittleGhost::Support::BlockingOperation.call { raise ArgumentError, "bad operation" }
+        LittleGhost.offload_blocking { raise ArgumentError, "bad operation" }
       end
     end.wait
 
@@ -122,7 +139,7 @@ class BlockingOperationTest < Minitest::Test
 
     Async do |task|
       child = task.async do
-        LittleGhost::Support::BlockingOperation.call do
+        LittleGhost.offload_blocking do
           started << true
           release.pop
           completed = true
@@ -138,6 +155,52 @@ class BlockingOperationTest < Minitest::Test
 
     assert waiting_after_stop
     assert completed
+  ensure
+    release&.push(true)
+  end
+
+  def test_nested_offload_runs_inline_on_the_pool_worker
+    observed = nil
+
+    Async do
+      observed = LittleGhost.offload_blocking do
+        outer = Thread.current
+        [outer, LittleGhost.offload_blocking { Thread.current }]
+      end
+    end
+
+    assert_same observed.first, observed.last
+  end
+
+  def test_nested_offload_stays_inline_after_the_pool_worker_enters_a_scheduler
+    runner = LittleGhost::Support::PooledThreadRunner.new(capacity: 1)
+    executor = LittleGhost::Support::Executor.new(runner:)
+    observed = nil
+
+    Async do
+      observed = executor.call do
+        outer = Thread.current
+        nested = Async { executor.call { Thread.current } }.wait
+        [outer, nested]
+      end
+    end.wait
+
+    assert_same observed.first, observed.last
+  end
+
+  def test_pooled_task_cannot_terminate_its_shared_worker
+    started = Queue.new
+    release = Queue.new
+    task = LittleGhost::Support::Executor.blocking.submit do
+      started << true
+      release.pop
+    end
+    started.pop
+
+    refute task.terminate
+    release << true
+    task.wait(deadline: Time.now + 1)
+    refute_predicate task, :alive?
   ensure
     release&.push(true)
   end

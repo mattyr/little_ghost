@@ -9,14 +9,35 @@ module LittleGhost
     # ExecutionState is copied to workers. +on_result+ runs on the calling
     # execution context in completion order. After all workers join, the first
     # cleanup error, or otherwise the first input-order error, is raised.
-    class Executor
-      # Sets the maximum number of worker tasks and their scheduling policy.
-      def initialize(max_concurrency: 8, task_runner: TaskRunner.new)
+    class Executor # :nodoc:
+      # Sets the maximum number of batch workers and their execution policy.
+      def initialize(max_concurrency: 8, runner: TaskRunner.new, wait_through_interruptions: false)
         raise ArgumentError, "max_concurrency must be at least 1" if max_concurrency < 1
-        raise ArgumentError, "task_runner must be a LittleGhost::Support::TaskRunner" unless task_runner.is_a?(TaskRunner)
 
         @max_concurrency = max_concurrency
-        @task_runner = task_runner
+        @runner = runner
+        @wait_through_interruptions = wait_through_interruptions
+      end
+
+      attr_reader :runner # :nodoc:
+
+      # Submits one unit of work and returns its Task.
+      def submit(&work)
+        @runner.spawn(&work)
+      end
+
+      # Runs one unit of work and returns its result.
+      def call(&work)
+        resolve(submit(&work))
+      end
+
+      # Runs one unit of work only when runner capacity is immediately
+      # available. Returns an accepted flag and the result.
+      def try_call(&work)
+        task = @runner.try_spawn(&work)
+        return [false, nil] unless task
+
+        [true, resolve(task)]
       end
 
       # Maps +values+ with at most the configured number of workers.
@@ -39,7 +60,7 @@ module LittleGhost
         workers = []
         begin
           worker_count.times do
-            workers << @task_runner.spawn do
+            workers << submit do
               loop do
                 index = begin
                   queue.pop(true)
@@ -99,6 +120,36 @@ module LittleGhost
         raise first_error if first_error
 
         results
+      end
+
+      private
+
+      def resolve(task)
+        interruption = nil
+        loop do
+          task.wait
+          break
+        rescue Exception => error # rubocop:disable Lint/RescueException
+          raise unless @wait_through_interruptions
+
+          interruption ||= error
+          break unless task.alive?
+        end
+        raise interruption if interruption
+        raise task.error if task.error
+
+        task.result
+      end
+
+      # The process-wide Executor for opaque blocking work.
+      BLOCKING = new(
+        runner: PooledThreadRunner.new,
+        wait_through_interruptions: true
+      ) # :nodoc:
+      private_constant :BLOCKING
+
+      class << self
+        def blocking = BLOCKING # :nodoc:
       end
     end
   end

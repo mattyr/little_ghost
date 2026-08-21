@@ -236,7 +236,7 @@ class FilesystemSessionStoreTest < Minitest::Test
     Async do |task|
       workers = LittleGhost.blocking_pool_capacity.times.map do
         task.async do
-          LittleGhost::Support::BlockingOperation.call do
+          LittleGhost.offload_blocking do
             entered << true
             release.pop
           end
