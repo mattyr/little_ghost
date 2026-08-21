@@ -236,8 +236,10 @@ class SkillsTest < Minitest::Test
         File.join(skill_directory, "SKILL.md"),
         "---\nname: review\ndescription: Review code\n---\nRead the guide."
       )
-      runtime = Struct.new(:skill_paths, :skill_resource_root).new(
-        [directory], "workspace://skills"
+      runtime = Struct.new(
+        :skill_paths, :skill_resource_root, :task_runner, :runtime_hooks, :code_mode_configuration
+      ).new(
+        [directory], "workspace://skills", LittleGhost::Support::TaskRunner.new, [], nil
       )
       workspace, sandbox = workspace_resources(directory)
       run = Struct.new(:runtime, :workspace, :sandbox).new(runtime, workspace, sandbox)

@@ -20,7 +20,7 @@ module LittleGhost
         wall_seconds: 3_600, observation_seconds: OBSERVATION_SECONDS, cleanup_timeout: CLEANUP_TIMEOUT,
         task_runner: nil)
         @broker = broker
-        @task_runner = task_runner || (broker.task_runner if broker.respond_to?(:task_runner)) || Support::TaskRunner.new
+        @task_runner = task_runner || broker.task_runner
         @client = client
         @sandbox = sandbox
         @workspace = workspace

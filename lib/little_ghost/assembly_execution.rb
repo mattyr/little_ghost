@@ -206,7 +206,7 @@ module LittleGhost
       (policy.fetch(:retries) + 1).times do |index|
         attempt_number = index + 1
         started_at = Time.now
-        child = if build_options.any? && runtime.respond_to?(:build_agent)
+        child = if build_options.any?
           build_stream_participant(:build_agent, reference, stream_path, **build_options)
         else
           build_stream_participant(:build_assembly, reference, stream_path, **build_options)
@@ -254,8 +254,8 @@ module LittleGhost
             predecessor_ids:,
             branch_id:,
             participant:,
-            assembly_id: child.class.respond_to?(:assembly_id) ? child.class.assembly_id : participant,
-            assembly_kind: child.class.respond_to?(:assembly_kind) ? child.class.assembly_kind : :assembly,
+            assembly_id: child.class.assembly_id,
+            assembly_kind: child.class.assembly_kind,
             status: :completed,
             attempts:,
             usage:,
@@ -339,14 +339,8 @@ module LittleGhost
     end
 
     def build_stream_participant(builder_name, reference, stream_path, **options)
-      builder = runtime.method(builder_name)
-      parameters = builder.parameters
-      accepts_path = parameters.any? do |kind, name|
-        kind == :keyrest || (%i[key keyreq].include?(kind) && name == :agent_stream_path)
-      end
-      options[:agent_stream_path] = stream_path if accepts_path
-      child = builder.call(reference, run:, **options)
-      child.bind_agent_stream_path(stream_path) if child.respond_to?(:bind_agent_stream_path)
+      child = runtime.public_send(builder_name, reference, run:, agent_stream_path: stream_path, **options)
+      child.bind_agent_stream_path(stream_path)
       child
     end
 
@@ -420,11 +414,11 @@ module LittleGhost
       error.instance_variable_set(:@little_ghost_step_usage, usage)
       error.instance_variable_set(
         :@little_ghost_step_assembly_id,
-        child.class.respond_to?(:assembly_id) ? child.class.assembly_id : participant.to_s
+        child.class.assembly_id
       )
       error.instance_variable_set(
         :@little_ghost_step_assembly_kind,
-        child.class.respond_to?(:assembly_kind) ? child.class.assembly_kind : :assembly
+        child.class.assembly_kind
       )
     end
 

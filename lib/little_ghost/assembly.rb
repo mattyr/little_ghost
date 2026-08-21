@@ -155,8 +155,8 @@ module LittleGhost
     def initialize(run: nil, runtime: nil, workspace: nil, sandbox: nil, standalone: run.nil?) # :nodoc:
       @run = run
       @runtime = runtime || run&.runtime || LittleGhost.runtime
-      @workspace = workspace || (run.workspace if run&.respond_to?(:workspace))
-      @sandbox = sandbox || (run.sandbox if run&.respond_to?(:sandbox))
+      @workspace = workspace || run&.workspace
+      @sandbox = sandbox || run&.sandbox
       @standalone = standalone
       @assembly_mutex = Mutex.new
       @assembly_closed = false
@@ -342,11 +342,7 @@ module LittleGhost
     def standalone? = @standalone # :nodoc:
 
     def task_runner # :nodoc:
-      @task_runner ||= if runtime.respond_to?(:task_runner)
-        runtime.task_runner
-      else
-        Support::TaskRunner.new
-      end
+      @task_runner ||= runtime ? runtime.task_runner : Support::TaskRunner.new
     end
 
     def with_active_assembly(assembly) # :nodoc:
@@ -381,14 +377,8 @@ module LittleGhost
     end
 
     def build_tool_assembly
-      builder = runtime.method(:build_assembly)
-      accepts_path = builder.parameters.any? do |kind, name|
-        kind == :keyrest || (%i[key keyreq].include?(kind) && name == :agent_stream_path)
-      end
-      options = {run:}
-      options[:agent_stream_path] = agent_stream_path if accepts_path
-      child = builder.call(self.class, **options)
-      child.bind_agent_stream_path(agent_stream_path) if child.respond_to?(:bind_agent_stream_path)
+      child = runtime.build_assembly(self.class, run:, agent_stream_path:)
+      child.bind_agent_stream_path(agent_stream_path)
       child
     end
 

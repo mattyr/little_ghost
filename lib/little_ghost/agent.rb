@@ -609,8 +609,8 @@ module LittleGhost
       raise ArgumentError, "max_turns must be at least 1" if @max_turns < 1
       raise ArgumentError, "max_tool_calls must be at least 1" if @max_tool_calls < 1
       raise ArgumentError, "max_tool_result_tokens must be at least 1" if @max_tool_result_tokens < 1
-      @artifact_lifecycle = if runtime&.respond_to?(:runtime_hooks)
-        runtime.runtime_hooks.find { |hook| hook.is_a?(Runtime::Hooks::Artifacts) }
+      @artifact_lifecycle = @runtime&.then do |resolved_runtime|
+        resolved_runtime.runtime_hooks.find { |hook| hook.is_a?(Runtime::Hooks::Artifacts) }
       end
       apply_cancellation_decision!(run_callbacks(:after_initialize, self))
     rescue
@@ -2126,7 +2126,7 @@ module LittleGhost
       declaration = self.class.code_mode_configuration
       return unless declaration
 
-      defaults = @runtime.respond_to?(:code_mode_configuration) ? @runtime.code_mode_configuration : nil
+      defaults = @runtime&.code_mode_configuration
       @code_mode_declaration = (defaults || {}).merge(declaration).transform_keys(&:to_sym).freeze
       unknown = @code_mode_declaration.keys - %i[engine except sandbox limits]
       raise ConfigurationError, "Unknown code-mode option: #{unknown.first.inspect}" unless unknown.empty?

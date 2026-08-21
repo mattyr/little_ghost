@@ -13,6 +13,7 @@ class ExecutionTest < Minitest::Test
       @release = release
       @interject_release = interject_release
       @cancellation_token = LittleGhost::Support::CancellationToken.new
+      @runtime = Data.define(:task_runner).new(LittleGhost::Support::TaskRunner.new)
       @interjections = []
       @started = Queue.new
       @close_count = 0

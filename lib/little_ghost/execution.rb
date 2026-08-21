@@ -51,11 +51,7 @@ module LittleGhost
       @active_interjections = 0
       @closing = false
       @execution_state = ExecutionState.capture
-      @task_runner = if run.respond_to?(:runtime) && run.runtime.respond_to?(:task_runner)
-        run.runtime.task_runner
-      else
-        Support::TaskRunner.new
-      end
+      @task_runner = run.runtime.task_runner
     end
 
     # Returns +:pending+, +:running+, or +:finished+.

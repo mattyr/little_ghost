@@ -123,9 +123,13 @@ class AgentStreamTest < Minitest::Test
     end
 
     def open_session(_run) = nil
+    def prepare_execution(run) = run
     def service_name = "agent-stream-test"
     def template_locals(run:, agent:) = {run:, agent:}
     def error_message(error, _run) = "Agent failed: #{error.class}"
+    def task_runner = @task_runner ||= LittleGhost::Support::TaskRunner.new
+    def runtime_hooks = []
+    def code_mode_configuration = nil
   end
 
   def test_standalone_agent_contextual_events_are_opt_in

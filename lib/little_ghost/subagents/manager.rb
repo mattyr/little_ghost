@@ -253,11 +253,7 @@ module LittleGhost
         @observer = observer
         @observer_events = []
         @observer_flushing = false
-        @task_runner = if runtime&.respond_to?(:task_runner)
-          runtime.task_runner
-        else
-          Support::TaskRunner.new
-        end
+        @task_runner = runtime ? runtime.task_runner : Support::TaskRunner.new
         @parent_session = parent_session
         @parent_agent_path = AgentPath.validate!(parent_agent_path)
         @parent_link = parent_session && self.class.parent_link(parent_session)
@@ -732,7 +728,7 @@ module LittleGhost
         end
         timed_out = (deadline <= monotonic_time) ? workers.select(&:alive?) : []
         workers.select(&:alive?).each do |worker|
-          worker.terminate if worker.backend == :thread && worker.respond_to?(:terminate)
+          worker.terminate if worker.backend == :thread
         end
         workers.each do |worker|
           remaining = deadline - monotonic_time

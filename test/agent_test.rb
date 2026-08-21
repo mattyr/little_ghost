@@ -323,6 +323,22 @@ class AgentTest < Minitest::Test
     assert_equal %i[user assistant], result.messages.map(&:role)
   end
 
+  def test_uses_artifact_hooks_from_the_runs_runtime
+    hook = LittleGhost::Runtime::Hooks::Artifacts.configured.new
+    runtime = Struct.new(:task_runner, :runtime_hooks, :code_mode_configuration).new(
+      LittleGhost::Support::TaskRunner.new,
+      [hook],
+      nil
+    )
+    run = Struct.new(:runtime, :workspace, :sandbox).new(runtime)
+
+    agent = LittleGhost::Agent.new(model: Object.new.extend(LittleGhost::ModelInterface), run:)
+
+    assert_same hook, agent.instance_variable_get(:@artifact_lifecycle)
+  ensure
+    agent&.close
+  end
+
   def test_agent_hooks_wrap_invocations_model_tools_and_tool_execution
     tool = LittleGhost::Tool.define(name: "echo", description: "Echo input.") { |input| input.fetch("value") }
     tool_use = LittleGhost::Content::ToolUse.new(id: "echo-1", name: "echo", input: {"value" => "ready"})

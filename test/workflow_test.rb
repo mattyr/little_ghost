@@ -7,6 +7,9 @@ class WorkflowTest < Minitest::Test
   class FakeAgent
     attr_reader :calls
 
+    def self.assembly_id = "fake_agent"
+    def self.assembly_kind = :agent
+
     def initialize(result, mutation: nil, failure_usage: LittleGhost::Usage.new, close_error: nil)
       @result = result
       @mutation = mutation
@@ -16,6 +19,7 @@ class WorkflowTest < Minitest::Test
     end
 
     def prompt_locals = {}
+    def bind_agent_stream_path(_path) = self
 
     def call(input, **options)
       calls << [:call, input, options]
@@ -63,10 +67,11 @@ class WorkflowTest < Minitest::Test
       @task_runner = task_runner
     end
 
-    def build_assembly(agent_class_or_name, run:)
+    def build_assembly(agent_class_or_name, run:, agent_stream_path:)
       built << [agent_class_or_name, run]
-      @agents.fetch(agent_class_or_name).shift ||
+      (@agents.fetch(agent_class_or_name).shift ||
         raise("No fake #{agent_class_or_name} configured")
+      ).bind_agent_stream_path(agent_stream_path)
     end
 
     def template_locals(run:, agent:)
@@ -74,7 +79,7 @@ class WorkflowTest < Minitest::Test
     end
   end
 
-  Run = Struct.new(:runtime)
+  Run = Struct.new(:runtime, :workspace, :sandbox)
 
   class ExampleWorkflow < LittleGhost::Workflow
     attr_reader :route, :note

@@ -6,6 +6,9 @@ require "little_ghost"
 class TestRuntime
   def error_message(error, _run) = "Agent failed: #{error.class}"
   def service_name = "test"
+  def task_runner = @task_runner ||= LittleGhost::Support::TaskRunner.new
+  def runtime_hooks = []
+  def code_mode_configuration = nil
 end
 
 module InstrumentationIsolation

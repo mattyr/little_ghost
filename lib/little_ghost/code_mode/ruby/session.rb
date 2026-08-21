@@ -15,7 +15,7 @@ module LittleGhost
         def initialize(broker:, sandbox_factory:, subprocess_policy:, limits:, observation_seconds: OBSERVATION_SECONDS,
           task_runner: nil)
           @broker = broker
-          @task_runner = task_runner || (broker.task_runner if broker.respond_to?(:task_runner)) || Support::TaskRunner.new
+          @task_runner = task_runner || broker.task_runner
           @sandbox_factory = sandbox_factory
           @subprocess_policy = subprocess_policy
           @limits = limits

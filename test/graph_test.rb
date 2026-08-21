@@ -7,6 +7,9 @@ class GraphTest < Minitest::Test
   class FakeAssembly
     attr_reader :calls
 
+    def self.assembly_id = "fake_assembly"
+    def self.assembly_kind = :assembly
+
     def initialize(result, failure_usage: LittleGhost::Usage.new, mutation: nil)
       @result = result
       @failure_usage = failure_usage
@@ -30,6 +33,7 @@ class GraphTest < Minitest::Test
     end
 
     def interject(...) = nil
+    def bind_agent_stream_path(_path) = self
     def close = @closed = true
     def closed? = @closed == true
   end
@@ -46,15 +50,15 @@ class GraphTest < Minitest::Test
       @task_runner = task_runner
     end
 
-    def build_assembly(declaration, run:)
+    def build_assembly(declaration, run:, agent_stream_path:)
       built << [declaration, run]
-      @assemblies.fetch(declaration).shift
+      @assemblies.fetch(declaration).shift.bind_agent_stream_path(agent_stream_path)
     end
 
     def template_locals(run:, agent:) = {run:, agent:}
   end
 
-  Run = Struct.new(:runtime)
+  Run = Struct.new(:runtime, :workspace, :sandbox)
 
   def test_runs_one_path_and_only_streams_the_finish_node
     graph_class = Class.new(LittleGhost::Graph) do
