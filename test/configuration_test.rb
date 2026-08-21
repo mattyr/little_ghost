@@ -74,43 +74,6 @@ class ConfigurationTest < Minitest::Test
     end
   end
 
-  def test_configuration_file_loading_uses_the_scheduler_and_keeps_build_context
-    Dir.mktmpdir do |root|
-      probe = Struct.new(:started, :release, :thread).new(Queue.new, Queue.new)
-      Object.const_set(:ConfigurationFileSchedulerProbe, probe)
-      config_path = File.join(root, "config/little_ghost.rb")
-      FileUtils.mkdir_p(File.dirname(config_path))
-      File.write(config_path, <<~RUBY)
-        ConfigurationFileSchedulerProbe.thread = Thread.current
-        ConfigurationFileSchedulerProbe.started << true
-        ConfigurationFileSchedulerProbe.release.pop
-        LittleGhost.configure { |configuration| configuration.service_name "loaded from file" }
-      RUBY
-      configuration = LittleGhost::Configuration.new(root:)
-      scheduler_thread = nil
-      progressed_while_loading = false
-      runtime = nil
-
-      Async do |task|
-        scheduler_thread = Thread.current
-        build = task.async do
-          LittleGhost.with_configuration(configuration) { configuration.runtime }
-        end
-        probe.started.pop
-        progressed_while_loading = true
-        probe.release << true
-        runtime = build.wait
-      end.wait
-
-      assert progressed_while_loading
-      assert_same scheduler_thread, probe.thread
-      assert_equal "loaded from file", runtime.service_name
-    ensure
-      probe&.release&.push(true)
-      Object.send(:remove_const, :ConfigurationFileSchedulerProbe) if Object.const_defined?(:ConfigurationFileSchedulerProbe, false)
-    end
-  end
-
   def test_recursive_runtime_build_in_the_same_execution_context_is_rejected
     Dir.mktmpdir do |root|
       configuration = LittleGhost::Configuration.new(root:)

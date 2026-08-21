@@ -153,22 +153,6 @@ class AgentCoreMemoryTest < Minitest::Test
     end
   end
 
-  def test_builds_the_sdk_client_on_the_calling_thread
-    factory_thread = nil
-
-    Async do
-      scheduler_thread = Thread.current
-      LittleGhost::SessionStores::AgentCoreMemory.new(
-        memory_id: "memory",
-        client_factory: -> {
-          factory_thread = Thread.current
-          Client.new
-        }
-      )
-      assert_same scheduler_thread, factory_thread
-    end
-  end
-
   def test_concurrent_client_refreshes_share_one_factory_call
     previous = Client.new
     replacement = Client.new

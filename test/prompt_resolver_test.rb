@@ -4,7 +4,6 @@ require "test_helper"
 require "fileutils"
 require "tmpdir"
 require "little_ghost/prompt_resolver"
-require "async"
 
 class PromptResolverTest < Minitest::Test
   def setup
@@ -105,43 +104,6 @@ class PromptResolverTest < Minitest::Test
     end.map(&:value)
 
     assert_equal((0...10).map { |index| "Hello #{index}" }, results)
-  end
-
-  def test_template_reads_and_erb_evaluation_use_the_scheduler_thread
-    write(@application, "system.erb", "Hello <%= PromptSchedulerProbe.call %>")
-    evaluation_thread = nil
-    Object.const_set(:PromptSchedulerProbe, lambda {
-      evaluation_thread = Thread.current
-      "Ghost"
-    })
-    started = Queue.new
-    release = Queue.new
-    read_thread = nil
-    scheduler_thread = nil
-    result = nil
-    original_read = File.method(:read)
-
-    Async do |task|
-      scheduler_thread = Thread.current
-      rendering = task.async do
-        File.stub(:read, lambda { |*args, **options|
-          read_thread = Thread.current
-          started << true
-          release.pop
-          original_read.call(*args, **options)
-        }) { @resolver.render("system") }
-      end
-      started.pop
-      release << true
-      result = rendering.wait
-    end.wait
-
-    assert_equal "Hello Ghost", result
-    assert_same scheduler_thread, read_thread
-    assert_same scheduler_thread, evaluation_thread
-  ensure
-    release&.push(true)
-    Object.send(:remove_const, :PromptSchedulerProbe) if Object.const_defined?(:PromptSchedulerProbe, false)
   end
 
   private

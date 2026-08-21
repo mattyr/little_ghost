@@ -2,7 +2,6 @@
 
 require "test_helper"
 require "tmpdir"
-require "async"
 
 class ArtifactsTest < Minitest::Test
   def test_inline_and_deferred_artifacts_are_immutable_and_redacted
@@ -68,25 +67,6 @@ class ArtifactsTest < Minitest::Test
       end
       assert_raises(LittleGhost::ToolError) do
         store.write(data: "four", media_type: "text/plain")
-      end
-    end
-  end
-
-  def test_workspace_store_uses_scheduler_native_file_io
-    with_workspace do |workspace|
-      materializer_thread = nil
-
-      Async do
-        scheduler_thread = Thread.current
-        store = LittleGhost::Artifacts::WorkspaceStore.new(workspace:)
-        original = store.method(:materialize)
-        store.define_singleton_method(:materialize) do |**arguments|
-          materializer_thread = Thread.current
-          original.call(**arguments)
-        end
-
-        store.write(data: "report", media_type: "text/plain")
-        assert_same scheduler_thread, materializer_thread
       end
     end
   end

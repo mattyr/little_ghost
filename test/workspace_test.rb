@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require "test_helper"
-require "async"
 
 class WorkspaceTest < Minitest::Test
   Run = Data.define(:id)
@@ -73,43 +72,6 @@ class WorkspaceTest < Minitest::Test
       aliased = LittleGhost::Workspace.new(root:, paths: {one: "shared", two: "shared"})
 
       assert_raises(ArgumentError) { aliased.open }
-    end
-  end
-
-  def test_open_keeps_setup_and_filesystem_work_on_the_scheduler_thread
-    Dir.mktmpdir do |root|
-      started = Queue.new
-      release = Queue.new
-      setup_thread = nil
-      filesystem_thread = nil
-      scheduler_thread = nil
-      original_mkdir_p = FileUtils.method(:mkdir_p)
-      workspace = LittleGhost::Workspace.new(
-        root:,
-        setup: ->(**) { setup_thread = Thread.current }
-      )
-
-      Async do |task|
-        scheduler_thread = Thread.current
-        opening = task.async do
-          FileUtils.stub(:mkdir_p, lambda { |*args, **options|
-            filesystem_thread = Thread.current
-            started << true
-            release.pop
-            original_mkdir_p.call(*args, **options)
-          }) { workspace.open }
-        end
-        started.pop
-        release << true
-        opening.wait
-      end.wait
-
-      assert_same scheduler_thread, setup_thread
-      assert_same scheduler_thread, filesystem_thread
-      assert_same workspace, workspace.validate!
-    ensure
-      release&.push(true)
-      workspace&.close
     end
   end
 

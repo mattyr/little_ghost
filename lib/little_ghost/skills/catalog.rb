@@ -289,12 +289,10 @@ module LittleGhost
             !sandbox.allows?(:filesystem_write, @resource_root)
           raise ConfigurationError, "workspace resource_root must be tool-readable and read-only"
         end
-        grants = writable_tool_grants(sandbox)
-        writable_inside_root = grants.any? do |grant|
+        if writable_tool_grants(sandbox).any? do |grant|
           source = File.realpath(grant.source)
           source == physical_root || source.start_with?("#{physical_root}#{File::SEPARATOR}")
         end
-        if writable_inside_root
           raise ConfigurationError, "workspace resource_root must not contain writable file grants"
         end
         @workspace_physical_root = physical_root
@@ -305,9 +303,8 @@ module LittleGhost
       def validate_workspace_resource_aliases!(sandbox)
         return unless @workspace_physical_root
 
-        grants = writable_tool_grants(sandbox)
         protected_identities = protected_directory_identities
-        aliased = grants.any? do |grant|
+        aliased = writable_tool_grants(sandbox).any? do |grant|
           stat = File.stat(grant.source)
           protected_identities.include?([stat.dev, stat.ino])
         end

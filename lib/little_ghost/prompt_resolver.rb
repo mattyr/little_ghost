@@ -12,7 +12,6 @@ module LittleGhost
     def initialize(path:)
       expanded = File.realpath(path)
       raise ArgumentError, "trusted template path must be a directory" unless File.directory?(expanded)
-
       super(path: expanded.freeze)
     rescue Errno::ENOENT
       raise ArgumentError, "trusted template path must exist"
@@ -134,13 +133,6 @@ module LittleGhost
     end
 
     def resolve(name, roots)
-      path = resolve_filesystem(name, roots)
-      return path if path
-
-      raise MissingPromptTemplateError, "Prompt template not found: #{name}"
-    end
-
-    def resolve_filesystem(name, roots)
       candidates = template_candidates(name)
       roots.each do |root_spec|
         root, real_root = validate_root(root_spec)
@@ -152,7 +144,8 @@ module LittleGhost
           return real_path if inside_root?(real_path, real_root)
         end
       end
-      nil
+
+      raise MissingPromptTemplateError, "Prompt template not found: #{name}"
     end
 
     def template_candidates(name)

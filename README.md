@@ -29,8 +29,7 @@ how to choose where each Agent sends its requests.
 
 ## Install the gem
 
-LittleGhost requires Ruby 3.3 or newer. Add it to your bundle and provide a
-provider credential:
+LittleGhost requires Ruby 3.3 or newer. Add it to your bundle and provide a provider credential:
 
 ```ruby
 gem "little_ghost"

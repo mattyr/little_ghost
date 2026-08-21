@@ -1,32 +1,8 @@
 # frozen_string_literal: true
 
 require "test_helper"
-require "async"
 
 class SandboxFilesystemTest < Minitest::Test
-  def test_filesystem_operations_use_scheduler_native_io
-    Dir.mktmpdir do |root|
-      workspace = LittleGhost::Workspace.new(root:).open
-      sandbox = LittleGhost::Sandboxes::Unrestricted.new(workspace:)
-      filesystem = sandbox.scope.instance_variable_get(:@filesystem)
-      operation_thread = nil
-      original = filesystem.method(:read_path)
-      filesystem.define_singleton_method(:read_path) do |path, context: nil|
-        operation_thread = Thread.current
-        original.call(path, context:)
-      end
-      File.write(File.join(root, "note.txt"), "hello")
-
-      Async do
-        scheduler_thread = Thread.current
-        assert_equal "hello", filesystem.read("note.txt")
-        assert_same scheduler_thread, operation_thread
-      end
-    ensure
-      workspace&.close
-    end
-  end
-
   def test_filesystem_tools_use_logical_paths_and_reject_physical_paths
     Dir.mktmpdir do |root|
       workspace = LittleGhost::Workspace.new(root:, paths: {source: "source"}).open

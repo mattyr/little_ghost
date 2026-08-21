@@ -39,19 +39,19 @@ module LittleGhost
       # Installs autoloads for the current registry and returns self.
       def setup
         PROCESS_LOCK.synchronize do
-          unless @setup
-            registry.each do |constant_name, path|
-              namespace, name = namespace_for(constant_name)
-              if namespace.const_defined?(name, false) || namespace.autoload?(name)
-                existing = namespace.autoload?(name)
-                next if existing && File.expand_path(existing) == path
-                next if !existing && constant_source_location(constant_name)&.then { |location| File.realpath(location.first) == path }
-                raise ConflictError, "#{constant_name} is already defined"
-              end
-              namespace.autoload(name, path)
+          return self if @setup
+
+          registry.each do |constant_name, path|
+            namespace, name = namespace_for(constant_name)
+            if namespace.const_defined?(name, false) || namespace.autoload?(name)
+              existing = namespace.autoload?(name)
+              next if existing && File.expand_path(existing) == path
+              next if !existing && constant_source_location(constant_name)&.then { |location| File.realpath(location.first) == path }
+              raise ConflictError, "#{constant_name} is already defined"
             end
-            @setup = true
+            namespace.autoload(name, path)
           end
+          @setup = true
         end
         self
       end
@@ -81,9 +81,7 @@ module LittleGhost
           next unless inside?(candidate, path_root)
           next unless File.file?(candidate)
           real_candidate = File.realpath(candidate)
-          if inside?(real_candidate, real_path_root(path_root))
-            return real_candidate
-          end
+          return real_candidate if inside?(real_candidate, real_path_root(path_root))
         end
         nil
       end

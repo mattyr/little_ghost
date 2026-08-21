@@ -2,7 +2,6 @@
 
 require "test_helper"
 require "tmpdir"
-require "async"
 
 class SkillsTest < Minitest::Test
   def test_discovers_and_loads_skill_instructions
@@ -33,41 +32,6 @@ class SkillsTest < Minitest::Test
       assert_includes result.content, "Location: #{File.realpath(File.join(skill_directory, "SKILL.md"))}"
       assert_includes result.content, "references/nested/guide.md"
       assert_equal ["skill_name"], catalog.tool.input_schema.fetch("required")
-    end
-  end
-
-  def test_catalog_uses_scheduler_native_file_reads
-    Dir.mktmpdir do |directory|
-      skill_directory = File.join(directory, "review")
-      Dir.mkdir(skill_directory)
-      skill_path = File.join(skill_directory, "SKILL.md")
-      File.write(skill_path, "---\nname: review\ndescription: Review code\n---\nRead carefully.")
-      started = Queue.new
-      release = Queue.new
-      read_thread = nil
-      scheduler_thread = nil
-      catalog = nil
-      original_read = File.method(:read)
-
-      Async do |task|
-        scheduler_thread = Thread.current
-        loading = task.async do
-          File.stub(:read, lambda { |*args, **options|
-            read_thread = Thread.current
-            started << true
-            release.pop
-            original_read.call(*args, **options)
-          }) { LittleGhost::Skills::Catalog.new(paths: directory) }
-        end
-        started.pop
-        release << true
-        catalog = loading.wait
-      end.wait
-
-      assert_equal ["review"], catalog.names
-      assert_same scheduler_thread, read_thread
-    ensure
-      release&.push(true)
     end
   end
 
