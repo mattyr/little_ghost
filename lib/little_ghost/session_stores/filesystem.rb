@@ -28,14 +28,14 @@ module LittleGhost
     #   sessions.
     #
     # Session data is stored as ordinary JSON with canonical String keys. A
-    # value outside that boundary raises ProtocolError without replacing the
-    # previous snapshot. Shared roots require filesystem support for file
-    # locking and atomic rename. Lock contention uses scheduler-aware polling;
-    # durable transactions use LittleGhost's lazily created blocking pool. Set
-    # LittleGhost.blocking_pool_capacity before the pool starts when measured
-    # contention requires more than its two default workers. Store calls do not
-    # accept cancellation or deadlines, so a cross-process lock wait continues
-    # until the other process releases it.
+    # value that cannot be represented that way raises ProtocolError without
+    # replacing the previous snapshot. Shared roots require filesystem support for file
+    # locking and atomic rename. Waiting for another process does not pause other
+    # scheduled fibers. In a scheduled fiber, file transactions use
+    # LittleGhost's shared thread pool. Set Configuration#blocking_pool_capacity
+    # during process startup if measurements show calls waiting for its two
+    # default workers. Store calls do not accept cancellation or deadlines, so
+    # a cross-process lock wait continues until the other process releases it.
     class Filesystem < SessionStore
       FORMAT_VERSION = 1 # :nodoc:
       LOCK_RETRY_INTERVAL = 0.01 # :nodoc:
@@ -70,9 +70,10 @@ module LittleGhost
       # Atomically appends sanitized +messages+ and returns the updated snapshot.
       #
       # +expected_count+ must match the stored history length. +state+ and
-      # +metadata+ must meet this store's JSON boundary. Raises ProtocolError
-      # when another writer changed the session or the snapshot cannot be read
-      # or written. Raises Error when +actor_id+ does not match the session.
+      # +metadata+ must contain values this store can represent as JSON. Raises
+      # ProtocolError when another writer changed the session or the snapshot
+      # cannot be read or written. Raises Error when +actor_id+ does not match
+      # the session.
       def append(id, messages:, state:, metadata:, expected_count:, actor_id: nil)
         messages = persistable_messages(messages)
         state = canonical_map(state)

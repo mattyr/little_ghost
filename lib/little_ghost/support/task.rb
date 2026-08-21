@@ -3,13 +3,12 @@
 module LittleGhost
   module Support
     # Task represents one unit of framework-owned concurrent work. It provides
-    # the same completion contract whether TaskRunner selected a thread or a
-    # scheduler-owned fiber.
+    # the same completion contract whether TaskRunner selected a thread or fiber.
     class Task # :nodoc:
       CURRENT_KEY = :little_ghost_support_task # :nodoc:
 
       class << self
-        # Returns the Task currently running in this execution context, if any.
+        # Returns the Task currently running for this caller, if any.
         def current
           ExecutionState[CURRENT_KEY]
         end
@@ -70,7 +69,7 @@ module LittleGhost
         @mutex.synchronize { !@finished }
       end
 
-      # Indicates that the caller is this task's worker execution context.
+      # Indicates that the caller is running this task.
       def current?
         equal?(self.class.current)
       end

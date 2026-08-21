@@ -162,6 +162,21 @@ class ConfigurationTest < Minitest::Test
     assert_raises(ArgumentError) { configuration[:concurrency_backend] = :unknown }
   end
 
+  def test_blocking_pool_capacity_is_configuration
+    configuration = LittleGhost::Configuration.new
+    current_capacity = LittleGhost::Support::Executor.blocking.runner.capacity
+
+    assert_equal current_capacity, configuration.blocking_pool_capacity
+    assert_equal current_capacity, configuration[:blocking_pool_capacity]
+    assert_equal current_capacity, configuration.blocking_pool_capacity(current_capacity)
+    assert_raises(ArgumentError) do
+      LittleGhost::Configuration.new(blocking_pool_capacity: 0)
+    end
+    assert_raises(ArgumentError) do
+      LittleGhost::Configuration.new[:blocking_pool_capacity] = 2.9
+    end
+  end
+
   def test_execution_scoped_configurations_have_independent_shared_runtimes
     Dir.mktmpdir do |first_root|
       Dir.mktmpdir do |second_root|

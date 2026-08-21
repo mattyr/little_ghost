@@ -38,7 +38,7 @@ module LittleGhost
       end
 
       # Yields produced values, raising producer, cancellation, deadline, or
-      # cleanup errors in the consuming execution context.
+      # cleanup errors in the caller.
       def each
         return enum_for(__method__) unless block_given?
 

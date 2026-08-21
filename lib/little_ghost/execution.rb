@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 
 module LittleGhost
-  # Runs one dormant Run in a supervised background task while the caller remains
-  # free to serve health checks, deliver interjections, or coordinate shutdown.
+  # Runs one dormant Run in the background while the caller remains free to
+  # serve health checks, deliver interjections, or coordinate shutdown.
   #
   #   execution = agent.start_execution(message: "Investigate transfer 481") do |event|
   #     event_buffer << event
@@ -12,26 +12,24 @@ module LittleGhost
   #   execution.wait(deadline: Time.now + 30)
   #   execution.run.completed? # => true
   #
-  # An execution owns its background task. The Runtime's concurrency backend
-  # selects a scheduled fiber or worker thread. The task receives the caller's
-  # ExecutionState; other application fiber-local or thread-local values are not
-  # copied. The Run continues to own its workspace,
+  # The Runtime selects a scheduled fiber or worker thread for the execution.
+  # LittleGhost copies the caller's ExecutionState, but not other application
+  # fiber-local or thread-local values. The Run continues to own its workspace,
   # sandbox, session, entrypoint, and registered resources. +close+ requests
-  # cooperative cancellation and waits for both the background task and
-  # in-flight interjection calls.
+  # cooperative cancellation and waits for the execution and any in-flight
+  # interjection calls.
   class Execution
     # The supervised Run.
     attr_reader :run
 
     class << self
       # Starts +run+ immediately and returns its supervising Execution. If the
-      # background task cannot start, this method closes +run+ before raising.
+      # work cannot start, this method closes +run+ before raising.
       #
-      # The optional block receives each StreamEvent on the background task. It
-      # may run on a scheduled fiber or worker thread, according to the Runtime's
-      # concurrency backend. It must not rely on thread affinity and should not
-      # block the scheduler or retain sensitive event content longer than the
-      # application requires.
+      # The optional block receives each StreamEvent from the fiber or thread
+      # running the Execution. It must not depend on a particular thread and
+      # should not pause the scheduler or retain sensitive event content longer
+      # than the application requires.
       def start(run, &event_consumer)
         new(run, event_consumer:).send(:start)
       end
@@ -58,17 +56,17 @@ module LittleGhost
       @mutex.synchronize { @state }
     end
 
-    # Returns an event-delivery or cleanup exception raised by the worker.
+    # Returns an event-delivery or cleanup exception raised by the Execution.
     def error
       @mutex.synchronize { @worker }&.error
     end
 
-    # Indicates that the worker or an interjection call is still active.
+    # Indicates that the Execution or an interjection call is still active.
     def active?
       @mutex.synchronize { @state != :finished || @active_interjections.positive? }
     end
 
-    # Indicates that the worker and all interjection calls have finished.
+    # Indicates that the Execution and all interjection calls have finished.
     def finished?
       !active?
     end
@@ -101,11 +99,11 @@ module LittleGhost
       self
     end
 
-    # Waits for the worker and in-flight interjections, then returns the Run.
+    # Waits for the Execution and in-flight interjections, then returns the Run.
     #
     # +deadline+ is an absolute Time. Reaching it raises DeadlineExceededError
     # without cancelling the run. An event-delivery or cleanup failure raised by
-    # the worker is re-raised after all supervised work finishes.
+    # the Execution is re-raised after all supervised work finishes.
     def wait(deadline: nil)
       worker = wait_until_finished(deadline:)
       worker.wait

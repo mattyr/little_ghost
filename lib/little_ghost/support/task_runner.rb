@@ -2,9 +2,9 @@
 
 module LittleGhost
   module Support
-    # TaskRunner starts framework work on threads or scheduler-owned fibers.
-    # +:auto+ uses a fiber only when the calling fiber is managed by an active
-    # scheduler. LittleGhost never installs or controls that scheduler.
+    # TaskRunner starts framework work on threads or scheduled fibers. +:auto+
+    # uses a fiber only when the caller is already in one. LittleGhost never
+    # installs or controls the scheduler.
     class TaskRunner # :nodoc:
       BACKENDS = %i[auto thread fiber].freeze # :nodoc:
 
@@ -40,8 +40,7 @@ module LittleGhost
         spawn(&work)
       end
 
-      # Indicates that work started from the current execution context will be
-      # owned by its active Fiber scheduler.
+      # Indicates that #spawn would use the caller's active Fiber scheduler.
       def uses_current_scheduler?
         resolve_backend == :fiber
       end
@@ -65,7 +64,7 @@ module LittleGhost
         return :fiber if scheduler
         if backend == :fiber
           raise ConfigurationError,
-            "fiber concurrency requires an active scheduler-managed nonblocking fiber"
+            "fiber concurrency requires calling from a scheduled fiber"
         end
 
         :thread

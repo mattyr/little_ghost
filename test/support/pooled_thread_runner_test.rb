@@ -56,27 +56,32 @@ class PooledThreadRunnerTest < Minitest::Test
           end
         end
       end
-      LittleGhost.blocking_pool_capacity.times { entered.pop }
+      LittleGhost.configuration.blocking_pool_capacity.times { entered.pop }
       50.times { release << true }
     end.wait
 
-    assert_equal LittleGhost.blocking_pool_capacity, 50.times.map { workers.pop }.uniq.length
+    assert_equal LittleGhost.configuration.blocking_pool_capacity, 50.times.map { workers.pop }.uniq.length
   ensure
     50.times { release&.push(true) }
   end
 
-  def test_global_capacity_can_be_set_before_the_pool_starts
+  def test_configured_capacity_is_shared_by_every_configuration
     reader, writer = IO.pipe
     pid = fork do
       reader.close
-      LittleGhost.blocking_pool_capacity = 3
-      Marshal.dump(LittleGhost.blocking_pool_capacity, writer)
+      configuration = LittleGhost::Configuration.new
+      configuration.blocking_pool_capacity = 3
+      another_configuration = LittleGhost::Configuration.new
+      Marshal.dump(
+        [configuration.blocking_pool_capacity, another_configuration.blocking_pool_capacity],
+        writer
+      )
       writer.close
       exit! 0
     end
     writer.close
 
-    assert_equal 3, Marshal.load(reader)
+    assert_equal [3, 3], Marshal.load(reader)
     _pid, status = Process.waitpid2(pid)
     assert_predicate status, :success?
   ensure
@@ -84,20 +89,21 @@ class PooledThreadRunnerTest < Minitest::Test
     writer&.close unless writer&.closed?
   end
 
-  def test_global_capacity_rejects_invalid_values
-    error = assert_raises(ArgumentError) { LittleGhost.blocking_pool_capacity = 0 }
+  def test_configured_capacity_rejects_invalid_values
+    configuration = LittleGhost::Configuration.new
+    error = assert_raises(ArgumentError) { configuration.blocking_pool_capacity = 0 }
 
     assert_equal "blocking_pool_capacity must be a positive integer", error.message
-    assert_raises(ArgumentError) { LittleGhost.blocking_pool_capacity = 2.9 }
+    assert_raises(ArgumentError) { configuration.blocking_pool_capacity = 2.9 }
   end
 
-  def test_global_capacity_cannot_change_after_the_pool_starts
+  def test_configured_capacity_cannot_change_after_the_pool_starts
     reader, writer = IO.pipe
     pid = fork do
       reader.close
       Async { LittleGhost.offload_blocking { nil } }.wait
       error = begin
-        LittleGhost.blocking_pool_capacity = 3
+        LittleGhost::Configuration.new.blocking_pool_capacity = 3
         nil
       rescue => caught
         caught

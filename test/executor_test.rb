@@ -160,7 +160,7 @@ class ExecutorTest < Minitest::Test
 
     error = assert_raises(LittleGhost::ConfigurationError) { runner.spawn { :work } }
 
-    assert_includes error.message, "active scheduler-managed nonblocking fiber"
+    assert_includes error.message, "calling from a scheduled fiber"
   end
 
   def test_auto_backend_does_not_use_a_scheduler_from_the_blocking_root_fiber

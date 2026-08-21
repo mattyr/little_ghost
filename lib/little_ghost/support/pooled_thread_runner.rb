@@ -3,7 +3,8 @@
 module LittleGhost
   module Support
     # PooledThreadRunner starts Tasks on a fixed set of reusable threads. It is
-    # reserved for opaque work that cannot cooperate with a Fiber scheduler.
+    # used for calls that would otherwise pause every fiber on the caller's
+    # thread.
     class PooledThreadRunner # :nodoc:
       DEFAULT_CAPACITY = 2
       CURRENT_RUNNER_KEY = Object.new.freeze # :nodoc:

@@ -234,7 +234,7 @@ class FilesystemSessionStoreTest < Minitest::Test
     lock_available = false
 
     Async do |task|
-      workers = LittleGhost.blocking_pool_capacity.times.map do
+      workers = LittleGhost.configuration.blocking_pool_capacity.times.map do
         task.async do
           LittleGhost.offload_blocking do
             entered << true
@@ -242,20 +242,20 @@ class FilesystemSessionStoreTest < Minitest::Test
           end
         end
       end
-      LittleGhost.blocking_pool_capacity.times { entered.pop }
+      LittleGhost.configuration.blocking_pool_capacity.times { entered.pop }
       waiting = task.async { store.load("conversation", actor_id: "actor") }
       sleep(0.02)
       File.open(lock_path, File::RDWR) do |competitor|
         lock_available = competitor.flock(File::LOCK_EX | File::LOCK_NB)
       end
-      LittleGhost.blocking_pool_capacity.times { release << true }
+      LittleGhost.configuration.blocking_pool_capacity.times { release << true }
       workers.each(&:wait)
       assert_nil waiting.wait
     end.wait
 
     assert lock_available
   ensure
-    LittleGhost.blocking_pool_capacity.times { release&.push(true) }
+    LittleGhost.configuration.blocking_pool_capacity.times { release&.push(true) }
   end
 
   private

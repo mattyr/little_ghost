@@ -104,6 +104,12 @@ module LittleGhost
       @configuration_values[:concurrency_backend] = normalize_concurrency_backend(
         @configuration_values[:concurrency_backend]
       )
+      if values.key?(:blocking_pool_capacity)
+        Support::Executor.blocking.runner.capacity = normalize_blocking_pool_capacity(
+          values[:blocking_pool_capacity]
+        )
+        @configuration_values.delete(:blocking_pool_capacity)
+      end
       @configuration_values[:prompt_paths] = Array(@configuration_values[:prompt_paths]).dup
       @configuration_values[:skill_paths] = Array(@configuration_values[:skill_paths]).dup
       @configuration_values[:skill_resource_root] = Skills::ResourceRoot.normalize(
@@ -200,11 +206,11 @@ module LittleGhost
     # Selects how subsequently built runtimes start independent work such as
     # parallel Tool calls and Workflow branches.
     #
-    # The default, +:auto+, uses scheduler-owned fibers when work starts inside
-    # a fiber managed by the active scheduler, and threads otherwise. +:thread+
-    # always uses threads. +:fiber+ requires an active scheduler-managed fiber
-    # that supports Fiber.schedule, and raises ConfigurationError when no
-    # scheduler is active. Any other value raises ArgumentError.
+    # The default, +:auto+, uses fibers when the caller is already running in a
+    # scheduled fiber and uses threads otherwise. +:thread+ always uses threads.
+    # +:fiber+ raises ConfigurationError when the caller is not in a scheduled
+    # fiber. The application's scheduler must support Fiber.schedule. Any other
+    # value raises ArgumentError.
     #
     #   LittleGhost.configure do |config|
     #     config.concurrency_backend = :thread
@@ -224,6 +230,35 @@ module LittleGhost
     # Replaces the concurrency backend for subsequently built runtimes.
     def concurrency_backend=(value)
       concurrency_backend(value)
+    end
+
+    # Returns or sets the maximum number of process-wide workers available to
+    # LittleGhost.offload_blocking, certificate generation, and Filesystem
+    # SessionStore transactions when they run from scheduled fibers. Workers
+    # are created lazily. The default is 2. Every Configuration reads and writes
+    # the same process-wide value.
+    #
+    # Configure this during process startup, before any operation can start the
+    # pool. +value+ must be a positive Integer. Raises ArgumentError for an
+    # invalid value and ConfigurationError when changing the value after the
+    # pool has started.
+    #
+    # :call-seq:
+    #   blocking_pool_capacity() -> integer
+    #   blocking_pool_capacity(value) -> integer
+    def blocking_pool_capacity(value = :__read__)
+      return Support::Executor.blocking.runner.capacity if value == :__read__
+
+      normalized = normalize_blocking_pool_capacity(value)
+      change_configuration do
+        Support::Executor.blocking.runner.capacity = normalized
+      end
+      normalized
+    end
+
+    # Sets the same process-wide worker limit as +blocking_pool_capacity+.
+    def blocking_pool_capacity=(value)
+      blocking_pool_capacity(value)
     end
 
     # Workspace declaration used for subsequently built runtimes.
@@ -453,6 +488,8 @@ module LittleGhost
 
     # Looks up an arbitrary setting by symbol or string-compatible name.
     def [](name)
+      return blocking_pool_capacity if name.to_sym == :blocking_pool_capacity
+
       configuration_values.fetch(name.to_sym)
     end
 
@@ -467,6 +504,8 @@ module LittleGhost
         self.code_mode = value
       when :concurrency_backend
         self.concurrency_backend = value
+      when :blocking_pool_capacity
+        self.blocking_pool_capacity = value
       else
         change_configuration { configuration_values[name.to_sym] = value }
       end
@@ -749,6 +788,12 @@ module LittleGhost
       return normalized if Support::TaskRunner::BACKENDS.include?(normalized)
 
       raise ArgumentError, "concurrency_backend must be :auto, :thread, or :fiber"
+    end
+
+    def normalize_blocking_pool_capacity(value)
+      return value if value.is_a?(Integer) && value.positive?
+
+      raise ArgumentError, "blocking_pool_capacity must be a positive integer"
     end
 
     def load_configuration_file(path)

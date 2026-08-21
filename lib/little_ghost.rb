@@ -112,10 +112,9 @@ module LittleGhost
     # :call-seq:
     #   LittleGhost.offload_blocking { ... } -> object
     #
-    # Runs a call that is known or measured to stall sibling scheduler fibers
-    # and can make progress on another Ruby thread. Inside a scheduled fiber,
-    # the block uses the process-wide pool and returns its value. Otherwise, it
-    # runs inline.
+    # Runs a call that is known or measured to pause other fibers and can make
+    # progress on another Ruby thread. Inside a scheduled fiber, the block uses
+    # a shared thread pool. Otherwise, it runs inline. Returns the block's value.
     #
     # Once the pool accepts the block, LittleGhost waits for it to finish before
     # re-raising an interruption. The block's own exception is also re-raised.
@@ -125,21 +124,6 @@ module LittleGhost
       raise ArgumentError, "a blocking operation block is required" unless operation
 
       Support::Executor.blocking.call(&operation)
-    end
-
-    # Returns the maximum number of process-wide workers used by
-    # +offload_blocking+ and LittleGhost's own blocking boundaries. Workers are
-    # created lazily. The default is 2.
-    def blocking_pool_capacity
-      Support::Executor.blocking.runner.capacity
-    end
-
-    # Sets the process-wide blocking worker capacity before the first worker
-    # starts. +value+ must be a positive Integer. Raises ArgumentError for an
-    # invalid value and ConfigurationError when changing the value after the
-    # pool has started.
-    def blocking_pool_capacity=(value)
-      Support::Executor.blocking.runner.capacity = value
     end
 
     # The configuration active in the current execution context, falling back to

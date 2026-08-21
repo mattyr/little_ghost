@@ -6,8 +6,8 @@ module LittleGhost
     # the final results. It gives framework extensions bounded parallelism without
     # losing cancellation or request-scoped state.
     #
-    # ExecutionState is copied to workers. +on_result+ runs on the calling
-    # execution context in completion order. After all workers join, the first
+    # ExecutionState is copied to workers. +on_result+ runs on the caller in
+    # completion order. After all workers join, the first
     # cleanup error, or otherwise the first input-order error, is raised.
     class Executor # :nodoc:
       # Sets the maximum number of batch workers and their execution policy.
@@ -141,7 +141,7 @@ module LittleGhost
         task.result
       end
 
-      # The process-wide Executor for opaque blocking work.
+      # The process-wide Executor for work moved off a scheduler thread.
       BLOCKING = new(
         runner: PooledThreadRunner.new,
         wait_through_interruptions: true
