@@ -285,8 +285,25 @@ class ArtifactsTest < Minitest::Test
       assert_equal [deferred, run], seen
       assert_equal "image/png", prepared.artifacts.first.media_type
       assert_equal "png", prepared.presentation_content.first.data
-      assert_equal({"ok" => true}, prepared.content)
-      refute_includes prepared.content.to_s, prepared.artifacts.first.reference
+      assert_includes prepared.content, prepared.artifacts.first.reference
+    end
+  end
+
+  def test_exposes_materialized_references_to_the_model
+    artifact = LittleGhost::Artifact.new(
+      data: "notes",
+      media_type: "text/plain",
+      name: "notes.md"
+    )
+    result = LittleGhost::Tool::ExecutionResult.new(value: {ok: true}, status: :success, artifacts: [artifact])
+    tool_use = LittleGhost::Content::ToolUse.new(id: "call-1", name: "attachment", input: {})
+
+    with_run do |run|
+      prepared = LittleGhost::Runtime::Hooks::Artifacts.configured.new.prepare_tool_result(
+        result, tool_use:, run:, workspace: run.workspace, context: run.context
+      )
+
+      assert_includes prepared.content, prepared.artifacts.first.reference
     end
   end
 
@@ -349,7 +366,7 @@ class ArtifactsTest < Minitest::Test
       assert_equal "report.csv", document.name
       assert_equal artifact.data, document.data
       assert_equal "artifact", prepared.presentation_content.fetch(1).name
-      prepared.artifacts.each { |stored| refute_includes prepared.content.to_s, stored.reference }
+      prepared.artifacts.each { |stored| assert_includes prepared.content.to_s, stored.reference }
     end
   end
 
