@@ -20,6 +20,8 @@ require_relative "little_ghost/stream_event"
 require_relative "little_ghost/agent_stream_source"
 require_relative "little_ghost/model_request"
 require_relative "little_ghost/model_response"
+require_relative "little_ghost/embeddings/request"
+require_relative "little_ghost/embeddings/response"
 require_relative "little_ghost/run_result"
 require_relative "little_ghost/model_capabilities"
 require_relative "little_ghost/models/target"
@@ -82,6 +84,7 @@ require_relative "little_ghost/agent_factory"
 require_relative "little_ghost/runtime/hook"
 require_relative "little_ghost/runtime/hooks/artifacts"
 require_relative "little_ghost/runtime"
+require_relative "little_ghost/model_operations"
 
 # Build AI features as ordinary Ruby classes. An Agent owns one model
 # conversation. Larger units called Assemblies coordinate several Agents while
@@ -150,6 +153,26 @@ module LittleGhost
 
     # Returns the model resolver owned by the active process configuration.
     def model_resolver = configuration.model_resolver
+
+    # :call-seq:
+    #   LittleGhost.generate(model:, messages:, result_schema: nil, settings: {}, cancellation_token: Support::CancellationToken.new, deadline: nil) -> RunResult
+    #
+    # Generates one model response and returns a RunResult.
+    #
+    # Use this entrypoint when application code owns the workflow and does not
+    # need Tools, Sessions, delegation, or agent callbacks. +model+ and
+    # +settings+ are trusted application controls. A +result_schema+ checks one
+    # object result and permits one repair attempt.
+    def generate(...) = runtime.generate(...)
+
+    # :call-seq:
+    #   LittleGhost.embed(model:, inputs:, settings: {}, limits: {}, cancellation_token: Support::CancellationToken.new, deadline: nil) -> Embeddings::Response
+    #
+    # Embeds one or more strings and returns vectors in input order.
+    #
+    # +model+, +settings+, and any raised +limits+ are trusted application
+    # controls. The operation raises rather than returning a partial batch.
+    def embed(...) = runtime.embed(...)
 
     # Makes +configuration+ and its independent shared Runtime current only
     # while the block runs.

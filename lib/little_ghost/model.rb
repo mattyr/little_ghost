@@ -76,6 +76,26 @@ module LittleGhost
       provider.stream(configured_request, &block)
     end
 
+    # Applies profile settings and executes an Embeddings::Request.
+    #
+    # Returns an Embeddings::Response with one vector per input. A provider that
+    # returns another shape raises ProtocolError.
+    def embed(request)
+      configured = Embeddings::Request.new(
+        inputs: request.inputs,
+        settings: settings.merge(request.settings),
+        limits: request.limits,
+        cancellation_token: request.cancellation_token,
+        deadline: request.deadline
+      )
+      response = provider.embed(configured)
+      unless response.is_a?(Embeddings::Response) && response.vectors.length == configured.inputs.length
+        raise ProtocolError, "Embedding provider returned an unexpected vector count"
+      end
+
+      response
+    end
+
     # Uses advertised provider capabilities.
     def capabilities
       @capabilities ||= provider.capabilities(metadata: details.attributes)

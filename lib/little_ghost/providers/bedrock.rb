@@ -11,9 +11,9 @@ module LittleGhost
   # request and response types. Agents select them through model configuration rather
   # than depending on a provider class directly.
   module Providers
-    # Bedrock lets LittleGhost agents use models available through Amazon Bedrock
-    # Converse. Its output follows the same streaming events as every other
-    # LittleGhost provider.
+    # Bedrock lets LittleGhost features use models available through Amazon
+    # Bedrock. Generation uses Converse and follows the same streaming events as
+    # every other LittleGhost provider.
     #
     #   provider = LittleGhost::Providers::Bedrock.new(
     #     model: ENV.fetch("BEDROCK_MODEL_ID"),
@@ -34,6 +34,7 @@ module LittleGhost
 
       INITIAL_RETRY_DELAY = 1 # :nodoc:
       MAX_RETRY_DELAY = 16 # :nodoc:
+      DEFAULT_MAX_EMBEDDING_RESPONSE_BYTES = 8 * 1024 * 1024 # :nodoc:
       TRANSIENT_STREAM_ERRORS = %w[
         internal_server_exception model_stream_error_exception service_unavailable_exception throttling_exception
       ].freeze # :nodoc:
@@ -63,15 +64,17 @@ module LittleGhost
       # Configures Bedrock for +model+.
       #
       # +region+ and remaining +client_options+ configure the built-in HTTP client.
-      # +max_retries+, +sleeper+, and +on_retry+ control retry behavior. Injecting
-      # +client+ bypasses creation of the built-in HTTP client.
+      # +max_retries+, +sleeper+, and +on_retry+ control retry behavior.
+      # +max_embedding_response_bytes+ bounds each embedding response retained in
+      # memory. Injecting +client+ bypasses creation of the built-in HTTP client.
       def initialize(model:, region: nil, client: nil, max_retries: 2, sleeper: nil,
-        on_retry: ->(*) {}, **client_options)
+        on_retry: ->(*) {}, max_embedding_response_bytes: DEFAULT_MAX_EMBEDDING_RESPONSE_BYTES, **client_options)
         @model = model
         @client = client || build_client(region:, **client_options)
         @max_retries = Integer(max_retries)
         @sleeper = sleeper
         @on_retry = on_retry
+        @max_embedding_response_bytes = positive_integer(max_embedding_response_bytes, :max_embedding_response_bytes)
       end
 
       # Streams LittleGhost StreamEvent objects for +request+.
@@ -132,6 +135,49 @@ module LittleGhost
         end
       end
 
+      # Embeds text with Amazon Titan Text Embeddings V2.
+      #
+      # The +:dimensions+ request setting accepts 256, 512, or 1024 and defaults
+      # to 1024. +:normalize+ controls vector normalization and defaults to true.
+      # Inputs are requested sequentially, and a failure raises without returning
+      # a partial batch.
+      def embed(request)
+        unless model == "amazon.titan-embed-text-v2:0"
+          raise UnsupportedModelOperationError, "Bedrock embeddings require amazon.titan-embed-text-v2:0"
+        end
+
+        dimensions = Integer(request.settings.fetch(:dimensions, 1024))
+        raise ConfigurationError, "dimensions must be 256, 512, or 1024" unless [256, 512, 1024].include?(dimensions)
+        normalize = request.settings.fetch(:normalize, true)
+        unless normalize == true || normalize == false
+          raise ConfigurationError, "normalize must be true or false"
+        end
+
+        vectors = []
+        usage = Usage.new
+        request.inputs.each do |input|
+          response = with_retries(request) do
+            @client.invoke_model(
+              model_id: model,
+              body: {input_text: input, dimensions:, normalize:},
+              cancellation_token: request.cancellation_token,
+              deadline: request.deadline,
+              max_response_bytes: @max_embedding_response_bytes
+            )
+          end
+          payload = JSON.parse(response.body)
+          vector = payload.fetch("embedding")
+          unless vector.is_a?(Array) && vector.length == dimensions
+            raise ProtocolError, "Bedrock returned an embedding with unexpected dimensions"
+          end
+          vectors << vector
+          usage += Usage.new(input_tokens: payload["inputTextTokenCount"])
+        rescue JSON::ParserError, KeyError
+          raise ProtocolError, "Bedrock returned an invalid embedding response"
+        end
+        Embeddings::Response.new(vectors:, usage:, metadata: {model:})
+      end
+
       # Reads capabilities from Bedrock +supported_parameters+ metadata. Missing
       # metadata produces ModelCapabilities.unknown.
       def capabilities(metadata: {})
@@ -148,6 +194,29 @@ module LittleGhost
       end
 
       private
+
+      def positive_integer(value, name)
+        integer = Integer(value)
+        raise ArgumentError, "#{name} must be positive" unless integer.positive?
+
+        integer
+      end
+
+      def with_retries(request)
+        attempts = 0
+        begin
+          request.cancellation_token.raise_if_cancelled!
+          yield
+        rescue HTTPError => error
+          raise unless error.retryable? && attempts < @max_retries
+
+          attempts += 1
+          delay = capped_retry_delay(request, retry_delay(attempts))
+          @on_retry.call(attempts, error, delay)
+          wait_before_retry(request, delay)
+          retry
+        end
+      end
 
       def build_client(region:, **options)
         resolver = options.delete(:credential_resolver)

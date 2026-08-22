@@ -136,6 +136,7 @@ module LittleGhost
         @invocation_class = @settings[:invocation] || Invocation
         @model_resolver = @settings.fetch(:model_resolver)
         @default_model = @settings.fetch(:default_model, "default").to_s
+        @model_operations = ModelOperations.new(model_resolver:)
 
         @startup_phase = "session_store"
         @session_store = build_session_store(@settings[:session_store])
@@ -181,6 +182,28 @@ module LittleGhost
     # Coerces an application payload into the configured Invocation class.
     def parse(payload)
       payload.is_a?(@invocation_class) ? payload : @invocation_class.new(payload)
+    end
+
+    # :call-seq:
+    #   generate(model:, messages:, result_schema: nil, settings: {}, cancellation_token: Support::CancellationToken.new, deadline: nil) -> RunResult
+    #
+    # Generates one response through this Runtime's model resolver.
+    #
+    # Returns a RunResult without creating a Run or invoking runtime hooks. See
+    # LittleGhost.generate for the operation contract.
+    def generate(**arguments)
+      @model_operations.generate(**arguments)
+    end
+
+    # :call-seq:
+    #   embed(model:, inputs:, settings: {}, limits: {}, cancellation_token: Support::CancellationToken.new, deadline: nil) -> Embeddings::Response
+    #
+    # Embeds text through this Runtime's model resolver.
+    #
+    # Returns an Embeddings::Response without creating a Run or invoking runtime
+    # hooks. See LittleGhost.embed for the operation contract.
+    def embed(**arguments)
+      @model_operations.embed(**arguments)
     end
 
     # Creates a Run that owns any workspace and sandbox built for the request.

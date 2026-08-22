@@ -244,6 +244,40 @@ class TracingOpenTelemetryTest < Minitest::Test
     tracing&.shutdown
   end
 
+  def test_maps_direct_generation_and_embedding_to_gen_ai_client_spans
+    tracer = Tracer.new
+    tracing = LittleGhost::Tracing::OpenTelemetry.new(tracer:)
+
+    %i[generation embedding].each do |operation|
+      id = operation.to_s
+      tracing.start(operation, {
+        operation_id: id,
+        model_id: "model-1",
+        model_provider: :bedrock
+      })
+      tracing.finish(operation, {
+        operation_id: id,
+        input_tokens: 4,
+        output_tokens: (2 if operation == :generation)
+      }.compact)
+    end
+
+    generation_name, _, generation_span = tracer.started.fetch(0)
+    embedding_name, _, embedding_span = tracer.started.fetch(1)
+    assert_equal "chat model-1", generation_name
+    assert_equal "embeddings model-1", embedding_name
+    assert_equal :client, generation_span.kind
+    assert_equal :client, embedding_span.kind
+    assert_equal "chat", generation_span.attributes.fetch("gen_ai.operation.name")
+    assert_equal "embeddings", embedding_span.attributes.fetch("gen_ai.operation.name")
+    assert_equal "model-1", embedding_span.attributes.fetch("gen_ai.request.model")
+    assert_equal "aws.bedrock", embedding_span.attributes.fetch("gen_ai.provider.name")
+    assert_equal 4, embedding_span.attributes.fetch("gen_ai.usage.input_tokens")
+    assert_equal 2, generation_span.attributes.fetch("gen_ai.usage.output_tokens")
+  ensure
+    tracing&.shutdown
+  end
+
   def test_names_swarm_root_separately_from_its_member_agent
     tracer = Tracer.new
     tracing = LittleGhost::Tracing::OpenTelemetry.new(tracer:)

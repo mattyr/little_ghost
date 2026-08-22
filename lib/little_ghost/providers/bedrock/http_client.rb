@@ -10,6 +10,7 @@ module LittleGhost
       # the adapter.
       class HTTPClient # :nodoc:
         Response = Data.define(:stream)
+        InvokeResponse = Data.define(:body)
         DEFAULT_MAX_RESPONSE_BYTES = 256 * 1024 * 1024
 
         def initialize(region:, credentials: nil, credential_resolver: nil, endpoint: nil,
@@ -42,6 +43,19 @@ module LittleGhost
             decoder.finish
           end
           Response.new(stream:)
+        end
+
+        def invoke_model(model_id:, body:, max_response_bytes:, cancellation_token: nil, deadline: nil)
+          payload = JSON.generate(camelize(body))
+          uri = URI.join(@endpoint.to_s, "/model/#{escape_path(model_id)}/invoke")
+          credentials = @credential_resolver.call
+          signer = AwsSigV4.new(service: "bedrock", region: @region, credentials:, clock: @clock)
+          headers = signer.headers(method: :post, uri:, headers: {"content-type" => "application/json", "accept" => "application/json"}, body: payload)
+          response = @http_client.request(
+            uri:, method: :post, headers:, body: payload,
+            cancellation_token:, deadline:, label: "Bedrock request", max_response_bytes:
+          )
+          InvokeResponse.new(body: response)
         end
 
         private

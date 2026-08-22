@@ -120,6 +120,93 @@ choose a structured-result strategy.
 Provider capabilities can change. Handle failed Runs and provider errors even
 when the catalog says a feature is supported.
 
+## Call a model without an Agent
+
+Some application work needs one model response rather than an Agent. Use
+`LittleGhost.generate` for tasks such as classification, extraction, or
+rewriting when your application already owns the surrounding workflow:
+
+```ruby
+response = LittleGhost.generate(
+  model: :customer_support,
+  messages: [
+    {role: :system, content: "Classify the request."},
+    {role: :user, content: "My transfer is still pending."}
+  ],
+  settings: {temperature: 0}
+)
+
+response.output
+response.usage.total_tokens
+```
+
+The operation returns a `LittleGhost::RunResult`, the same result type returned
+by an Agent invocation, so
+application code can read `output`, `usage`, and the final message in the same
+way. Plain generation makes one model request without starting an Agent or
+creating a Run. Structured generation may make one additional repair request.
+
+Pass a strict object schema when application code needs checked JSON:
+
+```ruby
+response = LittleGhost.generate(
+  model: :customer_support,
+  messages: [{role: :user, content: "My transfer is still pending."}],
+  result_schema: {
+    name: "classification",
+    description: "Classify one support request",
+    schema: {
+      type: "object",
+      properties: {category: {type: "string"}},
+      required: ["category"],
+      additionalProperties: false
+    }
+  }
+)
+
+response.output
+```
+
+LittleGhost checks the result against the schema and gives the model one repair
+attempt. Read the checked value through `response.output`. If both attempts are
+invalid, the call raises `LittleGhost::StructuredResultError`.
+
+A schema checks the shape of a value, not whether your application should act
+on it. Check identifiers, permissions, and business rules before using the
+result to change application state.
+
+## Create embeddings
+
+Use `LittleGhost.embed` when your application needs numeric representations for
+search, clustering, or another similarity-based feature:
+
+The example assumes application startup maps `search_embeddings` to an
+embedding model, following the role configuration shown earlier on this page.
+The selected provider adapter's API reference lists the model-specific
+settings.
+
+```ruby
+response = LittleGhost.embed(
+  model: :search_embeddings,
+  inputs: ["Reset a password", "Track a transfer"]
+)
+
+response.vectors.length # => 2
+response.dimensions
+response.usage.input_tokens
+```
+
+The response keeps vectors in the same order as the inputs. LittleGhost rejects
+an incomplete or malformed response instead of returning a partial batch.
+Choose the embedding model and request settings in trusted application
+configuration, and keep each call within a workload size your application can
+retry safely.
+
+Embedding text is sent to the selected provider. Choose a provider that is
+appropriate for that data, just as you would for an Agent request. See
+`LittleGhost::Embeddings::Request` and your provider adapter's API reference for
+the supported settings and request bounds.
+
 Continue with [Prompts as Views](prompt_views.md) when an Agent's instructions
 outgrow one string. See [Structured Results and Content](structured_outputs_and_content.md)
 when you need checked result shapes, images, or documents.
