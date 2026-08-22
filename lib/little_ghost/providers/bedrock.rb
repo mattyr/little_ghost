@@ -332,7 +332,6 @@ module LittleGhost
           description: definition[:description],
           input_schema: {json: definition[:input_schema] || {}}
         }
-        tool_spec[:strict] = definition[:strict] unless definition[:strict].nil?
         {
           tool_spec: {
             **tool_spec

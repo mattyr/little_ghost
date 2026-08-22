@@ -190,7 +190,7 @@ class BedrockTest < Minitest::Test
     assert_equal output_schema.fetch(:schema), JSON.parse(json_schema.fetch(:schema))
   end
 
-  def test_serializes_strict_result_tool_and_tool_choice
+  def test_omits_unsupported_strict_result_tool_flag_and_serializes_tool_choice
     client = FakeClient.new([
       {message_start: {role: "assistant"}},
       {message_stop: {stop_reason: "end_turn"}}
@@ -211,7 +211,11 @@ class BedrockTest < Minitest::Test
       )
     ).to_a
 
-    assert_equal true, client.parameters.dig(:tool_config, :tools, 0, :tool_spec, :strict)
+    tool_spec = client.parameters.dig(:tool_config, :tools, 0, :tool_spec)
+
+    assert_equal "submit_result", tool_spec.fetch(:name)
+    assert_equal({json: {type: "object"}}, tool_spec.fetch(:input_schema))
+    assert_nil tool_spec[:strict]
     assert_equal(
       {tool: {name: "submit_result"}},
       client.parameters.dig(:tool_config, :tool_choice)

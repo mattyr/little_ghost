@@ -6,9 +6,10 @@ class ModelOperationsTest < Minitest::Test
   class Provider < LittleGhost::Providers::Base
     attr_reader :requests
 
-    def initialize(responses: [], embedding_response: nil)
+    def initialize(responses: [], embedding_response: nil, capabilities: LittleGhost::ModelCapabilities.permissive)
       @responses = responses
       @embedding_response = embedding_response
+      @capabilities = capabilities
       @requests = []
     end
 
@@ -23,7 +24,7 @@ class ModelOperationsTest < Minitest::Test
       @embedding_response
     end
 
-    def capabilities(metadata: {}) = LittleGhost::ModelCapabilities.permissive
+    def capabilities(metadata: {}) = @capabilities
   end
 
   Resolver = Data.define(:model) do
@@ -92,6 +93,69 @@ class ModelOperationsTest < Minitest::Test
     assert_equal({"answer" => "secret"}, result.output)
     assert_equal "[Structured result answer redacted]", result.text
     refute result.messages.any? { |message| message.text.include?("secret") }
+  end
+
+  def test_uses_a_terminal_tool_for_structured_generation_when_native_output_is_unavailable
+    provider = Provider.new(
+      capabilities: tool_capabilities,
+      responses: [tool_response({"answer" => "yes"})]
+    )
+
+    result = operations_for(provider).generate(
+      model: :writer,
+      messages: [{role: :user, content: "Answer"}],
+      result_schema: result_schema
+    )
+
+    assert_equal({"answer" => "yes"}, result.output)
+    assert_nil provider.requests.first.output_schema
+    assert_equal :required, provider.requests.first.tool_choice
+    assert_equal %i[tools tool_choice], provider.requests.first.required_capabilities
+    assert_equal ["answer"], provider.requests.first.tools.map { |tool| tool.fetch(:name) }
+    assert_equal true, provider.requests.first.tools.first.fetch(:strict)
+    refute result.messages.any? { |message| message.text.include?("yes") }
+  end
+
+  def test_repairs_an_invalid_terminal_tool_result_once
+    provider = Provider.new(
+      capabilities: tool_capabilities,
+      responses: [tool_response({"wrong" => "value"}), tool_response({"answer" => "yes"})]
+    )
+
+    result = operations_for(provider).generate(
+      model: :writer,
+      messages: [{role: :user, content: "Answer"}],
+      result_schema: result_schema
+    )
+
+    assert_equal({"answer" => "yes"}, result.output)
+    assert_equal({name: "answer"}, provider.requests.last.tool_choice)
+    repair_tool_uses = provider.requests.last.messages[-2].content.grep(LittleGhost::Content::ToolUse)
+    assert_equal ["tool-1"], repair_tool_uses.map(&:id)
+    assert_equal [{}], repair_tool_uses.map(&:input)
+    repair_results = provider.requests.last.messages.last.content.grep(LittleGhost::Content::ToolResult)
+    assert_equal ["tool-1"], repair_results.map(&:tool_use_id)
+    assert repair_results.all? { |result| result.status == :error }
+  end
+
+  def test_repairs_a_missing_terminal_tool_result_once
+    provider = Provider.new(
+      capabilities: tool_capabilities,
+      responses: [model_response("plain text"), tool_response({"answer" => "yes"})]
+    )
+
+    result = operations_for(provider).generate(
+      model: :writer,
+      messages: [{role: :user, content: "Answer"}],
+      result_schema: result_schema
+    )
+
+    assert_equal({"answer" => "yes"}, result.output)
+    assert_equal :assistant, provider.requests.last.messages[-2].role
+    assert_equal "[Structured result answer redacted]", provider.requests.last.messages[-2].text
+    assert_equal :user, provider.requests.last.messages.last.role
+    assert_includes provider.requests.last.messages.last.text, "Call answer exactly once"
+    assert_equal({name: "answer"}, provider.requests.last.tool_choice)
   end
 
   def test_raises_after_one_invalid_structured_repair
@@ -171,6 +235,20 @@ class ModelOperationsTest < Minitest::Test
       stop_reason: :end_turn,
       usage: LittleGhost::Usage.new(input_tokens: input, output_tokens: output)
     )
+  end
+
+  def tool_response(input)
+    LittleGhost::ModelResponse.new(
+      message: {
+        role: :assistant,
+        content: [LittleGhost::Content::ToolUse.new(id: "tool-1", name: "answer", input:)]
+      },
+      stop_reason: :tool_use
+    )
+  end
+
+  def tool_capabilities
+    LittleGhost::ModelCapabilities.new(tools: true, tool_choice: true)
   end
 
   def result_schema

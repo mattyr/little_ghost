@@ -16,21 +16,20 @@ module LittleGhost
     def generate(model:, messages:, result_schema: nil, settings: {}, cancellation_token: Support::CancellationToken.new, deadline: nil)
       resolved = @model_resolver.resolve(model)
       schema = normalize_schema(result_schema)
-      validate_native_schema!(resolved, schema) if schema
+      strategy = StructuredOutput.resolve(schema, model: resolved, ordinary_tools: []) if schema
       handle = Instrumentation.start(:generation, model_provider: resolved.target.provider, model_id: resolved.model_id, model_role: resolved.role, structured: !schema.nil?)
       usage = Usage.new
       conversation = messages.map { |message| Message.coerce(message) }
-      response = complete(resolved, messages: conversation, settings:, schema:, cancellation_token:, deadline:)
+      response = complete(resolved, messages: conversation, settings:, schema:, strategy:, repair: false, cancellation_token:, deadline:)
       usage += response.usage
-      output, errors = schema ? parse_structured(response.message.text, schema) : [response.message.text, []]
-      conversation << (schema ? redact_structured_message(response.message, schema) : response.message)
+      output, errors = schema ? parse_structured_response(response.message, schema, strategy) : [response.message.text, []]
+      conversation << (schema ? redact_structured_response(response.message, schema, strategy) : response.message)
       if schema && !errors.empty?
-        repair = Message.new(role: :user, content: "Return only JSON matching the configured output schema. You have one repair attempt. The previous structured result was invalid.")
-        conversation << repair
-        response = complete(resolved, messages: conversation, settings:, schema:, cancellation_token:, deadline:)
+        conversation << structured_repair_message(response.message, strategy)
+        response = complete(resolved, messages: conversation, settings:, schema:, strategy:, repair: true, cancellation_token:, deadline:)
         usage += response.usage
-        output, errors = parse_structured(response.message.text, schema)
-        conversation << redact_structured_message(response.message, schema)
+        output, errors = parse_structured_response(response.message, schema, strategy)
+        conversation << redact_structured_response(response.message, schema, strategy)
       end
       unless errors.empty?
         raise StructuredResultError.new(
@@ -71,10 +70,13 @@ module LittleGhost
 
     private
 
-    def complete(model, messages:, settings:, schema:, cancellation_token:, deadline:)
+    def complete(model, messages:, settings:, schema:, strategy:, repair:, cancellation_token:, deadline:)
       request = ModelRequest.new(
-        messages:, settings:, output_schema: schema,
-        required_capabilities: schema ? [:native_structured_output] : [],
+        messages:, settings:,
+        tools: strategy ? strategy.tools([]) : [],
+        output_schema: strategy&.output_schema,
+        tool_choice: strategy&.tool_choice(repair:),
+        required_capabilities: strategy ? strategy.required_capabilities : [],
         cancellation_token:, deadline:
       )
       response = nil
@@ -95,27 +97,57 @@ module LittleGhost
         json_schema,
         name:,
         description: schema[:description],
-        strategy: :provider
+        strategy: :auto
       ).except(:strategy).freeze
     end
 
-    def validate_native_schema!(model, schema)
-      capabilities = model.capabilities
-      return if !capabilities.known? || capabilities.native_structured_output?
+    def parse_structured_response(message, schema, strategy)
+      return parse_structured(message.text, schema) if strategy.provider?
 
-      raise ConfigurationError, "#{model.target.provider}/#{model.model_id} does not support provider-native structured output"
+      tool_uses = message.content.grep(Content::ToolUse)
+      result_tool_uses = tool_uses.select { |tool_use| tool_use.name == strategy.schema_name }
+      return [nil, ["The structured result tool was not called"]] if result_tool_uses.empty?
+      return [nil, ["The model called the structured result tool more than once"]] if result_tool_uses.length > 1
+      return [nil, ["The structured result tool must be the only tool call in its response"]] if tool_uses.length > 1
+
+      validate_structured_value(result_tool_uses.first.input, schema)
     end
 
     def parse_structured(text, schema)
       raise StructuredResultError.new("Structured result exceeds the maximum serialized size", schema_name: schema.fetch(:name)) if text.bytesize > MAX_STRUCTURED_RESULT_BYTES
       value = JSON.parse(text)
-      validate_complexity!(value, schema.fetch(:name))
-      errors = Tool::SchemaValidator.new(schema.fetch(:schema)).validate(value)
-      [value, errors]
+      validate_structured_value(value, schema)
     rescue JSON::ParserError
       [nil, ["Structured result is not valid JSON"]]
     rescue StructuredResultError => error
       [nil, [error.message]]
+    end
+
+    def validate_structured_value(value, schema)
+      validate_complexity!(value, schema.fetch(:name))
+      errors = Tool::SchemaValidator.new(schema.fetch(:schema)).validate(value)
+      [value, errors]
+    rescue StructuredResultError => error
+      [nil, [error.message]]
+    end
+
+    def structured_repair_message(message, strategy)
+      tool_uses = message.content.grep(Content::ToolUse)
+      if strategy.tool? && !tool_uses.empty?
+        return Message.new(
+          role: :tool,
+          content: tool_uses.map do |tool_use|
+            Content::ToolResult.new(
+              tool_use_id: tool_use.id,
+              content: "The structured result was invalid. Submit it again using the required schema.",
+              status: :error
+            )
+          end
+        )
+      end
+
+      requirement = strategy.tool? ? "Call #{strategy.schema_name} exactly once as your only tool call." : "Return only JSON matching the configured output schema."
+      Message.new(role: :user, content: "#{requirement} You have one repair attempt. The previous structured result was invalid.")
     end
 
     def validate_complexity!(value, schema_name)
@@ -135,6 +167,19 @@ module LittleGhost
       Message.new(
         role: message.role,
         content: "[Structured result #{schema.fetch(:name)} redacted]",
+        metadata: message.metadata
+      )
+    end
+
+    def redact_structured_response(message, schema, strategy)
+      tool_uses = message.content.grep(Content::ToolUse)
+      return redact_structured_message(message, schema) unless strategy.tool? && !tool_uses.empty?
+
+      Message.new(
+        role: message.role,
+        content: tool_uses.map do |tool_use|
+          Content::ToolUse.new(id: tool_use.id, name: tool_use.name, input: {})
+        end,
         metadata: message.metadata
       )
     end
