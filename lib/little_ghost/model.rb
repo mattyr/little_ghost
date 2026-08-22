@@ -76,7 +76,10 @@ module LittleGhost
       provider.stream(configured_request, &block)
     end
 
-    # Executes an embedding request through the configured provider.
+    # Applies profile settings and executes an Embeddings::Request.
+    #
+    # Returns an Embeddings::Response with one vector per input. A provider that
+    # returns another shape raises ProtocolError.
     def embed(request)
       configured = Embeddings::Request.new(
         inputs: request.inputs,

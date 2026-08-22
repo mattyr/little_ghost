@@ -21,7 +21,12 @@ module LittleGhost
     end
 
     # Shared provider contract. Provider adapters implement #stream and may
-    # override capability-sensitive request preparation.
+    # implement #embed or override capability-sensitive request preparation.
+    #
+    # LittleGhost may call one provider instance concurrently. An embedding
+    # adapter accepts Embeddings::Request, observes its cancellation and
+    # deadline, and returns Embeddings::Response. Provider failures should use a
+    # content-safe ProviderError subclass.
     class Base
       # Returns the trusted per-profile request options this adapter accepts.
       # Connection options remain authoritative and are configured separately.
@@ -32,7 +37,12 @@ module LittleGhost
         raise AbstractMethodError, "#{self.class} must implement #stream"
       end
 
-      # Executes an embedding operation when the adapter supports it.
+      # Executes +request+ when the adapter supports text embeddings.
+      #
+      # The default implementation raises UnsupportedModelOperationError.
+      #
+      # :call-seq:
+      #   embed(request) -> Embeddings::Response
       def embed(_request)
         raise UnsupportedModelOperationError, "#{self.class} does not support embeddings"
       end

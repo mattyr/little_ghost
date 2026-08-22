@@ -184,12 +184,24 @@ module LittleGhost
       payload.is_a?(@invocation_class) ? payload : @invocation_class.new(payload)
     end
 
-    # Generates one response through a trusted model selection.
+    # :call-seq:
+    #   generate(model:, messages:, result_schema: nil, settings: {}, cancellation_token: Support::CancellationToken.new, deadline: nil) -> RunResult
+    #
+    # Generates one response through this Runtime's model resolver.
+    #
+    # Returns a RunResult without creating a Run or invoking runtime hooks. See
+    # LittleGhost.generate for the operation contract.
     def generate(**arguments)
       @model_operations.generate(**arguments)
     end
 
-    # Embeds text through a trusted model selection.
+    # :call-seq:
+    #   embed(model:, inputs:, settings: {}, limits: {}, cancellation_token: Support::CancellationToken.new, deadline: nil) -> Embeddings::Response
+    #
+    # Embeds text through this Runtime's model resolver.
+    #
+    # Returns an Embeddings::Response without creating a Run or invoking runtime
+    # hooks. See LittleGhost.embed for the operation contract.
     def embed(**arguments)
       @model_operations.embed(**arguments)
     end

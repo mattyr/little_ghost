@@ -11,9 +11,9 @@ module LittleGhost
   # request and response types. Agents select them through model configuration rather
   # than depending on a provider class directly.
   module Providers
-    # Bedrock lets LittleGhost agents use models available through Amazon Bedrock
-    # Converse. Its output follows the same streaming events as every other
-    # LittleGhost provider.
+    # Bedrock lets LittleGhost features use models available through Amazon
+    # Bedrock. Generation uses Converse and follows the same streaming events as
+    # every other LittleGhost provider.
     #
     #   provider = LittleGhost::Providers::Bedrock.new(
     #     model: ENV.fetch("BEDROCK_MODEL_ID"),
@@ -64,8 +64,9 @@ module LittleGhost
       # Configures Bedrock for +model+.
       #
       # +region+ and remaining +client_options+ configure the built-in HTTP client.
-      # +max_retries+, +sleeper+, and +on_retry+ control retry behavior. Injecting
-      # +client+ bypasses creation of the built-in HTTP client.
+      # +max_retries+, +sleeper+, and +on_retry+ control retry behavior.
+      # +max_embedding_response_bytes+ bounds each embedding response retained in
+      # memory. Injecting +client+ bypasses creation of the built-in HTTP client.
       def initialize(model:, region: nil, client: nil, max_retries: 2, sleeper: nil,
         on_retry: ->(*) {}, max_embedding_response_bytes: DEFAULT_MAX_EMBEDDING_RESPONSE_BYTES, **client_options)
         @model = model
@@ -135,6 +136,11 @@ module LittleGhost
       end
 
       # Embeds text with Amazon Titan Text Embeddings V2.
+      #
+      # The +:dimensions+ request setting accepts 256, 512, or 1024 and defaults
+      # to 1024. +:normalize+ controls vector normalization and defaults to true.
+      # Inputs are requested sequentially, and a failure raises without returning
+      # a partial batch.
       def embed(request)
         unless model == "amazon.titan-embed-text-v2:0"
           raise UnsupportedModelOperationError, "Bedrock embeddings require amazon.titan-embed-text-v2:0"

@@ -4,8 +4,9 @@ require_relative "openai_compatible"
 
 module LittleGhost
   module Providers
-    # OpenAI connects LittleGhost agents to OpenAI models with streaming, tools,
-    # and structured results. It uses the Responses API by default.
+    # OpenAI connects LittleGhost features to OpenAI models for generation and
+    # embeddings. Generation uses the Responses API by default and supports
+    # streaming, Tools, and structured results.
     #
     #   provider = LittleGhost::Providers::OpenAI.new(
     #     api_key: ENV.fetch("OPENAI_API_KEY"),
@@ -20,6 +21,10 @@ module LittleGhost
       DEFAULT_MAX_EMBEDDING_RESPONSE_BYTES = 8 * 1024 * 1024 # :nodoc:
 
       # Uses the official OpenAI API base URL by default.
+      #
+      # +max_embedding_response_bytes+ bounds the response retained for one
+      # embedding batch. Remaining +arguments+ configure the shared generation
+      # transport and retry behavior.
       def initialize(base_url: DEFAULT_BASE_URL, max_embedding_response_bytes: DEFAULT_MAX_EMBEDDING_RESPONSE_BYTES, **arguments)
         @max_embedding_response_bytes = Integer(max_embedding_response_bytes)
         raise ArgumentError, "max_embedding_response_bytes must be positive" unless @max_embedding_response_bytes.positive?
@@ -27,7 +32,11 @@ module LittleGhost
         super(base_url:, **arguments)
       end
 
-      # Embeds one or more strings with the OpenAI embeddings endpoint.
+      # Embeds one or more strings with the configured OpenAI model.
+      #
+      # The optional +:dimensions+ request setting selects a supported output
+      # size for models that accept it. The response preserves input order and
+      # raises ProtocolError when OpenAI returns an incomplete or invalid batch.
       def embed(request)
         attempts = 0
         begin

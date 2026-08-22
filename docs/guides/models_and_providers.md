@@ -122,8 +122,9 @@ when the catalog says a feature is supported.
 
 ## Call a model without an Agent
 
-Use one-shot generation for bounded model work that does not need Tools,
-Sessions, Workspaces, delegation, or an agent loop:
+Some application work needs one model response rather than an Agent. Use
+`LittleGhost.generate` for tasks such as classification, extraction, or
+rewriting when your application already owns the surrounding workflow:
 
 ```ruby
 response = LittleGhost.generate(
@@ -135,19 +136,21 @@ response = LittleGhost.generate(
   settings: {temperature: 0}
 )
 
-response.output # => one possible classification
+response.output
 response.usage.total_tokens
 ```
 
-The model selection and settings are trusted application controls, just as
-they are for an Agent. The operation returns the same `RunResult` shape as an
-Agent invocation, but does not create a Run or invoke agent callbacks.
+The operation returns a `LittleGhost::RunResult`, the same result type returned
+by an Agent invocation, so
+application code can read `output`, `usage`, and the final message in the same
+way. Plain generation makes one model request without starting an Agent or
+creating a Run. Structured generation may make one additional repair request.
 
 Pass a strict object schema when application code needs checked JSON:
 
 ```ruby
 response = LittleGhost.generate(
-  model: :classifier,
+  model: :customer_support,
   messages: [{role: :user, content: "My transfer is still pending."}],
   result_schema: {
     name: "classification",
@@ -161,20 +164,26 @@ response = LittleGhost.generate(
   }
 )
 
-response.output # => {"category" => "transfer_status"}
+response.output
 ```
 
-One-shot structured generation requires provider-native structured output. It
-checks the returned JSON locally and gives the model one repair attempt before
-raising `LittleGhost::StructuredResultError`. JSON schema validates shape, not
-authorization or business rules; perform those checks in application code.
-As with an Agent result, raw structured JSON is redacted from the returned
-message history. Read the validated value through `response.output` or
-`response.structured_result.value`.
+LittleGhost checks the result against the schema and gives the model one repair
+attempt. Read the checked value through `response.output`. If both attempts are
+invalid, the call raises `LittleGhost::StructuredResultError`.
+
+A schema checks the shape of a value, not whether your application should act
+on it. Check identifiers, permissions, and business rules before using the
+result to change application state.
 
 ## Create embeddings
 
-`LittleGhost.embed` returns provider-neutral vectors in input order:
+Use `LittleGhost.embed` when your application needs numeric representations for
+search, clustering, or another similarity-based feature:
+
+The example assumes application startup maps `search_embeddings` to an
+embedding model, following the role configuration shown earlier on this page.
+The selected provider adapter's API reference lists the model-specific
+settings.
 
 ```ruby
 response = LittleGhost.embed(
@@ -187,39 +196,16 @@ response.dimensions
 response.usage.input_tokens
 ```
 
-Embedding requests accept at most 128 inputs, 64 KiB per input, and 1 MiB in
-aggregate by default. Trusted application code can tighten or raise these
-budgets for a bounded operation:
+The response keeps vectors in the same order as the inputs. LittleGhost rejects
+an incomplete or malformed response instead of returning a partial batch.
+Choose the embedding model and request settings in trusted application
+configuration, and keep each call within a workload size your application can
+retry safely.
 
-```ruby
-LittleGhost.embed(
-  model: :search_embeddings,
-  inputs: documents,
-  limits: {max_inputs: 32, max_input_bytes: 16 * 1024, max_total_bytes: 256 * 1024}
-)
-```
-
-LittleGhost supports OpenAI embeddings and Amazon Titan Text Embeddings V2 on
-Bedrock. OpenAI sends an input batch in one request. Bedrock sends one Titan
-request per input, sequentially, so the application controls concurrency and
-batch size. A failed batch raises without returning partial vectors.
-
-For Titan V2, configure dimensions and normalization in the model profile:
-
-```ruby
-config.models = {
-  search_embeddings: {
-    target: "aws:amazon.titan-embed-text-v2:0",
-    settings: {dimensions: 1024, normalize: true}
-  }
-}
-```
-
-Titan accepts 256, 512, or 1,024 dimensions. OpenAI accepts its model's
-supported `dimensions` value. Embedding inputs leave the process for the
-selected provider and are excluded from LittleGhost telemetry by default.
-Provider responses also have a separate 8 MiB default bound, configurable as
-`max_embedding_response_bytes` on the trusted provider connection.
+Embedding text is sent to the selected provider. Choose a provider that is
+appropriate for that data, just as you would for an Agent request. See
+`LittleGhost::Embeddings::Request` and your provider adapter's API reference for
+the supported settings and request bounds.
 
 Continue with [Prompts as Views](prompt_views.md) when an Agent's instructions
 outgrow one string. See [Structured Results and Content](structured_outputs_and_content.md)
