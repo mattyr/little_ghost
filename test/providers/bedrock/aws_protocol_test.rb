@@ -36,6 +36,17 @@ class BedrockAwsProtocolTest < Minitest::Test
     assert_match(/Signature=[0-9a-f]{64}\z/, headers.fetch("authorization"))
   end
 
+  def test_sigv4_canonicalizes_an_encoded_model_id_for_bedrock
+    signer = LittleGhost::Providers::Bedrock::AwsSigV4.new(
+      service: "bedrock",
+      region: "us-east-2",
+      credentials: LittleGhost::Providers::Bedrock::Credentials.new(access_key_id: "key", secret_access_key: "secret")
+    )
+    uri = URI("https://bedrock-runtime.us-east-2.amazonaws.com/model/us.amazon.nova-2-lite-v1%3A0/converse-stream")
+
+    assert_equal "/model/us.amazon.nova-2-lite-v1%253A0/converse-stream", signer.send(:canonical_path, uri)
+  end
+
   def test_event_stream_decodes_fragmented_frames_and_validates_crc
     frame = event_frame({":event-type" => "messageStart", ":message-type" => "event"}, JSON.generate(role: "assistant"))
     decoder = LittleGhost::Providers::Bedrock::EventStreamDecoder.new
