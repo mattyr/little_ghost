@@ -22,6 +22,80 @@ class BedrockTest < Minitest::Test
     end
   end
 
+  class FakeEmbeddingClient
+    attr_reader :parameters
+
+    def initialize(responses)
+      @responses = responses
+      @parameters = []
+    end
+
+    def invoke_model(**parameters)
+      @parameters << parameters
+      LittleGhost::Providers::Bedrock::HTTPClient::InvokeResponse.new(body: JSON.generate(@responses.shift))
+    end
+  end
+
+  class RawEmbeddingClient
+    def initialize(body) = @body = body
+
+    def invoke_model(**)
+      LittleGhost::Providers::Bedrock::HTTPClient::InvokeResponse.new(body: @body)
+    end
+  end
+
+  def test_embeds_titan_inputs_sequentially
+    client = FakeEmbeddingClient.new([
+      {embedding: [1] + ([0] * 255), inputTextTokenCount: 2},
+      {embedding: [0, 1] + ([0] * 254), inputTextTokenCount: 3}
+    ])
+    provider = LittleGhost::Providers::Bedrock.new(model: "amazon.titan-embed-text-v2:0", client:)
+
+    result = provider.embed(LittleGhost::Embeddings::Request.new(
+      inputs: ["one", "two"], settings: {dimensions: 256, normalize: false}
+    ))
+
+    assert_equal [1.0, 0.0], result.vectors.first.first(2)
+    assert_equal [0.0, 1.0], result.vectors.last.first(2)
+    assert_equal 5, result.usage.input_tokens
+    assert_equal 2, client.parameters.length
+    assert_equal({input_text: "one", dimensions: 256, normalize: false}, client.parameters.first[:body])
+    assert_equal LittleGhost::Providers::Bedrock::DEFAULT_MAX_EMBEDDING_RESPONSE_BYTES,
+      client.parameters.first[:max_response_bytes]
+  end
+
+  def test_rejects_titan_vectors_with_unexpected_dimensions
+    client = FakeEmbeddingClient.new([{embedding: [1, 0], inputTextTokenCount: 2}])
+    provider = LittleGhost::Providers::Bedrock.new(model: "amazon.titan-embed-text-v2:0", client:)
+
+    assert_raises(LittleGhost::ProtocolError) do
+      provider.embed(LittleGhost::Embeddings::Request.new(inputs: "one", settings: {dimensions: 256}))
+    end
+  end
+
+  def test_rejects_embedding_for_another_bedrock_model
+    provider = LittleGhost::Providers::Bedrock.new(model: "other", client: FakeClient.new([]))
+
+    assert_raises(LittleGhost::UnsupportedModelOperationError) do
+      provider.embed(LittleGhost::Embeddings::Request.new(inputs: "text"))
+    end
+  end
+
+  def test_invalid_embedding_json_does_not_leak_provider_content
+    sentinel = "SENSITIVE_PROVIDER_FRAGMENT"
+    provider = LittleGhost::Providers::Bedrock.new(
+      model: "amazon.titan-embed-text-v2:0",
+      client: RawEmbeddingClient.new("{#{sentinel}")
+    )
+
+    error = assert_raises(LittleGhost::ProtocolError) do
+      provider.embed(LittleGhost::Embeddings::Request.new(inputs: "text"))
+    end
+
+    assert_equal "Bedrock returned an invalid embedding response", error.message
+    refute_includes error.message, sentinel
+  end
+
   class StalledEvents
     attr_reader :started
 

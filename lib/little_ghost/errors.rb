@@ -36,6 +36,8 @@ module LittleGhost
   class AssemblyStepTimeoutError < AssemblyError; end
   # Raised when an invocation contains an unsupported input form.
   class UnsupportedInputError < InvocationError; end
+  # Raised when a provider does not implement the requested model operation.
+  class UnsupportedModelOperationError < ConfigurationError; end
   # Base class for provider request, response, and protocol failures. Agent Runs
   # normally record these as failed outcomes; provider retry policy may handle a
   # retryable failure before it reaches the Run.

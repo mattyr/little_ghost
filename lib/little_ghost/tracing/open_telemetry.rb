@@ -61,7 +61,9 @@ module LittleGhost
         workflow: "invoke_workflow",
         swarm: "invoke_swarm",
         graph: "invoke_graph",
-        assembly: "invoke_assembly"
+        assembly: "invoke_assembly",
+        generation: "chat",
+        embedding: "embeddings"
       }.freeze # :nodoc:
       REQUEST_SETTING_ATTRIBUTES = {
         frequency_penalty: "gen_ai.request.frequency_penalty",
@@ -244,7 +246,7 @@ module LittleGhost
         end
         description = [error_type, event_attributes["exception.message"]].compact.join(": ")
         span.status = ::OpenTelemetry::Trace::Status.error(description)
-        event_name = (kind == :model) ? "gen_ai.client.operation.exception" : "exception"
+        event_name = %i[model generation embedding].include?(kind) ? "gen_ai.client.operation.exception" : "exception"
         span.add_event(event_name, attributes: event_attributes.compact)
       end
 
@@ -270,7 +272,7 @@ module LittleGhost
         when :swarm, :graph, :assembly then attributes[:assembly_id]
         when :assembly_step then attributes[:participant]
         when :agent_turn then attributes[:turn]
-        when :model then attributes[:model_id]
+        when :model, :generation, :embedding then attributes[:model_id]
         when :subagent then attributes[:subagent_id] || attributes[:kind]
         when :tool then attributes[:tool_name]
         end
@@ -448,7 +450,7 @@ module LittleGhost
       end
 
       def span_kind(kind)
-        %i[model session_store].include?(kind) ? :client : :internal
+        %i[model generation embedding session_store].include?(kind) ? :client : :internal
       end
 
       def gen_ai_usage_value(key, attributes, value)

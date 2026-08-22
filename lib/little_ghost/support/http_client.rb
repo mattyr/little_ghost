@@ -81,7 +81,8 @@ module LittleGhost
 
       # Executes a bounded request and returns the complete response body.
       def request(uri:, method: :get, headers: {}, body: nil, allow_insecure_http: false,
-        cancellation_token: nil, deadline: nil)
+        cancellation_token: nil, deadline: nil, label: "HTTP request", max_response_bytes: @max_response_bytes)
+        response_limit = positive_integer(max_response_bytes, :max_response_bytes)
         response_body = +""
         each_chunk(
           uri:,
@@ -90,8 +91,14 @@ module LittleGhost
           body:,
           cancellation_token:,
           deadline: deadline || Time.now + @read_timeout,
-          allow_insecure_http:
-        ) { |chunk| response_body << chunk }
+          allow_insecure_http:,
+          label:
+        ) do |chunk|
+          if response_body.bytesize + chunk.bytesize > response_limit
+            raise ProtocolError, "#{label} response exceeded #{response_limit} bytes"
+          end
+          response_body << chunk
+        end
         response_body
       end
 

@@ -32,6 +32,11 @@ module LittleGhost
         raise AbstractMethodError, "#{self.class} must implement #stream"
       end
 
+      # Executes an embedding operation when the adapter supports it.
+      def embed(_request)
+        raise UnsupportedModelOperationError, "#{self.class} does not support embeddings"
+      end
+
       # Applies provider-specific capability constraints before streaming.
       def prepare_request(request, capabilities:)
         request

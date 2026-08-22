@@ -94,6 +94,24 @@ class BedrockAwsProtocolTest < Minitest::Test
     end
   end
 
+  def test_invoke_model_applies_its_tighter_response_bound
+    credentials = LittleGhost::Providers::Bedrock::Credentials.new(access_key_id: "key", secret_access_key: "secret")
+    response = Net::HTTPOK.new("1.1", "200", "OK")
+    response.define_singleton_method(:read_body) do |&block|
+      block.call("a" * 6)
+      block.call("b" * 6)
+    end
+    client = LittleGhost::Providers::Bedrock::HTTPClient.new(region: "us-east-1", credentials:)
+
+    Net::HTTP.stub(:new, FakeHTTP.new(response)) do
+      error = assert_raises(LittleGhost::ProtocolError) do
+        client.invoke_model(model_id: "provider.model", body: {}, max_response_bytes: 10)
+      end
+
+      assert_includes error.message, "exceeded 10 bytes"
+    end
+  end
+
   private
 
   def event_frame(headers, payload)
