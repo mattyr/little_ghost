@@ -141,6 +141,56 @@ class BedrockTest < Minitest::Test
     assert_equal "lookup", client.parameters.dig(:tool_config, :tools, 0, :tool_spec, :name)
   end
 
+  def test_normalizes_camel_case_http_events_for_tool_backed_structured_output
+    events = [
+      http_event("messageStart", {"role" => "assistant"}),
+      http_event("contentBlockStart", {"contentBlockIndex" => 0, "start" => {"toolUse" => {"toolUseId" => "tool-1", "name" => "submit_result"}}}),
+      http_event("contentBlockDelta", {"contentBlockIndex" => 0, "delta" => {"toolUse" => {"input" => "{\"english_text\":\"yes\"}"}}}),
+      http_event("contentBlockStop", {"contentBlockIndex" => 0}),
+      http_event("messageStop", {"stopReason" => "tool_use"}),
+      http_event("metadata", {"usage" => {"inputTokens" => 10, "outputTokens" => 4}})
+    ]
+    provider = LittleGhost::Providers::Bedrock.new(model: "amazon.nova-test", client: FakeClient.new(events))
+
+    result = provider.stream(request).to_a
+
+    assert_equal %i[message_start tool_call_start tool_call_delta tool_call_stop usage message_stop], result.map(&:type)
+    response = result.last.data.fetch(:response)
+    assert_equal :tool_use, response.stop_reason
+    assert_equal({"english_text" => "yes"}, response.message.content.grep(LittleGhost::Content::ToolUse).fetch(0).input)
+    assert_equal 10, response.usage.input_tokens
+    assert_equal 4, response.usage.output_tokens
+  end
+
+  def test_preserves_tool_schema_and_arguments_field_names_on_the_wire
+    credentials = LittleGhost::Providers::Bedrock::Credentials.new(access_key_id: "key", secret_access_key: "secret")
+    client = LittleGhost::Providers::Bedrock::HTTPClient.new(region: "us-east-1", credentials:)
+    payload = client.send(:camelize, {
+      tool_config: {
+        tools: [{
+          tool_spec: {
+            input_schema: {
+              json: {
+                type: "object",
+                properties: {
+                  english_text: {type: "string"},
+                  accountID: {type: "string"}
+                },
+                required: ["english_text", "accountID"],
+                additionalProperties: false
+              }
+            }
+          }
+        }]
+      }
+    })
+
+    schema = payload.dig("toolConfig", "tools", 0, "toolSpec", "inputSchema", "json")
+    assert_equal %w[accountID english_text], schema.fetch("properties").keys.sort
+    assert_equal ["english_text", "accountID"], schema.fetch("required")
+    assert_equal false, schema.fetch("additionalProperties")
+  end
+
   def test_default_client_is_zero_dependency_and_requires_a_region
     error = assert_raises(LittleGhost::ConfigurationError) do
       LittleGhost::Providers::Bedrock.new(model: "test", credential_resolver: -> { flunk })
@@ -679,6 +729,12 @@ class BedrockTest < Minitest::Test
   end
 
   private
+
+  def http_event(type, payload)
+    credentials = LittleGhost::Providers::Bedrock::Credentials.new(access_key_id: "key", secret_access_key: "secret")
+    client = LittleGhost::Providers::Bedrock::HTTPClient.new(region: "us-east-1", credentials:)
+    client.send(:event, {":event-type" => type}, JSON.generate(payload))
+  end
 
   def request(messages: [{role: :user, content: "Hello"}],
     cancellation_token: LittleGhost::Support::CancellationToken.new, deadline: nil)

@@ -63,27 +63,34 @@ module LittleGhost
         def event(headers, payload)
           value = payload.empty? ? {} : JSON.parse(payload)
           type = headers[":event-type"] || headers[":exception-type"]
-          {type.to_s.gsub(/([a-z])([A-Z])/, "\\1_\\2").downcase.to_sym => symbolize(value)}
+          {underscore(type).to_sym => normalize_event_payload(value)}
         rescue JSON::ParserError => error
           raise ProtocolError, "Bedrock returned invalid event JSON: #{error.message}"
         end
 
-        def camelize(value)
+        def camelize(value, json_schema: false, input_schema: false)
           case value
           when Hash
-            value.to_h { |key, child| [key.to_s.gsub(/_([a-z])/) { Regexp.last_match(1).upcase }, camelize(child)] }
-          when Array then value.map { |child| camelize(child) }
+            value.to_h do |key, child|
+              key = key.to_s
+              [json_schema ? key : camelize_key(key), camelize(child, json_schema: json_schema || (input_schema && key == "json"), input_schema: key == "input_schema")]
+            end
+          when Array then value.map { |child| camelize(child, json_schema:, input_schema: false) }
           else value
           end
         end
 
-        def symbolize(value)
+        def camelize_key(key) = key.gsub(/_([a-z])/) { Regexp.last_match(1).upcase }
+
+        def normalize_event_payload(value)
           case value
-          when Hash then value.to_h { |key, child| [key.to_sym, symbolize(child)] }
-          when Array then value.map { |child| symbolize(child) }
+          when Hash then value.to_h { |key, child| [underscore(key).to_sym, normalize_event_payload(child)] }
+          when Array then value.map { |child| normalize_event_payload(child) }
           else value
           end
         end
+
+        def underscore(value) = value.to_s.gsub(/([a-z0-9])([A-Z])/, "\\1_\\2").downcase
 
         def escape_path(value) = URI.encode_www_form_component(value.to_s).gsub("+", "%20")
       end
