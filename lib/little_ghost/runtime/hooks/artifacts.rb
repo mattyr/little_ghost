@@ -91,6 +91,7 @@ module LittleGhost
             automatic: automatic_descriptor,
             oversized:
           )
+          content = append_materialized_references(content, all_descriptors)
           Tool::ExecutionResult.new(
             value: result.value,
             content:,
@@ -227,6 +228,13 @@ module LittleGhost
               name: descriptor.name || "artifact"
             )
           end.freeze
+        end
+
+        def append_materialized_references(content, artifacts)
+          references = artifacts.filter_map { |artifact| artifact.reference if artifact.bytes }
+          return content if references.empty?
+
+          "#{content}\n\nWorkspace artifacts:\n#{references.map { |reference| "- #{reference}" }.join("\n")}"
         end
 
         def oversized_artifact(result, tool_use:)
