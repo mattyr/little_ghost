@@ -45,7 +45,7 @@ module LittleGhost
 
         def canonical_path(uri)
           path = uri.path.empty? ? "/" : uri.path
-          path.split("/", -1).map { |part| URI.encode_www_form_component(URI.decode_www_form_component(part)).gsub("+", "%20") }.join("/")
+          path.split("/", -1).map { |part| URI.encode_www_form_component(part).gsub("+", "%20") }.join("/")
         end
 
         def canonical_query(uri)
